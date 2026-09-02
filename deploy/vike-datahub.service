@@ -1,0 +1,244 @@
+# systemd unit for the vike-datahub compute-to-data backtest server (headless two-layer plan,
+# Layer 1, PR-1), in the ONE-PROJECT-FOLDER shape. See docs/ops/datahub-the CI box.md for the full runbook.
+#
+# ⚠ EVERY PATH BELOW IS THE PLACEHOLDER PROJECT ROOT /srv/vike-<unit>. It is an example, not a
+# requirement — the server works from ANY absolute path. Choose your own root by ONE rule: a single
+# directory owned by the user the service runs as, holding bin/ and settings/ (with state/ and
+# state/logs/). Then substitute it everywhere in the installed copy and check nothing was missed:
+#
+#   R=/your/project/root
+#   sed "s,/srv/vike-<unit>,$R,g" deploy/vike-datahub.service > /tmp/vike-datahub.service
+#   grep -n /srv/vike-<unit> /tmp/vike-datahub.service    # must print NOTHING
+#   install -Dm644 /tmp/vike-datahub.service ~/.config/systemd/user/vike-datahub.service
+#   systemctl --user daemon-reload && systemctl --user enable --now vike-datahub
+#
+# (For a system-wide install use /etc/systemd/system/, add `User=`, and drop the --user flags. Read
+# the hardening block at the bottom first: under a --user manager the sandbox directives are applied
+# as NO-OPS on a stock Ubuntu box — measured, docs/ops/tradehub-the CI box.md.)
+#
+# ⚠ /opt/vike is GONE. Binary, settings, state and log now live under ONE project root — nothing in
+# /opt, nothing in /var/log — because the settings walk and the log destination both key off it. The
+# STORE is the one thing that legitimately lives elsewhere: this server READS a store some other
+# process wrote (the CI box's recorder writes its own project's `data/hist`), so VIKE_DATAHUB_STORE below
+# may point outside the root, and reading needs no grant under ProtectSystem=strict.
+#
+# The shape is MACHINE-CHECKED: crates/vike-ops/tests/deploy_layout_gate.rs reads every unit in this
+# directory and fails if one names a second location, spreads its write grant over more than one
+# ReadWritePaths= LINE, grants a path that covers a binary it runs or its own settings directory,
+# sets VIKE_LOG_DIR, points EnvironmentFile= at the credential store, or runs an ExecStartPre= binary
+# from outside the project folder (or behind a `-`, which would make the pre-check non-fatal).
+#
+# The server runs NEXT TO the data and returns compact answers (a BacktestReport), never raw slices.
+# A laptop reaches it over an SSH tunnel: ssh -L 7878:localhost:7878 <box>.
+
+[Unit]
+Description=vike-datahub — compute-to-data backtest server (bind defaults to localhost; <project>/.env wins)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# The DataFusion-backed server bin. Build it once with the feature that pulls the concrete backend:
+#   cargo build --release -p vike-datahub --features serve-datafusion
+#
+# WorkingDirectory IS the project root: the settings walk and the rolling log resolve off it with no
+# extra variable (crates/vike-model/src/state_path.rs's `project_state_dir`).
+WorkingDirectory=/srv/vike-<unit>
+ExecStart=/srv/vike-<unit>/bin/vike-datahub
+
+# --- PRE-FLIGHT: refuse a broken configuration instead of starting degraded ----------------------
+# Without this line the server STARTS ANYWAY when its settings tree is broken, silently: a
+# `settings/` that was never created makes the project walk answer nothing, and this server then
+# runs with no settings at all — the case the block further down describes and which nothing until
+# now DETECTED. docs/decisions/0013-degrade-vs-refuse.md is the rule this implements.
+#
+# `vike-cli config check` resolves the SAME settings directory through the SAME loader
+# (crates/vike-config/src/load.rs's `load`) and makes the EXIT CODE the product, so a non-zero
+# status fails the unit BEFORE ExecStart runs.
+#
+# ⚠ It refuses only what a silent difference would MISREPRESENT: a settings file that does not parse
+# or carries an unknown/removed key, a REMOVED environment variable (which the EnvironmentFile= below
+# can still deliver), and a VIKE_SETTINGS_DIR naming a directory that is not there. An ABSENT
+# credential store is NOT a failure — this server needs no venue credentials at all, and absent
+# credentials ARE the live gate everywhere else.
+#
+# ⚠ An UNREADABLE credential store — one that exists and cannot be opened — WARNS here rather than
+# refusing, and only becomes a refusal when the process environment ARMS a live venue
+# (crates/vike-config/src/arming.rs's `CREDENTIAL_FILE_ARMING_REFUSED`). On this server that second
+# case does not arise: it mounts no venue and places no order. The distinction still matters for
+# reading the output — "not configured" and "cannot open" are different states
+# (crates/vike-secrets/src/store.rs's `SecretsError` exists to keep them apart), and the WARN is how
+# this box says which one it is in.
+#
+# ⚠ Deliberately NOT `--strict`, and NO leading `-`. `--strict` promotes every WARNING to a failure,
+# including a 0644 `secrets.env` that crates/vike-secrets/src/store.rs's `PermissionWarning` argues
+# must never be a refusal; a leading `-` would make a failed pre-check non-fatal, i.e. delete this
+# line while appearing to have it. Run `vike-cli config check --strict` by hand when auditing a box
+# — the shipped recipe (docs/ops/datahub-the CI box.md) creates neither a credential store nor the `.env`
+# below, so it has no warning to promote; a box that later adds the `.env` without a store will see
+# one (crates/vike-secrets/src/store.rs's `LegacyStoreWarning`).
+#
+# ⚠ IT NEEDS A SECOND BINARY IN bin/, or systemd fails the unit with status=203/EXEC. `vike-cli` is
+# DataFusion-free — unlike this server, which is built WITH the DataFusion backend — so it adds a
+# small binary and no runtime dependency:
+#   cargo build --release -p vike-cli --bin vike-cli
+#   install -m755 target/release/vike-cli /srv/vike-<unit>/bin/vike-cli
+ExecStartPre=/srv/vike-<unit>/bin/vike-cli config check
+
+# --- localhost bind (item 2 of the runbook) -----------------------------------------------------
+# The listener should stay bound to localhost — a laptop reaches it through
+# `ssh -L 7878:localhost:7878 <box>`, so an OS-account credential is already required to connect.
+# ⚠ This line is a DEFAULT, not a guarantee, and the unit cannot make it one: `EnvironmentFile=`
+# below beats every `Environment=` line here. What holds the posture is the BINARY: a non-loopback
+# address is REFUSED at startup unless VIKE_DATAHUB_ALLOW_PUBLIC_BIND=1 is ALSO set
+# (`crates/vike-datahub/src/server.rs`'s `bind_decision` — the tradehub guard's twin), so a
+# `VIKE_DATAHUB_ADDR=0.0.0.0:7878` in the project's `.env` now fails the unit loudly instead of
+# exposing an unauthenticated server with no unit edit.
+# ⚠ And that opt-in is NECESSARY, not sufficient: the same guard takes this server's key presence
+# as a third input, so `VIKE_DATAHUB_ALLOW_PUBLIC_BIND=1` on a box with NO
+# VIKE_DATAHUB_OBSERVE_KEY / VIKE_DATAHUB_CONTROL_KEY in the credential store is refused too
+# (`BindDecision::RefuseUnauthenticated`). Setting the opt-in to "make it reachable" is the
+# workaround `docs/decisions/0025-datahub-remote-posture.md` names and refuses; configure the keys
+# instead. Do not restate the bind as a property
+# in `Description=` — see the measurement in `crates/vike-ops/tests/deploy_layout_gate.rs`'s
+# `no_unit_description_claims_what_an_environment_file_can_falsify`.
+Environment=VIKE_DATAHUB_ADDR=127.0.0.1:7878
+
+# --- the hist store root (item 3 of the runbook) ------------------------------------------------
+# Point at the store this server should answer from. The one-folder default is `<project>/data/hist`
+# — the STORE, not the data directory above it (crates/vike-model/src/state_path.rs's `HIST_SUBDIR`
+# under `PROJECT_DATA_DIR`, which is the leaf every reader's own default resolves to). Point it at
+# the RECORDER's project instead when the tape is written there, which is the CI box's shape.
+# ⚠ This line named `<project>/data` until 2026-08-21 — a root one level ABOVE the store, so a box
+# taking the shipped default read a directory holding no `kind=` partitions at all and answered every
+# query with zero rows, indistinguishable from a recorder that found nothing. Keep the `hist` leaf.
+# Falls back to VIKE_HIST_STORE, then a default, if unset — set it explicitly so a systemd run is
+# unambiguous. Read-only either way: the server opens the store for reads and this unit grants it no
+# write.
+Environment=VIKE_DATAHUB_STORE=/srv/vike-<unit>/data/hist
+
+# --- turn the trace FILE log DOWN (item 1 of the runbook) ---------------------------------------
+# RUST_LOG/VIKE_LOG filter the CONSOLE only; the file layer defaults to `trace` and captures the
+# log->tracing bridge from DataFusion/arrow. A long backfill once wrote 341 GB and nearly filled the
+# disk hosting a live trading node — and the CI box runs a live hl-node, so this is not hypothetical.
+Environment=VIKE_LOG_FILE_LEVEL=warn
+# ⚠ Deliberately NO VIKE_LOG_DIR. Unset, the project layer resolves the rolling log to
+# <project>/settings/state/logs — inside the single write grant at the bottom. Naming a directory
+# here would put the log somewhere that grant does not cover. Watch it with
+# `du -sh /srv/vike-<unit>/settings/state/logs`.
+
+# --- WHERE SETTINGS AND CREDENTIALS LIVE ---------------------------------------------------------
+# `<project>/settings/` holds policy.toml, config.toml, preferences.toml, flags.toml, secrets.env
+# and state/. The binary finds it by walking UP from its working directory for a project marker: a
+# checkout's `Cargo.toml` declaring `[workspace]`, else the NEAREST marker of either kind — for a
+# DEPLOYMENT, its own `settings/` directory.
+#
+# ⚠ A DEPLOYED box has a BINARY, not a source checkout, so until the `settings/` marker existed the
+# walk returned NOTHING here and this server started with no settings at all. Create the directory:
+#   install -d -m700 /srv/vike-<unit>/settings /srv/vike-<unit>/settings/state
+#
+# The line below makes the answer EXPLICIT and independent of WorkingDirectory — set it and no walk
+# happens at all.
+Environment=VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings
+
+# Operator tunables (NOT credentials) from a plain env file at the PROJECT ROOT. The datahub server
+# itself needs no venue creds; harmless if the file is absent.
+#
+# ⚠ It MUST NOT be settings/secrets.env. The credential store is deliberately NEVER an environment
+# source — four gates in this workspace (VIKE_TRADEHUB_LIVE, VIKE_TRADEHUB_CONTROL, VIKE_RECONCILE,
+# VIKE_TELEGRAM_CONTROL) are read off the REAL process env precisely BECAUSE the store never reaches
+# there (crates/vike-ops/src/reconcile_config.rs's module doc is the authority), and an
+# EnvironmentFile= at the store both inverts that and exports every key into /proc/<pid>/environ.
+EnvironmentFile=-/srv/vike-<unit>/.env
+
+# --- keep a runaway sweep from starving the live node (item 3 of the runbook) -------------------
+# A concurrent sweep is an N_threads x slice MEMORY multiplier on a box that also hosts live trading.
+# Cap it so the server is OOM-killed before it can starve the hl-node; tune to the box's headroom.
+MemoryMax=8G
+# Restart on a crash (an OOM kill included), but not on a clean exit.
+Restart=on-failure
+RestartSec=5
+
+# ⚠ Deliberately NO TimeoutStopSec=, unlike the two DAEMON units. This server has no teardown to
+# bound — it answers RPCs and holds nothing that must be flushed — so it inherits systemd's 90 s
+# default. Writing a number here would advertise a stop budget nobody measured, which is the class of
+# claim `crates/vike-ops/tests/graceful_stop_pin.rs` exists to keep out of the two units that DO have
+# one. If this server ever grows a teardown, add the directive AND the gate row together.
+
+# Hardening: the server needs only to read the store and bind localhost.
+NoNewPrivileges=true
+# ⚠ ProtectSystem=strict mounts the WHOLE filesystem read-only except /dev, /proc, /sys and whatever
+# ReadWritePaths= names. READS are unaffected, so the settings above and the hist store both load
+# normally — which is why a store OUTSIDE the project root needs no entry here.
+#
+# ⚠ MEASURED on the CI box (systemd 255, Ubuntu 24.04): under a `systemd --user` manager with the
+# distribution default `kernel.apparmor_restrict_unprivileged_userns=1`, these directives are applied
+# as NO-OPS — no warning, no failed unit, and `systemctl --user show` still reports them as
+# configured. They enforce under the SYSTEM manager. docs/ops/tradehub-the CI box.md has the probe.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+# ONE grant, and deliberately the SUB-directory rather than the project root: this server writes its
+# rolling log and nothing else, so granting the root would hand it write access to the store it is
+# meant to read and to the binary it is running. Anything writable by this unit must be data, never
+# code. ⚠ The path must EXIST, and the install recipe must create it: `write_path`'s lazy
+# `create_dir_all` cannot make it under a read-only parent. Under the SYSTEM manager systemd also
+# refuses to start a unit whose ReadWritePaths= names a missing path (status=226); under a --user
+# manager it does NOT — the same root cause as the sandbox no-op measured on the CI box, whose probe is
+# in docs/ops/tradehub-the CI box.md. Do not read that refusal as a safety net on a --user install.
+#
+# ...and deliberately NO Environment=VIKE_HALT_FILE either — the mirror-image reason. The tradehub
+# unit sets it for explicitness, but the HALT sentinel is checked at the venue-adapter SUBMIT
+# boundary and this server has no execution path to check it: it links no bridge crate and holds no
+# `ExecutionClient`. A VIKE_HALT_FILE line here would name a file nothing in this process ever
+# reads — worse than absent, because an operator who touches it during an incident believes something
+# stopped. Nothing did, and nothing needed to: this server places no orders and holds no trading
+# credentials. See docs/ops/kill-switches.md §G.
+ReadWritePaths=/srv/vike-<unit>/settings/state
+
+
+# --- syscall / capability hardening, MEASURED ON THE REAL BINARIES -------------------------------
+# ⚠ MEASURED on the CI box 2026-08-17, systemd 255, with throwaway SYSTEM units running these exact
+# binaries — the set below is not a template copied from a hardening guide, every line survived a
+# run. The recorder's own `--once` dry run exits 0 under it, and that run dials 8 live polymarket
+# streams and 2 binance streams, so the TLS handshakes and WebSocket dials happen UNDER the seccomp
+# filter; vike-tradehub reaches `{"kind":"ready"}`. `systemd-analyze security`: recorder 8.7 -> 1.9,
+# tradehub 8.3 -> 1.7. Before this block the units carried the four filesystem directives above and
+# NONE of these — the whole syscall and capability surface was open.
+#
+# Nothing here is a guess about what the daemon needs: it runs as an ordinary user, acquires no
+# capability, creates no namespace of its own, takes no realtime priority and executes one ABI.
+#
+# ⚠ PrivateNetwork= is deliberately ABSENT and always will be — these daemons ARE network clients.
+# `systemd-analyze` charges 0.5 for that plus 0.3 for holding AF_INET sockets at all; both are
+# unrecoverable for anything that talks to a venue, and adding it to chase the number would produce a
+# daemon that cannot do its job. RestrictAddressFamilies= therefore ALLOWS the three families in use
+# rather than pretending the internet is optional.
+#
+# ⚠ The one line with a real blast radius is UMask=0077: new files become owner-only. Checked on
+# the CI box before adopting — `lsof +D <project>` shows exactly one user touching the tree, so nothing
+# else reads the store today. A future reader under a DIFFERENT account breaks on it, loudly, with a
+# permission error rather than silence. That is the intended trade for a tree holding venue keys.
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @module @reboot @swap @raw-io @debug @clock @cpu-emulation
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0077
+[Install]
+WantedBy=default.target

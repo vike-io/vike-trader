@@ -1,0 +1,60 @@
+[package]
+name = "vike"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+license-file.workspace = true
+publish = false
+
+# The multicall dispatcher. Layer 68 — above every headless top-of-graph binary (65) and below the
+# egui tiers (70), because it depends on those binaries' crates and nothing may depend on it.
+[package.metadata.vike]
+layer = 68
+
+[dependencies]
+# The one NON-optional dep: the dispatcher itself answers `--version`, and a version printer
+# without build identity is what identity_adoption.rs exists to refuse (a release binary was once
+# built four commits behind main). Leaf crate, layer 15 — the light lanes stay light.
+vike-buildinfo = { path = "../vike-buildinfo" }
+# Each tool is an OPTIONAL dependency behind a feature of the same shape as its own binary's
+# `required-features`. ⚠ Optional and NOT default: a dispatcher that always linked every tool would
+# make `cargo check -p vike` build the whole DataFusion closure for anyone touching the routing, and
+# would defeat the per-crate feature lanes that keep the light crates light.
+vike-studio-core = { path = "../vike-studio-core", optional = true }
+vike-report = { path = "../vike-report", optional = true }
+vike-backtest = { path = "../vike-backtest", optional = true }
+vike-datahub = { path = "../vike-datahub", optional = true }
+vike-recorder = { path = "../vike-recorder", optional = true }
+vike-tradehub = { path = "../vike-tradehub", optional = true }
+vike-cli = { path = "../vike-cli", optional = true }
+
+[features]
+default = []
+# `study-cli` forwards to the crate feature of the same name — the bin it replaces carries
+# `required-features = ["study-cli"]` for the same reason.
+study-cli = ["dep:vike-studio-core", "vike-studio-core/study-cli"]
+# `tearsheet` needs no crate feature — vike-report is DataFusion-free and binutil is feature-free.
+tearsheet = ["dep:vike-report"]
+# `backtest` forwards `datafusion-store` — the bin it replaces carries the same `required-features`.
+backtest = ["dep:vike-backtest", "vike-backtest/datafusion-store", "vike-backtest/venue-fetch"]
+# `vike-datahub` forwards `serve-datafusion`; without it the tool still answers --help and then
+# reports it has no backend, exactly as the standalone binary does.
+vike-datahub = ["dep:vike-datahub", "vike-datahub/serve-datafusion"]
+# `vike-recorder` forwards its VENUE feeds. ⚠ A dropped venue here ships a recorder that records
+# nothing for it — silently, since an unconfigured venue looks the same as an unbuilt one.
+vike-recorder = ["dep:vike-recorder", "vike-recorder/polymarket", "vike-recorder/binance"]
+# ⚠ `vike-tradehub` forwards the DataFusion sinks and the control channel, but NEVER `fxcm`: that
+# feature links libForexConnect and the ELF then dies at exec wherever the SDK is absent. The
+# fxcm-linked daemon stays its own separately-named release asset.
+vike-tradehub = ["dep:vike-tradehub", "vike-tradehub/telegram", "vike-tradehub/polymarket", "vike-tradehub/record-feeds", "vike-tradehub/materialize"]
+# The set the RELEASE builds. ⚠ It must enumerate exactly what `.github/workflows/release.yml`'s
+# `--features` line does: a silently-dropped tool feature ships a dispatcher whose `--help` lists
+# one tool fewer, and whose installed link for that tool exits 2.
+# ⚠ `vike-cli` is not optional in practice: four systemd units and the container entrypoint run
+# `vike-cli config check` as a pre-flight, so an image whose link for it exits 2 fails every start.
+vike-cli = ["dep:vike-cli"]
+full = ["study-cli", "tearsheet", "backtest", "vike-datahub", "vike-recorder", "vike-tradehub", "vike-cli"]
+
+
+[lints]
+workspace = true

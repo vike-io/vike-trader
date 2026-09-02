@@ -1,0 +1,36 @@
+# poly-l2-monitor.service — the latency box USER unit driving deploy/poly-l2-monitor.sh.
+# Install to ~/.config/systemd/user/poly-l2-monitor.service alongside poly-l2-monitor.timer.
+#
+# This mirrors what is deployed on the latency box. The only change from the historical unit is the
+# `OnFailure=` line: the monitor can now EXIT NON-ZERO (see deploy/poly-l2-monitor.sh — it
+# previously had no `exit` at all and always returned 0), so `Type=oneshot` puts it into failed
+# state on a collapse and the notifier fires. No `Restart=` is involved.
+#
+# On the latency box the OnFailure= line is applied as a drop-in — ~/.config/systemd/user/
+# poly-l2-monitor.service.d/10-vike-notify.conf, written by deploy/attach-onfailure.sh — so the
+# original unit file stays untouched and detaching is one `rm`. It is inlined here so this file is
+# a complete, self-contained description of the deployed shape.
+
+[Unit]
+Description=poly-l2-recorder health check
+OnFailure=vike-notify@%n.service
+
+[Service]
+Type=oneshot
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/bin/poly-l2-monitor.sh
+SyslogIdentifier=poly-l2-monitor
+
+# The rolling baseline lives here. Absent this, the script falls back to
+# $HOME/.local/state/poly-l2-monitor, which is what the latency box uses today.
+# StateDirectory=poly-l2-monitor
+
+# Floor knobs — defaults are calibrated in docs/ops/onfailure-notify.md against 683 real buckets.
+# Environment=POLY_MON_FLOOR_FRAC=0.35
+# Environment=POLY_MON_KEEP=288
+# Environment=POLY_MON_MIN_SAMPLES=12
+
+# The recorder's log directory. It is owned by ANOTHER user (`drwxr-x--- polyrec polyrec` on the latency box),
+# so the monitor reads its size through a non-interactive `sudo -n du`; where no such right exists
+# the summary line says the directory could not be measured rather than silently passing the check.
+# Environment=POLY_MON_LOG_DIR=/home/polyrec/logs

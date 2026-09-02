@@ -1,0 +1,49 @@
+[package]
+name = "vike-config"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — the TYPED settings model and its layered loader (Phase 1 of the settings-unification program). Four types split by AUTHORITY — Policy / Config / Preferences / Flags — with per-type override power enforced by the type system: Policy has no env or CLI layer at all, so overriding a ceiling is unrepresentable rather than merely discouraged. Depends on vike-model ONLY (for the shared utilization bounds), plus serde + toml."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+# The FIRST vike dependency, and still by design: `rate_limits::{MIN_UTILIZATION, MAX_UTILIZATION}`
+# are the canonical bounds for a target-utilization value and this crate must NOT define a second
+# copy — a duplicated bound is exactly the split-brain the rate-limit work just removed. Nothing
+# else is needed: this crate is a leaf that every layer above (bins, GUI, daemons) can depend on.
+vike-model = { path = "../vike-model" }
+# The credential store's own crate, for the boot disclosure (`src/boot.rs`) alone — the settings
+# directory that answered and whether `secrets.env` is beside the four TOMLs is the fact the CI box's
+# silent all-paper daemon needed and nothing rendered. It adds NO package to anything: vike-secrets
+# has ZERO dependencies, which is the whole reason it exists as a crate. Only its stat-only probes
+# are used (`permission_warning` / `legacy_store_warning` / `SECRETS_FILE`); this crate never opens
+# the store, and must not — see `src/boot.rs`.
+vike-secrets = { path = "../vike-secrets" }
+serde = { workspace = true } # the file model (Deserialize) + `config show`-style dumps (Serialize)
+toml = { workspace = true }  # the human-edited layer's format — see the crate doc for why not YAML
+# The settings-file WRITE half (src/write.rs, split-plane REQ-7): comment-preserving single-key
+# edits. Same parser family and exact lockfile version as `toml` above — see the root manifest's
+# rationale line.
+toml_edit = { workspace = true }
+
+[dev-dependencies]
+# dev-only: the loader takes its two roots as PARAMETERS, so every test builds a throwaway
+# a throwaway settings dir + project dir, never a real one. Not a workspace dep — matches the
+# vike-data / vike-backfill / vike-backtest / vike-alerting convention.
+tempfile = "3"
+# dev-only, and ONE test needs it: `tests/provenance.rs`'s completeness gate walks the REAL
+# serialized `Settings` and demands a `provenance::setting_keys` row for every leaf it finds. It has
+# to be `serde_json` rather than the `toml` this crate already links, for the reason that makes the
+# gate work at all: TOML has no null, so an `Option::None` field simply VANISHES from a TOML table —
+# and a field the gate cannot see is exactly the drift it exists to catch. `serde_json` renders it
+# `null` and the gate bites. Already a workspace dependency, so this adds no package.
+serde_json = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

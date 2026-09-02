@@ -1,0 +1,52 @@
+[package]
+name = "vike-boot"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — the STARTUP SEQUENCE's one owner: refuse a removed environment, resolve <project>/settings ONCE, load the settings, load the credentials, and hand back everything a binary needs to build its log subscriber and disclose what it resolved. Takes the environment as a PARAMETER and performs no logging, no transport and no DataFusion, so the five composition roots share one order without any of them acquiring the others' dependencies."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `boot` — the
+# composition-root startup sequence, over the settings/credential domain crates and below every
+# binary that runs it.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 25
+
+[dependencies]
+# The typed settings model + layered loader, and the three things this crate SEQUENCES around it:
+# `refuse_removed_env`, `load`, `refuse_credential_file_arming` and `boot_lines`. Pure — it reads no
+# environment and walks for no directory, which is exactly why the order has to live somewhere.
+vike-config = { path = "../vike-config" }
+# The credential store's own crate, for the project walk alone (`project_settings_dir_from`). ZERO
+# dependencies, which is the whole reason this crate can be depended on by `vike-cli` — reaching for
+# `vike_bridge_core::credentials` instead would put ureq/tungstenite/rustls one edge away from a
+# DataFusion-free, transport-free CLI. The credential READ itself is never performed here: the root
+# passes its own loader as a function (see `BootSpec::credentials`).
+vike-secrets = { path = "../vike-secrets" }
+# `state_path::{STATE_SUBDIR, LOGS_SUBDIR}` — the log home derived from the ONE resolved settings
+# directory. Already in this crate's graph through vike-config, so it adds no package.
+vike-model = { path = "../vike-model" }
+# The BUILD IDENTITY line that opens the startup disclosure. ZERO dependencies, same argument.
+vike-buildinfo = { path = "../vike-buildinfo" }
+
+# ⚠ DELIBERATELY ABSENT, and each absence is load-bearing — `tests/dependency_floor.rs` is the gate:
+#   * `vike-log` — this crate does NOT call `vike_log::init`. Measured on the tree this crate was
+#     written against, that one edge would add 43 packages (tracing-subscriber, tracing-appender,
+#     `time`, `regex-automata` and the whole ICU4X `idna` tree) to `vike-cli`, whose entire
+#     identity is being light and on the FAST CI lane. The root builds its own `LogConfig` and HOLDS
+#     the returned guards, exactly as it does today; what this crate hoists is the ORDER around it
+#     and the log HOME derived from the one settings walk.
+#   * `vike-bridge-core` — see the vike-secrets note above.
+#   * `tracing` — this crate must run BEFORE a subscriber exists (the log directory and both log
+#     levels are themselves settings), so anything it wants to say comes back as DATA.
+
+[dev-dependencies]
+# The project walk and the settings files must be exercised against a real directory tree; a
+# pure-string test would only re-assert `join`. Already in the lockfile, and dev-only, so the
+# crate's runtime graph is unchanged.
+tempfile = "3"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

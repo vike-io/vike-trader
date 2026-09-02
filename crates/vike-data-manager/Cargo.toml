@@ -1,0 +1,39 @@
+[package]
+name = "vike-data-manager"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false
+description = "Reusable egui view over the vike-data HistStore inventory (the Data-Manager cached-series catalog), mounted by both vike-app and the Studio."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `ui-widget` — an egui widget / engine crate (no eframe/wgpu).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 75
+
+[dependencies]
+# Default surface only (NO hist-datafusion): this crate names just the pure, feature-free
+# SeriesId/SeriesCoverage identity/coverage types. It never touches the DataFusion engine —
+# no I/O here; the store-owning caller (vike-app/Studio) fetches `inventory()`/`series_gaps()`
+# off-thread and hands plain Vecs/maps in. Keeping the feature off keeps this crate's — and
+# vike-app-core's — standalone build DataFusion-free.
+vike-data = { path = "../vike-data" }
+# Pure epoch-ms -> UTC calendar-date formatting (`time::epoch_ms_to_utc_date`) for
+# `coverage_label` — chrono-free, already the workspace's one consolidated home for this exact
+# math (see vike-model/src/time.rs's doc), and already transitively in the tree via vike-data.
+vike-model = { path = "../vike-model" }
+# canonical byte/count formatters (fmt_bytes/fmt_count/fmt_count_compact live here now — this crate
+# imports them privately for its own grid labels; it re-exports none of them)
+vike-ui-theme = { path = "../vike-ui-theme" }
+egui = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+# `frame_sanity::assert_frame_sane` — the ONE shared headless-frame geometry assertion, called from
+# `view.rs`'s `run_frame` test helper. Already a NORMAL dependency of this crate (the palette),
+# re-listed here with `test-support` because that feature is what compiles the module at all: a
+# default `cargo build -p vike-data-manager` still sees none of it.
+vike-ui-theme = { path = "../vike-ui-theme", features = ["test-support"] }
+
+[lints]
+workspace = true

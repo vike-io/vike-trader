@@ -1,0 +1,28 @@
+[package]
+name = "vike-catalog"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "Universal cross-venue instrument catalog: the Instrument model, AssetClass taxonomy, a two-mode CatalogProvider trait, a declarative venue registry, and tiered fuzzy search. Bridge-free (depends on vike-model only) so bridges and vike-chart can depend on it down-only."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+vike-model = { path = "../vike-model" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+#
+# ⚠ These two lines were MISSING until the unsafe ratchet was added. Cargo applies
+# `[workspace.lints]` only to members that opt in, so this crate — added by PR #274, before the
+# lint policy landed, and never retrofitted — sat silently OUTSIDE the workspace forbid, and
+# nothing about it looked wrong. It happened to contain no `unsafe`, so the hole was latent rather
+# than exploited; `crates/vike-ops/tests/unsafe_and_toolchain_gate.rs`'s `UNSAFE_EXEMPT` is what
+# makes the next one loud.
+[lints]
+workspace = true

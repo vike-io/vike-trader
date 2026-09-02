@@ -1,0 +1,64 @@
+[package]
+name = "vike-mm"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike market-maker strategies — the HFT SpreadMaker (inventory-skew size shaping, per-side fill-rate breaker, quote-style registry, own-order-book filtration, live-parameter plane), written generic over vike_model::HftBroker so it stays engine-agnostic. Extracted from vike-core (the vike-mm extraction, step 2)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+# The maker's non-test code references ONLY vike-model domain types (HftBroker/Strategy/QuoteTick/
+# L2Book/Fill/QuoteStyle/SpreadMakerParams/StrategyParams) — so this crate depends on vike-model
+# alone, keeping the down-only layering intact (nothing here reaches up into vike-exec or vike-core).
+vike-model = { path = "../vike-model" }
+# Durable-state hooks (Strategy::save_state/load_state, portfolio-observer PR-4 T4): SpreadMaker's
+# versioned SpreadMakerStateV1/AsStateV1 wire DTO (strategy_impl.rs) is a real production
+# dependency, not test/bench scaffolding.
+# The transcendentals in the quote math (`exp`/`log`/`pow` in alpha/avellaneda/fairvalue/fits/
+# spread_source/underlying/xemm::basis). ⚠ NOT a preference: `f64::exp`/`ln`/`powf` call the PLATFORM's libm,
+# which IEEE 754 does not require to be correctly rounded, and this crate was MEASURED diverging —
+# seven of nine hashed rows differed between Windows/MSVC and Linux/glibc, on the Avellaneda-Stoikov
+# half-spread, the LMSR reservation price and the LS-LMSR prices themselves. Two boxes running the
+# same strategy over the same tape posted different quotes. `src/platform_probe.rs` carries the
+# measurement; `docs/decisions/0032-transcendentals-come-from-the-libm-crate-not-the-platform.md` is
+# the accepted verdict. Already a workspace-pinned dep shared with vike-indicators/vike-analytics/
+# vike-model/vike-backtest/vike-options/vike-orderflow — no new external crate enters the tree.
+libm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true } # load_state's fail-open warn on an unparsable/version-mismatched payload
+# The own-order book's per-level order map (own_book.rs). Insertion order IS venue queue order, and
+# it makes the per-level f64 qty fold deterministic — the CLAUDE.md IndexMap-not-HashMap rule, here
+# for fold determinism rather than Python-dict parity. Already a workspace-pinned dep (root
+# Cargo.toml), shared with vike-model/vike-exec/vike-core — no new external crate enters the tree.
+indexmap = { workspace = true }
+# `SpreadMaker::from_params` reads a harness/registry TOML params table (the `BuyHold`/`Grid` reader
+# convention) so the backtest strategy registry can resolve + tune the maker by name. `toml` is
+# ALREADY a workspace-pinned dependency (a pure-Rust config parser, no native code, in the tree via
+# vike-backtest) — reusing it adds NO new crate to the supply chain / audit surface.
+toml = { workspace = true }
+
+[dev-dependencies]
+# TEST-ONLY: the maker's white-box tests build a concrete `LiveBroker` (vike-core's live `HftBroker`)
+# to drive the generic `SpreadMaker` and inspect the buffered order verbs. This is a dev-dependency
+# only — the vike-mm LIBRARY never depends on vike-core, so the down-only layering is preserved and
+# vike-core's lib gains NO dependency on vike-mm (its own tests dev-dep vike-mm, a legal test-only
+# cycle Cargo permits because neither library depends on the other).
+vike-core = { path = "../vike-core" }
+# TEST-ONLY: the two HOLD warns in this crate (`AsState::note_fee_floor`'s break-even refusal and
+# `SpreadMaker::note_no_quote`'s unpriced-book hold) are edge-triggered, and their whole purpose is
+# to be SAID — a silent hold is the defect they exist to remove. Asserting `price() == None` does
+# not test that, so the tests capture the emitted event through an in-memory `MakeWriter`, the same
+# shape `vike-log`'s own tests use. ALREADY workspace-pinned (root Cargo.toml) and already in the
+# tree via vike-log/vike-boot, so no new crate enters the supply-chain / `cargo deny` audit surface,
+# and being a DEV-dependency it is absent from every shipped binary.
+tracing-subscriber = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. The maker is unsafe-free.
+[lints]
+workspace = true

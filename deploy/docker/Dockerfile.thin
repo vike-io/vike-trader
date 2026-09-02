@@ -1,0 +1,114 @@
+# vike-app THIN — the observe-only GUI client, as a container reachable from any host OS.
+#
+# The SECOND image. `deploy/docker/Dockerfile` is the backend daemon; this is the client that talks
+# to it. Two images, one for each half, which is what an operator asked for and what the split-plane
+# architecture already is: `vike-app --observe <ADDR>` links no venue bridge and no DataFusion, so
+# it renders what a remote daemon sends and holds no trading core of its own.
+#
+# ## ⚠ Why this needs a display stack, and why that is not a workaround
+#
+# `vike-app` is egui/wgpu — it draws with a GPU API. A container has no display server and, on
+# Windows and macOS, no path to the host's GPU at all. The usual conclusion is "ship the GUI as a
+# native binary", and that remains the fastest option for anyone who can run one.
+#
+# But `0026`'s "there is no version of containerising the GUI worth the sentence" was written about
+# GPU passthrough, and there is a second path it did not weigh: **this application already renders
+# with no GPU whatsoever, every PR.** `scripts/ci_feature_suite.sh`'s `png-export` lane runs both GUI
+# harnesses on **Mesa lavapipe**, a pure software rasteriser, on GPU-less runners, and reads its own
+# pixels back against `vike_ui_theme::pixel_liveness`'s floors. Software rendering is not a
+# theoretical fallback here; it is a gated, exercised configuration.
+#
+# So this image renders into a virtual framebuffer with lavapipe and exports the result over VNC.
+# It works identically on Linux, Windows and macOS hosts because nothing in it touches host
+# hardware. What it costs is real and belongs on the label: **lavapipe is a CPU rasteriser**, so a
+# live chart will not feel like the native binary. Measure before promising it to anyone.
+#
+# ## Route (a), same as the server image
+#
+# The binary is COPIED in, not compiled here — `crates/vike-buildinfo`'s `build.rs` resolves
+# `GIT_SHA` from real git paths, so a build inside a context with no `.git` produces a client that
+# cannot say which commit it is. Build it with:
+#
+#     cargo build --release -p vike-app --no-default-features --features thin
+#
+#   docker build -f deploy/docker/Dockerfile.thin -t vike-thin:<version> .
+
+# Same digest-pinned base as the backend image, deliberately: one base to patch, one CVE stream.
+FROM ubuntu:24.04@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517
+
+# ── the display stack ───────────────────────────────────────────────────────────────────────────
+# xvfb          a virtual framebuffer — the display server this image has no host equivalent for
+# mesa-vulkan-drivers   carries lavapipe (`lvp_icd`), the software Vulkan ICD wgpu selects
+# x11vnc        exports that framebuffer as VNC
+# novnc/websockify   the same stream over a browser, so a client needs no VNC application
+# fonts-dejavu-core  egui renders NOTHING legible without a font on the box; omitting it produces
+#                    a window that draws and shows no text, which reads as a broken build
+# ca-certificates    the client speaks to the node over the network like any other consumer
+#
+# ⚠ The `libX*` line is winit's, not egui's, and every entry there was found by a CRASH rather than
+# by reading a manifest. winit dlopen()s them at window creation, so a missing one is not a build
+# error and not a startup error — it is a runtime `XNotSupported(LibraryOpenError)` after the app has
+# already logged its version and settings, which reads like an application fault rather than a
+# packaging one. `libXcursor` was the first; the rest are its usual companions.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      xvfb x11vnc novnc websockify \
+      mesa-vulkan-drivers libvulkan1 libgl1-mesa-dri \
+      libxcursor1 libxrandr2 libxi6 libxinerama1 libxext6 libxrender1 libxfixes3 \
+      libxkbcommon-x11-0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 libxcb-randr0 \
+      libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 libxcb-xfixes0 \
+      fonts-dejavu-core ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --uid 10001 --user-group --create-home --shell /usr/sbin/nologin vike \
+ # Xvfb creates this itself only as root. This image runs as uid 10001, so it must exist first —
+ # 1777 like any /tmp subdirectory. Without it Xvfb falls back to an abstract socket and the
+ # readiness probe (which watches for the socket FILE) never fires.
+ && mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix \
+ # vike-log's last-resort log directory is `<exe_dir>/logs`, which here is /opt/vike/bin/logs — owned
+ # by root and not writable by the runtime user, so every start printed a permission error before
+ # disabling the file layer. Give it a writable home instead of letting it fail into a warning.
+ && mkdir -p /var/log/vike && chown 10001:10001 /var/log/vike \
+ # ── drop the GPU Vulkan drivers this image can never load ──────────────────────────────────────
+ # `mesa-vulkan-drivers` ships EIGHT ICDs and `VK_ICD_FILENAMES` below pins exactly one — lavapipe.
+ # The other seven are for hardware a container with no device passthrough cannot reach, so they are
+ # dead weight that a `docker pull` still pays for. MEASURED on the 0.1.15 image: intel 21 MB,
+ # intel_hasvk 17, nouveau 16, radeon 15, asahi 12 — 81 MB of an image whose apt layer was 626 MB.
+ #
+ # ⚠ `libvulkan_lvp.so` and its `lvp_icd.json` are the ONLY pair kept, and the manifests go with the
+ # libraries: an ICD json naming a missing .so makes the loader log a failure for every enumeration.
+ # ⚠ This does NOT touch `libLLVM.so.20.1` (137 MB), which is the single largest file in the image
+ # and is not removable — lavapipe JIT-compiles shaders through it. Software rendering costs that.
+ && for d in intel intel_hasvk nouveau radeon asahi virtio gfxstream; do \
+      rm -f "/usr/lib/x86_64-linux-gnu/libvulkan_${d}.so" \
+            "/usr/share/vulkan/icd.d/${d}_icd.json" \
+            "/usr/share/vulkan/icd.d/${d}_vk_icd.json"; \
+    done \
+ && [ -f /usr/lib/x86_64-linux-gnu/libvulkan_lvp.so ] || { echo "lavapipe was removed — the image cannot render" >&2; exit 1; }
+
+COPY target/release/vike-app        /opt/vike/bin/vike-app
+COPY deploy/docker/entrypoint-thin.sh /opt/vike/entrypoint-thin.sh
+RUN chmod 0755 /opt/vike/bin/vike-app /opt/vike/entrypoint-thin.sh
+
+# ⚠ Force the SOFTWARE ICD explicitly rather than letting wgpu enumerate. A host that DOES expose a
+# GPU (Linux with `--device /dev/dri`) would otherwise be selected silently, so the same image would
+# render two different ways depending on the host and a bug would reproduce on one and not the
+# other. Pinning it makes the configuration the same everywhere; a GPU-passthrough variant should be
+# a deliberate second tag, not an accident of the host.
+# ⚠ `lvp_icd.json`, with NO architecture suffix. Ubuntu 24.04's mesa-vulkan-drivers ships it under
+# that name; several distributions and most tutorials use `lvp_icd.x86_64.json`, which does not
+# exist here. Pointing at the wrong path does not error — the loader simply finds no ICD, so Vulkan
+# reports no adapter and wgpu fails much later with `Failed to create surface for any enabled
+# backend`, which reads as a surface problem rather than a missing driver.
+ENV VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
+    LIBGL_ALWAYS_SOFTWARE=1 \
+    WGPU_BACKEND=vulkan \
+    DISPLAY=:99 \
+    VIKE_LOG_DIR=/var/log/vike \
+    VIKE_THIN_GEOMETRY=1600x900x24
+
+# 5900 = VNC, 6080 = noVNC in a browser. Publish ONLY to loopback and tunnel, exactly as the node
+# port is treated: this stream carries a live trading view and VNC's own auth is not a substitute.
+EXPOSE 5900 6080
+USER 10001:10001
+WORKDIR /home/vike
+ENTRYPOINT ["/opt/vike/entrypoint-thin.sh"]

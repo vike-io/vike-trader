@@ -1,0 +1,66 @@
+# <project>/settings/config.toml — DEPLOYMENT CONFIG: where things live, what listens where.
+#
+#     cp settings/config.example.toml settings/config.toml
+#     $EDITOR settings/config.toml
+#     vike-cli config show --filter config    # confirm what the binaries will read
+#
+# Every line below is COMMENTED OUT, so this file AS SHIPPED configures NOTHING — copy it and you
+# still have the compiled-in defaults. Uncomment only what you mean to SET: where a key has a real
+# default the line shows it, and where its default is absence (an `Option`) the line shows a working
+# example value, so uncommenting THAT line sets it.
+#
+# Full override chain, highest first: environment variable > this file > default. Each key names its
+# own variable below; `vike-cli config show` prints which layer actually won on this box.
+#
+# A path key that is omitted does NOT mean "no directory" — it means the reading binary falls back to
+# its own default, which is not the same for every binary. `config show`'s DEFAULT column is the
+# authority for each one.
+
+# Historical data store root — the DataFusion+Parquet hist store every backtest, backfill and Studio
+# read opens. Omitted = the platform user-data directory (`~/.local/share/vike-data` on Linux).
+# Env: VIKE_HIST_STORE
+# store_root = "/data/vike/hist"
+
+# Where the rolling JSON trace log is written. Omitted = `<project>/settings/state/logs`, falling
+# back to `<exe_dir>/logs` when no project sits above the working directory.
+# ⚠ This is the SIZE knob's neighbour, not the size knob: the file layer defaults to `trace` and
+# ignores RUST_LOG entirely. Turn the volume down with `preferences.log_file_level`.
+# Env: VIKE_LOG_DIR
+# log_dir = "/var/log/vike"
+
+# The write-ahead command journal directory (crash-recoverable order intents). Omitted = disabled.
+# Env: VIKE_JOURNAL_DIR
+# journal_dir = "/var/lib/vike/journal"
+
+# ⚠ vike-app's strategy-state SIDECAR directory — NOT the state ROOT that vike-tradehub, vike-ops
+# and vike-studio resolve, which is `<project>/settings/state/` and is not configurable from here.
+# The two have collided by name before; `vike_model::state_path`'s module doc records it. Setting
+# this on a headless box does nothing, because only the GUI reads it.
+# Env: VIKE_STATE_DIR
+# state_dir = "/var/lib/vike/strategy-state"
+
+# Where `vike-cli backtest|sweep|walkforward` ships its profile — the vike-datahub server, usually
+# reached over an SSH tunnel (`ssh -L 7878:localhost:7878 the CI box`). Must contain a ':'.
+# Env: VIKE_DATAHUB_ADDR
+# datahub_addr = "127.0.0.1:7878"
+
+# The address vike-tradehub's authenticated node server BINDS, and the one `vike-cli trade --node`
+# connects to. Omitted (the default) = NO node server at all: the daemon trades headless and has no
+# network surface. Must contain a ':'.
+# ⚠ Setting this opens a socket. Observe (read) is always available to a peer holding
+# VIKE_TRADEHUB_OBSERVE_KEY; WRITES additionally need `flags.tradehub_control`.
+# Env: VIKE_TRADEHUB_ADDR
+# tradehub_addr = "127.0.0.1:7879"
+
+# The datahub dial address this daemon ADVERTISES to its clients (split-plane REQ-2): set, and every
+# `Welcome.features` the node server sends carries `datahub=<addr>`, so a client that has NOT set its
+# own `datahub_addr` dials the data service there — one configured address reaches both planes.
+# Omitted (the default) = advertise nothing. Must contain a ':'.
+# ⚠ THREE addresses, three jobs: `tradehub_addr` above is where the DAEMON LISTENS; `datahub_addr`
+# above is where THIS box's CLIENT dials (an explicit value always WINS over any advertisement);
+# this key is where the daemon TELLS clients to dial the datahub it fronts. So its value must be
+# valid FROM THE CLIENT'S SIDE of the wire — with the tunnel posture both servers ship with, that is
+# the client-local tunnel mouth (`ssh -L 7878:localhost:7878`), not this box's private interface.
+# Advertisement, never proxying: data traffic never flows through the process holding live orders.
+# Env: VIKE_DATAHUB_ADVERTISE_ADDR
+# datahub_advertise_addr = "127.0.0.1:7878"

@@ -1,0 +1,147 @@
+[package]
+name = "vike-datahub"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — Phase 1 of the vike-datahub data-service (\"thin-client GUI\" architecture): a headless COMPUTE-TO-DATA backtest server. A client ships a small BacktestProfile over localhost TCP (length-prefixed serde_json frames); the server runs the EXISTING vike-backtest engine NEXT TO the data and returns just the BacktestReport answer — never raw slices. Owns no engine; assembles vike-backtest + vike-data."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `daemon` — a headless top-of-graph binary: nothing may depend on it.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 65
+
+[dependencies]
+# The LIGHT client crate owns the wire protocol (`proto`), the `DatahubClient`, and `RemoteHistStore`
+# since Phase 2. The SERVER (server.rs) imports the proto from here (`vike_datahub_client::proto`) —
+# the ONE home of the wire schema; every consumer imports vike-datahub-client directly (this crate
+# re-exports nothing). It is DataFusion-free, so this edge adds no Arrow/DataFusion weight.
+vike-datahub-client = { path = "../vike-datahub-client" }
+# The domain types (down-only layering; surfaced by the profile/report the wire carries). No
+# unused_crate_dependencies lint in this workspace, so naming it is free even where a phase-1 file
+# does not reference it directly.
+vike-model = { path = "../vike-model" }
+# The backtest engine + config/report types the server delegates to. `hist-replay` is REQUIRED:
+# `run_backtest` / `BacktestProfile` / `harness::report::periods_per_year` all live behind it (a
+# default vike-backtest build compiles none of the harness tree). `BacktestReport` itself is
+# feature-free (`vike_backtest::report`), re-exported through `harness`.
+#
+# vike-backtest's `hist-replay` feature is DataFusion-FREE now (it compiles the harness against the
+# `HistStore` TRAIT only — the hist-replay/datafusion-store split). So depending on it does NOT pull
+# the DataFusion/Arrow/Parquet tree into this crate: THIS library holds the store as
+# `Arc<dyn HistStore>` and never names the concrete backend, so a default `vike-datahub` build is
+# DataFusion-free. The concrete `DataFusionHist` is a BIN-only concern behind `serve-datafusion`.
+vike-backtest = { path = "../vike-backtest", features = ["hist-replay"] }
+# The `HistStore` TRAIT only (the backend-agnostic seam the server holds as `Arc<dyn HistStore>`).
+# DEFAULT features — NO hist-datafusion here: the library never names the concrete backend, so the
+# concrete `DataFusionHist` stays a BIN concern behind `serve-datafusion`. (Feature unification may
+# still turn hist-datafusion ON globally via the vike-backtest edge above — that is orthogonal to
+# what THIS edge requests.)
+vike-data = { path = "../vike-data" }
+# PR-3: the Studio Run pipeline (`run_slice` + `StrategySpec`/`DataSlice`) the `RunSlice` verb
+# delegates to. OPTIONAL and enabled ONLY by `serve-datafusion` (below): vike-studio-core pulls
+# `vike-data/hist-datafusion`, so keeping it behind that gate is exactly what keeps a DEFAULT
+# `vike-datahub` build DataFusion-free. The `RunSlice` server arm + the DTO↔studio conversions
+# (`src/wire_run.rs`) + the parity roundtrip test are all `#[cfg(feature = "serve-datafusion")]`;
+# a default build has NO vike-studio-core reference and answers `RunSlice` with a clean error.
+vike-studio-core = { path = "../vike-studio-core", optional = true }
+# The user's OWN indicators (`<project>/user_data/indicators/*.rhai`), installed process-wide by the
+# BIN at startup so a client-supplied Rhai strategy can call them. This server COMPILES the user's
+# script — `server.rs`'s `run_backtest` resolves `[strategy.params].src` through `harness::registry`'s
+# `"rhai"` arm, and `RunSlice` goes through `wire_run::to_strategy_spec` — so without the install the
+# identical strategy that runs under `vike-cli` on the operator's own box fails HERE with an
+# unknown-function compile error, and `vike-cli backtest --script` ships the source to exactly this
+# server.
+# OPTIONAL under the SAME gate as vike-studio-core: only that build has a `main` that serves at all
+# (the default one prints a rebuild hint and exits), so only that build compiles a strategy.
+vike-script = { path = "../vike-script", optional = true }
+# The venue-direct kline collectors the backfill-on-demand verb (split-plane REQ-9) dispatches to —
+# `backfill_{binance,bybit,okx}_klines`, the exact functions the fat GUI's `maybe_spawn_backfill`
+# family calls today. OPTIONAL and enabled ONLY by `backfill-serve` (below): `venue-backfill` pulls
+# seven bridge crates (signing + transport trees), which must never ride a default — or even a
+# plain `serve-datafusion` — server build. The dispatch goes through `src/backfill.rs`'s
+# feature-free `BackfillTable` seam, so `server.rs` names no collector; only
+# `backfill::real_backfill_table` (cfg `backfill-serve`) does.
+# NB the layer gate: vike-backfill moved from tier 65 to 55 (service-stacked) in the PR that added
+# this edge — it was already consumed as a LIBRARY by vike-app, so "daemon: nothing may depend on
+# it" had stopped being its truth before this edge existed.
+vike-backfill = { path = "../vike-backfill", features = ["venue-backfill"], optional = true }
+vike-log = { path = "../vike-log" } # tracing-native logging init — the BIN calls vike_log::init (see crates/vike-log)
+# The BUILD IDENTITY `--version` prints and the server logs on startup — which commit this binary
+# came from. A ZERO-dependency leaf; it adds no package to this crate's graph. It matters here for
+# the same reason it matters on the trading daemons: this server is DEPLOYED (the CI box, behind an SSH
+# tunnel, `deploy/vike-datahub.service`), so "is the running binary the code I pushed?" is a question
+# somebody asks it from a terminal.
+vike-buildinfo = { path = "../vike-buildinfo" }
+# The STARTUP SEQUENCE's one owner. This server takes the narrowest slice of it there is — the
+# identity line and the log HOME off the one project walk — and the value of the edge is not the two
+# lines it saves: it is that the four ways this root DEPARTS from the sequence (no removed-env
+# refusal, no settings, no credentials, no disclosure) become named arms with reasons instead of a
+# prose comment nothing can check. Its closure (vike-config + vike-model + vike-secrets +
+# vike-buildinfo) is already in this graph, so the edge adds no package.
+vike-boot = { path = "../vike-boot" }
+# This root's OWN credential loader (`Credentials::LoadWith` in the bin), reading the datahub node
+# keys `docs/decisions/0025-datahub-remote-posture.md` adopted. ⚠ `vike-secrets`, NOT
+# `vike-bridge-core::credentials`: the canonical wrapper drags the ureq/tungstenite/rustls transport
+# stack, which is absent from a DEFAULT vike-datahub graph and must not join it just to read a
+# `.env`. `vike-recorder`'s `webhook_targets` reads the store the same way for the same reason, and
+# vike-secrets is a ZERO-vike-dependency leaf already in this crate's closure through vike-boot and
+# vike-config — so the edge adds no package.
+vike-secrets = { path = "../vike-secrets" }
+# The wire proto (Request/Response derive + framing) moved to vike-datahub-client (Phase 2), so this
+# crate no longer needs the `serde` DERIVE dep directly. It still serializes the report ANSWER, so it
+# keeps `serde_json`: server.rs does `serde_json::to_string(&BacktestReport)`.
+serde_json = { workspace = true }   # the report-serialize site (server.rs) + the re-exported frame codec
+# The per-connection auth NONCE (`server.rs`'s `fresh_nonce`) — 32 bytes from the OS-backed default
+# generator, which is what makes a captured handshake transcript unreplayable against a later
+# connection. The same crate and the same call `vike_tradehub::server`'s own `fresh_nonce` uses;
+# already a workspace dep, so no new package enters the audit surface. The auth MATH itself is
+# vike-datahub-client's `node_auth` (shared with the tradehub node) — this crate adds only the
+# randomness the server side owns.
+rand = { workspace = true }
+# tracing facade for connection-boundary spans/events in the server (subscriber lives in vike-log);
+# same split every library crate uses. NOT a new transport/stack dep — the workspace-pinned facade.
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The DataFusion-free in-memory `HistStore` double (behind vike-data's `test-support` feature) the
+# hermetic roundtrip test drives the server over — no prod store, no network beyond loopback.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# The PR-3 `run_slice_roundtrip` parity test seeds a real `DataFusionHist` over a temp dir (the
+# `MemHistStore` double cannot store bars — its `load_bars`/`append_bars` are inert stubs — so a
+# meaningful bar/tick run needs the concrete store). That test is `#[cfg(feature = "serve-datafusion")]`,
+# which turns `hist-datafusion` ON, making `DataFusionHist` nameable. Workspace-standard test-only
+# dev-dep (same `tempfile = "3"` vike-studio-core/vike-backtest use for their store fixtures).
+tempfile = "3"
+
+[features]
+# Compile the BIN's real DataFusion-backed server. Turns on `vike-data/hist-datafusion` so this
+# crate's own source may name `vike_data::DataFusionHist` / `DataFusionHist::open`; the bin's real
+# `main` is `#[cfg(feature = "serve-datafusion")]` and the default (feature-off) build produces an
+# inert stub `main` that prints a rebuild hint and exits.
+#
+# This gate is now LOAD-BEARING for DataFusion: since vike-backtest's `hist-replay` no longer forces
+# `hist-datafusion` (the harness compiles against the trait), a default `cargo build -p vike-datahub`
+# is DataFusion-free and ONLY `serve-datafusion` pulls the DataFusion/Arrow/Parquet tree — which is
+# also exactly what makes the concrete `DataFusionHist` nameable in the bin.
+#
+# PR-3 additionally enables `vike-studio-core` (an optional dep above) behind this SAME gate: it is
+# what the `RunSlice` verb (`src/wire_run.rs` + the `server.rs` arm) delegates to, and it pulls
+# `vike-data/hist-datafusion` itself — so co-gating it here keeps a default build both DataFusion-free
+# AND free of any vike-studio-core reference (that build answers `RunSlice` with a clean error).
+serve-datafusion = ["vike-data/hist-datafusion", "dep:vike-studio-core", "dep:vike-script"]
+
+# The backfill-on-demand verb's SERVING half (split-plane REQ-9): compile the real collector table
+# (`backfill::real_backfill_table` — the vike-backfill kline collectors) and have the bin mount it,
+# which is what makes `serve` advertise + answer `Request::Backfill`. REQUIRES `serve-datafusion`
+# twice over: the collectors write a concrete `DataFusionHist` (their signature names it), and a
+# backfill server that could not then SERVE what it fetched would be a contradiction. A default or
+# plain `serve-datafusion` build compiles none of the collector tree and answers `Backfill` with a
+# clean refusal naming this feature (and does not advertise `backfill` in Welcome.features — the
+# verb is capability-negotiated, not version-gated).
+backfill-serve = ["serve-datafusion", "dep:vike-backfill"]
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is the
+# sole crate that does NOT inherit this.
+[lints]
+workspace = true

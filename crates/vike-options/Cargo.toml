@@ -1,0 +1,21 @@
+[package]
+name = "vike-options"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — the venue-free options pure core: Black–Scholes price/greeks/implied-vol, the normalized OptionChain model, and the pure column model. Faithful f64 port of vike-trader-app data/options/{greeks,model,columns}.py. No I/O, no egui, no internal-crate deps."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+libm = { workspace = true }   # erf for Black–Scholes (see the root-manifest rationale)
+chrono = { workspace = true } # UTC calendar math for expiry DTE / 08:00-UTC settle epoch
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

@@ -1,0 +1,2051 @@
+{
+ "manifest": {
+  "exporter": "scripts/export_r0_fixtures.py",
+  "oracle": "vike-trader-app origin/main worktree",
+  "source_sha": "023d6e87ced0b495d8575fd247914e14522ccd2d",
+  "seed": 20260630,
+  "generated": "2026-07-03T17:12:43Z",
+  "float_encoding": "ieee754-f64-hex-bits"
+ },
+ "scenarios": [
+  {
+   "name": "spot_lifecycle_commissions",
+   "venue": "binance",
+   "multiplier": "3ff0000000000000",
+   "multipliers": {},
+   "events": [
+    {
+     "op": "fill",
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3fe0000000000000",
+     "px": "40ed4c0000000000",
+     "commission": "4028000000000000",
+     "position_side": "BOTH",
+     "trade_id": "a1"
+    },
+    {
+     "op": "fill",
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3fd0000000000000",
+     "px": "40edc90000000000",
+     "commission": "4018666666666666",
+     "position_side": "BOTH",
+     "trade_id": "a2"
+    },
+    {
+     "op": "fill",
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3fd3333333333333",
+     "px": "40ee460000000000",
+     "commission": "bff8000000000000",
+     "position_side": "BOTH",
+     "trade_id": "a3"
+    },
+    {
+     "op": "fill",
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3fdccccccccccccd",
+     "px": "40ed8a8000000000",
+     "commission": "4025cccccccccccd",
+     "position_side": "BOTH",
+     "trade_id": "a4"
+    }
+   ],
+   "expect": {
+    "balance": "c03b800000000000",
+    "realized_pnl": "4081f7fffffffff0",
+    "fees_paid": "403b800000000000",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "trades": [
+     "407f3ffffffffff3",
+     "4052bfffffffffb3"
+    ],
+    "positions": [
+     {
+      "venue": "binance",
+      "symbol": "BTCUSDT",
+      "position_side": "BOTH",
+      "size": "0000000000000000",
+      "avg_px": "0000000000000000"
+     }
+    ],
+    "unrealized_total": "0000000000000000",
+    "equity_all": {
+     "seed": "40c3880000000000",
+     "value": "40c499bfffffffff"
+    }
+   }
+  },
+  {
+   "name": "flip_long_short",
+   "venue": "bybit",
+   "multiplier": "3ff0000000000000",
+   "multipliers": {},
+   "events": [
+    {
+     "op": "fill",
+     "venue": "bybit",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "4000000000000000",
+     "px": "40a3880000000000",
+     "commission": "3ff0000000000000",
+     "position_side": "BOTH",
+     "trade_id": "b1"
+    },
+    {
+     "op": "fill",
+     "venue": "bybit",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "4014000000000000",
+     "px": "40a4500000000000",
+     "commission": "4000000000000000",
+     "position_side": "BOTH",
+     "trade_id": "b2"
+    },
+    {
+     "op": "fill",
+     "venue": "bybit",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "4008000000000000",
+     "px": "40a3ec0000000000",
+     "commission": "3ff3333333333333",
+     "position_side": "BOTH",
+     "trade_id": "b3"
+    }
+   ],
+   "expect": {
+    "balance": "c010cccccccccccd",
+    "realized_pnl": "4075e00000000000",
+    "fees_paid": "4010cccccccccccd",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "trades": [
+     "4069000000000000",
+     "4062c00000000000"
+    ],
+    "positions": [
+     {
+      "venue": "bybit",
+      "symbol": "ETHUSDT",
+      "position_side": "BOTH",
+      "size": "0000000000000000",
+      "avg_px": "0000000000000000"
+     }
+    ],
+    "unrealized_total": "0000000000000000",
+    "equity_all": {
+     "seed": "40b3880000000000",
+     "value": "40b4e1cccccccccd"
+    }
+   }
+  },
+  {
+   "name": "mixed_multipliers_marks",
+   "venue": "okx",
+   "multiplier": "4000000000000000",
+   "multipliers": {
+    "BTC-USDT-SWAP": "3f847ae147ae147b"
+   },
+   "events": [
+    {
+     "op": "fill",
+     "venue": "okx",
+     "symbol": "BTC-USDT-SWAP",
+     "side": 1,
+     "qty": "4059000000000000",
+     "px": "40ed4c0000000000",
+     "commission": "4008000000000000",
+     "position_side": "BOTH",
+     "trade_id": "c1"
+    },
+    {
+     "op": "fill",
+     "venue": "okx",
+     "symbol": "ETH-USDT-SWAP",
+     "side": -1,
+     "qty": "4024000000000000",
+     "px": "40a3880000000000",
+     "commission": "3ff0000000000000",
+     "position_side": "BOTH",
+     "trade_id": "c2"
+    },
+    {
+     "op": "mark",
+     "venue": "okx",
+     "symbol": "BTC-USDT-SWAP",
+     "px": "40edc90000000000"
+    },
+    {
+     "op": "mark",
+     "venue": "okx",
+     "symbol": "ETH-USDT-SWAP",
+     "px": "40a3240000000000"
+    }
+   ],
+   "expect": {
+    "balance": "c010000000000000",
+    "realized_pnl": "0000000000000000",
+    "fees_paid": "4010000000000000",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "trades": [],
+    "positions": [
+     {
+      "venue": "okx",
+      "symbol": "BTC-USDT-SWAP",
+      "position_side": "BOTH",
+      "size": "4059000000000000",
+      "avg_px": "40ed4c0000000000"
+     },
+     {
+      "venue": "okx",
+      "symbol": "ETH-USDT-SWAP",
+      "position_side": "BOTH",
+      "size": "c024000000000000",
+      "avg_px": "40a3880000000000"
+     }
+    ],
+    "unrealized_total": "409f400000000000",
+    "equity_all": {
+     "seed": "40d86a0000000000",
+     "value": "40da5d0000000000"
+    }
+   }
+  },
+  {
+   "name": "funding_signed",
+   "venue": "binance",
+   "multiplier": "3ff0000000000000",
+   "multipliers": {},
+   "events": [
+    {
+     "op": "fill",
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3ff0000000000000",
+     "px": "40e86a0000000000",
+     "commission": "4014000000000000",
+     "position_side": "BOTH",
+     "trade_id": "d1"
+    },
+    {
+     "op": "funding",
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "position_side": "BOTH",
+     "amount": "c029000000000000"
+    },
+    {
+     "op": "funding",
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "position_side": "BOTH",
+     "amount": "4011000000000000"
+    }
+   ],
+   "expect": {
+    "balance": "c02a800000000000",
+    "realized_pnl": "0000000000000000",
+    "fees_paid": "4014000000000000",
+    "funding_paid": "c020800000000000",
+    "balance_mode": "delta",
+    "trades": [],
+    "positions": [
+     {
+      "venue": "binance",
+      "symbol": "BTCUSDT",
+      "position_side": "BOTH",
+      "size": "3ff0000000000000",
+      "avg_px": "40e86a0000000000"
+     }
+    ],
+    "unrealized_total": "0000000000000000",
+    "equity_all": {
+     "seed": "408f400000000000",
+     "value": "408ed60000000000"
+    }
+   }
+  },
+  {
+   "name": "account_state_quote_match",
+   "venue": "bybit",
+   "multiplier": "3ff0000000000000",
+   "multipliers": {},
+   "events": [
+    {
+     "op": "fill",
+     "venue": "bybit",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3fb999999999999a",
+     "px": "40ed4c0000000000",
+     "commission": "3ff0000000000000",
+     "position_side": "BOTH",
+     "trade_id": "e1"
+    },
+    {
+     "op": "mark",
+     "venue": "bybit",
+     "symbol": "BTCUSDT",
+     "px": "40ed8a8000000000"
+    },
+    {
+     "op": "account_state",
+     "venue": "bybit",
+     "quote_asset": "USDT",
+     "balances": [
+      [
+       "BTC",
+       "3fb999999999999a"
+      ],
+      [
+       "USDT",
+       "40c34a451eb851ec"
+      ]
+     ]
+    }
+   ],
+   "expect": {
+    "balance": "40c34a451eb851ec",
+    "realized_pnl": "0000000000000000",
+    "fees_paid": "3ff0000000000000",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "authoritative",
+    "trades": [],
+    "positions": [
+     {
+      "venue": "bybit",
+      "symbol": "BTCUSDT",
+      "position_side": "BOTH",
+      "size": "3fb999999999999a",
+      "avg_px": "40ed4c0000000000"
+     }
+    ],
+    "unrealized_total": "4049000000000000",
+    "equity_all": {
+     "seed": "40bd4c0000000000",
+     "value": "40c363451eb851ec"
+    }
+   }
+  },
+  {
+   "name": "account_state_fallbacks",
+   "venue": "okx",
+   "multiplier": "3ff0000000000000",
+   "multipliers": {},
+   "events": [
+    {
+     "op": "account_state",
+     "venue": "okx",
+     "quote_asset": "USDT",
+     "balances": [
+      [
+       "USDC",
+       "40934a0000000000"
+      ]
+     ]
+    },
+    {
+     "op": "account_state",
+     "venue": "okx",
+     "quote_asset": "USDT",
+     "balances": [
+      [
+       "USDC",
+       "408f400000000000"
+      ],
+      [
+       "DAI",
+       "407f440000000000"
+      ],
+      [
+       "BUSD",
+       "406f440000000000"
+      ]
+     ]
+    }
+   ],
+   "expect": {
+    "balance": "409b598000000000",
+    "realized_pnl": "0000000000000000",
+    "fees_paid": "0000000000000000",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "authoritative",
+    "trades": [],
+    "positions": [],
+    "unrealized_total": "0000000000000000",
+    "equity_all": {
+     "seed": "0000000000000000",
+     "value": "409b598000000000"
+    }
+   }
+  },
+  {
+   "name": "liquidation_partial_full_replay",
+   "venue": "binance",
+   "multiplier": "3ff0000000000000",
+   "multipliers": {},
+   "events": [
+    {
+     "op": "fill",
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "4000000000000000",
+     "px": "40e86a0000000000",
+     "commission": "4010000000000000",
+     "position_side": "BOTH",
+     "trade_id": "f1"
+    },
+    {
+     "op": "liquidation",
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "position_side": "BOTH",
+     "qty": "3fe0000000000000",
+     "liq_price": "40e5f90000000000",
+     "fee": "4039000000000000"
+    },
+    {
+     "op": "liquidation",
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "position_side": "BOTH",
+     "qty": "4058c00000000000",
+     "liq_price": "40e57c0000000000",
+     "fee": "403e000000000000"
+    },
+    {
+     "op": "liquidation",
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "position_side": "BOTH",
+     "qty": "0000000000000000",
+     "liq_price": "40e4ff0000000000",
+     "fee": "4024000000000000"
+    }
+   ],
+   "expect": {
+    "balance": "c04d800000000000",
+    "realized_pnl": "c0c6760000000000",
+    "fees_paid": "4010000000000000",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "trades": [
+     "c0a3880000000000",
+     "c0c1940000000000"
+    ],
+    "positions": [
+     {
+      "venue": "binance",
+      "symbol": "BTCUSDT",
+      "position_side": "BOTH",
+      "size": "0000000000000000",
+      "avg_px": "0000000000000000"
+     }
+    ],
+    "unrealized_total": "0000000000000000",
+    "equity_all": {
+     "seed": "40d3880000000000",
+     "value": "40c07c8000000000"
+    }
+   }
+  },
+  {
+   "name": "hedge_mode_legs",
+   "venue": "bybit",
+   "multiplier": "3ff0000000000000",
+   "multipliers": {},
+   "events": [
+    {
+     "op": "fill",
+     "venue": "bybit",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3ff0000000000000",
+     "px": "40ed4c0000000000",
+     "commission": "4000000000000000",
+     "position_side": "LONG",
+     "trade_id": "g1"
+    },
+    {
+     "op": "fill",
+     "venue": "bybit",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3fe6666666666666",
+     "px": "40ed650000000000",
+     "commission": "3ff6666666666666",
+     "position_side": "SHORT",
+     "trade_id": "g2"
+    },
+    {
+     "op": "mark",
+     "venue": "bybit",
+     "symbol": "BTCUSDT",
+     "px": "40ed588000000000"
+    },
+    {
+     "op": "fill",
+     "venue": "bybit",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3fd999999999999a",
+     "px": "40ed718000000000",
+     "commission": "3fe999999999999a",
+     "position_side": "LONG",
+     "trade_id": "g3"
+    }
+   ],
+   "expect": {
+    "balance": "c010cccccccccccd",
+    "realized_pnl": "405e000000000000",
+    "fees_paid": "4010cccccccccccd",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "trades": [
+     "405e000000000000"
+    ],
+    "positions": [
+     {
+      "venue": "bybit",
+      "symbol": "BTCUSDT",
+      "position_side": "LONG",
+      "size": "3fe3333333333333",
+      "avg_px": "40ed4c0000000000"
+     },
+     {
+      "venue": "bybit",
+      "symbol": "BTCUSDT",
+      "position_side": "SHORT",
+      "size": "bfe6666666666666",
+      "avg_px": "40ed650000000000"
+     }
+    ],
+    "unrealized_total": "4060400000000000",
+    "equity_all": {
+     "seed": "40cd4c0000000000",
+     "value": "40cdc6e666666666"
+    }
+   }
+  },
+  {
+   "name": "randomized_multi_symbol",
+   "venue": "sim",
+   "multiplier": "3ff0000000000000",
+   "multipliers": {
+    "ETHUSDT": "3fb999999999999a"
+   },
+   "events": [
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "3fe7c51fc4c16590",
+     "px": "40efaa06b851eb85",
+     "commission": "4011ea7ef9db22d1",
+     "position_side": "BOTH",
+     "trade_id": "r0"
+    },
+    {
+     "op": "mark",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "px": "40e99476b851eb85"
+    },
+    {
+     "op": "funding",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "position_side": "BOTH",
+     "amount": "c031e17c1bda511a"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "4005252157689ca2",
+     "px": "40e1a67000000000",
+     "commission": "4011cd4fdf3b645a",
+     "position_side": "BOTH",
+     "trade_id": "r1"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "3ffb408c8259e1f4",
+     "px": "40dd1f5c28f5c28f",
+     "commission": "bfdfafb7e90ff972",
+     "position_side": "BOTH",
+     "trade_id": "r2"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": 1,
+     "qty": "3fd69c99285a921d",
+     "px": "40e5fc775c28f5c3",
+     "commission": "3fe3e00d1b71758e",
+     "position_side": "BOTH",
+     "trade_id": "r3"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "3ff1a1932d6ece14",
+     "px": "40c2d5d1eb851eb8",
+     "commission": "400d7a43fe5c91d1",
+     "position_side": "BOTH",
+     "trade_id": "r4"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3fe670cfe154434e",
+     "px": "40cc5c07ae147ae1",
+     "commission": "3ffd58793dd97f63",
+     "position_side": "BOTH",
+     "trade_id": "r5"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "400225d0fa58f712",
+     "px": "40cc572f5c28f5c3",
+     "commission": "40049ba5e353f7cf",
+     "position_side": "BOTH",
+     "trade_id": "r6"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3fe4b6aa4b9884c7",
+     "px": "40d486328f5c28f6",
+     "commission": "bfd49eecbfb15b57",
+     "position_side": "BOTH",
+     "trade_id": "r7"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "4004a72324c83665",
+     "px": "40cf20c666666666",
+     "commission": "3ffb2d77318fc505",
+     "position_side": "BOTH",
+     "trade_id": "r8"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "3ff75d701d9f4d38",
+     "px": "40e9056dc28f5c29",
+     "commission": "3fe75182a9930be1",
+     "position_side": "BOTH",
+     "trade_id": "r9"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "3ffc2e9ff0cbaf96",
+     "px": "40c8e6428f5c28f6",
+     "commission": "40052fec56d5cfab",
+     "position_side": "BOTH",
+     "trade_id": "r10"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "40032dfa43fe5c92",
+     "px": "40e3d59b33333333",
+     "commission": "bfafa43fe5c91d15",
+     "position_side": "BOTH",
+     "trade_id": "r11"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "4004b32f87ad080b",
+     "px": "40d56a5147ae147b",
+     "commission": "bfd0a2339c0ebee0",
+     "position_side": "BOTH",
+     "trade_id": "r12"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3fec3ae685db76b4",
+     "px": "40e74bee66666666",
+     "commission": "3fe869ad42c3c9ef",
+     "position_side": "BOTH",
+     "trade_id": "r13"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3febcb945308bb90",
+     "px": "40d9ebcc28f5c28f",
+     "commission": "40050b4395810625",
+     "position_side": "BOTH",
+     "trade_id": "r14"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "4003d5c853c14834",
+     "px": "40ecbf4b851eb852",
+     "commission": "4012119ce075f6fd",
+     "position_side": "BOTH",
+     "trade_id": "r15"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3fd327c7c5260f5e",
+     "px": "40de4d947ae147ae",
+     "commission": "4013001a36e2eb1c",
+     "position_side": "BOTH",
+     "trade_id": "r16"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "3ff3d4d834091c08",
+     "px": "40b826c51eb851ec",
+     "commission": "400672474538ef35",
+     "position_side": "BOTH",
+     "trade_id": "r17"
+    },
+    {
+     "op": "mark",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "px": "40c8c8a666666666"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "4004316a8b8f14db",
+     "px": "40ed16b2e147ae14",
+     "commission": "3fd38bac710cb296",
+     "position_side": "BOTH",
+     "trade_id": "r18"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "3fff1e939eadd591",
+     "px": "40e45cdccccccccd",
+     "commission": "4013172474538ef3",
+     "position_side": "BOTH",
+     "trade_id": "r19"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "40062f605ab3aabd",
+     "px": "40defae70a3d70a4",
+     "commission": "4005123a29c779a7",
+     "position_side": "BOTH",
+     "trade_id": "r20"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3fe8ccb1897a67a5",
+     "px": "40eb777851eb851f",
+     "commission": "400c8ff972474539",
+     "position_side": "BOTH",
+     "trade_id": "r21"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "3ff1c7ffde7210bf",
+     "px": "40ed2893851eb852",
+     "commission": "4005fa786c22680a",
+     "position_side": "BOTH",
+     "trade_id": "r22"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "3ff4359ab6d00b46",
+     "px": "40e60876147ae148",
+     "commission": "40110346dc5d6388",
+     "position_side": "BOTH",
+     "trade_id": "r23"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": 1,
+     "qty": "3fe0277a2cecc815",
+     "px": "40f0eb5147ae147b",
+     "commission": "3fc95810624dd2f2",
+     "position_side": "BOTH",
+     "trade_id": "r24"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": 1,
+     "qty": "3fe868427418d691",
+     "px": "40e920d6b851eb85",
+     "commission": "400f64f765fd8adb",
+     "position_side": "BOTH",
+     "trade_id": "r25"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": 1,
+     "qty": "3ff7aa9d627bf61b",
+     "px": "40e7c89570a3d70a",
+     "commission": "4010371758e21965",
+     "position_side": "BOTH",
+     "trade_id": "r26"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "40026dc3bd599243",
+     "px": "40cf5b1c28f5c28f",
+     "commission": "3fe2a0902de00d1b",
+     "position_side": "BOTH",
+     "trade_id": "r27"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "3fec450268900c52",
+     "px": "40bae7e666666666",
+     "commission": "3fed81d7dbf487fd",
+     "position_side": "BOTH",
+     "trade_id": "r28"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": 1,
+     "qty": "3ffe8f3343fa2ad4",
+     "px": "40a6e5e666666666",
+     "commission": "3fe49374bc6a7efa",
+     "position_side": "BOTH",
+     "trade_id": "r29"
+    },
+    {
+     "op": "funding",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "position_side": "BOTH",
+     "amount": "c01222d0e5604189"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "40063aab47410731",
+     "px": "40abe77ae147ae14",
+     "commission": "40031bda5119ce07",
+     "position_side": "BOTH",
+     "trade_id": "r30"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3ff08f8d716d2aa6",
+     "px": "40d8c42e147ae148",
+     "commission": "3ff53dd97f62b6ae",
+     "position_side": "BOTH",
+     "trade_id": "r31"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "4002d92428d434a0",
+     "px": "40e3d8c8f5c28f5c",
+     "commission": "3ff0aacd9e83e426",
+     "position_side": "BOTH",
+     "trade_id": "r32"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "3fe3e97d06bbdbe4",
+     "px": "40f071d000000000",
+     "commission": "400367d566cf41f2",
+     "position_side": "BOTH",
+     "trade_id": "r33"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "3fe0e4649906cca3",
+     "px": "40e438c23d70a3d7",
+     "commission": "4011d3a92a305532",
+     "position_side": "BOTH",
+     "trade_id": "r34"
+    },
+    {
+     "op": "mark",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "px": "40e71aa51eb851ec"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3ff08aff6d330942",
+     "px": "40c6b5d47ae147ae",
+     "commission": "4002fa786c22680a",
+     "position_side": "BOTH",
+     "trade_id": "r35"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "3ff5aa90cd423d92",
+     "px": "40df0f3666666666",
+     "commission": "3ff68fc504816f00",
+     "position_side": "BOTH",
+     "trade_id": "r36"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": 1,
+     "qty": "3ffd4ccff21b3aef",
+     "px": "40e2c86947ae147b",
+     "commission": "4003c1205bc01a37",
+     "position_side": "BOTH",
+     "trade_id": "r37"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "3ffafc7607c419a0",
+     "px": "40e7e3975c28f5c3",
+     "commission": "bfd04816f0068db9",
+     "position_side": "BOTH",
+     "trade_id": "r38"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "4004eee631f8a090",
+     "px": "40d9036d70a3d70a",
+     "commission": "40057c504816f007",
+     "position_side": "BOTH",
+     "trade_id": "r39"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3ff550a569b17482",
+     "px": "40af248f5c28f5c3",
+     "commission": "3fc6bedfa43fe5c9",
+     "position_side": "BOTH",
+     "trade_id": "r40"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "4004132b55ef1fde",
+     "px": "40cca607ae147ae1",
+     "commission": "4001cb5dcc63f141",
+     "position_side": "BOTH",
+     "trade_id": "r41"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "3fe15e2cdc011d36",
+     "px": "40d783b5c28f5c29",
+     "commission": "400895b573eab368",
+     "position_side": "BOTH",
+     "trade_id": "r42"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3ff387f66e86c658",
+     "px": "40daf8f666666666",
+     "commission": "3ff55b573eab367a",
+     "position_side": "BOTH",
+     "trade_id": "r43"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "4002262a1b5c7cd9",
+     "px": "40dc871d70a3d70a",
+     "commission": "401158793dd97f63",
+     "position_side": "BOTH",
+     "trade_id": "r44"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3ffab4f1e4b44a1f",
+     "px": "40e22610a3d70a3d",
+     "commission": "40112a161e4f7660",
+     "position_side": "BOTH",
+     "trade_id": "r45"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": 1,
+     "qty": "3fe8a65492ff4ba5",
+     "px": "40aec10a3d70a3d7",
+     "commission": "40041ff2e48e8a72",
+     "position_side": "BOTH",
+     "trade_id": "r46"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "3fe65a6612839043",
+     "px": "40c2c4a147ae147b",
+     "commission": "3fd59ce075f6fd22",
+     "position_side": "BOTH",
+     "trade_id": "r47"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "3ffcfe9531550ca2",
+     "px": "40e067d947ae147b",
+     "commission": "40038624dd2f1aa0",
+     "position_side": "BOTH",
+     "trade_id": "r48"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": 1,
+     "qty": "3fc209784ec636b1",
+     "px": "40d7dc3000000000",
+     "commission": "400a333333333333",
+     "position_side": "BOTH",
+     "trade_id": "r49"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "4003152a84380885",
+     "px": "40e9f17f0a3d70a4",
+     "commission": "4009395810624dd3",
+     "position_side": "BOTH",
+     "trade_id": "r50"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "3ff81c9c4da9003f",
+     "px": "40ef3c97ae147ae1",
+     "commission": "400518c7e28240b8",
+     "position_side": "BOTH",
+     "trade_id": "r51"
+    },
+    {
+     "op": "mark",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "px": "40d91681eb851eb8"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "3fb52ff4ba51a006",
+     "px": "40e5b585c28f5c29",
+     "commission": "400c8e5604189375",
+     "position_side": "BOTH",
+     "trade_id": "r52"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3febab6f19934efd",
+     "px": "40df11aeb851eb85",
+     "commission": "3fcec56d5cfaacda",
+     "position_side": "BOTH",
+     "trade_id": "r53"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "40024de657b84dba",
+     "px": "40bfe20ccccccccd",
+     "commission": "4002c32ca57a786c",
+     "position_side": "BOTH",
+     "trade_id": "r54"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3fec32a8c9b84556",
+     "px": "40a5d61eb851eb85",
+     "commission": "400ce00d1b71758e",
+     "position_side": "BOTH",
+     "trade_id": "r55"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3fe222e7f6f4be83",
+     "px": "40e66300f5c28f5c",
+     "commission": "4011068db8bac711",
+     "position_side": "BOTH",
+     "trade_id": "r56"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": 1,
+     "qty": "4006727913e81451",
+     "px": "40ec2e0eb851eb85",
+     "commission": "40127aacd9e83e42",
+     "position_side": "BOTH",
+     "trade_id": "r57"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3fdad7ba6698bb4d",
+     "px": "40cfd9d0a3d70a3d",
+     "commission": "4010276c8b439581",
+     "position_side": "BOTH",
+     "trade_id": "r58"
+    },
+    {
+     "op": "funding",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "position_side": "BOTH",
+     "amount": "c00104ea4a8c154d"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3ff88c6a3bddfca0",
+     "px": "40ef1cf28f5c28f6",
+     "commission": "3fc7df3b645a1cac",
+     "position_side": "BOTH",
+     "trade_id": "r59"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3ffc3bf0dc768dfc",
+     "px": "40c8d1747ae147ae",
+     "commission": "3fd05f06f6944674",
+     "position_side": "BOTH",
+     "trade_id": "r60"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3fd90de4c51116a9",
+     "px": "40df55170a3d70a4",
+     "commission": "bf80624dd2f1a9fc",
+     "position_side": "BOTH",
+     "trade_id": "r61"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "400562e4d1a65061",
+     "px": "40f0614f33333333",
+     "commission": "401395e9e1b089a0",
+     "position_side": "BOTH",
+     "trade_id": "r62"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3fb869728a611772",
+     "px": "40d7c877ae147ae1",
+     "commission": "400176c8b4395810",
+     "position_side": "BOTH",
+     "trade_id": "r63"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "3ffcc2a66dbd72bd",
+     "px": "40ced7d47ae147ae",
+     "commission": "40075f3b645a1cac",
+     "position_side": "BOTH",
+     "trade_id": "r64"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "40013ece5710880e",
+     "px": "40d579f000000000",
+     "commission": "3fed6ae7d566cf42",
+     "position_side": "BOTH",
+     "trade_id": "r65"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "4003b49cf56eac86",
+     "px": "40e251d147ae147b",
+     "commission": "bfdd4c985f06f694",
+     "position_side": "BOTH",
+     "trade_id": "r66"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3fbbfc2224edf612",
+     "px": "40ef654bd70a3d71",
+     "commission": "3fe58adab9f559b4",
+     "position_side": "BOTH",
+     "trade_id": "r67"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "3ffb5d95dd4c76d1",
+     "px": "40ee21bb33333333",
+     "commission": "3ff0487fcb923a2a",
+     "position_side": "BOTH",
+     "trade_id": "r68"
+    },
+    {
+     "op": "mark",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "px": "40e956470a3d70a4"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3ffad35653c9abb0",
+     "px": "40dac23333333333",
+     "commission": "40101b089a027525",
+     "position_side": "BOTH",
+     "trade_id": "r69"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "3fec1420b3d4ae43",
+     "px": "40d81eaae147ae14",
+     "commission": "400337e90ff97247",
+     "position_side": "BOTH",
+     "trade_id": "r70"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": 1,
+     "qty": "4000b269df97aaac",
+     "px": "40efa30fae147ae1",
+     "commission": "400556a161e4f766",
+     "position_side": "BOTH",
+     "trade_id": "r71"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "3ff812977c88e79b",
+     "px": "40d0376333333333",
+     "commission": "400d6a4a8c154c98",
+     "position_side": "BOTH",
+     "trade_id": "r72"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "3fee61deacc92147",
+     "px": "40d536de147ae148",
+     "commission": "400cdfd8adab9f56",
+     "position_side": "BOTH",
+     "trade_id": "r73"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "40016f2064239607",
+     "px": "40d0aeb47ae147ae",
+     "commission": "3ff83404ea4a8c15",
+     "position_side": "BOTH",
+     "trade_id": "r74"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3ff0e72a7bd48cb5",
+     "px": "40af37e666666666",
+     "commission": "3fc432ca57a786c2",
+     "position_side": "BOTH",
+     "trade_id": "r75"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": 1,
+     "qty": "3fde4b662fdfc19c",
+     "px": "408de3eb851eb852",
+     "commission": "4010a0c49ba5e354",
+     "position_side": "BOTH",
+     "trade_id": "r76"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "3ff71cb5781c7150",
+     "px": "40de666eb851eb85",
+     "commission": "401384189374bc6a",
+     "position_side": "BOTH",
+     "trade_id": "r77"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3ff0fedfa43fe5c9",
+     "px": "40e8a72e147ae148",
+     "commission": "400a1096bb98c7e3",
+     "position_side": "BOTH",
+     "trade_id": "r78"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": 1,
+     "qty": "3ff146ab14ec204f",
+     "px": "40f019aa66666666",
+     "commission": "4012c60aa64c2f83",
+     "position_side": "BOTH",
+     "trade_id": "r79"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3fcdf327aa68f4b6",
+     "px": "40ef2fb570a3d70a",
+     "commission": "401360f9096bb98c",
+     "position_side": "BOTH",
+     "trade_id": "r80"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "4003c2c55c96030c",
+     "px": "40ead5475c28f5c3",
+     "commission": "bfda5e353f7ced91",
+     "position_side": "BOTH",
+     "trade_id": "r81"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3fdae4606748e475",
+     "px": "40dffd8ccccccccd",
+     "commission": "4012e7381d7dbf48",
+     "position_side": "BOTH",
+     "trade_id": "r82"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "4007fb9cf9a06a6e",
+     "px": "40ea524eb851eb85",
+     "commission": "3fba305532617c1c",
+     "position_side": "BOTH",
+     "trade_id": "r83"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "3ff0cd130df9bdc7",
+     "px": "40e8387947ae147b",
+     "commission": "400fd07c84b5dcc6",
+     "position_side": "BOTH",
+     "trade_id": "r84"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3ffdc3760bf5d788",
+     "px": "40c86835c28f5c29",
+     "commission": "3ff48b4395810625",
+     "position_side": "BOTH",
+     "trade_id": "r85"
+    },
+    {
+     "op": "mark",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "px": "40d3f0c99999999a"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "3fd9a33bd9cae211",
+     "px": "40b87c8ccccccccd",
+     "commission": "400c2858793dd97f",
+     "position_side": "BOTH",
+     "trade_id": "r86"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "4005a0c62e4d1a65",
+     "px": "40e152999999999a",
+     "commission": "3ffac779a6b50b0f",
+     "position_side": "BOTH",
+     "trade_id": "r87"
+    },
+    {
+     "op": "funding",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "position_side": "BOTH",
+     "amount": "4030813404ea4a8c"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "40011884406c00da",
+     "px": "40e1862051eb851f",
+     "commission": "40126a7ef9db22d1",
+     "position_side": "BOTH",
+     "trade_id": "r88"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": 1,
+     "qty": "3fe30fde2ef4e011",
+     "px": "40e349a947ae147b",
+     "commission": "4007d32617c1bda5",
+     "position_side": "BOTH",
+     "trade_id": "r89"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3fde8b8ae31d712a",
+     "px": "40ec77ae66666666",
+     "commission": "400d4af4f0d844d0",
+     "position_side": "BOTH",
+     "trade_id": "r90"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3ffbde5f30e7ff58",
+     "px": "40c9a6d1eb851eb8",
+     "commission": "4012495182a9930c",
+     "position_side": "BOTH",
+     "trade_id": "r91"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "40069398e9707182",
+     "px": "40cdc610a3d70a3d",
+     "commission": "40018ce703afb7e9",
+     "position_side": "BOTH",
+     "trade_id": "r92"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "400338f0c77dd873",
+     "px": "40e6aaeeb851eb85",
+     "commission": "4013c9a027525461",
+     "position_side": "BOTH",
+     "trade_id": "r93"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "3ff269b068123811",
+     "px": "40dd667147ae147b",
+     "commission": "3fe4161e4f765fd9",
+     "position_side": "BOTH",
+     "trade_id": "r94"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "3ff7d72799a1fd15",
+     "px": "40c8957851eb851f",
+     "commission": "3fe8d9e83e425aee",
+     "position_side": "BOTH",
+     "trade_id": "r95"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3ff065cf67b1c001",
+     "px": "40e80bb28f5c28f6",
+     "commission": "4003b1f8a0902de0",
+     "position_side": "BOTH",
+     "trade_id": "r96"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "400528d64d7f0ed4",
+     "px": "40edd0c333333333",
+     "commission": "40068e5604189375",
+     "position_side": "BOTH",
+     "trade_id": "r97"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "4003f914f483cafb",
+     "px": "40ed362570a3d70a",
+     "commission": "400bb50b0f27bb30",
+     "position_side": "BOTH",
+     "trade_id": "r98"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "40026eec7c957cd4",
+     "px": "40dddfd666666666",
+     "commission": "4010a26809d49518",
+     "position_side": "BOTH",
+     "trade_id": "r99"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "4001aa6223e18698",
+     "px": "40d543eb851eb852",
+     "commission": "3ff59e83e425aee6",
+     "position_side": "BOTH",
+     "trade_id": "r100"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "4001a8d2a1f8e3ac",
+     "px": "40c9f6d851eb851f",
+     "commission": "400c532617c1bda5",
+     "position_side": "BOTH",
+     "trade_id": "r101"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3fc8a64c2f837b4a",
+     "px": "40bdd251eb851eb8",
+     "commission": "4013926e978d4fdf",
+     "position_side": "BOTH",
+     "trade_id": "r102"
+    },
+    {
+     "op": "mark",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "px": "40ef39b570a3d70a"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": 1,
+     "qty": "3ff7376e6106ab15",
+     "px": "40eb1a9570a3d70a",
+     "commission": "40105a9fbe76c8b4",
+     "position_side": "BOTH",
+     "trade_id": "r103"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3ffd85a8155d5f57",
+     "px": "40f0b150cccccccd",
+     "commission": "4011b1a9fbe76c8b",
+     "position_side": "BOTH",
+     "trade_id": "r104"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3ff220afa2f05a71",
+     "px": "40e5614ae147ae14",
+     "commission": "3ffc916872b020c5",
+     "position_side": "BOTH",
+     "trade_id": "r105"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "4002f3a4f8726d05",
+     "px": "40d69408f5c28f5c",
+     "commission": "40104c2f837b4a23",
+     "position_side": "BOTH",
+     "trade_id": "r106"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "4004c6317268d328",
+     "px": "40e1923b33333333",
+     "commission": "40138ac083126e98",
+     "position_side": "BOTH",
+     "trade_id": "r107"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "3fd743aa79bbadc1",
+     "px": "40dee0ce147ae148",
+     "commission": "400c521ff2e48e8a",
+     "position_side": "BOTH",
+     "trade_id": "r108"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "3fe031769a91105e",
+     "px": "40d787bd70a3d70a",
+     "commission": "400a9096bb98c7e3",
+     "position_side": "BOTH",
+     "trade_id": "r109"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": -1,
+     "qty": "3fffe85122318330",
+     "px": "40e6d02a8f5c28f6",
+     "commission": "3ffee4f765fd8adb",
+     "position_side": "BOTH",
+     "trade_id": "r110"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3fe632fa93af74cd",
+     "px": "40e7677b851eb852",
+     "commission": "3ff92b020c49ba5e",
+     "position_side": "BOTH",
+     "trade_id": "r111"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "3fe2b4289118c198",
+     "px": "40ef86d800000000",
+     "commission": "3ff968db8bac710d",
+     "position_side": "BOTH",
+     "trade_id": "r112"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "4005539b8887229f",
+     "px": "40dbb8b147ae147b",
+     "commission": "bfddcac083126e98",
+     "position_side": "BOTH",
+     "trade_id": "r113"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "4004d77b7c7820a3",
+     "px": "40ee8ce570a3d70a",
+     "commission": "4000e425aee631f9",
+     "position_side": "BOTH",
+     "trade_id": "r114"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "ETHUSDT",
+     "side": 1,
+     "qty": "3ff250dcfcc5b8dc",
+     "px": "40cc9a9eb851eb85",
+     "commission": "3fe28b4395810625",
+     "position_side": "BOTH",
+     "trade_id": "r115"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "3f973083558a7610",
+     "px": "40c9d70666666666",
+     "commission": "400e1f212d773190",
+     "position_side": "BOTH",
+     "trade_id": "r116"
+    },
+    {
+     "op": "funding",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "position_side": "BOTH",
+     "amount": "c02fc161e4f765fe"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "qty": "40072672fba01eef",
+     "px": "40df6a31eb851eb8",
+     "commission": "bf9c779a6b50b0f2",
+     "position_side": "BOTH",
+     "trade_id": "r117"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "qty": "3ffb4c7b02d59d56",
+     "px": "40db991b851eb852",
+     "commission": "3fe926e978d4fdf4",
+     "position_side": "BOTH",
+     "trade_id": "r118"
+    },
+    {
+     "op": "fill",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "side": -1,
+     "qty": "4004d68512231833",
+     "px": "40d5c6d70a3d70a4",
+     "commission": "3ff258e219652bd4",
+     "position_side": "BOTH",
+     "trade_id": "r119"
+    },
+    {
+     "op": "mark",
+     "venue": "sim",
+     "symbol": "SOLUSDT",
+     "px": "40e85eadc28f5c29"
+    }
+   ],
+   "expect": {
+    "balance": "c073bdd97f62b6ae",
+    "realized_pnl": "c113bfbfbd2e04b2",
+    "fees_paid": "40723f34d6a161e5",
+    "funding_paid": "c037ea4a8c154c99",
+    "balance_mode": "delta",
+    "trades": [
+     "40a0a7da23307583",
+     "c0b4fc810011f39f",
+     "c0a6d12b7837048b",
+     "c01b2e67509c20af",
+     "c0b07397b81e1413",
+     "c094836dbed51265",
+     "c0766d1b090d37d6",
+     "40b7a5228fff681a",
+     "409291cd17fbcb2e",
+     "c0d5d2ad215587a3",
+     "c0d3af69bc65cb40",
+     "c0e11940a544ec00",
+     "40e075962dbf4a0f",
+     "40a28357d52ef0ff",
+     "c0dd807aa36c4c6a",
+     "c08f60bba6bac6ea",
+     "c0e4c01d733ba969",
+     "c0aa784ea200458a",
+     "c072392c4d3fbc36",
+     "40c025462b0795a0",
+     "408db498ff58e1cc",
+     "c0957fed15532369",
+     "c0a5b67a0e6de39d",
+     "c0dbbcfdb17a731d",
+     "c0f4e5669efd70b7",
+     "c0bfe9c8aa71d353",
+     "40e4ed247e12bd4e",
+     "40c1fff28fd440f2",
+     "c0a7a17b6e83cc68",
+     "c0a7f01681f3029a",
+     "c0f3269c755ea091",
+     "40c2f8100afc22d6",
+     "40d8cf571f762ce7",
+     "c0e5de8c2afa4994",
+     "40c10b7906a5ab44",
+     "40f3cc537324383d",
+     "c0931fc6f01b9461",
+     "40df8cf210b0d15e",
+     "c0b5b930200a3d91",
+     "40d0353d27a8bbb9",
+     "c0d1ad86f1dea6be",
+     "c07c5e2f7b10e90a",
+     "c0a8fc11b31c8350",
+     "40d9bd994c737cb4",
+     "40e29bfd8c101a2a",
+     "c088e72a96002f04",
+     "c0e890f71f5cb8d2",
+     "c081a50456713fe5",
+     "c0e1ce83173fc950",
+     "c0c50800a42538e9",
+     "c0ec746e2c397813",
+     "40a61acb64eb84e5",
+     "c0a0bb434c4f51a0",
+     "c0f0841f4b50a2d0",
+     "40c12efd6ac189d3"
+    ],
+    "positions": [
+     {
+      "venue": "sim",
+      "symbol": "ETHUSDT",
+      "position_side": "BOTH",
+      "size": "403420d07852f7f4",
+      "avg_px": "40dec6fefd8e5f90"
+     },
+     {
+      "venue": "sim",
+      "symbol": "SOLUSDT",
+      "position_side": "BOTH",
+      "size": "c023a51f3e89a88a",
+      "avg_px": "40db88b4190d9c59"
+     },
+     {
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "position_side": "BOTH",
+      "size": "c0029437c5692b3f",
+      "avg_px": "40e0511fb56fb046"
+     }
+    ],
+    "unrealized_total": "c10dafb415f6773f",
+    "equity_all": {
+     "seed": "40f86a0000000000",
+     "value": "c11c82093e891900"
+    }
+   }
+  }
+ ]
+}

@@ -1,0 +1,25 @@
+# One compiler everywhere: dev-Windows and CI-Linux must build with the SAME rustc — the test
+# philosophy is bit-identical f64 parity, and rustfmt output (the CI fmt gate) is
+# version-dependent.
+#
+# This pin does real work: the boxes do NOT share a default toolchain. Measured 2026-08-06 —
+# the CI box (CI + the test clone) defaulted to `stable` = 1.97.1 while the latency box (the latency runner) and
+# the Windows dev box were on 1.96.0. And Windows has NO CI coverage at all (every workflow runs
+# on the self-hosted Linux boxes; the `windows-latest` job was retired), so `just windows-check`
+# on the dev box is the only Windows witness there is — a version-only difference between it and
+# the compiler that gates merges is precisely the class CI structurally cannot see. This file is
+# the only reason all four environments agree.
+#
+# The version is restated in several other places (the root Cargo.toml's `rust-version` and a
+# `toolchain:` input in each Rust workflow). Bump them TOGETHER — and note that this comment used
+# to enumerate them and was already wrong (it named ci.yml alone, while deny.yml and
+# ctrader-proto.yml carry copies too). So the list lives in a test rather than here:
+# `crates/vike-ops/tests/unsafe_and_toolchain_gate.rs`'s `the_toolchain_version_has_exactly_one_value`
+# finds every copy and fails if they disagree.
+#
+# ⚠ The dangerous direction is quiet: this file OVERRIDES whatever a workflow's toolchain step
+# installed, and rustup auto-installs on override — so bumping `channel` alone leaves every
+# workflow DECLARING a compiler that is not the one it runs, with nothing red anywhere.
+[toolchain]
+channel = "1.96.0"
+components = ["clippy", "rustfmt"]

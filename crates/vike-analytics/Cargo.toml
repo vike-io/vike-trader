@@ -1,0 +1,33 @@
+[package]
+name = "vike-analytics"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — the pure performance-analytics cluster extracted out of vike-backtest: the metrics catalog, BacktestResult/BacktestReport, benchmark/excursions/periods/montecarlo/stability/overfit/validation analytics, the position-sizing registry and the zero-trade diagnoser. Depends on vike-model ONLY — no engine, no execution, no data layer — so a consumer that just needs the numbers (vike-report's live tearsheet) does not compile the simulator to get them."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+# The ONLY vike dependency, by design (see the crate doc): Trade / Bar / py_sum / time / sizing.
+# Adding vike-exec, vike-core or vike-data here would defeat the reason this crate exists.
+vike-model = { path = "../vike-model" }
+serde = { workspace = true }    # BacktestReport + ZeroTradeReport derive Serialize
+chrono = { workspace = true }   # periods.rs calendar bucketing (daily/weekly/monthly/quarterly/yearly)
+indexmap = { workspace = true } # periods.rs periodic_returns — Python dict insertion order
+rand = { workspace = true }     # montecarlo.rs seeded resampling (statistical, not bit, parity — see montecarlo.rs)
+libm = { workspace = true }     # overfit.rs normal_cdf (erfc) + Acklam normal_inv_cdf (vike-options precedent)
+
+[dev-dependencies]
+# report.rs / zero_trade.rs unit tests assert the `--json` wire contract of the serialized report.
+serde_json = { workspace = true }
+# tests/sizing_props.rs — the `Sizer::size` property suite (testing-arch plan Phase 6, target P1),
+# moved here with the `sizing` module it exercises. Root-pinned; dev-dep only.
+proptest = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

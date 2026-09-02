@@ -1,0 +1,37 @@
+[package]
+name = "vike-data"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — historical market-data access: the HistStore seam (bars + ticks), TRAIT-ONLY by default; feature \"hist-datafusion\" = the DataFusion+Parquet engine (design of record)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[features]
+# The DataFusion+Parquet historical store. OFF by default so the base crate stays lean & sync;
+# only this feature pulls the async/Arrow/DataFusion tree.
+hist-datafusion = ["dep:datafusion", "dep:tokio", "dep:futures-util"]
+# A DataFusion-free in-memory HistStore (`MemHistStore`) for downstream crates' tests — lets venue
+# bridges assert filter-recording wiring without pulling the Arrow/DataFusion tree into test builds.
+test-support = []
+
+[dependencies]
+vike-model = { path = "../vike-model" }
+datafusion = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true } # StreamExt::next: async batch stream -> sync iterator
+tracing = { workspace = true } # sync facade (no async/Arrow tree): properties_rec drop-warnings (always) + live_rec flush-failure warnings
+serde = { workspace = true }        # datasets (default) + manifest (file index) serialization
+serde_json = { workspace = true }   # datasets JSON persistence + manifests (no SQLite)
+
+[dev-dependencies]
+tempfile = "3"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true
