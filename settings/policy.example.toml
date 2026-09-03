@@ -1,0 +1,158 @@
+# <project>/settings/policy.toml — RISK CEILINGS. Copy this file, then edit:
+#
+#     cp settings/policy.example.toml settings/policy.toml
+#     $EDITOR settings/policy.toml
+#     vike-cli config show --filter policy    # confirm what the binaries will read
+#
+# Every line below is COMMENTED OUT, so this file AS SHIPPED configures NOTHING — copy it and you
+# still have the compiled-in defaults. Uncomment only what you mean to SET: where a key has a real
+# default the line shows it, and where its default is absence (an `Option`) the line shows a working
+# example value, so uncommenting THAT line sets it.
+#
+# ⚠ THIS FILE IS THE ONLY WAY TO SET THESE. `Policy` implements neither the environment nor the CLI
+# override trait, and both are sealed, so an override is a compile error rather than a review
+# comment — a ceiling you can raise from a shell export is not a ceiling. The two variables that
+# used to do it, `VIKE_MAX_ORDER_NOTIONAL` and `VIKE_TRADEHUB_MAX_ORDER_NOTIONAL`, are REFUSED at
+# startup now: a binary that found one set names this file, this key, and your own value.
+#
+# Committable: this carries no secret, and a shared ceiling under review is a feature. Credentials
+# live next door in `secrets.env`, which `.gitignore` keeps out. `vike-cli secrets path` prints it.
+
+# The account leverage ceiling. Must be finite and >= 1.0; 1.0 means no leverage at all.
+# max_leverage = 1.0
+
+# The per-ORDER notional ceiling, in quote currency. Omitted (the default) = UNCAPPED. Must be
+# finite and > 0. It is enforced at the node — `vike-cli trade`'s preview guardrail only ADVISES,
+# and says so on the line.
+# max_notional_per_order = 250.0
+
+# Slippage assumed when pricing a MARKET order, as a fraction (0.005 = 50 bps). Omitted = each venue
+# keeps its own literal. Accepted range 0.001 ..= 0.05, and a value outside it is REJECTED rather
+# than clamped: a typo'd ceiling that silently becomes a different ceiling is the failure this whole
+# file exists to prevent.
+# market_slippage = 0.005
+
+# How much evidence the HALT kill switch (`touch $VIKE_HALT_FILE`) demands before letting an order
+# out. "admit" (the default) trusts the order's own `reduce_only` flag — which the venue adapter
+# cannot check, so a strategy bug that mis-tags an entry gets through it. "verify" additionally
+# checks the venue's OWN position book and refuses what that book proves is an OPEN.
+#
+# ⚠ "verify" is REAL ON A LIVE cTRADER MOUNT ONLY — the one adapter holding a position book at its
+# halt boundary. Every other venue degrades to "admit" and logs the venue and the reason once, at
+# mount; a cTrader venue that fell back to PAPER (no credentials, or a failed handshake) logs that
+# it armed nothing, because the paper client holds no book either. After setting this, grep your log
+# for halt_admit and confirm what actually armed.
+#
+# ⚠ …and even there it refuses only what the venue POSITIVELY reported. It needs an open position in
+# that very symbol — from an answer for YOUR account that this build read in full, on a socket that
+# has not dropped since — and then it refuses an order claiming to reduce the side that same report
+# says is empty. Every ABSENCE still admits, deliberately, INCLUDING an account that reported no
+# position in the symbol at all: an answer that omits a position you are holding looks exactly like a
+# flat account, and refusing on it would trap you in a live position under an engaged kill switch.
+# So `verify` stops the SECOND mis-tagged order in a symbol, not the first. Halting must never trap
+# you, which outranks making the halt airtight. `docs/ops/kill-switches.md` is the operator page;
+# `crates/vike-exec/src/halt.rs`'s module doc is the authority.
+#
+# There is no third value. A "refuse everything" halt WAS the behaviour until 2026-08-06 and was
+# removed because it disarmed the panic button in exactly the situations that halt on their own.
+# halt_admit = "verify"
+
+# ---------------------------------------------------------------------------------------------
+# [venues] — PER-VENUE ARMING. One key per venue vike has a bridge for; "paper" | "demo" | "live".
+# ---------------------------------------------------------------------------------------------
+#
+# ⚠⚠ THIS IS ENFORCED, AND ITS DEFAULT BITES. A venue with no line here is "paper", and a paper
+# venue mounts the simulator no matter what credentials it has — the mount refuses it ABOVE the
+# credential read, so nothing is loaded, fetched or dialled for it. On the first start after this
+# landed, a box with credentials and no [venues] table drops EVERY venue to paper and says so once,
+# naming this file, this key and the venues it refused, with the block to paste.
+#
+# ⚠ A CEILING, NOT A SELECTOR. The effective tier is min(this, whatever the existing mechanisms
+# decide) — never max. So `bybit = "live"` does NOT put bybit live; it declines to stop bybit going
+# live if its credentials, its `{VENUE}_MAINNET` flag and its mount arm already do. The only line
+# that changes an outcome is one that LOWERS a venue, and it can only lower it.
+#
+# What "demo" means is the VENUE's own demo/testnet account, and on the four venues whose tier is
+# chosen by something other than a credential prefix it is now the refusal that decides:
+#   * binance / bybit / okx  — `{VENUE}_MAINNET=1` selects nothing under "demo"; the demo key set is
+#                              loaded, and with no demo keys the venue is paper (a mainnet host is
+#                              never signed with live keys the ceiling declined).
+#   * hyperliquid            — the same, for HYPERLIQUID_MAINNET.
+#   * aster                  — SWITCHLESS: there is no ASTER_MAINNET, and its mount tries the LIVE
+#                              (mainnet) keys FIRST. Under "demo" that attempt is deleted, so an
+#                              ASTER_LIVE_* pair in secrets.env arms nothing. This line is the only
+#                              refusal that exists for that venue.
+#   * polymarket             — has NO testnet, so "demo" names a tier that does not exist and its
+#                              exec arm refuses it. Only "live" (plus POLY_EXEC=1, which this does
+#                              NOT replace) mounts it.
+#
+# The default is "paper" for EVERY venue, which is what a machine with no policy.toml gets. The gate
+# it replaces was credential PRESENCE alone: a `DERIBIT_LIVE_*` pair appended to secrets.env armed
+# deribit on the next start, with no file changed and no review. This table is where a deployment
+# says which venues it MEANT to trade on.
+#
+# Writing the table AT ALL — even with every venue at "paper" — is a stated decision and silences
+# the upgrade warning. Leaving it out is not the same thing, which is why the warning exists.
+#
+# A venue this BUILD cannot mount (ibkr, polymarket and fxcm are behind cargo features) is still a
+# legal key: the file must stay portable across boxes whose features differ, and a ceiling on an
+# unmountable venue caps at paper anyway. An UNKNOWN venue id is refused by name at load, with the
+# whole roster in the message — the `[venues]` keys are data to serde, so `deny_unknown_fields`
+# cannot see them and the check is made by hand.
+#
+# The lines below use the DOTTED spelling (`venues.<venue> = …`) so that uncommenting any single
+# one of them works on its own. A `[venues]` section header with bare `<venue> = …` lines under it
+# is the same table and is the nicer shape once you are setting several — but do not write both, or
+# the keys nest as `venues.venues.<venue>` (which is refused at load, loudly).
+# venues.alpaca = "paper"
+# venues.aster = "paper"
+# venues.binance = "paper"
+# venues.bybit = "paper"
+# venues.ctrader = "paper"
+# venues.deribit = "paper"
+# venues.dukascopy = "paper"
+# venues.fxcm = "paper"
+# venues.hyperliquid = "paper"
+# venues.ibkr = "paper"
+# venues.ig = "paper"
+# venues.oanda = "paper"
+# venues.okx = "paper"
+# venues.polymarket = "paper"
+
+# ---------------------------------------------------------------------------------------------
+# [accounts] — PER-ACCOUNT ARMING, for a venue you hold MORE THAN ONE account on.
+# ---------------------------------------------------------------------------------------------
+#
+# A second account of a venue is addressed by a LABEL appended to that venue's credential keys in
+# secrets.env, behind a DOUBLE underscore:
+#
+#     HYPERLIQUID_LIVE_API_KEY           the DEFAULT account — unchanged, byte for byte
+#     HYPERLIQUID_LIVE_API_KEY__ALT      the account labelled ALT
+#
+# `vike-cli secrets list` names the accounts your store's key names resolve to. A label is A-Z and
+# 0-9 only, at most 24 characters, and `DEFAULT` is refused: the unlabelled account's ceiling IS its
+# venue's [venues] line, so naming it here would be a second name for one thing.
+#
+# ⚠ THE DEFAULT ACCOUNT INHERITS AND A LABELLED ONE DOES NOT. `venues.hyperliquid = "live"` arms the
+# default account and NOTHING else — it was written when that venue had one account, and reading it
+# as consent for an account that did not exist then is exactly the silent escalation the ceiling
+# exists to prevent. A second account must be NAMED here to be armed, and the venue's own line still
+# caps it: `venues.hyperliquid = "paper"` disarms every hyperliquid account whatever this table says.
+#
+# ⚠ TWO ACTIVE ACCOUNTS OF ONE VENUE MAY NOT ARM ON THE SAME SYMBOL. One venue account is one book at
+# the venue; two local books each sizing against a venue position that includes the other's is the
+# hazard. The mount REFUSES the second account rather than mounting both — the default account keeps
+# the symbol, the labelled one is named in the log and on the Data Manager's Venues screen with
+# "symbol taken by another account", and everything else on the box mounts normally. `paper` accounts
+# compete for nothing and never collide.
+#
+# The real shape is nested, one table per venue — written here as ordinary comments because the
+# example line the loader is tested against has to be one key:
+#
+#     [accounts.hyperliquid]
+#     ALT  = "live"
+#     TEST = "demo"
+#
+# The line below is the empty table, i.e. exactly the default: no account is named, so nothing is
+# armed beyond the [venues] lines above.
+# accounts = { }

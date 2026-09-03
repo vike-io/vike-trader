@@ -1,0 +1,74 @@
+[package]
+name = "vike-alerting"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "The alerting primitive: a persisted serde rule model, an alerts.json loader, and the delivery seam (in-process buffer + Telegram/generic-webhook POST over the shared ureq+rustls stack). The DEFAULT build has ZERO vike-* dependencies, so a standalone watchdog binary can send an alert without linking the trading core; the optional `core` feature adds the CoreSnapshot/Event evaluator and the AlertEngine that drives it."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `service` — a library composed over the engine crates.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 50
+
+# WHY THIS CRATE EXISTS (the dependency argument, not a taste argument):
+# the latency box crashed and ~6h of recorded Polymarket L2 tape was lost UNNOTICED. The fix wanted is a
+# small STANDALONE watchdog that pages (Telegram) when an external recorder stops writing. While
+# this tree lived inside `vike-ops`, that binary would have had to link
+# vike-ops -> vike-core -> vike-exec -> vike-model (plus vike-data + vike-bridge-core) just to POST
+# a message. Three of the five modules here (`rule`/`delivery`/`persist`) were already vike-free;
+# only `eval` + `AlertEngine` ever touched `vike_core::CoreSnapshot` / `vike_model::events::Event`.
+# Splitting on that existing seam turns the watchdog's dependency set into serde + ureq.
+#
+# The rule this crate is under: a DEFAULT build must stay vike-*-free. A new module that needs a
+# vike type goes behind `core` (or a new named feature), never into the default half.
+[dependencies]
+serde = { workspace = true }      # the persisted AlertRuleSet JSON model (`rule`)
+serde_json = { workspace = true } # alerts.json load/save + the webhook POST body
+tracing = { workspace = true }    # off-fold diagnostics (subscriber lives in vike-log)
+ureq = { workspace = true }       # blocking webhook/Telegram POST on the shared rustls stack (no second HTTP client)
+# deterministic per-rule state ordering in `AlertEngine` (repo-wide insertion-order convention).
+# NON-optional since the engine joined the vike-free half: `AlertEngine` is the fold + the sinks,
+# and nothing about THAT is vike-specific — only two of its four input methods are. indexmap has no
+# vike-* dependency of its own, so a default build still lists none (the `alerting-standalone`
+# lane's `cargo tree` half is what proves it, not this comment).
+indexmap = { workspace = true }
+
+# --- optional, feature-gated: the ONLY vike-* edges in this crate -------------------------------
+# CoreSnapshot — the published, OFF-FOLD side of the live core `eval_snapshot_rule` reads.
+vike-core = { path = "../vike-core", optional = true }
+# Event — the wire vocabulary `eval_event_rule` matches on.
+vike-model = { path = "../vike-model", optional = true }
+#
+# ⚠ There is deliberately NO vike-bridge-core edge here any more. One existed — optional, behind a
+# `workspace-env` feature — for a single convenience function that opened the workspace credential
+# store itself (`webhook_configs_from_workspace_env`). That is a LIBRARY reading global
+# configuration its caller can neither see nor substitute: the exact class
+# `crates/vike-ops/tests/settings_registry.rs`'s `CREDENTIAL_STORE_PIN` ratchets down. Its ONE
+# caller (vike-tradehub's `main.rs`) already resolves the full credential chain for the live mount,
+# so the read moved there and `delivery::webhook_configs_from_env` takes the map. Do not
+# reintroduce it: a caller that wants targets built from the store loads the store and passes it.
+
+[features]
+# DEFAULT = the vike-free half: `rule` + `delivery` + `persist` + `eval` + `AlertEngine`, all
+# unconditionally compiled. They are deliberately NOT named features: `persist` and `delivery` both
+# require `rule` and share serde_json/tracing, so separate flags would buy no real build shape while
+# adding cfg noise and intra-doc links that dangle under a partial combination.
+# `cargo tree -p vike-alerting -e normal` on this default build lists no vike-* crate.
+default = []
+# The two evaluator entry points that NAME a vike type — `eval_snapshot_rule`
+# (vike_core::CoreSnapshot) and `eval_event_rule` (vike_model::events::Event) — plus the matching
+# `AlertEngine::on_snapshot`/`on_event`. NOT the engine itself: a standalone watchdog needs the
+# fold, the per-rule state and the sinks, and none of those three is vike-shaped. vike-ops enables
+# this, so every historical `vike_ops::alerting::…` / `vike_app_core::alerting::…` path resolves
+# unchanged.
+core = ["dep:vike-core", "dep:vike-model"]
+# `core` is the ONLY feature. `workspace-env` (the vike-bridge-core edge) was deleted with the
+# function it existed for — see the note in [dependencies] above.
+
+[dev-dependencies]
+tempfile = "3" # the alerts.json disk round-trip in `persist`
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

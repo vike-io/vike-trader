@@ -1,0 +1,55 @@
+[package]
+name = "vike-fxcm"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "FXCM ForexConnect FX venue bridge — native C++ FFI over the proprietary ForexConnect SDK, quarantined behind a crate-local build.rs + `fxcm` feature (stub build with zero native deps is the CI/default). Moved into crates/bridges/fxcm (crate-reorg Phase 3, PR D)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+vike-exec = { path = "../../vike-exec" }
+# shared venue-bridge plumbing (credentials::Environment, exec_actor) — crate-reorg Phase 3 (D4);
+# the direct-path style survives every later venue move unchanged.
+vike-bridge-core = { path = "../../vike-bridge-core" }
+# CatalogProvider seam (catalog.rs): a bundled static FX/metals instrument list — no fetch, so this
+# is the crate's only vike-catalog dependency (down-only: vike-catalog depends on vike-model only,
+# never on any bridge crate). Declared unconditionally, same as this crate's `CAPS` const — pure
+# data, not gated by the `fxcm` feature.
+vike-catalog = { path = "../../vike-catalog" }
+serde_json = { workspace = true } # decodes the shim's async fill/cancel/reject event envelopes
+# Promoted from dev-only: `event_mapper` now REFUSES a fill envelope carrying no `trade_id` (it could
+# not be deduplicated, so a reconnect re-surface would re-book it), and a dropped money event must be
+# visible rather than silent — every sibling bridge already logs its refusals through the facade.
+tracing = { workspace = true }
+
+[features]
+# FXCM ForexConnect native build attempt (heavy proprietary SDK). OFF by default so CI and
+# SDK-less builds don't try to link ForexConnect.dll; enable with `--features fxcm` on a machine
+# that has the SDK (FCSDK_DIR). The module tree itself is NOT gated by this feature — it always
+# compiles (src/sys.rs stubs via `#[cfg(not(fcsdk))]` whenever the SDK isn't found), so a default
+# (no-feature) build already gives the same stub coverage `--features fxcm` gives on a no-SDK box.
+fxcm = []
+
+[build-dependencies]
+cc = "1" # compiles src/shim/fcshim.cpp under --features fxcm (when the SDK is also found)
+
+[dev-dependencies]
+tokio = { workspace = true }         # test-only: timeout around the ingest receiver in the live smoke
+vike-log = { path = "../../vike-log" } # dev-only: test_init() diagnostics for the gated live demo smoke
+# test-only: SELF-DELETING scratch trees for the packaging fixture (tests/fcsdk_packaging.rs) and
+# the rpath link probes (tests/fcsdk_rpath_tag.rs). The hand-rolled
+# `env::temp_dir().join(format!("…-{pid}"))` spelling they used before leaked a directory on every
+# skip and every failure — and the rpath probes are mostly skips, since they need a C toolchain and
+# readelf — while a reused PID collided with the OTHER user's leftovers on the shared the CI box box,
+# where the write then failed `PermissionDenied`. Not a workspace dep — matches the
+# vike-data/vike-backfill/vike-backtest/ctrader convention.
+tempfile = "3"
+
+# Deliberately NOT `[lints] workspace = true`: the workspace policy forbids `unsafe_code`,
+# and this crate IS the quarantined unsafe surface (src/sys.rs FFI over the ForexConnect SDK).

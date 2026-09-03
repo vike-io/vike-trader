@@ -1,0 +1,38 @@
+[package]
+name = "vike-dukascopy"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "Dukascopy FX venue bridge — keyless deep tick-history data (.bi5) + JForex execution via a colocated Java sidecar (jforex-bridge/, Gradle project, sibling of src/). The only venue with no REST execution API: exec.rs drives java as a child process over JSON-lines stdio. Moved into crates/bridges/dukascopy (crate-reorg Phase 3, PR J — the last venue move)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+vike-exec = { path = "../../vike-exec" }
+# shared venue-bridge plumbing (http::blocking_agent for the .bi5 CDN fetch) — crate-reorg Phase
+# 3 (D4); the direct-path style survives every later venue move unchanged. Dukascopy's execution
+# is 100% bespoke (child process, not REST/WS), so this is its only bridge-core borrowing.
+vike-bridge-core = { path = "../../vike-bridge-core" }
+# CatalogProvider seam (catalog.rs): a bundled static FX/metals instrument list — no fetch, so
+# this is the crate's only vike-catalog dependency (down-only: vike-catalog depends on vike-model
+# only, never on any bridge crate).
+vike-catalog = { path = "../../vike-catalog" }
+serde = { workspace = true }       # sidecar JSON-lines protocol derives (proto.rs)
+serde_json = { workspace = true }  # sidecar JSON-lines encode/decode (proto.rs)
+chrono = { workspace = true }      # .bi5 URL calendar math (data.rs)
+lzma-rs = { workspace = true }     # .bi5 LZMA decode (data.rs)
+tracing = { workspace = true }     # structured adapter diagnostics (sidecar lifecycle)
+
+[dev-dependencies]
+tokio = { workspace = true }         # test-only: timeout around ingest receiver reads
+vike-log = { path = "../../vike-log" } # dev-only: test_init() for the live-fetch unit test + live smoke
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

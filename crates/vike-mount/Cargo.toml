@@ -1,0 +1,175 @@
+[package]
+name = "vike-mount"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — the venue→ExecutionClient/ReconClient composition root (make_engine + the CEX reconcile-client factory + per-venue fallback grids), extracted from vike-app so its live-exec wiring runs in CI (vike-app itself is wgpu-heavy and excluded)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `mount` — the venue composition root (make_engine).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 60
+
+[dependencies]
+# the domain types the fallback grids + engine construction name (SymbolProperties, now_ms/now_us)
+vike-model = { path = "../vike-model" }
+# `fee_lane`: the `.P` spot-vs-perp split applied to the FEE table's key. binance/aster route EXEC on
+# that suffix, so `make_engine` must resolve the LANE before reading `fee_schedule_for` — keying it
+# off the bare venue string filled every perp paper book at SPOT fees. Adds no external package:
+# vike-catalog depends on vike-model alone and was already in this crate's transitive tree via the
+# bridge crates.
+vike-catalog = { path = "../vike-catalog" }
+# ExecutionEngine/ExecutionClient/RiskGate/RiskLimits/Account/EventSender + the recon::ReconClient seam
+vike-exec = { path = "../vike-exec" }
+# DEFAULT features (trait surface only — NO hist-datafusion, so no Arrow/DataFusion tree through
+# this edge): this crate names just the UNGATED `PropertiesRecorder` TYPE (it holds only
+# `Arc<dyn HistStore>`) as the opt-in PIT-recorder SEAM the five recording arms thread into their
+# venue spawns, plus the cTrader arm's default-surface `LiveDataSink`/`TeeSink`. The recorder is
+# CONSTRUCTED by the calling BINARY (`PropertiesRecorder::open_from_env` names the concrete
+# `DataFusionHist` and is gated on hist-datafusion, which vike-app's `fat` and vike-tradehub's
+# `record-feeds`/`materialize` builds carry) and RECEIVED here via `make_engine`'s `properties_rec`
+# parameter — libraries take configuration as parameters; only binaries open stores. A binary
+# without the backend passes `None`, byte-identical to the recorder's own disabled path.
+vike-data = { path = "../vike-data" }
+# The TYPED settings model (settings-unification Phase 6c). This crate is the venue composition
+# root, so it is where a machine's hard ceilings must actually REACH a venue — before this edge
+# existed the whole `vike-config` tree had no consumer below the order-preview surfaces, and
+# #1051's `spawn_with_market_slippage` seam had nothing to feed it. `src/policy.rs` owns the ONE
+# projection (`MountPolicy`), so "which Policy fields does the mount apply?" has a single home and a
+# compile-time completeness gate. Zero new EXTERNAL packages: vike-config is a leaf over vike-model
+# + serde + toml, all already in this crate's tree. ⚠ This crate NEVER loads the settings — the
+# BINARY does (`vike_config::load` takes the env as a MAP) and passes the projection in.
+vike-config = { path = "../vike-config" }
+# credential loader (load_credentials_from + Environment) + the shared signers/transport
+# (BinanceHmacSigner/BybitV5Signer/OkxV5Signer/UreqTransport) + Credentials the recon factory reuses.
+# ⚠ `eip712` is spelled EXPLICITLY rather than inherited: `book_identity.rs` calls
+# `eth_address_from_private_key` to answer "which wallet does this account trade" for the EVM
+# venues, and that primitive is feature-gated. The feature is ALREADY on in every build containing
+# this crate (the non-optional `vike-aster` dep below takes `exec`, which enables it), so this adds
+# no package to the lockfile — it states the edge so that dropping aster's `exec` is a compile error
+# here rather than a silently-lost warning about two engines over one book.
+vike-bridge-core = { path = "../vike-bridge-core", features = ["eip712"] }
+# the paper exchange the live gate falls back to when a venue's credentials are absent.
+# THIS LINE USED TO READ `vike-backtest`, which owned the same module. All 12 call sites in this
+# crate named `vike_backtest::paper::…` and NOTHING else from it, so the entire simulator — engine,
+# harness, analytics — was compiled here to obtain one `ExecutionClient`. vike-paper carries the
+# identical client (it fills with the shared vike-fills core the engine itself uses, so
+# backtest == paper still holds BY CONSTRUCTION) over vike-model + vike-exec + vike-fills alone.
+vike-paper = { path = "../vike-paper" }
+# the six live-exec venues make_engine builds: each contributes its ExecutionClient +
+# fetch_*_properties pre-fetch (and, for the CEX trio, its ReconClient via build_recon_client)
+vike-bybit = { path = "../bridges/bybit" }
+vike-okx = { path = "../bridges/okx" }
+vike-binance = { path = "../bridges/binance" }
+vike-deribit = { path = "../bridges/deribit" }       # inline recon (dedicated authed order-WS)
+# ⚠ aster/hyperliquid spell `features = ["exec"]` EXPLICITLY even though it is their default:
+# this crate is THE exec consumer (it builds their signers, ExecutionClients and ReconClients), so
+# the need survives in the manifest if the bridges' default ever flips feeds-only — while
+# feed-only consumers (vike-app/vike-tradehub/vike-backfill) deliberately stay on the default and
+# can drop to `default-features = false` without touching this crate (split-plane Phase 5).
+vike-aster = { path = "../bridges/aster", features = ["exec"] }           # agent-wallet creds + inline recon (EIP-712 signer)
+vike-hyperliquid = { path = "../bridges/hyperliquid", features = ["exec"] } # bespoke private-key live client + inline recon
+vike-ctrader = { path = "../bridges/ctrader" }       # exec-only mount: blocking OAuth protobuf handshake + inline recon (own dedicated authed socket)
+vike-alpaca = { path = "../bridges/alpaca" }         # OAuth2 client-credentials exec + inline recon (fresh Bearer AlpacaRest per purpose)
+# IG & OANDA: pure-Rust REST FX/CFD brokers, exec-only mounts (self-reconnecting ExecActor spawn, like
+# alpaca) + inline recon over a DEDICATED logged-in IgSession / Bearer OandaRest (never the exec side's
+# transport). Each self-gates on its own {IG,OANDA}_DEMO_* config, absent ⇒ paper.
+vike-ig = { path = "../bridges/ig" }                 # session-auth REST exec + inline recon (dedicated IgSession)
+vike-oanda = { path = "../bridges/oanda" }           # v20 Bearer REST exec + inline recon (dedicated OandaRest)
+# IBKR is the ONE feature-gated live venue: its real backends (socket/cpapi) live behind
+# vike-ibkr's own `ibkr` umbrella feature — a default vike-ibkr build is a stub whose connect
+# returns `Unavailable`. So this dep is `optional` and the `make_engine` ibkr arm is compiled only
+# under vike-mount's own `ibkr` feature (see [features] below). A default vike-mount build never
+# compiles vike-ibkr's live code and the ibkr arm falls through to paper — byte-identical to today.
+vike-ibkr = { path = "../bridges/vike-ibkr", optional = true } # feature-gated exec (socket/cpapi) + inline cpapi recon
+# Polymarket is the SECOND feature-gated venue here, for the same reason as IBKR but stricter: the
+# whole vike-polymarket module tree sits behind that crate's own `polymarket` feature (it re-exports
+# the feature-gated `vike_bridge_core::eip712` k256/tiny-keccak primitive, so a default build is an
+# EMPTY crate — there is nothing to call). This dep is therefore `optional` and the `make_engine`
+# polymarket arm compiles only under
+# vike-mount's own `polymarket` feature (see [features]); OFF (the default) the arm does not exist,
+# `("polymarket", _)` falls through to the paper `_` arm, and no k256/keccak tree is built here.
+# RECON-ONLY: the arm builds a `ReconClient`, never an exec client (polymarket exec is not mounted
+# by make_engine yet) — see the arm's comment and `vike_polymarket::poly_reconcile_enabled`.
+vike-polymarket = { path = "../bridges/polymarket", optional = true }
+# FXCM is the THIRD feature-gated venue here, and its gate is a different KIND from the other two.
+# IBKR/polymarket hide real CODE behind a crate feature; vike-fxcm's `fxcm` feature hides only
+# `build.rs`'s attempt to compile the native ForexConnect shim — the module tree always compiles and
+# degrades to a stub whose every call returns `Unavailable`. So the dep is `optional` for the
+# ordinary reason (a default vike-mount build must stay byte-identical: no arm, `("fxcm", _)` falls
+# through to paper) rather than to keep a heavy tree out of the graph.
+# ⚠ Turning the feature on is NOT enough to mount live, and that is deliberate: the arm ALSO
+# requires `vike_fxcm::sdk_linked()`, because a stub build's exec client accepts submits and
+# silently discards them (the session thread returns at login and every later submit is a no-op) —
+# which is the one thing the venue-adapter contract forbids. See the arm.
+vike-fxcm = { path = "../bridges/fxcm", optional = true }
+# make_engine's live arms warn at each venue's live/paper decision boundary (never per-message)
+tracing = { workspace = true }
+# the Account per-symbol contract-multiplier grid is an IndexMap (its insertion order is part of
+# Account's f64 fold order — the repo-wide IndexMap-not-HashMap rule)
+indexmap = { workspace = true }
+# `src/server_time.rs` parses each venue's server-clock body (which is a `serde_json::Value`, the
+# shared `RestTransport` return type) and builds hyperliquid's one-key `/info` request body. Zero
+# new EXTERNAL packages: serde_json was already in this crate's transitive tree via every bridge
+# dep, and was already a dev-dependency here — this promotes that same pin to a normal dep.
+serde_json = { workspace = true }
+
+# `src/startup.rs`'s `free_space_bytes`: the startup preflight's DISK-HEADROOM leg, which was
+# configured with no directories and never called until this edge existed. `rustix::fs::statvfs` is
+# a SAFE wrapper, so the leg costs no `unsafe` and no lint exemption in a crate that builds the
+# order-signing clients. Target-scoped: rustix's statvfs is POSIX-only, and the Windows half of
+# `free_space_bytes` declares a reason instead of measuring. The root manifest carries the
+# supply-chain argument (it adds zero packages on Linux).
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
+[dev-dependencies]
+# test-only: the live cTrader mount smoke inits the tracing subscriber (skip/soft-skip lines) …
+vike-log = { path = "../vike-log" }
+# … and drains a tokio::sync::mpsc Ingest receiver with a bounded timeout while awaiting the
+# venue's terminal OrderFilled (same pattern as crates/bridges/ctrader/tests/ctrader_demo_smoke.rs).
+tokio = { workspace = true }
+# (serde_json is a NORMAL dependency now — see the note above `[dev-dependencies]`. The hyperliquid
+# margin-mode wiring gate, which feeds a real `meta` body through the real `Symbology::from_meta`,
+# keeps using it from there.)
+# test-only: the self-deleting scratch directory each HALT sentinel is minted in
+# (`crates/vike-mount/tests/halt_paper_live_agree.rs`'s `unique_sentinel`). It replaces a pid-keyed
+# `std::env::temp_dir()` path that leaked 17,696 `/tmp` directories on the CI box and flaked on PID reuse
+# across the box's two test users — that helper's doc carries the measurement and the argument.
+tempfile = "3"
+
+[features]
+default = []
+# `ibkr` compiles the feature-gated IBKR live-exec arm in `make_engine`: it pulls in the optional
+# `vike-ibkr` dep AND turns on that crate's `ibkr` umbrella feature (= `ibkr-socket` + `ibkr-cpapi`),
+# so the socket/cpapi ExecutionClient backends AND the cpapi `IbkrReconClient` are real (not stubs).
+# OFF (the default) the arm doesn't exist and `make_engine("ibkr", …)` falls through to paper —
+# byte-identical to today. ⚠ This line used to read "CI turns it on via `cargo test -p vike-mount
+# --features ibkr`", and that was FALSE for as long as it stood: the `ibkr` arm of
+# `scripts/ci_feature_suite.sh` named `-p vike-ibkr` alone, so this arm was compiled by no merge-gate
+# job at all. That arm now names the whole forwarding chain
+# (`-p vike-ibkr -p vike-mount -p vike-run --features vike-mount/ibkr,vike-run/ibkr`), which is what
+# turns this feature on. The default workspace build (and `cargo check --workspace`) still never
+# enables it, keeping the vendored ibapi tree uncompiled here.
+ibkr = ["dep:vike-ibkr", "vike-ibkr/ibkr"]
+# `polymarket` compiles the feature-gated Polymarket RECONCILE arm in `make_engine`: it pulls in the
+# optional `vike-polymarket` dep AND turns on that crate's own `polymarket` feature (without which
+# the crate is empty). OFF (the default) the arm doesn't exist and `make_engine("polymarket", …)`
+# falls through to paper — byte-identical to today. CI turns it on via
+# `cargo test -p vike-mount --features polymarket`.
+polymarket = ["dep:vike-polymarket", "vike-polymarket/polymarket"]
+# `fxcm` compiles the feature-gated FXCM live-exec/recon arm in `make_engine`: it pulls in the
+# optional `vike-fxcm` dep AND turns on that crate's own `fxcm` feature, which is what lets
+# `build.rs` attempt the native ForexConnect compile on a box that has the SDK staged. OFF (the
+# default) the arm doesn't exist and `make_engine("fxcm", …)` falls through to paper — byte-identical
+# to today. ⚠ ON, on a box WITHOUT the SDK, the arm exists and still refuses to mount live: the
+# build degrades to the `Unavailable` stub, `vike_fxcm::sdk_linked()` is false, and the arm lands on
+# paper with an `error!`. That is the configuration CI runs (no runner has ever had the SDK), so
+# this lane proves the arm COMPILES and REFUSES, and nothing about the wire.
+fxcm = ["dep:vike-fxcm", "vike-fxcm/fxcm"]
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

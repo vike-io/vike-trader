@@ -1,0 +1,45 @@
+# The repository's own build tooling — the `xtask` convention, a task runner written in the language
+# the project is already in. It answers ONE question: what does CI run? — for CI, for the justfile
+# and for a developer, out of one implementation instead of the three languages plus a hand copy that
+# used to answer it.
+#
+# Entry point: `just xtask <cmd>`, which is `cargo run -p xtask -- <cmd>`. ⚠ NOT `cargo xtask`: an
+# alias would have to live in `.cargo/config.toml`, `crates/vike-ops/tests/build_config_gate.rs`
+# requires every leaf path there to sit under `target.x86_64-pc-windows-msvc`, and cargo does not
+# allow `[alias]` to be target-scoped. The convention's spelling is unavailable in this repository.
+#
+# ⚠ IT IS A WORKSPACE MEMBER AND A FULL CI CRATE — it is NOT in `EXCLUDE_FROM_CI`. That is the
+# opposite of the usual xtask advice, and the reasons are this repository's own gates:
+# `crates/vike-ops/tests/feature_lane_coverage.rs`'s `every_workspace_member_is_built_by_some_lane`
+# refuses a member no lane builds, and `crate_of` maps a path under a NON-member to no crate — so a
+# workspace-excluded xtask could change and CI would plan nothing at all. Being in the roster costs
+# one small crate in the fast lane and buys tests plus `clippy -D warnings` on the code that derives
+# the merge gate. `crates/vike-ops` also DEV-depends on it, so the differential gate calls the
+# library in-process rather than spawning a nested cargo build.
+#
+# ⚠ ITS DEPENDENCY SET IS THE POINT. The roster has to be answerable BEFORE the workspace is built —
+# in a cold CI `plan` job, and on every `just` invocation — so this crate takes exactly one
+# dependency (serde_json, to read `cargo metadata`'s JSON) and no vike-* crate at all. MEASURED on
+# the dev box, warm registry: 6 compile units, 1.8-2.1 s cold, 86-122 ms warm. Adding a dependency
+# here makes the question slower to ask than the answer is worth.
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Layer 15 = `leaf` in `crates/vike-ops/tests/layer_gate.rs`'s TIERS: a pure leaf with no vike-*
+# dependency of its own. It is not part of the product's architecture at all — nothing in the
+# workspace may depend on it normally, and the one edge that exists (vike-ops, dev-only) is a test
+# edge that the layer gate exempts by construction.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+serde_json = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. Cargo binds `[workspace.lints]` only
+# to members that opt in, so a crate without these two lines is silently outside the policy —
+# `crates/vike-ops/tests/unsafe_and_toolchain_gate.rs` is what refuses that. This crate is unsafe-free.
+[lints]
+workspace = true

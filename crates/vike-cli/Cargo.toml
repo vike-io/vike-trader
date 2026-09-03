@@ -1,0 +1,161 @@
+[package]
+name = "vike-cli"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — the unified, DataFusion-free command-line surface over the LIGHT client crates (git-style subcommands). First subcommand `backtest` = the compute-to-data offload: ship a profile's TOML to a remote vike-datahub server (the CI box, over an SSH tunnel) and print the report, with NO DataFusion in this side's build graph. sweep/walkforward/trade/repl are future siblings. Links only vike-datahub-client, so it rides the FAST CI lane."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `daemon` — a headless top-of-graph binary: nothing may depend on it.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 65
+
+[dependencies]
+# The LIGHT client half of the data-service: `DatahubClient` (the blocking RPC client) over the wire
+# proto. DataFusion-FREE by construction (it depends on vike-data DEFAULT features = the HistStore
+# TRAIT only), which is the whole point — this CLI links it and inherits none of the Arrow/DataFusion
+# weight. No concrete backend, no vike-backtest, no engine crates.
+vike-datahub-client = { path = "../vike-datahub-client" }
+# The typed settings model + layered loader (settings unification, Phase 5). The dispatcher refuses
+# a REMOVED environment variable before any subcommand runs, and resolves the POLICY ceiling
+# `max_notional_per_order` from `<project>/settings/policy.toml` for the two order-write surfaces'
+# preview guardrail. Pure-Rust leaf (vike-model + serde + toml) — the CLI stays DataFusion-free and
+# on the fast lane.
+vike-config = { path = "../vike-config" }
+# The STARTUP SEQUENCE's one owner: refuse a removed variable, resolve `<project>/settings` ONCE,
+# load the settings — the same order `vike-app`, `vike-tradehub` and `vike-recorder` run, which this
+# dispatcher used to carry its own copy of.
+#
+# ⚠ It links NO logging, NO transport and NO DataFusion, and that is the whole reason this edge is
+# safe here: it takes the environment as a parameter (so it adds no `Layer::Library` row) and it
+# takes the CREDENTIAL LOADER as a function (so it never reaches for `vike_bridge_core`, which owns
+# the ureq/tungstenite/rustls stack). Its closure is vike-config + vike-secrets + vike-model +
+# vike-buildinfo, every one of which this crate ALREADY links — so this edge adds no package at all,
+# the same test every other dependency in this manifest is held to. A `vike-log` edge inside it
+# would have added 43. `crates/vike-boot/tests/dependency_floor.rs` is the gate.
+vike-boot = { path = "../vike-boot" }
+serde_json = { workspace = true }   # pretty-print the report JSON the server returns (backtest cmd)
+# `backtest --script <s.rhai>`: parse the profile TOML and inject the script's source into
+# `[strategy.params].src`, so an AUTHORED Rhai strategy ships self-contained to the (possibly
+# remote) datahub server. Pure-Rust, DataFusion-free — keeps this CLI on the fast lane.
+toml = { workspace = true }
+# `backtest --list-params --script <s.rhai>` + the `mcp discover_params` tool: discover a Rhai
+# script's tunable `param(name, default)` knobs OFFLINE (no server round-trip). vike-script is
+# pure-Rust (rhai + vike-model + vike-indicators), so the CLI stays native-dep-free + DataFusion-free.
+vike-script = { path = "../vike-script" }
+# The `indicators` subcommand and the `mcp list_indicators` tool: the indicator METADATA (label,
+# category, parameters with defaults, output lines) joined onto the host-bound name set
+# `vike_script::RHAI_INDICATORS`. It supplies the METADATA, never the roster — a listing built from
+# `registry()` alone would advertise names the Rhai host does not bind, and a script calling one of
+# those compiles and then fails on every bar. Pure-Rust (vike-model only) — DataFusion-free /
+# fast-lane.
+vike-indicators = { path = "../vike-indicators" }
+# The `mcp` LIVE-CONTROL trade tools: RemoteControlHandle (write WireCommands) + RemoteCoreHandle
+# (read WireSnapshot) to a running vike-tradehub node. The LIGHT wire crate — std + hmac/sha2 + the
+# framing, NO async / bridge / transport stack — so the CLI stays DataFusion-free / fast-lane.
+vike-tradehub-client = { path = "../vike-tradehub-client" }
+# The `trade` interactive REPL: a pure-Rust line editor (history + in-line editing) for a human at a
+# terminal driving a running vike-tradehub node. Not a transport/crypto crate — stays fast-lane.
+rustyline = { workspace = true }
+
+# `config show`: the `settings::SETTINGS` registry — the workspace-wide catalog of every environment
+# variable that is read, which this command resolves against the process env and the workspace
+# `.env` to answer "where did this value come from?" (settings-unification Phase 0).
+#
+# ⚠ `default-features = false` is LOAD-BEARING, not tidiness. vike-ops' default `full` feature
+# carries vike-core -> vike-exec, vike-data, and vike-alerting's `workspace-env` edge onto
+# vike-bridge-core — i.e. ureq+rustls and tungstenite, the whole venue transport stack — into a CLI
+# whose entire identity is being light and DataFusion-free. Without it, vike-ops is `settings` +
+# `scan` + `shutdown`: std-only, plus vike-model, which this crate ALREADY links through
+# vike-script/vike-indicators. So this edge adds no new external crate at all. The split's full
+# argument lives in vike-ops' own manifest.
+vike-ops = { path = "../vike-ops", default-features = false }
+# `config show`: the workspace's ONE `.env` authority — `workspace_dotenv_path` +
+# `load_workspace_dotenv`. A provenance tool MUST read that store through the same loader the rest of
+# the workspace uses; a SECOND `.env` parser would drift from the first and nothing would catch it,
+# which is the exact failure the settings-unification program exists to remove.
+#
+# ⚠ `default-features = false` is LOAD-BEARING, exactly as on vike-ops above. The default `full`
+# feature carries the transport/signing half — ureq+rustls, tungstenite, hmac/sha2/hex/base64,
+# rust_decimal and vike-exec. Without it this crate is `credentials` and its pure siblings: std +
+# vike-model + serde_json + tracing, ALL of which vike-cli already links transitively. So this edge,
+# too, adds NO new external crate. See vike-bridge-core's own manifest for the split's argument.
+vike-bridge-core = { path = "../vike-bridge-core", default-features = false }
+
+# The `secrets` subcommand and the settings-directory walk: the credential store
+# `<project>/settings/secrets.env` and the reader for it. Deliberately linked HERE rather than
+# reaching for `vike-bridge-core` (the reader's historical home): `vike-secrets` has ZERO
+# dependencies and no transport stack, so this DataFusion-free fast-lane CLI stays free of
+# ureq/tungstenite/rustls and the edge adds no package at all.
+#
+# The dispatcher ALSO reads it for the two vike-tradehub NODE KEYS: the daemon takes them from this
+# store, so a client that only ever looked at `std::env::var` reported "nothing to do" on a box
+# where `vike-cli secrets list` showed both keys present.
+vike-secrets = { path = "../vike-secrets" }
+
+# The BUILD IDENTITY `--version` prints: the git commit this binary came from, whether that tree was
+# dirty, when it was built and with which toolchain. Same argument as `vike-secrets` directly above
+# — ZERO dependencies, so this DataFusion-free fast-lane CLI pays nothing for it, while `vergen` or
+# `built` would each drag a build-graph tree in to answer the same question.
+vike-buildinfo = { path = "../vike-buildinfo" }
+
+# The coid MINT for the two order-write surfaces (`trade`, `mcp`): `ClientOrderIdGenerator` —
+# `<8-hex-session><seq>`, the SAME generator and the SAME wire form the live core mints with. A
+# vike-tradehub node REFUSES a remote submit with an empty `client_order_id` (`lower_command`'s
+# idempotency policy), so a client of that protocol must PRE-MINT one; before this the `trade` REPL
+# could not place an order at all.
+#
+# ⚠ vike-model, NOT vike-exec (the generator's historical home — it moved down for exactly this
+# reason). vike-exec would have added tokio `rt-multi-thread` + core_affinity + ustr + indexmap to a
+# CLI whose entire identity is being light, DataFusion-free and on the FAST lane. vike-model is
+# already in this crate's graph through vike-script / vike-indicators / vike-config / vike-ops /
+# vike-bridge-core / vike-datahub-client, so naming it directly adds NO package at all — the same
+# test every other edge in this manifest is held to.
+vike-model = { path = "../vike-model" }
+
+
+[dev-dependencies]
+# End-to-end loopback tests: drive the REAL vike-datahub `serve` over a `MemHistStore` on an
+# ephemeral port and run the SHIPPED `vike-cli` bin against it (CARGO_BIN_EXE_vike-cli). DEV-deps
+# only — the CLI library graph never depends on the server, so it stays light and DataFusion-free.
+# vike-datahub's vike-backtest edge is `hist-replay` (DataFusion-free), so even the test build pulls
+# no Arrow/DataFusion tree.
+vike-datahub = { path = "../vike-datahub" }
+# The DataFusion-free in-memory `HistStore` double the loopback server runs over (vike-data's
+# `test-support` feature).
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# `tests/trade_node_e2e.rs`: the SAME loopback pattern one layer up — a REAL paper vike-tradehub
+# node (`vike_run::build_paper_maker_core` + `vike_tradehub::{server, publish}`, exactly the harness
+# `crates/vike-tradehub/tests/control_roundtrip.rs` uses) on an ephemeral port, with the SHIPPED
+# `vike-cli trade` bin driven against it over a pipe. No creds, no venue, no external network — the
+# paper mount has no feed, so the only orders in the book are the ones the REPL places. It has to be
+# THIS crate's test: `CARGO_BIN_EXE_vike-cli` exists only here.
+#
+# DEV-deps, so the CLI's own graph stays light and DataFusion-free; both crates are already in the
+# CI roster, so the marginal cost is linking one more test binary.
+vike-tradehub = { path = "../vike-tradehub" }
+vike-run = { path = "../vike-run" }
+# The throwaway `<project>/settings/` the e2e test points VIKE_SETTINGS_DIR at — a store holding
+# obviously-fake DUMMY-* node keys, so the test proves the store path without ever touching a real
+# credential file. `tests/init_cli.rs` uses it one level over, for a throwaway `user_data/` to
+# scaffold into.
+tempfile = "3"
+# `tests/init_cli.rs` mounts every Rhai strategy `vike-cli init` ships through the REAL
+# `vike_script::RhaiStrategy` over vike-model's shared `MockBroker`, drives bars through it and
+# asserts an order reaches the broker.
+#
+# ⚠ This is the gate behind "the shipped examples actually run", and a COMPILE check is not that
+# gate: Rhai resolves function names at CALL time, so a script naming a misspelled indicator — or
+# any name outside `vike_script::RHAI_INDICATORS`, the set the host registers — compiles perfectly
+# and then errors on every single bar, self-disabling after the consecutive-error cap. The strategy
+# would look mounted and silently never trade, which is exactly the failure a shipped example must
+# not teach.
+#
+# A dev-dep FEATURE on a crate this package ALREADY links, so it adds no package to the graph, and
+# the shipped binary never compiles the mock (`test-support` is `#[cfg]`-gated).
+vike-model = { path = "../vike-model", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

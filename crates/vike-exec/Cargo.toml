@@ -1,0 +1,42 @@
+[package]
+name = "vike-exec"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — the live-exec ledger: per-venue Account (fill-fold read-model) + cross-venue Portfolio aggregator. Exact ports of exec/accounting.py + exec/portfolio.py."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+vike-model = { path = "../vike-model" }
+serde = { workspace = true }
+serde_json = { workspace = true }   # recon divergence payloads + snapshot serde
+indexmap = { workspace = true }
+tokio = { workspace = true }        # ingest mpsc (core does blocking_recv off-runtime)
+tracing = { workspace = true }      # coarse per-order spans + fault-transition events (NOT in the hot fold)
+core_affinity = { workspace = true } # opt-in VIKE_PIN_CORES thread pinning (affinity module; OFF by default)
+# ustr is NOT workspace-pinned (only vike-model depends on it directly, with its own
+# `version = "..."` — see crates/vike-model/Cargo.toml); `{ workspace = true }` here would fail
+# workspace resolution since the key doesn't exist under the root Cargo.toml's
+# `[workspace.dependencies]`. recon::resolve interns FillEvent's venue/symbol/commission_asset
+# (Ustr) so this crate needs its own pin, matching vike-model's version (see vike-ibkr's identical
+# comment for the same reason). `serde` is declared HERE and not merely inherited by feature
+# unification through vike-model: `AccountSnapshot` (engine_snapshot.rs) serializes `Ustr` keys
+# directly, so this crate's own build must enable it or the journal DTO stops compiling.
+ustr = { version = "1.1", features = ["serde"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+# Property suite over the ManagedOrder FSM (tests/order_fsm_props.rs): randomized lifecycle
+# folds beside the r5 fixture pins. Workspace-pinned; the root manifest carries the rationale
+# (dev-dependency only — never reaches the shipped binary's SBOM).
+proptest = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

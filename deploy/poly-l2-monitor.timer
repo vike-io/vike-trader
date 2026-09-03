@@ -1,0 +1,18 @@
+# poly-l2-monitor.timer — 5-minute cadence for poly-l2-monitor.service.
+# Install to ~/.config/systemd/user/poly-l2-monitor.timer, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now poly-l2-monitor.timer
+#
+# Unchanged from what the latency box has been running; reproduced here so deploy/ describes the whole unit.
+# The 5-minute period is what the monitor's own 5-minute count window is sized against — changing
+# one without the other changes what the rolling baseline means.
+
+[Unit]
+Description=Run poly-l2-recorder health check every 5 min
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=poly-l2-monitor.service
+
+[Install]
+WantedBy=timers.target

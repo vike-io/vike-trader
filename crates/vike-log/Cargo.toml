@@ -1,0 +1,44 @@
+[package]
+name = "vike-log"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "Workspace logging init: layered tracing subscriber (pretty console + non-blocking JSON rolling file). No domain deps."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `leaf` — a pure leaf with no vike-* dependency of its own.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+# BUILD-GRAPH EDGE ONLY (see root Cargo.toml `idna_adapter` rationale) — not an API dependency. This
+# single reference is what binds the workspace `idna_adapter` requirement into resolution at all.
+# ⚠ It does NOT currently select the stub back end: the workspace requirement is `~1.2`, the ICU4X
+# stream — the root manifest records how the `~1.0` pin was reverted. Held via
+# `use idna_adapter as _;` in lib.rs.
+idna_adapter = { workspace = true }
+
+[dev-dependencies]
+log = { workspace = true }
+tracing-log = { workspace = true }
+# Already a normal dependency above — repeated here because an INTEGRATION test links this crate as
+# an external library and does NOT inherit its normal deps. `tests/log_retention.rs` builds the
+# appender exactly as `init` does, so the retention test exercises the real construction path rather
+# than an imitation of it. Adds nothing to the dependency graph.
+tracing-appender = { workspace = true }
+# The scratch guard `tests/unwritable_log_dir.rs` builds its unopenable destination inside. Not a
+# workspace dep — this is the per-crate convention ~21 other crates already use (see
+# `crates/bridges/polymarket/Cargo.toml`'s note). Dev-only, so nothing reaches a shipped binary,
+# and the crate stays the pure `layer = 15` leaf it declares above: tempfile is third-party, not a
+# `vike-*` edge. It replaces a hand-rolled pid+nanos temp path that leaked 423 directories into
+# the CI box's `/tmp` and flaked on pid reuse across that box's two test users.
+tempfile = "3"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

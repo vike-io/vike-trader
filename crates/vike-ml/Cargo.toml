@@ -1,0 +1,89 @@
+[package]
+name = "vike-ml"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — the general-purpose gradient-boosted-model crate. `train` DRIVES the upstream LightGBM CLI binary as a child process (config in, model text out — no FFI, no linked library); `infer` is PURE RUST, parsing LightGBM's v4 text model and walking the trees itself, so a live trading binary predicts with no native dependency at all. `fit_cache` is the content-addressed cross-run cache over the learner seam. ONE vike dependency (vike-model) plus three crates already linked into every binary in this workspace: the SHA-256/hex pair the fit cache needs, and `libm`, whose portable `log`/`exp` keep a log-loss and a probability bit-identical across MSVC and glibc. ONE cargo feature, `test-support`, which a shipped build never compiles. Nothing in its API names a strategy or a study."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+# The ONLY vike dependency, by design: `py_sum` for metrics::binary_logloss.
+# ⚠ The TREE WALK deliberately does NOT use it — see infer.rs's `raw_score`.
+vike-model = { path = "../vike-model" }
+# ⚠ THE THREE NON-VIKE DEPENDENCIES, and this crate's description used to say it had none. This
+# heading read "THE TWO" until `libm` joined it on 2026-08-26; the count is corrected here rather
+# than the sentence rewritten, because the interesting part is that this crate's zero-dependency
+# headline has now expired twice for two unrelated reasons, each argued below.
+#
+# The first two arrived with `src/fit_cache.rs`: a content-addressed fit cache IS a hash, and the
+# framing it needs — a domain-separated transcript that hashes each part's own digest — cannot be
+# faked with anything cheaper. ALL THREE are ALREADY linked into every binary in this workspace
+# (sha2/hex by vike-bridge-core's signer, libm by vike-model's `fair::p_up` and by vike-options'
+# greeks), so none is a new crate in the merge gate's audit surface (`cargo deny --all-features`)
+# and none is a second spelling of anything: the root Cargo.toml pins one SHA-256, one hex encoder
+# and one libm for the whole tree.
+#   sha2 — the key transcript and every digest a learner's `fit_identity` builds.
+sha2 = { workspace = true }
+#   hex — entry file names only (`<key hex>.score`); the same crate the signers already use.
+hex = { workspace = true }
+#   libm — `libm::log` in `crates/vike-ml/src/metrics.rs`'s `binary_logloss` and `libm::exp` in
+#   `crates/vike-ml/src/infer.rs`'s `GbdtModel::predict_proba` — the crate's only two
+#   transcendental call sites. IEEE 754 requires `+`, `-`, `*`, `/` and `sqrt` to be correctly
+#   rounded and requires NOTHING of `ln`/`exp`, so an `f64` METHOD call reaches whichever libm the
+#   PLATFORM ships — MSVC's CRT on the Windows dev box, glibc on the CI box and on every CI runner — and
+#   the two disagree in the last bit. The `libm` CRATE is the same source everywhere, which is what
+#   makes a probability out of this crate a property of the model rather than of the box.
+#   `docs/decisions/0032-transcendentals-come-from-the-libm-crate-not-the-platform.md` is the
+#   verdict; its Consequences section names this crate as one of the not-yet-converted, and those
+#   two sites are the whole of its share, so this edge is complete rather than a beachhead.
+libm = { workspace = true }
+
+[features]
+# The shared learner DOUBLE (`src/test_support.rs`: ScriptedLearner/ScriptedModel) for downstream
+# crates' tests — the only way code that fits models is testable on a box with no LightGBM binary,
+# which is every Windows box and every CI runner. EMPTY array and no `dep:` entry: the double is
+# std-only, so THE FEATURE adds no dependency to the four above it. (⚠ This sentence used to read
+# "so this crate's `[dependencies]` is still `vike-model` and nothing else" — a claim about the
+# TABLE rather than about the feature, and one that stopped being true the moment `sha2`/`hex`
+# landed and is now wrong by three. The point it was making — that turning `test-support` on costs
+# no crate — survives intact and is what it now says.) Gated
+# `#[cfg(any(test, feature = "test-support"))]`, so a shipped build compiles NONE of it — the
+# `vike-data`/`vike-model` test-support model, and the reason there is no self-referential
+# dev-dep anywhere but the line below.
+#
+# ⚠ This table was DELIBERATELY EMPTY, and the argument for keeping it so has one premise that
+# turned out to be false. It ran: a feature needs a CI lane
+# (crates/vike-ops/tests/feature_lane_coverage.rs), the lane is then forced into the justfile's
+# clippy/features recipes (crates/vike-ops/tests/local_gate_mirrors_ci.rs), and the Windows dev box
+# could no longer run `just ci` at all. The premise is that a feature's only route to a lane is a
+# NEW arm in scripts/ci_feature_suite.sh. It is not: a dev-dependency edge activates a feature for
+# everything built alongside it (resolver-2 unification — that gate's rule 3), which is how
+# `vike-bridge-core/test-support` and `vike-data/test-support` are covered today. So this feature
+# rides the DEFAULT roster lane through the dev-dep below: no suite arm, no justfile recipe, no
+# `xtask/src/ci/tables.rs` trigger set, and `just ci` on the Windows box is untouched. It is also
+# strictly stronger than a check-only lane would have been, because the roster lane RUNS the tests.
+test-support = []
+
+[dev-dependencies]
+# ⚠ NOT a new dependency — `vike-model` is already this crate's ONE `[dependencies]` entry above.
+# It is repeated here because an integration test links the crate under test plus its DEV-deps only,
+# never the lib's normal deps, and `crates/vike-ml/tests/` needs `vike_model::scratch::ScratchDir`:
+# the std-only, self-deleting scratch guard that replaced the pid-keyed `env::temp_dir()` paths this
+# crate's suites used to leak (44,840 directories measured on the CI box, 2026-08-25). Nothing new joins
+# `Cargo.lock` or the `cargo deny --all-features` graph, so the plan's zero-dependency constraint is
+# untouched — which is also why this is `ScratchDir` and not `tempfile`.
+vike-model = { path = "../vike-model" }
+# Self-referential dev-dep, the `vike-bridge-core` idiom: it turns `test-support` on for THIS
+# crate's own `tests/` targets (an integration test compiles the lib WITHOUT `cfg(test)`, so the
+# double is visible to it only through the feature), and it is what puts the feature on a CI lane —
+# see the comment above. Never affects a normal build; `crates/vike-ops/tests/layer_gate.rs`
+# discounts a self-edge in both directions.
+vike-ml = { path = ".", features = ["test-support"] }
+
+[lints]
+workspace = true

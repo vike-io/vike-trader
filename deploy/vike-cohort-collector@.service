@@ -1,0 +1,165 @@
+# systemd TEMPLATE unit for the data.vike.io cohort collector, in the ONE-PROJECT-FOLDER shape.
+# `%i` is the ASSET (`vike-cohort-collector@BTC`). Driven by deploy/vike-cohort-collector@.timer.
+# See docs/ops/cohort-collector.md for the runbook, the polled set and the metered-spend arithmetic.
+#
+# ⚠ THIS IS THE ONLY SCHEDULED SHAPE THE COLLECTOR HAS, AND THAT IS A CORRECTNESS PROPERTY, NOT A
+# PREFERENCE. `kind=cohort` idempotency is BATCH-level on the commit key
+# (crates/vike-data/src/cohort_rec.rs's `CohortFetch`), so re-running the SAME command writes 0 rows
+# while two OVERLAPPING windows are two different keys and every hour they share lands TWICE. A
+# trailing `--days N` SLIDES with the clock, so on a timer it is two keys over one tape on every
+# firing. `--schedule` derives whole COMPLETE UTC days off a fixed grid and accepts no boundary at
+# all — crates/vike-backfill/src/vikedata/schedule.rs's `scheduled_windows` is the whole policy, and
+# crates/vike-backfill/src/bin/vikedata_backfill.rs's `resolve_plan` REFUSES
+# --days/--start/--end/--axis/--grading beside it, so this unit cannot be edited into the unsafe
+# shape without the binary rejecting the line. Do not "just add --days" here.
+#
+# ⚠ THE POLLED SET IS DELIBERATELY NARROW AND IS DECLARED IN CODE, NOT HERE. `--schedule` polls
+# crates/vike-backfill/src/vikedata/schedule.rs's `POLLED` and nothing else; every ladder it leaves
+# out is a row in that file's `DEFERRED` carrying the measurement that deferred it. The two that
+# bite, restated only as a pointer so this file cannot become a second, rotting copy of them: the
+# TIER axis is not deployed upstream, and the `realized-pit` grading is frozen — each would be one
+# guaranteed-useless METERED request per ladder per firing, forever. That is also why `--axis` and
+# `--grading` are refused above rather than merely unused: a unit that retyped a ladder would be a
+# second copy of that decision in the place least likely to be revisited.
+#
+# ⚠ EVERY PATH BELOW IS THE PLACEHOLDER PROJECT ROOT /srv/vike-<unit>. It is an example,
+# not a requirement. Substitute your own root everywhere in the installed copy and check nothing was
+# missed — the same recipe deploy/vike-recorder.service prescribes:
+#
+#   R=/your/project/root
+#   sed "s,/srv/vike-<unit>,$R,g" deploy/vike-cohort-collector@.service > /tmp/u.service
+#   grep -n /srv/vike-<unit> /tmp/u.service    # must print NOTHING
+#   sudo install -Dm644 /tmp/u.service /etc/systemd/system/vike-cohort-collector@.service
+#   sudo install -Dm644 deploy/vike-cohort-collector@.timer \
+#        /etc/systemd/system/vike-cohort-collector@.timer   # …after the same substitution
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vike-cohort-collector@BTC.timer
+#
+# ⚠ A SYSTEM install is the shape to prefer, and add `User=`/`Group=` naming the account that owns
+# the project root — a collector reading a public metrics API has no business running as root. Under
+# a `systemd --user` manager on a stock Ubuntu box the sandbox directives at the bottom are applied
+# as NO-OPS (measured; docs/ops/tradehub-the CI box.md has the probe), so a --user install gives up the
+# whole sandbox silently.
+#
+# ⚠ IT MAY SHARE A PROJECT FOLDER WITH A RECORDER, and on the CI box it does. The store's locking is
+# PER-SERIES (crates/vike-data/src/datafusion_hist.rs's `SeriesLock`), and `kind=cohort` series are
+# disjoint from every series a recorder writes, so the two writers do not contend. What they DO
+# share is the write grant below: point this unit's root at the same folder only if you are content
+# for both to write the same `data/` tree.
+#
+# Build with the `vikedata` feature — a default vike-backfill build does not contain this bin at all
+# (crates/vike-backfill/Cargo.toml's `required-features`):
+#   cargo build --release -p vike-backfill --features vikedata --bin vikedata_backfill
+
+[Unit]
+Description=data.vike.io cohort metrics for %i into kind=cohort
+After=network-online.target
+Wants=network-online.target
+# The failure notifier, attached the same way deploy/poly-l2-monitor.service attaches it. A
+# `Type=oneshot` that exits non-zero enters the FAILED state, which is what `OnFailure=` keys on —
+# and this bin DOES exit non-zero: any ladder of any planned day that failed makes the run fail
+# (crates/vike-backfill/src/bin/vikedata_backfill.rs's `main`), so a stalled upstream grading or an
+# expired API key is a page rather than a line nobody reads.
+OnFailure=vike-notify@%n.service
+
+[Service]
+# One run, then exit. There is no daemon here and no stop story: the process holds no venue
+# connection, places no orders and writes one batch per ladder per day. `systemctl stop` on a run in
+# flight loses at most the in-flight batch, which the next firing re-fetches while --catch-up covers
+# its day.
+Type=oneshot
+
+# ⚠ UNCOMMENT AND FILL THESE IN FOR THE SYSTEM INSTALL THE HEADER PRESCRIBES. Commented rather than
+# guessed because the account is per-deployment and a wrong name is a unit that will not start; but
+# a system unit with NEITHER runs as root, and then ReadWritePaths= below hands root the store.
+#User=
+#Group=
+
+WorkingDirectory=/srv/vike-<unit>
+
+# ⚠ THE ARGUMENT LIST IS THE POLICY. `--schedule` is the grid; `--catch-up 3` also re-attempts the
+# two preceding days so ONE missed firing (a reboot, a network blip, an upstream stall) heals itself
+# on the next one. The cost is arithmetic and it is the reason the number is small: a firing issues
+# `catch-up x POLLED.len()` requests against a METERED endpoint whatever it finds, because a spent
+# commit key is only discoverable AFTER the fetch — the store answers "0 rows written", never "do
+# not bother". At 3 days x 3 polled ladders that is 9 requests per asset per day.
+#
+# `--store` is passed EXPLICITLY rather than left to $VIKE_HIST_STORE: a deployment has no checkout,
+# and a store root that depends on an environment variable this unit does not set is one
+# `systemd-run` away from writing the tape somewhere nobody is looking. It must stay inside the
+# `data` grant at the bottom.
+ExecStart=/srv/vike-<unit>/bin/vikedata_backfill --asset %i --schedule --catch-up 3 --store /srv/vike-<unit>/data/hist
+
+# --- PRE-FLIGHT: refuse a broken configuration instead of collecting nothing in silence -----------
+# The API key comes from the CREDENTIAL STORE and an absent one is a refusal, not a fallback — so a
+# settings tree that resolves to nothing is a run that exits non-zero every day for a reason that
+# looks like an outage. `vike-cli config check` resolves the SAME settings directory through the
+# SAME loader (crates/vike-config/src/load.rs's `load`) and makes the EXIT CODE the product, so a
+# broken settings file, an unknown key or a REMOVED environment variable fails the unit here with a
+# message about the configuration.
+#
+# ⚠ Deliberately NOT `--strict` and NO leading `-`: `--strict` promotes warnings that must not be
+# refusals (a 0644 secrets.env — crates/vike-secrets/src/store.rs's `PermissionWarning`), and a
+# leading `-` makes a failed pre-check non-fatal, i.e. deletes this line while appearing to have it.
+#
+# ⚠ IT NEEDS A SECOND BINARY IN bin/, or systemd fails the unit with status=203/EXEC:
+#   cargo build --release -p vike-cli --bin vike-cli
+#   install -m755 target/release/vike-cli /srv/vike-<unit>/bin/vike-cli
+ExecStartPre=/srv/vike-<unit>/bin/vike-cli config check
+
+# --- turn the trace FILE log DOWN -----------------------------------------------------------------
+# RUST_LOG/VIKE_LOG filter the CONSOLE only; the file layer defaults to `trace` and captures the
+# log->tracing bridge from DataFusion/arrow, which this bin links for the store. A backfill once
+# wrote 341 GB that way and nearly filled the disk hosting a live trading node.
+Environment=VIKE_LOG_FILE_LEVEL=warn
+# ⚠ Deliberately NO VIKE_LOG_DIR — unset, the project layer resolves the rolling log to
+# <project>/settings/state/logs, which is inside the write grant below.
+
+# --- WHERE SETTINGS AND CREDENTIALS LIVE ---------------------------------------------------------
+# `<project>/settings/` holds policy.toml, config.toml, preferences.toml, flags.toml, secrets.env and
+# state/. A DEPLOYED box has a BINARY and no source checkout, so the project walk needs the
+# `settings/` marker to exist at all:
+#   install -d -m700 /srv/vike-<unit>/settings /srv/vike-<unit>/settings/state
+#
+# VIKE_API_KEY goes in `<project>/settings/secrets.env`, which this unit deliberately does NOT load
+# as an EnvironmentFile — the bin opens the credential store itself
+# (crates/vike-bridge-core/src/credentials.rs's `load_workspace_secrets_from_env`), steered by the
+# line below. The store must never reach the process environment; deploy/vike-recorder.service and
+# crates/vike-ops/tests/deploy_layout_gate.rs carry the full argument.
+Environment=VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings
+
+# Operator tunables (NOT credentials) from a plain env file at the PROJECT ROOT; the `-` makes it
+# optional. VIKE_API_BASE belongs here if this deployment points at a non-default API root.
+EnvironmentFile=-/srv/vike-<unit>/.env
+
+# Hardening: the collector needs no privileges. It makes outbound HTTPS GETs and writes its store +
+# log. The set below is deploy/vike-recorder.service's, which was MEASURED against the real binaries
+# on the CI box (2026-08-17, systemd 255) — see crates/vike-ops/tests/deploy_layout_gate.rs's
+# REQUIRED_HARDENING for what each line is and why PrivateNetwork= will never join it.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+# ONE grant LINE naming TWO paths: the rolling log at `<project>/settings/state/logs` and the store
+# at `<project>/data/hist` (the `--store` above). Neither reaches a binary this unit runs nor the
+# settings directory that configures it — anything writable by a unit must be data, never code.
+ReadWritePaths=/srv/vike-<unit>/settings/state /srv/vike-<unit>/data
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @module @reboot @swap @raw-io @debug @clock @cpu-emulation
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0077

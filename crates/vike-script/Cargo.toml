@@ -1,0 +1,26 @@
+[package]
+name = "vike-script"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false
+description = "Rhai-scripted strategies: run a Rhai script as a vike-model Strategy<B> (Studio SP1)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `engine` — a runtime / simulation / transport core over the domain crates.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 30
+
+[dependencies]
+vike-model = { path = "../vike-model" }
+vike-indicators = { path = "../vike-indicators" }
+rhai = { workspace = true }
+indexmap = { workspace = true }
+tracing = { workspace = true } # fail-safe warn/error on a runtime script error (RhaiStrategy::run_hook)
+
+[[bench]]
+name = "eval_overhead"
+harness = false
+
+[lints]
+workspace = true

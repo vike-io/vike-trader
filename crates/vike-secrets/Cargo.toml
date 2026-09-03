@@ -1,0 +1,28 @@
+[package]
+name = "vike-secrets"
+version = "0.1.0"
+edition = "2021"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — the credential store: ONE file, `<project>/settings/secrets.env`, resolved at runtime by walking up for the project root. ZERO dependencies at all — no vike-* crate and no external crate — so vike-bridge-core (which owns the transport stack) and vike-cli (DataFusion-free, transport-free, FAST CI lane) both link it without dragging the other in."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `leaf` — a pure leaf with no vike-* dependency of its own.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+# Deliberately EMPTY. Reading a `KEY=value` file and walking up for a project root need nothing but
+# `std`, and the empty list is the property this crate exists to hold: both consumers link it
+# without pulling in anything, so nothing here can widen the `cargo deny --all-features` surface.
+
+[dev-dependencies]
+# TEST-ONLY. The project-root walk must be exercised against a real directory tree; a pure-string
+# test would only re-assert `join`. Already in the lockfile (vike-config and others use it), so it
+# adds ZERO packages to the `cargo deny` surface — and being a dev dep it never reaches a shipped
+# binary, so the crate's zero-dependency runtime graph is unchanged.
+tempfile = "3"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true
