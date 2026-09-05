@@ -1,0 +1,33 @@
+[package]
+name = "vike-ui-theme"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "The canonical vike egui UI theme leaf crate: the app color palette (theme.py port) plus the deliberately-separate dark trading-terminal palette (palette::trading, shared by vike-cockpit/vike-panels), the font-weight RichText helpers, and the byte/count/thousands formatters. Consumed by every GUI crate so palette + fmt values live in exactly one place — the drift the historical 1-bit accent bug (62,224,137 vs 62,224,138) proved this crate must end. Dep: egui only."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `ui-foundation` — the egui foundation leaf — everything above here links egui.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 70
+
+[features]
+# The workspace's "one owned double behind a `test-support` feature" convention (CLAUDE.md): a
+# DEFAULT build compiles none of `src/frame_sanity.rs`, `src/frame_record.rs` or
+# `src/pixel_liveness.rs`. Consumers take it as a dev-dependency with this feature on, which is
+# what makes the shared frame-geometry assertion, the tessellated-frame golden recorder and the
+# png-export harnesses' pixel-liveness floors cost a default build nothing while every GUI crate's
+# test/example target can reach them. It pulls in NO new dependency — frame_sanity/frame_record are
+# pure `egui`, the one dep this crate already has, and pixel_liveness is pure std (it reads a raw
+# RGBA buffer, so even `image` stays out) — so the cargo-deny surface, the lockfile and the layer
+# gate are all unchanged by it.
+test-support = []
+
+[dependencies]
+# egui only — this is a leaf crate below vike-chart/vike-connections/vike-data-manager/vike-app-core/
+# vike-app, so the cargo-deny surface is unchanged (egui is already workspace-pinned).
+egui = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

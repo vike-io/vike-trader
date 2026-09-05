@@ -1,0 +1,38 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.vike-io/vike-trader",
+  "title": "vike-cli",
+  "description": "Backtest, validate and execute trading strategies behind a mandatory two-call preview gate.",
+  "version": "0.1.0",
+  "websiteUrl": "https://vike.io/docs/ai/trader/setup",
+  "repository": {
+    "url": "https://github.com/vike-io/vike-trader",
+    "source": "github"
+  },
+  "_vike": {
+    "comment": "OUR block, not the registry's. `tools` is held equal to `tools_spec` — ORDER INCLUDED, because that is the order tools/list returns — by `the_registry_manifest_lists_every_tool_this_server_serves` in crates/vike-cli/src/cmd/mcp.rs, which also holds `version` equal to the crate version the server reports at initialize. It lives at the top level rather than under `_meta` deliberately: the schema's own `_meta` slot is keyed by an upstream-chosen name (`io.modelcontextprotocol.registry/publisher-provided`), and a drift gate keyed on an upstream field stops checking the day that field is renamed. The schema sets no `additionalProperties: false` on ServerDetail, so this validates; if a future revision does, this block moves into that `_meta` slot and the gate's pointer moves with it.",
+    "command": "vike-cli mcp [--addr <datahub host:port>] [--node <vike-tradehub host:port>]",
+    "transport": "stdio",
+    "write_tools_are_preview_gated": "Every tool below carrying destructiveHint executes ONLY against a preview_token this server issued, unexpired, and bound to the same command. `confirm: true` on its own returns a preview and sends nothing. The token is not a secret: it proves a preview HAPPENED FOR THIS COMMAND — a sequence, not an authorization.",
+    "packages_deliberately_absent": "No `packages` entry: this server ships as a Rust binary from the repository's own GitHub releases, not from npm/pypi/oci/nuget/mcpb, and naming a registry artifact that does not exist would be a guess. Choosing a distribution is part of the (unmade) decision to publish this listing at all.",
+    "tools": [
+      "validate_strategy",
+      "discover_params",
+      "list_templates",
+      "list_indicators",
+      "run_backtest",
+      "run_sweep",
+      "run_walk_forward",
+      "list_strategies",
+      "list_series",
+      "node_snapshot",
+      "submit_order",
+      "cancel_order",
+      "modify",
+      "flatten",
+      "market_exit",
+      "mass_cancel",
+      "set_trading_state"
+    ]
+  }
+}

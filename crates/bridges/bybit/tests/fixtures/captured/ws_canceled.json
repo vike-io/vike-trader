@@ -1,0 +1,72 @@
+{
+  "_provenance": {
+    "captured_at_utc": "2026-07-22T08:55:08Z",
+    "frame_count": 1,
+    "kind": "ws_canceled",
+    "redacted_paths": [],
+    "sanitizer": "vike-bridge-core::capture v1",
+    "source": "bybit V5 linear DEMO (wss://stream-demo.bybit.com/v5/private) — bybit_capture_smoke ladder: rest-LIMIT/cancel + market round-trip (reduce-only flatten), real demo orders, position left flat",
+    "venue": "bybit"
+  },
+  "frames": [
+    {
+      "creationTime": 1784710505148,
+      "data": [
+        {
+          "avgPrice": "0",
+          "blockTradeId": "",
+          "cancelType": "CancelByUser",
+          "category": "linear",
+          "closeOnTrigger": false,
+          "closedPnl": "0",
+          "createType": "CreateByUser",
+          "createdTime": "1784710504824",
+          "cumExecFee": "0",
+          "cumExecQty": "0",
+          "cumExecValue": "0",
+          "cumFeeDetail": {},
+          "feeCurrency": "",
+          "isLeverage": "",
+          "lastPriceOnCreated": "65946.4",
+          "leavesQty": "0",
+          "leavesValue": "0",
+          "marketUnit": "",
+          "orderId": "c9196014-f221-4f7a-9375-7c83aee527f4",
+          "orderIv": "",
+          "orderLinkId": "vtrcapR10504735",
+          "orderStatus": "Cancelled",
+          "orderType": "Limit",
+          "parentOrderLinkId": "",
+          "placeType": "",
+          "positionIdx": 0,
+          "price": "59350.5",
+          "qty": "0.001",
+          "reduceOnly": false,
+          "rejectReason": "EC_PerCancelRequest",
+          "side": "Buy",
+          "slLimitPrice": "0",
+          "slTriggerBy": "",
+          "slippageTolerance": "0",
+          "slippageToleranceType": "UNKNOWN",
+          "smpGroup": 0,
+          "smpOrderId": "",
+          "smpType": "None",
+          "stopLoss": "",
+          "stopOrderType": "",
+          "symbol": "BTCUSDT",
+          "takeProfit": "",
+          "timeInForce": "GTC",
+          "tpLimitPrice": "0",
+          "tpTriggerBy": "",
+          "tpslMode": "UNKNOWN",
+          "triggerBy": "",
+          "triggerDirection": 0,
+          "triggerPrice": "",
+          "updatedTime": "1784710505146"
+        }
+      ],
+      "id": "556453271_BTCUSDT_140717864285516",
+      "topic": "order"
+    }
+  ]
+}

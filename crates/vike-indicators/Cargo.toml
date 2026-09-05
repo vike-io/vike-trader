@@ -1,0 +1,61 @@
+[package]
+name = "vike-indicators"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — the Qt-free indicator framework (one Indicator trait: streaming on_bar + batch vectorize, proven bit-for-bit equal). Faithful f64 extraction of vike-trader-app core/indicators/base.py. Also the STUDY↔STRATEGY seam: `window`'s rolling kernels, `feature::ColumnFeature` (the same streaming-equals-batch contract over a raw numeric column, held by construction rather than by convention), `frame`'s validated (asset, timestamp) panel — where a rolling window crossing an asset boundary is unrepresentable rather than discouraged — the `rolling` blocks that apply a feature across a whole panel, and ONE cargo feature, `test-support`, carrying the parity harness that gates it — which a shipped build never compiles. Depends on vike-model and libm — the latter because this crate's transcendentals (ln/log10/exp/atan) must be PLATFORM-INVARIANT; see the `libm` dependency comment below."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+vike-model = { path = "../vike-model" }
+# ⚠ NOT a convenience — it is the whole reason this crate has a second dependency.
+#
+# IEEE 754 requires `+ - * /` and `sqrt` to be correctly rounded; it does NOT require `ln`,
+# `log10`, `exp` or `atan`. So the PLATFORM's libm decides their last bit, and glibc and the MSVC
+# CRT are each entitled to a different one. MEASURED, not assumed: every indicator here that
+# touches one — `fisher`, `hvol`, `chop`, `linearreg_angle`, `alma`, `pairs::spread`,
+# `pairs::correl_log` — hashed differently on the two boxes. `tests/libm_platform_probe.rs` is
+# that measurement, and its `libm_cross_platform_pin` is the committed gate that now holds the
+# converted values equal on both.
+#
+# The root manifest's own rationale for this crate already names the property being bought:
+# "deterministic across dev-Windows / CI-Linux, unlike a platform libm".
+libm = { workspace = true }
+
+[features]
+# The STUDY↔STRATEGY parity harness (`src/test_support.rs`): given a `feature::ColumnFeature`,
+# assert that the per-bar streaming computation equals the batch matrix computation for the same
+# row, bit for bit. EMPTY array and no `dep:` entry — the harness is std-only, so this crate's
+# `[dependencies]` is still `vike-model` and nothing else. Gated `#[cfg(any(test, feature =
+# "test-support"))]`, so a shipped build compiles NONE of it: the `vike-ml`/`vike-data`/`vike-model`
+# model.
+#
+# ⚠ It is a LIBRARY module rather than a `tests/` file because of WHERE the definitions it checks
+# live. `tests/parity.rs` can iterate `registry()` because this crate owns that roster; a model
+# feature's definition belongs to whoever wrote the study, and
+# `docs/superpowers/specs/2026-08-24-research-engine-user-split-design.md` (R1) puts that source in
+# the author's own tree rather than in this repository. A test binary here could never run on it.
+#
+# Feature-lane coverage rides the DEFAULT roster lane through the self-referential dev-dep below —
+# the `vike-ml`/`vike-bridge-core` idiom — so this adds NO arm to `scripts/ci_feature_suite.sh`, no
+# justfile recipe and no `xtask/src/ci/tables.rs` trigger. See `vike-ml`'s manifest for why that
+# route exists and is strictly stronger than a check-only lane: the roster lane RUNS the tests.
+test-support = []
+
+[dev-dependencies]
+# Self-referential dev-dep, the `vike-ml`/`vike-bridge-core` idiom: it turns `test-support` on for
+# THIS crate's own `tests/` targets (an integration test compiles the lib WITHOUT `cfg(test)`, so
+# the harness is visible to it only through the feature), and it is what puts the feature on a CI
+# lane. Never affects a normal build; `crates/vike-ops/tests/layer_gate.rs` discounts a self-edge
+# in both directions.
+vike-indicators = { path = ".", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

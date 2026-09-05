@@ -1,0 +1,27 @@
+[package]
+name = "vike-panels"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "Shared egui trading widgets (chart-engine-free). The future home for reusable egui panels; today it holds only the DOM (depth-of-market) order-entry ladder + order-flow heatmap, moved verbatim out of vike-chart."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `ui-widget` — an egui widget / engine crate (no eframe/wgpu).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 75
+
+[dependencies]
+vike-model = { path = "../vike-model" } # L2Book/Level/VenueCaps — the only types the DOM paints over
+vike-ui-theme = { path = "../vike-ui-theme" } # palette::trading — the ONE pinned trading-terminal palette (+ dim); ends dom.rs's hand-copied const block (BID/ASK/LAST = trading UP/DOWN/ACCENT; GUI audit F3)
+egui = { workspace = true }
+
+[dev-dependencies]
+# Accessibility-tree tests over the REAL widget (`tests/dom_a11y.rs`). NO wgpu / NO snapshot —
+# `Context::run_ui` is pure CPU, so these run on the GPU-less CI runners like any other test. See
+# the workspace manifest's `egui_kittest` rationale.
+egui_kittest = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

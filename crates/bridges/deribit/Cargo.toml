@@ -1,0 +1,54 @@
+[package]
+name = "vike-deribit"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "Deribit venue bridge — options exec (JSON-RPC-over-WS order transport + private fill stream, no REST/HMAC) plus the keyless public options-chain provider (chain.rs, ports data/options/deribit.py). Moved into crates/bridges/deribit (crate-reorg Phase 3, PR F)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+vike-exec = { path = "../../vike-exec" }
+# shared venue-bridge plumbing (credentials, signer, transport, http, user_data, format, json,
+# ws/rest/klines fragments) — crate-reorg Phase 3 (D4); the direct-path style survives every
+# later venue move unchanged.
+vike-bridge-core = { path = "../../vike-bridge-core" }
+# deribit's read-side chain provider (chain.rs) consumes the venue-free options model/greeks —
+# the layering twin of Python options/deribit.py importing options/{model,greeks}. Deribit is
+# the ONLY crate-reorg bridge that carries a data/options/*.py port (D6 of the vike-options
+# extraction plan): it moved here wholesale as part of the venue's own crate-reorg move.
+vike-options = { path = "../../vike-options" }
+# PIT recording (opt-in): `DeribitRest::with_properties_recorder` records the parsed instrument
+# grid into the PropertiesRecorder store, and `DeribitOptionsProvider::with_chain_recorder`
+# records fetched option chains into the ChainRecorder `kind=chain` store (chain.rs). Default
+# features only — the DataFusion tree stays behind hist-datafusion and must NOT enable.
+vike-data = { path = "../../vike-data" }
+# venue catalog contribution (catalog.rs): keyless public get_instruments → Instrument for the
+# chart's cross-venue Symbol picker — mirrors binance/bybit/okx's catalog.rs.
+vike-catalog = { path = "../../vike-catalog" }
+serde_json = { workspace = true }
+indexmap = { workspace = true }     # option-instrument map keyed by instrument name (client.rs)
+ureq = { workspace = true }         # blocking REST (rustls, no OpenSSL) — chain.rs book-summary fetch
+tungstenite = { workspace = true }  # blocking WS: order transport (transport.rs) + fill pump (user_data.rs)
+tracing = { workspace = true }      # adapter diagnostics
+
+[dev-dependencies]
+arc-swap = { workspace = true }   # smoke test reads the CoreSnapshot cell
+vike-log = { path = "../../vike-log" }  # dev-only: test_init() for smoke/dev test diagnostics
+# dev-only: smoke tests spawn a real core; the library itself must never depend on vike-core
+# (crate-reorg D3 — bridges depend on exec, not core).
+vike-core = { path = "../../vike-core" }
+# dev-only, test-support feature: the DataFusion-free MemHistStore + PropertiesRecorder test double for
+# the PIT filter-recording wiring test — the normal [dependencies] vike-data entry above stays
+# default-features so the venue's DEFAULT build never pulls DataFusion in.
+vike-data = { path = "../../vike-data", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

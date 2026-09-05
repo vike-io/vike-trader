@@ -1,0 +1,234 @@
+[package]
+name = "vike-app"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "Native egui/wgpu vike-trader app: chart renderer + (in progress) the HFT trading core port."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `app` — the desktop application: the outermost shell.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 90
+
+[dependencies]
+# R5c: the GUI consumes the vt-core runtime (bar cache snapshots + trading core)
+vike-exec = { path = "../vike-exec" }
+# the single-writer live core (runtime/snapshot) the GUI spawns and reads (crate-reorg Phase 2, D3)
+vike-core = { path = "../vike-core" }
+vike-model = { path = "../vike-model" }
+# The typed settings model + layered loader (settings unification, Phase 5). This binary resolves
+# the POLICY ceiling `max_notional_per_order` (the order-entry preview cap) from
+# `<project>/settings/policy.toml` and refuses to start when the REMOVED `VIKE_MAX_ORDER_NOTIONAL` is still
+# set. A leaf: it pulls in only vike-model + serde + toml, all already in this graph.
+vike-config = { path = "../vike-config" }
+# The STARTUP SEQUENCE's one owner: refuse the removed variable, refuse a credential file that ARMS
+# REAL MONEY, resolve `<project>/settings` ONCE, load it — and hand back the BUILD IDENTITY line
+# this app logs first (which commit it came from; a screenshot of a bug report now names it) and the
+# log HOME off that same walk. This `main` used to spell all of it out, alongside four other roots,
+# and it had the "two walks, two answers" bug the disclosure exists to surface: the rolling log file
+# hung off a second `project_log_dir(&cwd)` call, which is `VIKE_SETTINGS_DIR`-blind.
+#
+# ⚠ It REPLACES the direct `vike-buildinfo` edge (that crate is still in this graph, one hop down,
+# and is still a ZERO-dependency leaf) and it adds no package: its whole closure — vike-config,
+# vike-model, vike-secrets, vike-buildinfo — was already here.
+vike-boot = { path = "../vike-boot" }
+# the universal cross-venue instrument catalog (Instrument/AssetClass/Tab/Catalog search + the
+# CatalogProvider seam) driving the chart's Symbol picker (catalog workstream Task 12).
+vike-catalog = { path = "../vike-catalog" }
+# the eframe/wgpu-free logic (data-sink wiring, orderflow/tickvol aggregation, tool model +
+# fetchers, and the egui-but-not-eframe workspace/tool_views draw modules) extracted so it runs in
+# CI — the A5 vike-app-core extraction (like vike-chart before it)
+vike-app-core = { path = "../vike-app-core" }
+# The B11 live-account lock (`vike_ops::live_lock`) — one live process per venue account. Already
+# in the graph via vike-app-core; this direct edge is what lets `main.rs` name it (wiring only).
+vike-ops = { path = "../vike-ops" }
+# the venue→ExecutionClient/ReconClient composition root (make_engine + build_recon_client + the
+# per-venue fallback grids) extracted out of main.rs so its live-exec wiring runs in CI (A-mount)
+vike-mount = { path = "../vike-mount", optional = true }
+# the run/composition layer that now owns `build_node` (PR-8): the twelve-venue mount assembly moved
+# out of this file's `App::new`. Top-of-graph (nothing depends on it), so this down-only edge is safe.
+vike-run = { path = "../vike-run", optional = true }
+# thin-client observe: RemoteCoreHandle + WireSnapshot for `--observe <ADDR>` mode (connect to a
+# headless vike-tradehub daemon's observe server, read-only). LIGHT + DataFusion-free by itself.
+vike-tradehub-client = { path = "../vike-tradehub-client" }
+# the Studio tool (SP2): Rhai-editor + store-backed slice picker + worker-thread backtest Run +
+# tabbed results, mounted as the "studio" launcher's WinKind::Studio tool window (Task 7).
+# ⚠ NOT optional since split-plane I7 (it was `fat`-gated): a default vike-studio build is
+# DataFusion-free (the `studio-standalone` suite is the gate), so the THIN client links the Studio
+# too and drives it REMOTE-ONLY — `config.datahub_addr` set → `RemoteHistStore`; unset → the
+# "Studio: no data store" label naming the fix. The LOCAL DataFusionHist open stays `fat`-gated in
+# `open_studio_store` (`vike-data/hist-datafusion` is still a `fat` enable).
+vike-studio = { path = "../vike-studio" }
+# The DataFusion-FREE datahub RPC client: `RemoteHistStore`, the trait store `open_studio_store`
+# hands the Studio when `config.datahub_addr` is set (split-plane B12). Unconditional since I7 for
+# the same reason as vike-studio above — the THIN Studio's only store is this one; light by design
+# (vike-data with DEFAULT features — the `HistStore` trait only), so no build's dep tree gains a
+# second engine.
+vike-datahub-client = { path = "../vike-datahub-client" }
+# The user's OWN indicators (`<project>/user_data/indicators/*.rhai`), compiled into real
+# `Indicator`s that `main`'s `install_user_indicators` installs on BOTH seams — the chart's ƒx
+# picker and, under `fat`, the Rhai strategy bindings the Studio compiles against.
+# ⚠ NOT optional, and it used to be. The old `fat`-only edge was justified by reachability: this
+# crate reached vike-script only through vike-studio, and a THIN (`--observe`) build has no
+# strategy runner an indicator could be called from. The CHART is the second consumer that
+# argument did not anticipate — a user's own indicator has to plot in a plain
+# `cargo run -p vike-app`, observe-only build included — so the edge is now unconditional.
+# It stays cheap: vike-script's tree is rhai + vike-indicators + vike-model, no DataFusion and no
+# venue bridge, so the thin build's `cargo tree … -i datafusion` claim below is untouched.
+vike-script = { path = "../vike-script" }
+# DataClient slice: the DATA layer the GUI drives lives in the layer-correct crates.
+# live Binance kline feed — its own bridge crate (crate-reorg Phase 3, PR H).
+vike-binance = { path = "../bridges/binance", optional = true } # live Binance kline feed (market_feed::Feeds)
+vike-bybit = { path = "../bridges/bybit", optional = true }     # DOM depth feed + credential-gated live exec client
+vike-okx = { path = "../bridges/okx", optional = true }         # DOM depth feed + credential-gated live exec client
+# Aster DEX (Binance USDⓈ-M/spot fork; EIP-712 agent-wallet signing) — credential-gated LIVE
+# (mainnet-verified) exec client + AsterCatalog for the Symbol picker. THIS IS A REAL-MONEY venue:
+# ASTER_LIVE_* keys spawn a live mainnet exec client (see make_engine's aster arm).
+vike-aster = { path = "../bridges/aster", optional = true }
+vike-hyperliquid = { path = "../bridges/hyperliquid", optional = true } # spot+perp: credential-gated live testnet exec + DataClient feed + catalog
+# credential loader + Environment + workspace .env reader (the app is the composition root: it reads
+# creds and picks live-vs-paper per venue — absent-credentials-is-the-live-gate)
+vike-bridge-core = { path = "../vike-bridge-core" }
+# live Polymarket market-tick feed (L2 books + derived L1 quotes + trades) — tick-producer T5;
+# vike-app's third venue coupling (alongside binance/bybit/okx).
+vike-polymarket = { path = "../bridges/polymarket", features = ["feeds"], optional = true }
+# symbol universes (datasets::Store) + the live DataClient/LiveDataSink/TeeSink seam. Feature
+# "hist-datafusion" pulls in DataFusionHist so the app can spawn a RecorderSink (tick-producer
+# T3) to persist live quotes/trades — this adds the DataFusion+Arrow build tree to vike-app's
+# compile (slower build; accepted -- it is the real desktop build, and ci.yml's `app-check`
+# job compiles, lints and tests exactly this default `fat` resolution).
+vike-data = { path = "../vike-data" }
+# the venue-free options pure core: OptionChain model + column math the Options tool renders
+vike-options = { path = "../vike-options" }
+# Deribit's keyless options-chain provider (Options tool fetch loop) — its own bridge crate
+# (crate-reorg Phase 3, PR F). Also contributes DeribitCatalog to the Symbol picker (catalog
+# workstream).
+vike-deribit = { path = "../bridges/deribit" }
+# credential-gated catalog providers for the Symbol picker (catalog workstream): Alpaca (US
+# equities+crypto) and OANDA (FX+CFD). Both self-gate to an empty catalog when creds are absent.
+vike-alpaca = { path = "../bridges/alpaca", optional = true }
+vike-oanda = { path = "../bridges/oanda", optional = true }
+# more Symbol-picker catalog providers (catalog workstream): Dukascopy and FXCM are both bundled
+# static FX/metals instrument lists (unit-struct providers, no fetch, no creds needed) — FXCM's
+# catalog.rs is pure data and NOT gated by the crate-local `fxcm` FFI feature, so a default
+# (no-feature) dep is enough here. cTrader is credential-gated (self-gates to an empty catalog
+# when creds are absent), like Alpaca/OANDA above.
+vike-dukascopy = { path = "../bridges/dukascopy", optional = true }
+vike-fxcm = { path = "../bridges/fxcm", optional = true }
+vike-ctrader = { path = "../bridges/ctrader", optional = true }
+vike-log = { path = "../vike-log" } # tracing-native logging init (see crates/vike-log)
+vike-chart = { path = "../vike-chart" } # the chart engine (renderer/model/transforms) — extracted chart roadmap phase 2
+# shared egui trading widgets — the DOM (depth-of-market) ladder (`dom::draw`) lives here now,
+# moved out of vike-chart. egui-without-wgpu, depends on vike-model + egui only.
+vike-panels = { path = "../vike-panels" }
+# Polymarket scalp-cockpit egui widgets — the WinKind::Polymarket tool window's chain rail / header /
+# probability ladder / one-click ticket (`vike_cockpit::draw_*`). egui-without-wgpu, model + egui only.
+vike-cockpit = { path = "../vike-cockpit" }
+# the canonical palette + font-weight helpers + byte formatter — theme.rs re-exports the palette,
+# the `font` module re-exports the weight helpers, and human_bytes is gone (uses fmt_bytes).
+vike-ui-theme = { path = "../vike-ui-theme" }
+# (vike-report moved to vike-app-core with the Tearsheet tool body — tool-view extraction batch 1;
+# this crate reaches LiveTearsheet only through `vike_app_core::tool_views` now.)
+# the Data-Manager "Stored" catalog view (venue→symbol→series tree + coverage), shared with the
+# Studio's Data pane (vike-data-manager extraction plan, Task 3).
+vike-data-manager = { path = "../vike-data-manager" }
+# read-only venues x Sim/Demo/Live credential-status grid, mounted as the "connections"
+# launcher's WinKind::Connections tool window (Connections tool, first slice).
+vike-connections = { path = "../vike-connections" }
+# Data Manager bulk "Backfill": the keyless kline-history collectors
+# (backfill_binance_klines/backfill_bybit_klines/backfill_okx_klines) the Stored grid's bulk
+# Backfill/Update action runs off-thread against the local hist store (dm-bulk-backfill).
+vike-backfill = { path = "../vike-backfill", optional = true }
+tracing = { workspace = true }      # tracing::info! at startup (subscriber lives in vike-log)
+arc-swap = { workspace = true }
+# eframe 0.35 bundles egui 0.35 (root-pinned) — bump together
+eframe = "0.36"
+egui = { workspace = true }
+serde_json = "1"
+# C1 Task 2: WinState's oscillator-uid -> pane assignment map (insertion-order stable,
+# matching the repo-wide IndexMap convention — see root Cargo.toml's rationale comment).
+indexmap = { workspace = true }
+chrono = { version = "0.4", default-features = false, features = ["clock"] } # local time x-axis labels
+# Tool-window fetchers (News/Calendar/Options) — rustls-based TLS (NO OpenSSL) for clean
+# Windows MSVC builds. The live Binance WS feed (tungstenite) moved to vike-binance.
+ureq = "3.3"                                                              # blocking REST (tool fetchers)
+image = { version = "0.25", default-features = false, features = ["png"] }  # headless self-screenshot (VIKE_SHOT)
+
+[features]
+default = ["fat"]
+
+# The FULL desktop app: the local trading core (`vike_run::build_node` → the 14 venue bridges via
+# vike-mount/vike-run), DataFusion-backed tick recording / the Studio's LOCAL store arm / bulk
+# backfill (`vike-data/hist-datafusion`), and every Symbol-picker catalog provider.
+# `default = ["fat"]` keeps a plain `cargo build -p vike-app` BYTE-IDENTICAL to before this feature
+# existed. Building `--no-default-features` yields the THIN observe-only client (`vike-app --observe
+# <ADDR>` against a headless vike-tradehub daemon, PR #733): it links NO DataFusion and NONE of the 14
+# venue bridges EXCEPT vike-deribit (an unconditional edge via vike-app-core's options-chain provider).
+# Since split-plane I7 thin DOES link the (DataFusion-free) Studio, remote-only.
+# Verify with `cargo tree -p vike-app --no-default-features -i datafusion` (must be unreachable).
+fat = [
+    "dep:vike-mount",
+    "dep:vike-run",
+    # NOTE: no `dep:vike-studio` / `dep:vike-datahub-client` — both are UNCONDITIONAL since
+    # split-plane I7 (the thin client links the DataFusion-free Studio and drives it remote-only);
+    # see the two deps' own comments above. What stays fat-only is the LOCAL store arm, via the
+    # `vike-data/hist-datafusion` enable below.
+    # NOTE: no `dep:vike-script` — that dependency is UNCONDITIONAL now (the chart's ƒx picker
+    # needs the user's indicators in a thin build too), and cargo REJECTS a `dep:` feature naming
+    # a non-optional dependency. The `fat`-only half of the install is a `#[cfg]` in `main.rs`.
+    "dep:vike-binance",
+    "dep:vike-bybit",
+    "dep:vike-okx",
+    "dep:vike-aster",
+    "dep:vike-hyperliquid",
+    "dep:vike-polymarket",
+    "dep:vike-alpaca",
+    "dep:vike-oanda",
+    "dep:vike-dukascopy",
+    "dep:vike-fxcm",
+    "dep:vike-ctrader",
+    # ⚠ WITH its venue-backfill feature: vike-app's data-manager calls
+    # `vike_backfill::backfill_{binance,bybit,okx}_klines`, which that feature gates.
+    "dep:vike-backfill",
+    "vike-backfill/venue-backfill",
+    "vike-data/hist-datafusion",
+]
+
+# Documentary alias so `--no-default-features --features thin` reads clearer than a bare
+# `--no-default-features`. There is nothing extra to turn ON — "thin" is simply "fat absent".
+thin = []
+
+# `ibkr` mounts the FEATURE-GATED IBKR live-exec/recon arm in `App::new`: it flips on vike-mount's own
+# `ibkr` feature, which pulls the optional `vike-ibkr` dep AND its umbrella `ibkr` feature (= the real
+# socket/cpapi backends + the vendored `ibapi` tree). OFF (the default) NO ibkr `make_engine` call is
+# compiled here (the `#[cfg(feature = "ibkr")]` wiring vanishes), the ibkr `make_engine` arm in
+# vike-mount does not exist either, and the heavy `ibapi` tree is never built — byte-identical to today.
+# ci.yml's `app-check` job checks vike-app in its DEFAULT (`fat`) configuration only, so this feature
+# is compiled NOWHERE in CI — validate it with a local `cargo build -p vike-app --features ibkr`;
+# enabling it live also needs `IBKR_DEMO_*` config + a running TWS/IB Gateway.
+# `vike-run/ibkr` compiles `build_node`'s feature-gated ibkr `make_engine` arm (PR-8) too.
+ibkr = ["fat", "vike-mount/ibkr", "vike-run/ibkr"]
+# `polymarket` mounts the FEATURE-GATED Polymarket live-exec/recon arm in `App::new`, flipping on
+# vike-mount's own `polymarket` feature (which pulls vike-polymarket's `polymarket` feature = the
+# k256/keccak EIP-712 signing tree). OFF (the default) NO polymarket `make_engine` call is compiled
+# here, the arm in vike-mount does not exist, and `("polymarket", _)` falls through to the paper `_`
+# arm — byte-identical to today. NOTE the feature only makes the arm COMPILE; what it mounts at
+# runtime is decided by two further env gates, both default-off: `POLY_EXEC=1` (live exec + the
+# user-WS fill pump) and `POLY_RECONCILE=1` (the ReconClient). Both unset ⇒ no network call.
+# ⚠ Polymarket has NO testnet — enabling `POLY_EXEC=1` trades REAL money, and the venue is
+# US-geo-blocked, so it also needs the Dublin SOCKS route (`POLY_PROXY_*`, `POLY_WS_PROXY_ENABLED=1`).
+# ci.yml's `app-check` job checks the DEFAULT (`fat`) configuration only, so this feature is compiled
+# NOWHERE in CI (the `polymarket-stack` suite compiles vike-mount/vike-run's arms, never vike-app's
+# `#[cfg]` wiring) — validate it with `cargo check -p vike-app --features polymarket`.
+# `vike-run/polymarket` compiles `build_node`'s feature-gated polymarket `make_engine` arm (PR-8) too.
+polymarket = ["fat", "vike-mount/polymarket", "vike-run/polymarket"]
+
+[[bin]]
+name = "vike-app"
+path = "src/main.rs"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

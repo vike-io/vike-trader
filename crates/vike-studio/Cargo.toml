@@ -1,0 +1,116 @@
+[package]
+name = "vike-studio"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false
+description = "egui Studio shell: write a Rhai strategy, pick a data slice, Run, see the backtest (Studio SP2)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `ui-shell` — an egui shell assembled from the widget crates.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 80
+
+[dependencies]
+vike-script = { path = "../vike-script" }
+# Same `hist-replay` enablement as vike-studio-core (see its Cargo.toml): the Studio's native
+# strategy picker lists `vike_backtest::harness::registry::STRATEGIES` and its tick slices replay
+# through `vike_backtest::hist_replay`. Both crates must agree or the feature would be enabled only
+# via unification, which is fragile to state in a manifest.
+vike-backtest = { path = "../vike-backtest", features = ["hist-replay"] }
+# Default surface only (NO hist-datafusion): since split-plane B12 the Studio holds its store as
+# `StoreHandle = Arc<dyn HistStore + Send + Sync>` and never names the concrete DataFusionHist
+# outside #[cfg(test)]/examples, so the feature enable lives in [dev-dependencies] below (vike-ai/
+# vike-report's lib-default/dev-feature pattern) — a default build of this crate is DataFusion-free
+# (split-plane I7; the `studio-standalone` suite in scripts/ci_feature_suite.sh is the gate).
+vike-data = { path = "../vike-data" }
+# Data pane: the shared stored-catalog tree-model + egui view (also mounted by vike-app's Data
+# Manager) — de-duplicates the pane's former bespoke grouping/render.
+vike-data-manager = { path = "../vike-data-manager" }
+vike-model = { path = "../vike-model" }
+vike-indicators = { path = "../vike-indicators" }
+vike-studio-core = { path = "../vike-studio-core" }
+# PR-5 backend selector: dispatch a Studio Run/Sweep/Walk-Forward to a REMOTE vike-datahub server
+# over TCP. The LIGHT, DataFusion-free client crate (vike-data DEFAULT features + vike-model + serde),
+# so it adds no Arrow/DataFusion weight and cannot cycle (it never depends on vike-studio/-core).
+vike-datahub-client = { path = "../vike-datahub-client" }
+vike-ai = { path = "../vike-ai" }
+# ⚠ NO vike-bridge-core (split-plane I8). It was here for ONE reason — ChatPane called
+# `vike_bridge_core::credentials::load_workspace_dotenv()` to find ANTHROPIC_API_KEY/
+# CEREBRAS_API_KEY — and it cost this crate the whole bridge stack (vike-exec behind it) so that a
+# GUI pane could open `<project>/settings/secrets.env` for itself. The keys arrive as a
+# `chat::ChatApiKeys` parameter now, resolved by the composition root from the credential map it
+# already loads, so a crate on its way to being a thin client links no venue-execution code to run
+# a chat panel.
+egui = { workspace = true }
+egui_plot = { workspace = true }
+egui_code_editor = { workspace = true }
+similar = { workspace = true } # ChatPane "review changes" diff view (chat.rs diff_rows)
+# Saved-strategies pane: persist Vec<SavedStrategy> as pretty JSON next to the store.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Serialize a Native strategy's `toml::Value` params to TOML TEXT for the remote RunSlice wire spec
+# (WireSpec::Native.params_toml) — the same text the datahub server parses back with
+# `StrategySpec::native_from_toml_str`. Also read by saved.rs's migration tests.
+toml = { workspace = true }
+
+# Headless Studio → PNG capture (examples/studio_shot.rs), OFF by default. Same shape and the same
+# pinned versions as vike-chart's `png-export` harness (see its Cargo.toml for why these are normal
+# optional deps rather than dev-deps: Cargo forbids OPTIONAL dev-deps, and an unconditional dev-dep
+# would drag wgpu into every `--all-targets` run). Nothing new enters the lockfile — vike-app/eframe
+# already resolve these exact versions.
+egui-wgpu = { version = "0.36", optional = true } # the production egui renderer eframe drives
+wgpu = { version = "30", optional = true }        # offscreen render target (headless DX12/WARP)
+pollster = { version = "1.0", optional = true }   # block on the async wgpu handshake
+image = { version = "0.25", default-features = false, features = [
+    "png",
+], optional = true } # RgbaImage → PNG
+
+[features]
+# `cargo run -p vike-studio --features png-export --example studio_shot -- <tab>` renders the REAL
+# `StudioState::ui` off-screen — the vike-studio twin of vike-chart's `png-export`. It exists so a
+# Studio UI change can be eyeballed WITHOUT building vike-app (wgpu + eframe + every bridge crate).
+png-export = ["dep:egui-wgpu", "dep:wgpu", "dep:pollster", "dep:image"]
+
+# NON-default: enables the ChatPane "Connect to Claude" MCP-command generator
+# (`chat::ChatPane::connect_to_claude` over the `connect` module) — the `claude mcp add …` line that
+# registers `vike-cli mcp` (the one MCP server since the vike-mcp retirement, Phase B of #842). Its
+# backtest tools go over a RUNNING vike-datahub server (`just datahub-serve`), not an in-process
+# store, so the generated command carries the datahub address. Pure code gate, no crate dep. Off,
+# the button emits a "rebuild with --features mcp" note.
+mcp = []
+
+# `required-features` keeps the wgpu stack out of a plain `--all-targets` run: without the feature
+# cargo skips this target entirely instead of building it.
+[[example]]
+name = "studio_shot"
+required-features = ["png-export"]
+
+[dev-dependencies]
+# Test/example-only DataFusion (split-plane I7): the #[cfg(test)] modules (studio.rs / picker.rs /
+# data_browser.rs) and BOTH examples (studio_seed, studio_shot) seed a real DataFusionHist over a
+# temp dir — seed-then-scan needs real read-back, which the DataFusion-free MemHistStore double
+# cannot provide. Dev targets (tests/examples) resolve vike-data with this feature ON; the plain
+# lib build does not.
+vike-data = { path = "../vike-data", features = ["hist-datafusion"] }
+# Seed a real DataFusionHist over a temp dir for bar-store tests (MemHistStore is a
+# filters/equity-only stub and cannot store bars). Ad hoc, not workspace-pinned — matches the
+# vike-data/vike-backtest/vike-backfill/vike-polymarket convention.
+tempfile = "3"
+# Accessibility-tree tests over the real pane and shell renders (`tests/saved_pane_a11y.rs`,
+# `tests/picker_disclosure.rs`, `tests/studio_shell_render.rs`). NO wgpu / NO snapshot — see the
+# workspace manifest's `egui_kittest` rationale.
+egui_kittest = { workspace = true }
+# `frame_sanity::assert_frame_sane` — the ONE shared headless-frame geometry assertion, called from
+# `tests/studio_shell_render.rs`'s `settle` so every frame the shell paints is also a geometry test.
+# Unlike vike-chart's and vike-data-manager's copies of this line, vike-ui-theme is NOT already a
+# dependency here (this crate deliberately keeps its own brand ACCENT and links none of the shared
+# palette) — but nothing new enters the lockfile either: vike-data-manager, a normal dep, already
+# pulls the crate in, and what `test-support` adds is the module, which a default build of that
+# crate compiles none of. The feature brings no dependency of its own (vike-ui-theme's only dep is
+# egui), so the cargo-deny surface is unchanged, and `-e normal` cannot see a dev-dep at all, so the
+# `studio-standalone` lane's DataFusion-free tree check is unaffected. Do NOT copy the helper in.
+vike-ui-theme = { path = "../vike-ui-theme", features = ["test-support"] }
+
+[lints]
+workspace = true

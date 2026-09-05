@@ -1,0 +1,173 @@
+[package]
+name = "vike-ops"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "The HEADLESS-usable off-fold operations layer, extracted from vike-app-core so a server-side daemon can reach it without the egui widget stack: alerting (re-exported from vike-alerting), the journal materializer, the VIKE_RECONCILE* env parser, the bounded shutdown orchestrator, the feed-status classifier and the settings registry + its scanner. Depends on NO egui crate, so vike-tradehub links this instead of vike-app-core."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `service-stacked` — a service composed over another service crate.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 55
+
+# WHY THIS CRATE EXISTS (the dependency argument, not a taste argument):
+# `vike-tradehub` is the headless daemon that runs on the production trading box. It used exactly
+# three modules out of `vike-app-core` (journal_mat / reconcile_config / shutdown) — and that ONE
+# edge dragged the entire egui widget stack (egui, egui_plot, epaint, epaint_default_fonts,
+# vike-chart, vike-panels, vike-cockpit, vike-ui-theme, vike-connections, vike-data-manager) into
+# the daemon's build graph. The cost is not CI minutes: it is daemon build time, binary size, and
+# the `cargo deny --all-features` supply-chain audit surface on the box that SIGNS REAL ORDERS.
+# Everything here is off-fold (never in the vike-core hot path) and egui-free by construction; a
+# module that needs egui belongs in vike-app-core, not here.
+
+[features]
+# ON BY DEFAULT — every consumer that existed before `vike-cli config show` (vike-app-core,
+# vike-tradehub) takes this crate with default features and is byte-identical. The feature exists
+# only so a LIGHT consumer can opt OUT.
+default = ["full", "docs-data"]
+# The operational half: `alerting` / `journal_mat` / `reconcile_config`, and with them this crate's
+# whole dependency closure — vike-core -> vike-exec and vike-data. (vike-alerting used to add a
+# `workspace-env` edge onto vike-bridge-core, i.e. ureq+rustls+tungstenite, the venue transport
+# stack; that feature and its one credential-store-reading function are gone, so `full` no longer
+# drags the transport stack in through the alerting tree. `ureq` still arrives via vike-alerting's
+# own non-optional webhook POST dependency, but nothing here pulls `tungstenite`.)
+#
+# WHY THE SPLIT: `settings` + `scan` + `shutdown` name NO vike type and no external crate — they are
+# std-only — and `settings::SETTINGS` is a WORKSPACE-WIDE operator table, so its natural readers
+# include tools that have no business linking a transport stack. `vike-cli` is the first: its whole
+# identity is being light and DataFusion-free (it is the thin client half of the compute-to-data
+# design), and `vike-cli config show` needs exactly the `SETTINGS` table and nothing else. (The row
+# COUNT used to be written here, as "295". It is not, now: it was already stale, and the credential
+# grid then moved it by more than half again in one PR — `SETTINGS.len()` is the authority.)
+# Taking this
+# crate with default features to reach it would have pulled ureq/rustls/tungstenite/vike-core/
+# vike-exec into that CLI — the SAME mistake, one layer up, that this crate was extracted from
+# vike-app-core to fix. So: `vike-ops = { default-features = false }` gets the table alone.
+#
+# ⚠ Cargo unifies features per build, so in a workspace-wide invocation (`cargo test -p … -p …`,
+# `just windows-check`) vike-tradehub turns `full` back on and vike-ops is built once, complete.
+# The split buys a light STANDALONE `cargo build -p vike-cli`, not CI minutes — the same shape, and
+# the same argument, as vike-alerting's `alerting-standalone` lane.
+full = ["dep:vike-core", "dep:vike-exec", "dep:vike-data", "dep:vike-alerting", "dep:indexmap", "dep:tracing"]
+# The docs-data exporter (`src/docs_data.rs` + the `docs_data` bin): renders the per-venue
+# capability tables into the `venues.json`/`stats.json` release assets the website/docs consume.
+# Its OWN feature rather than a `full` member because it is unrelated to the operational half and
+# its one extra vike edge is DOWN onto vike-bridge-core's PURE half (`default-features = false`:
+# tif/credentials/klines — std + vike-model + serde_json, NO ureq/tungstenite/rustls), so `full`'s
+# recorded "nothing here pulls tungstenite" stays true. ON BY DEFAULT so the roster lane compiles
+# the bin and runs `tests/docs_data_gate.rs` on every PR (feature_lane_coverage.rs's rule 2 covers
+# it through `default`); the light consumers (`vike-cli` takes this crate
+# `default-features = false`) still see none of it — the bin is `required-features`-gated and the
+# gate test is `#![cfg]`-gated, so `--no-default-features --all-targets` stays green.
+docs-data = ["dep:vike-bridge-core", "dep:serde_json", "dep:vike-indicators", "dep:vike-strategy", "dep:vike-data", "dep:vike-exec", "dep:vike-catalog"]
+
+[dependencies]
+# CoreSnapshot / ReconConfig / ReconHealth / the journal reader (read_since/JournalRecord/
+# MaterializeCheckpoint) — the published, OFF-FOLD side of the live core. vike-core depends on
+# vike-exec + vike-model only, so this stays a down-only edge.
+vike-core = { path = "../vike-core", optional = true }
+# Event / OrderRequest — the wire vocabulary `journal_mat` folds. NOT optional: `feed_status` is a
+# re-export of `vike_model::feed_status` and is 142 dependency-free lines, so carrying it costs a
+# `--no-default-features` consumer nothing that vike-model's own tree does not already cost.
+vike-model = { path = "../vike-model" }
+# The alerting tree, extracted into its OWN crate so a STANDALONE watchdog binary (the the latency box
+# recorder-stall pager) can link the rule model + delivery seam without dragging vike-core ->
+# vike-exec -> vike-model in behind it. Its ONE optional feature is ON here, so
+# `vike_ops::alerting::…` (re-exported in lib.rs) resolves exactly as it did when the modules lived
+# in this crate:
+#   core = the `eval` evaluator + `AlertEngine` (vike-core/vike-model/indexmap)
+# (There was a second, `workspace-env`, for the one function that opened the credential store from
+# inside the library; it and its vike-bridge-core edge were deleted — see that crate's manifest.)
+vike-alerting = { path = "../vike-alerting", features = ["core"], optional = true }
+# lanes::{Command, Ingest, OrderIntent} (journal_mat's replay vocabulary) + recon::{BalanceTol,
+# ReconMode, ReconPolicy} (reconcile_config's policy types).
+vike-exec = { path = "../vike-exec", optional = true }
+# DEFAULT features on purpose — the HistStore TRAIT + ExecOrderRow/ExecFillRow + the `worker`
+# actor helper only. NO `hist-datafusion`, so this crate never pulls the Arrow/DataFusion tree;
+# the concrete store is opened by the BINARY that spawns the materializer.
+vike-data = { path = "../vike-data", optional = true }
+indexmap = { workspace = true, optional = true } # deterministic `journal_mat` ordering (repo-wide insertion-order convention)
+tracing = { workspace = true, optional = true }  # off-fold diagnostics (subscriber lives in vike-log)
+# `docs-data` only — the TIF authority (`vike_bridge_core::tif::venue_tif`) the exporter renders.
+# ⚠ `default-features = false` is load-bearing: `tif` sits in that crate's PURE half, so this edge
+# adds NO transport stack (no ureq/tungstenite/rustls) to any build of this crate. Layer 30 < 55,
+# a down-only edge like every other (crates/vike-ops/tests/layer_gate.rs).
+vike-bridge-core = { path = "../vike-bridge-core", default-features = false, optional = true }
+# `docs-data` only — the JSON the exporter writes (workspace-pinned; already in this crate's
+# normal closure via vike-bridge-core either way).
+serde_json = { workspace = true, optional = true }
+# docs-data: the built-in indicator + pair registries `indicators.json` renders (layer 20).
+vike-indicators = { path = "../vike-indicators", optional = true }
+# docs-data: PORTABLE_STRATEGIES / PARAM_KEYS / LIVE_CAPABLE / SIMULATOR_ONLY for `templates.json`
+# (layer 30; drags vike-mm, layer 20 — four crates in total, MEASURED with `cargo tree`).
+vike-strategy = { path = "../vike-strategy", optional = true }
+# docs-data: the three remaining rosters `rosters.json` renders — `vike_data::store_kind::
+# STORE_KINDS` (the hist store's layout contract), `vike_exec::recon`'s `DivergenceKind` plus the
+# `mode_applies` the four policies are COMPUTED through, and `vike_catalog::AssetClass`. All three
+# are layer 20, all three are already optional deps of the `full` feature (vike-catalog excepted),
+# so `docs-data` shares their closure rather than adding one.
+vike-catalog = { path = "../vike-catalog", optional = true }
+
+# The ONE signal surface in the workspace, carried for `stop::install_handlers` — the graceful
+# SIGTERM/SIGINT stop both headless daemons now install. `docs/ops/graceful-stop.md` is the decision
+# record; the root manifest's `[workspace.dependencies]` entry carries the one-package measurement.
+#
+# NOT optional and NOT behind `full`, on purpose. `stop` sits in this crate's LIGHT half beside
+# `shutdown` so `vike-recorder` — which places no orders and must not grow a `vike-core`/`vike-exec`
+# edge for a stop flag — reaches it with `default-features = false`. Behind a feature, a daemon
+# could build with the graceful stop silently absent and look identical from the outside, which is
+# the exact failure mode this whole change exists to remove.
+#
+# `cfg(unix)`: there is no POSIX signal on Windows, so the dependency is absent from a Windows build
+# entirely and `install_handlers` is a documented no-op there (`just windows-check` is a real gate).
+[target.'cfg(unix)'.dependencies]
+signal-hook = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# The Windows console-ctrl → stop-flag bridge (split-plane B10) — see the workspace manifest's
+# rationale beside signal-hook, its unix twin.
+ctrlc = { workspace = true }
+
+# The docs-data exporter bin. `required-features` (not just a `#[cfg]`) so the light-consumers
+# lane's `cargo check -p vike-ops --no-default-features --all-targets` skips the target outright
+# instead of failing on the absent module; its gate test (`tests/docs_data_gate.rs`) uses the
+# `#![cfg(feature = "docs-data")]` idiom for the same lane and needs no [[test]] section.
+[[bin]]
+name = "docs_data"
+path = "src/bin/docs_data.rs"
+required-features = ["docs-data"]
+
+[dev-dependencies]
+tempfile = "3" # journal_mat materializer tests (WAL tempdir)
+# `crates/vike-ops/tests/build_config_gate.rs` — the AUTHORITY for what a committed TOML build
+# setting resolves to. That gate hand-rolled its own line scanner for three rounds and leaked in all
+# three: a line scanner reads `key = value` and can only ever judge the KEY side, so an inline table
+# (`dev = { debug = 0 }`) puts the setting where no key matcher reaches it. That is an axis, not a
+# pattern, and a parser is what closes an axis.
+#
+# Free, and VERIFIED rather than asserted — twice over. `cargo tree -p vike-ops -e normal` is
+# byte-identical with and without this line (a dev-dependency is not in any production closure), and
+# `cargo tree -p vike-ops -e normal -i toml` shows why the question was easy: `toml` is ALREADY in
+# this crate's normal closure, through `vike-core`'s TOML run-profile loader. So the line adds no
+# package to `Cargo.lock` and no compile unit to any build — the whole lockfile delta is one
+# `"toml",` added to vike-ops' own dependency list. ⚠ It DOES mean this gate no longer compiles standalone on std alone:
+# running it the way the dev box does (`rustc --test`, where a workspace build is denied) now needs
+# `--extern toml=…`. See `walk_tests`' `scratch`, which states the cost at the one place that pays it.
+toml = { workspace = true }
+# the DataFusion-free MemHistStore test double for the materializer tests
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# `crates/vike-ops/tests/ci_plan_gate.rs` — the CI derivation's own gate. A DEV edge, and it points
+# sideways at a build tool rather than upward at a product crate, so `crates/vike-ops/tests/layer_gate.rs`
+# does not see it at all (that gate only classifies `vike-*` keys).
+#
+# It exists so the gate can call the derivation IN-PROCESS. The alternative is spawning
+# `cargo run -p xtask` from inside a test — a nested cargo build, on a runner whose target directory
+# the outer test run is already using — to compare two strings. This edge is also what makes CI
+# COMPILE the tool that derives the merge gate on the same PRs that can break it: an xtask change
+# selects `xtask` (its own crate) and, one dev hop later, `vike-ops`.
+xtask = { path = "../../xtask" }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

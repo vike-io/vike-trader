@@ -1,0 +1,45 @@
+[package]
+name = "vike-ai"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false
+description = "Headless in-app AI copilot: LlmClient (Anthropic + Cerebras over ureq) + the develop_strategy agentic loop that generates compile-validated, OOS-backtested Rhai strategies (Studio SP3, BYO key)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `service-stacked` — a service composed over another service crate.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 55
+
+[dependencies]
+vike-script = { path = "../vike-script" }
+vike-backtest = { path = "../vike-backtest" }
+# Default surface only (NO hist-datafusion): the library operates on `&dyn HistStore` + TsRange,
+# and since the tests moved onto MemHistStore's real bar storage (the `test-support` enable in
+# [dev-dependencies] below) NO target of this crate names the concrete DataFusionHist — the whole
+# Arrow/DataFusion tree stays out of `cargo test -p vike-ai`'s graph entirely.
+vike-data = { path = "../vike-data" }
+vike-model = { path = "../vike-model" }
+# The trial ledger + learnings store (`ledger.rs`) persists as JSON, so `AgentResult`/`Trial`/
+# `Learning` derive Serialize/Deserialize. Already a workspace dep in most crates here; nothing
+# new enters the lockfile.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The `tracing` FACADE only (library crate — only binaries call `vike_log::init`): the ledger is
+# best-effort, so a missing/corrupt/unwritable file is exactly one `warn!` rather than a failed
+# authoring run.
+tracing = { workspace = true }
+ureq = { workspace = true }
+
+[dev-dependencies]
+# The trial-ledger tests still park their files under a real directory — the ledger is a real
+# filesystem seam regardless of what backs the bars — so tempfile stays through the store switch.
+tempfile = "3"
+# Test-only store double: the develop-loop tests seed bars with `append_bars` and read them back
+# through `HistStore::load_bars` — shapes `MemHistStore` now serves for REAL (in-memory bar
+# storage behind `test-support`, matching DataFusionHist's observable semantics), so
+# `cargo test -p vike-ai` no longer compiles the Arrow/DataFusion tree at all.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+
+[lints]
+workspace = true

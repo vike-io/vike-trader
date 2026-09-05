@@ -1,0 +1,56 @@
+[package]
+name = "vike-report"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — LIVE tearsheet reader (PR-2 of the live-tearsheet arc). Reads the vike-core command journal's fill stream, reconstructs Trade round-trips through the SAME pure cost-basis primitive the backtest uses (vike_model::compute_fill) so live and backtest tearsheets are computed identically, then reuses vike-analytics' pure metrics catalog. Reimplements no metric."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `service-stacked` — a service composed over another service crate.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 55
+
+[dependencies]
+# The parity seam: `compute_fill` (the ONE cost-basis primitive) + `Trade` + `FillEvent`/`Event`.
+vike-model = { path = "../vike-model" }
+# The metrics/report catalog reused verbatim (metrics::*, excursions::mae_mfe, periods::*,
+# BacktestResult, BacktestReport, and binutil's argv glue for the `tearsheet` bin). NO metric is
+# reimplemented here — every number is a vike-analytics call.
+#
+# This line USED to read `vike-backtest`, which owned the same modules. The catalog is ~3.9k lines;
+# that crate is 32,259, so this single edge compiled the simulator (engine/sim_broker), the paper
+# exchange and the whole gated harness/ tree just to reach it — 89% of what this crate built it
+# could not call. vike-analytics holds the identical code and depends on vike-model ALONE. Nothing
+# else was needed: after the swap this crate names no `vike_backtest` type anywhere.
+vike-analytics = { path = "../vike-analytics" }
+# The command journal (CommandJournal::read_all / JournalRecord) the fill stream is read from.
+vike-core = { path = "../vike-core" }
+# The ingest lane types the journal records wrap (Ingest / Event) + Account for the parity anchor
+# test. vike-core already pulls this transitively; naming it directly keeps the reuse explicit.
+vike-exec = { path = "../vike-exec" }
+# The optional equity-curve source: HistStore::scan_equity + EquitySample. Default features (NO
+# hist-datafusion) — this crate only names the venue-agnostic HistStore trait + EquitySample.
+vike-data = { path = "../vike-data" }
+# the facade only (library crate — never `vike_log::init`): `journal_read` warns per SKIPPED stored
+# exec-fill row whose `trade_id` is empty, so a legacy row degrades visibly instead of silently.
+tracing = { workspace = true }
+serde = { workspace = true } # LiveTearsheet derives Serialize
+serde_json = { workspace = true } # `tearsheet` bin's --json output (also used by tests)
+
+[features]
+# Opt-in DataFusion backend for the `tearsheet` bin's `--store` path: enables vike-data's
+# concrete `DataFusionHist` so the bin can OPEN a store dir. The LIBRARY functions
+# (`backfill_excursions`, `equity_curve_from_store`) name only the venue-agnostic `HistStore`
+# trait and need NO feature — this gate exists solely so the bin can construct a backend.
+hist = ["vike-data/hist-datafusion"]
+
+[dev-dependencies]
+# End-to-end journal round-trip: spawn_core (vike-core) + TestExecutionClient (vike-exec::testing).
+tempfile = "3"
+# the DataFusion-free MemHistStore double for the Tier-2 fills_from_store equivalence test
+vike-data = { path = "../vike-data", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

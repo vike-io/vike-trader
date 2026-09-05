@@ -1,0 +1,23 @@
+[package]
+name = "vike-orderflow"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "Pure trade-aggregation core (chart Phase 5 SP1): classify + tick/volume bars + CVD + volume-profile + footprint from vike_model::TradeTick. Streaming+batch, bit-parity gated. Depends on vike-model only."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+vike-model = { path = "../vike-model" }
+# Standard-normal CDF (erf) for VPIN's Bulk Volume Classification, mirroring vike-options'
+# norm_cdf — pure-Rust FDLIBM erf, deterministic across platforms. Already a workspace-pinned,
+# in-lockfile dep (see the root manifest rationale); no new supply-chain entry.
+libm = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

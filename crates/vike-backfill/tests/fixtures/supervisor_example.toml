@@ -1,0 +1,48 @@
+# Example collector-supervisor roster (parsed verbatim by tests/supervisor_config.rs, so this file
+# can never drift from what the code accepts). Run it with:
+#
+#   cargo run -p vike-backfill --bin collector_supervisor -- \
+#       --config crates/vike-backfill/tests/fixtures/supervisor_example.toml --status ./sup.json
+#
+# `store` here is the LOWEST-precedence store root: --store and $VIKE_HIST_STORE both beat it.
+
+tick_secs = 30
+
+# Crypto majors, one-minute bars, refreshed every 5 minutes. `lookback_ms` is the OUTER bound of the
+# freshness window, not a per-pass overlap: the window starts at the series' stored watermark, so a
+# current series only fetches the minutes it is missing and the 24h bound binds only on a cold or
+# long-stalled series. (It has to work that way — the store dedups by BATCH COMMIT KEY, which
+# includes the window bounds, so a window that slid with the clock would re-append the same bars
+# every pass.) Up to 8 gap sub-windows are healed per pass per symbol, rotating through the gap set.
+[[source]]
+name          = "binance-majors-1m"
+collector     = "binance_klines"
+symbols       = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+kind          = "bar"
+interval      = "1m"
+cadence_secs  = 300
+lookback_ms   = 86400000
+heal          = true
+max_heal_jobs = 8
+
+# Hourly bars need far less freshness pressure; heal work is what matters here, so a bigger budget.
+[[source]]
+name          = "bybit-btc-1h"
+collector     = "bybit_klines"
+symbols       = ["BTCUSDT"]
+interval      = "1h"
+cadence_secs  = 3600
+lookback_ms   = 604800000
+max_heal_jobs = 24
+# Park the source after 12 straight failing passes rather than probing a dead venue forever.
+max_consecutive_failures = 12
+
+# Freshness-only: no gap healing, so this behaves exactly like a cron'd one-shot okx_backfill.
+[[source]]
+name         = "okx-btc-5m"
+collector    = "okx_klines"
+symbols      = ["BTC-USDT"]
+interval     = "5m"
+cadence_secs = 600
+lookback_ms  = 43200000
+heal         = false

@@ -1,0 +1,39 @@
+# <project>/settings/preferences.toml — OPERATOR PREFERENCES: verbosity, look, local resource knobs.
+#
+#     cp settings/preferences.example.toml settings/preferences.toml
+#     $EDITOR settings/preferences.toml
+#     vike-cli config show --filter preferences    # confirm what the binaries will read
+#
+# Every line below is COMMENTED OUT, so this file AS SHIPPED configures NOTHING — copy it and you
+# still have the compiled-in defaults. Uncomment only what you mean to SET: where a key has a real
+# default the line shows it, and where its default is absence (an `Option`) the line shows a working
+# example value, so uncommenting THAT line sets it.
+#
+# Full override chain, highest first: environment variable > this file > default.
+#
+# Nothing here is a risk control. A preference may be wrong and cost you a readable screen; it can
+# never place a larger order. The ceilings live in `policy.toml`.
+
+# CONSOLE log level (stderr). Standard `tracing` filter syntax, so `info`, `warn`, or a targeted
+# `info,vike_exec=debug`.
+# Env: RUST_LOG, then VIKE_LOG (RUST_LOG wins, mirroring `vike_log::init`)
+# log_level = "info"
+
+# ⚠ THE DISK KNOB. FILE log level for the rolling JSON trace file — a SEPARATE filter from the
+# console, which is the part that surprises everyone: RUST_LOG/VIKE_LOG do not touch it, so a chatty
+# dependency writes at `trace` no matter how quiet the terminal looks. Measured: one hour of
+# `pmxt_backfill` wrote 6.4 GB, and one long range wrote 341 GB and nearly filled the disk hosting a
+# live trading node.
+# SET THIS TO `warn` FOR ANY LONG BACKFILL OR REPLAY RUN — `off` silences the file entirely — and
+# still watch `du -sh` on `config.log_dir`. The shipped systemd units all set it to `warn`.
+# Env: VIKE_LOG_FILE_LEVEL
+# log_file_level = "trace"
+
+# The chart style vike-app opens with. Omitted = the GUI's own default. Read ONLY by vike-app, so it
+# does nothing on a headless daemon or recorder box.
+# Env: VIKE_STYLE
+# chart_style = "candles"
+
+# Worker threads for a parameter sweep. Omitted = min(4, available_parallelism()). Must not be 0.
+# Env: VIKE_SWEEP_THREADS
+# sweep_threads = 4

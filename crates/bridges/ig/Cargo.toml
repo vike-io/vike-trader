@@ -1,0 +1,30 @@
+[package]
+name = "vike-ig"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "IG (IG Group) FX/CFD venue bridge — co-located data + exec (stateful session-auth REST + Lightstreamer trade-update stream). Moved into crates/bridges/ig (crate-reorg Phase 3, PR C)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+vike-exec = { path = "../../vike-exec" }
+# shared venue-bridge plumbing (credentials::Environment, exec_actor, http::blocking_agent) —
+# crate-reorg Phase 3 (D4); the direct-path style survives every later venue move unchanged.
+vike-bridge-core = { path = "../../vike-bridge-core" }
+vike-catalog = { path = "../../vike-catalog" }
+vike-data = { path = "../../vike-data" }   # the live market-data seam (DataClient/LiveDataSink/FeedRegistry) the Lightstreamer market feed implements
+serde_json = { workspace = true }
+ureq = { workspace = true }   # blocking REST (rustls, no OpenSSL) + the Lightstreamer streaming body reader
+tungstenite = { workspace = true } # the SHARED blocking WS stack — IG's Lightstreamer TLCP is a TEXT protocol spoken over it (no Lightstreamer client crate; see crates/bridges/ig/CLAUDE.md)
+tracing = { workspace = true } # LS trade-stream reconnect diagnostics
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

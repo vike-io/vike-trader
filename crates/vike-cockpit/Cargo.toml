@@ -1,0 +1,27 @@
+[package]
+name = "vike-cockpit"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "Polymarket scalp-cockpit egui widgets (chart-engine-free). The future home for the reusable cockpit panels a scalper trades the rolling up/down markets from; today it holds only the window-chain rail (current + next-N windows with live MM:SS countdowns)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `ui-widget` — an egui widget / engine crate (no eframe/wgpu).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 75
+
+[dependencies]
+vike-model = { path = "../vike-model" } # domain types the cockpit widgets paint over (base dep, mirrors vike-panels; the chain rail is self-contained i64-ms math today)
+vike-ui-theme = { path = "../vike-ui-theme" } # palette::trading — the ONE pinned trading-terminal palette (+ dim); ends the 4 hand-copied const blocks in chain/header/ladder/ticket (GUI audit F3)
+egui = { workspace = true }
+
+[dev-dependencies]
+# Accessibility-tree tests over the REAL widgets (`tests/ticket_a11y.rs`). NO wgpu / NO snapshot —
+# `Context::run_ui` is pure CPU, so these run on the GPU-less CI runners like any other test. See
+# the workspace manifest's `egui_kittest` rationale.
+egui_kittest = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

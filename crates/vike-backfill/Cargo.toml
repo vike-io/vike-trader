@@ -1,0 +1,313 @@
+[package]
+name = "vike-backfill"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — backfill glue: fetch venue history (vike-dukascopy, vike-binance, vike-bybit, vike-okx) and ingest it into the DataFusion hist store (vike-data). The historical-backfill counterpart to those bridge crates' own live DataClient feeds (slice 6)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `service-stacked` — a
+# service composed over another service crate (the collectors compose vike-backtest + the venue
+# bridges over the vike-data store seam). It sat at 65 (`daemon`) until the split-plane
+# backfill-on-demand verb made vike-datahub (65) a consumer — and the `daemon` label had already
+# stopped being true before that: vike-app links this crate as a LIBRARY (its fat-GUI backfill
+# feature), so "nothing may depend on it" described the bins, not the crate. Its own highest normal
+# vike-* dep is vike-backtest (50), so 55 is the honest floor.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 55
+
+[dependencies]
+vike-model = { path = "../vike-model" }
+# bybit's own bridge crate (crate-reorg Phase 3, PR E) — this was the first bridge crate
+# vike-backfill depended on directly (bybit klines backfill).
+vike-bybit = { path = "../bridges/bybit", optional = true }
+# okx's own bridge crate (crate-reorg Phase 3, PR G) — okx klines backfill goes through
+# vike-okx directly.
+vike-okx = { path = "../bridges/okx", optional = true }
+# binance's own bridge crate (crate-reorg Phase 3, PR H) — binance klines backfill goes through
+# vike-binance directly.
+vike-binance = { path = "../bridges/binance", optional = true }
+# dukascopy's own bridge crate (crate-reorg Phase 3, PR J — the last venue move) — dukascopy tick
+# backfill goes through vike-dukascopy directly.
+vike-dukascopy = { path = "../bridges/dukascopy", optional = true }
+# hyperliquid's own bridge crate — HL candleSnapshot klines backfill pages vike-hyperliquid's
+# keyless history fetcher directly (mainnet public reads, no new native dep — reuses the shared
+# ureq/tungstenite/rustls stack the other bridges do).
+vike-hyperliquid = { path = "../bridges/hyperliquid", optional = true }
+# aster's own bridge crate — Aster klines backfill pages vike-aster's fetch_klines_range (keyless
+# public REST; a `.P` symbol routes to the USDⓈ-M perp host inside the bridge). Same shared
+# ureq/rustls stack as the other bridges, so no new native dep.
+vike-aster = { path = "../bridges/aster", optional = true }
+# deribit's own bridge crate — Deribit candle backfill pages vike-deribit's fetch_klines_range (the
+# keyless public `get_tradingview_chart_data` JSON-RPC endpoint; instrument names like
+# `BTC-PERPETUAL` are already unambiguous, so no `.P` handling). Same shared ureq/rustls stack as the
+# other bridges, so no new native dep.
+vike-deribit = { path = "../bridges/deribit", optional = true }
+# The hist store: force the DataFusion+Parquet backend on — vike-backfill's whole job is to ingest
+# into it, so the feature is not optional here (default-feature vike-data has no append target).
+vike-data = { path = "../vike-data", features = ["hist-datafusion"] }
+vike-log = { path = "../vike-log" } # tracing-native logging init (see crates/vike-log)
+tracing = { workspace = true }      # tracing::info! at startup (subscriber lives in vike-log)
+# Shared by the EOD (stooq/Yahoo HTTP) + pmxt (archive Parquet) backfill collectors, non-optional:
+# EOD Yahoo v8 chart JSON + pmxt bids/asks JSON column decode (pmxt/map.rs, not feature-gated).
+serde_json = { workspace = true }
+# Derive on the supervisor's TOML config (supervisor/config.rs) + its JSON status surface
+# (supervisor/status.rs). serde is already in this crate's transitive tree via vike-data/the bridge
+# crates; this just names it directly so the derives are available here.
+serde = { workspace = true }
+# Supervisor roster config (supervisor/config.rs): read-only `from_str` of the declarative
+# `[[source]]` TOML — the same shape (and the same workspace pin) vike-backtest's BacktestProfile
+# uses. A plain (non-optional) dep for the same reason vike-backtest keeps it plain: the
+# `collector_supervisor` BIN target only ever sees [dependencies], so a dev-dependency would compile
+# under `cargo test` but not `cargo build --bin collector_supervisor`.
+toml = { workspace = true }
+# blocking HTTP GET (rustls): EOD sources (stooq/Yahoo) + pmxt hour-part download.
+ureq = { workspace = true }
+# pmxt archive ingest (pmxt/ingest.rs): the Parquet row-group reader (bounded memory) reads through
+# datafusion's re-exported `arrow`/`parquet` — same import paths as vike-data's datafusion_hist.
+datafusion = { workspace = true }
+# raw-frame re-parse (poly-reparse feature): replays captured Polymarket frames through the real
+# pump. Optional so a default vike-backfill build stays native-dep-free (polymarket's module tree is
+# behind its own feature).
+vike-polymarket = { path = "../bridges/polymarket", optional = true }
+# `StreamHealth` (the pump watchdog) lives in vike-bridge-core; the re-parse drive builds one to feed
+# `Watchdog`, exactly as a live pump does. Optional so a default vike-backfill build stays native-dep-free.
+vike-bridge-core = { path = "../vike-bridge-core", optional = true }
+flate2 = { workspace = true, optional = true }
+# Parallel market fan-out for the poly_mm_batch sweep (uses all cores). Optional + behind
+# poly-ch-backtest so a default vike-backfill build stays lean.
+rayon = { workspace = true, optional = true }
+# IBKR historical backfill (ibkr feature). Optional + behind `ibkr` so a default build never
+# compiles the vendored ibapi. Enables vike-ibkr's socket backend (the ibapi Client + the public
+# HistoricalFetcher seam).
+vike-ibkr = { path = "../bridges/vike-ibkr", optional = true }
+# The backtest harness (run_backtest / BacktestProfile / BacktestReport) — the poly_ch_backtest bin
+# (the #691 caller) drives it over `backtest_bridge::ClickHousePolyHistStore`, which reads the live
+# recorder's `polymarket.*` ClickHouse tables. Optional + behind `poly-ch-backtest` so a default
+# build never compiles the harness (vike-backtest's `hist-replay`) tree. Acyclic: vike-backtest
+# depends only on vike-model/vike-data, never on vike-backfill (the bridge doc's "leaf binary that
+# can depend on it directly").
+vike-backtest = { path = "../vike-backtest", features = ["hist-replay"], optional = true }
+# vike.io archive backfill (vike-archive feature): `bytes::Bytes` is what `parquet::file::reader::
+# ChunkReader::get_bytes` returns — needed to implement that trait over a ranged-HTTP reader
+# (`vike_archive::HttpRangeReader`). Already resolved in the lockfile transitively (ureq's `http`
+# crate + `datafusion-datasource-parquet`); optional so a default build never compiles it.
+bytes = { workspace = true, optional = true }
+
+[dev-dependencies]
+# dev-only, test-support feature: the shared scripted MarketStream double for the raw-tap
+# round-trip test (testing-arch Phase 4c). Unconditional dev-dep (dev-deps cannot be
+# optional); the normal [dependencies] vike-bridge-core entry stays optional/feature-gated.
+vike-bridge-core = { path = "../vike-bridge-core", features = ["test-support"] }
+tempfile = "3"
+# serde_json is a regular dependency now (see pmxt/map.rs above); also used here for the
+# scripted round-trip frames (reparse_roundtrip test).
+
+[[bin]]
+# On-demand re-parse tool; only built under the poly-reparse feature (its module tree needs it).
+name = "poly_reparse"
+required-features = ["poly-reparse"]
+
+[[bin]]
+# IBKR historical backfill; only built under the `ibkr` feature (needs the vendored ibapi Client).
+name = "ibkr_backfill"
+required-features = ["ibkr"]
+
+[[bin]]
+# Databento historical HTTP API backfill; only built under the `databento` feature.
+name = "databento_backfill"
+required-features = ["databento"]
+
+[[bin]]
+# Tardis datasets backfill; only built under the `tardis` feature.
+name = "tardis_backfill"
+required-features = ["tardis"]
+
+[[bin]]
+# data.vike.io cohort-metrics backfill (kind=cohort); only built under the `vikedata` feature.
+name = "vikedata_backfill"
+required-features = ["vikedata"]
+
+[[bin]]
+# ClickHouse-backed backtest driver (the #691 caller): runs a BacktestProfile over the live
+# recorder's `polymarket.*` tables. Only built under `poly-ch-backtest`.
+name = "poly_ch_backtest"
+required-features = ["poly-ch-backtest"]
+
+[[bin]]
+# Group-B MM-model batch: runs the pluggable maker models over a universe of Polymarket tokens and
+# aggregates the BacktestReports in-process (reusing harness::run_backtest + ClickHousePolyHistStore).
+# All-Rust: no external JSON/aggregation tooling. Only built under `poly-ch-backtest`.
+name = "poly_mm_batch"
+required-features = ["poly-ch-backtest"]
+
+[[bin]]
+# data.vike.io archive backfill (Polymarket L2 book_events/trades/l1_quotes, date-partitioned
+# Parquet); only built under the `vike-archive` feature (needs the ranged-HTTP ChunkReader tree +
+# vike-bridge-core's dotenv loader).
+name = "vike_archive_backfill"
+required-features = ["vike-archive"]
+
+[[bin]]
+# data.vike.io LIVE events API backfill (paged JSON /v1/events, one token at a time — no
+# ClickHouse, no multi-GB day-file download). Shares the `vike-archive` feature with the sibling
+# bulk-Parquet bin above (same auth/dotenv plumbing; no new feature).
+name = "events_api_backfill"
+required-features = ["vike-archive"]
+
+[features]
+
+# The VENUE-DIRECT collectors: binance/bybit/okx/aster/deribit klines, dukascopy `.bi5` ticks,
+# hyperliquid candleSnapshot + funding, and the supervisor registry that drives the three crypto
+# klines jobs.
+#
+# Off by default because of what Cargo does with bins: EVERY bin links the whole lib, so while these
+# five bridge crates were non-optional deps, all 22 bins compiled all five — including the 14 that
+# touch no venue at all (`eod_backfill` is 108 lines of Yahoo CSV; `pmxt_backfill`,
+# `databento_backfill`, `tardis_backfill`, `clickhouse_poly_backfill`, `poly_reparse`,
+# `vike_archive_backfill` and the rest are archive/vendor readers). Eight bins genuinely need them
+# and now say so through `required-features`.
+#
+# The seam was already clean: bridge types appear in exactly EIGHT modules out of 77 files —
+# binance/bybit/okx/aster/deribit/dukascopy/hyperliquid/funding_rate — plus `supervisor/registry.rs`,
+# which names the three crypto klines collectors.
+#
+# ⚠ `funding_rate` belongs here and is not obviously so: `funding_rate_backfill` LOOKS bridge-free,
+# but it routes through `crate::funding_rate`, which calls vike-hyperliquid. Gating one without the
+# other breaks the build instead of shrinking it.
+#
+# NOT gated, and cannot be: `vike-data/hist-datafusion`. Every collector ingests into the store, so
+# DataFusion — the dominant compile cost — is unavoidable here. This removes five bridge crates from
+# 14 bins' dependency trees; it does not make the crate cheap.
+#
+# ⚠ `dep:vike-bridge-core` belongs here and is not obviously so: `aster::backfill_aster_klines`
+# closes over `vike_bridge_core::Environment::Live` to fill the 5th param `vike_aster::data::
+# fetch_klines_range` takes and the shared 4-arg fetcher shape has no slot for. vike-aster does NOT
+# re-export that type (vike-ibkr is the only bridge that does), and an optional dep that no enabled
+# feature turns on is not in the extern prelude — naming `vike_bridge_core::` without this line is a
+# hard E0433 under `--features venue-backfill` alone. It adds no compile cost: every bridge crate on
+# this line already depends on vike-bridge-core, so it is in the tree either way (the same rationale
+# the databento/tardis/vike-archive features below state for their own `dep:vike-bridge-core`).
+venue-backfill = [
+    "dep:vike-binance",
+    "dep:vike-bybit",
+    "dep:vike-okx",
+    "dep:vike-dukascopy",
+    "dep:vike-hyperliquid",
+    "dep:vike-aster",
+    "dep:vike-deribit",
+    "dep:vike-bridge-core",
+]
+
+# Databento historical HTTP API backfill into the DataFusion store (databento_backfill bin).
+# Raw HTTP over the existing `ureq`. Pulls vike-bridge-core only for the canonical
+# `credentials::load_workspace_dotenv` (the single credential authority) — that crate is already
+# in vike-backfill's tree transitively via the venue bridge deps, so this adds no compile cost.
+# The BIN reads `DATABENTO_API_KEY` and passes it in; the adapter takes no env dependency of its
+# own (settings STEP 2 — the same shape the vike-archive note below already describes).
+databento = ["dep:vike-bridge-core"]
+
+# Tardis downloadable-CSV datasets backfill into the DataFusion store (tardis_backfill bin).
+# Reuses flate2 for the .csv.gz decode (same crate the poly-reparse feature already pulls);
+# vike-bridge-core for the canonical dotenv loader (see databento note above).
+tardis = ["dep:flate2", "dep:vike-bridge-core"]
+
+# data.vike.io COHORT METRICS backfill into the DataFusion store (vikedata_backfill bin): the
+# `kind=cohort` graded positioning panel, paged by cursor over the existing `ureq` (no new HTTP
+# stack — `deny.toml`'s [bans].deny is a merge gate on that) and decoded with the `serde_json` this
+# crate already carries unconditionally. `dep:vike-bridge-core` for the canonical credential-store
+# loader, exactly as the databento/tardis notes above describe — the BIN reads VIKE_API_KEY and
+# VIKE_API_BASE and passes both in; the library takes them as parameters and reads no environment.
+#
+# ⚠ Deliberately NOT folded into `vike-archive`, which is the SAME VENDOR: that feature is the
+# Polymarket L2 lane (a ranged-HTTP Parquet ChunkReader plus the live events API) and pulls
+# `dep:bytes` and `dep:rayon` for it. This lane needs neither, and sharing a feature would make a
+# cohort-metrics build compile the archive's Parquet tree for nothing.
+vikedata = ["dep:vike-bridge-core"]
+# On-demand raw-frame re-parse into the DataFusion store. Enables polymarket's module tree.
+poly-reparse = [
+    "dep:vike-polymarket",
+    "vike-polymarket/feeds",
+    "dep:vike-bridge-core",
+    "dep:flate2",
+]
+
+# IBKR historical-bar backfill into the DataFusion store (ibkr_backfill bin). Enables vike-ibkr's
+# socket backend (vendored ibapi Client + the public HistoricalFetcher seam).
+ibkr = ["dep:vike-ibkr", "vike-ibkr/ibkr-socket"]
+
+# ClickHouse-backed backtest driver (poly_ch_backtest bin): the #691 caller — points the harness'
+# `run_backtest` at the recorder's `polymarket.book_events`/`l1_quotes` via `ClickHousePolyHistStore`
+# (backtest_bridge.rs), so a BacktestProfile backtests recorded live Polymarket L2 with no local
+# copy. Pulls the vike-backtest harness (its own `hist-replay` feature). The ClickHouse store type
+# itself is always compiled (backtest_bridge is a plain module); this only adds the driver bin.
+# `vike-archive` is pulled in because `poly_mm_batch --archive` reads the downloaded archive Parquet
+# in place through `archive_store::ArchiveParquetHistStore`, which lives behind that feature. It
+# costs nothing extra here: `vike-archive` adds only `bytes`/`vike-bridge-core`/`rayon`, and this
+# lane already carries all three (rayon on this very line, the other two via
+# databento/tardis/poly-reparse). Depending on it rather than adding a CI lane means the existing
+# `collect` union suite covers the `--archive` arm with no workflow change.
+poly-ch-backtest = ["dep:vike-backtest", "dep:rayon", "vike-archive"]
+
+# data.vike.io archive backfill (vike_archive.rs + vike_archive_backfill bin): a ranged-HTTP
+# `parquet::file::reader::ChunkReader` reads ONLY the footer + row-group-pruned column chunks of
+# each date-partitioned Parquet file over `X-API-Key`-authed `ureq` GETs — never the whole 7.4 GB/day
+# file. `dep:bytes` for the `ChunkReader::get_bytes` return type; `dep:vike-bridge-core` for the
+# canonical dotenv loader (see databento/tardis notes above) — the BIN reads
+# `VIKE_ARCHIVE_API_KEY` and passes it in, the library itself takes no env dependency. `dep:rayon`
+# fans the `--file` local-ingest path's row groups across a bounded worker pool
+# (`ingest_local_file_parallel`, `--jobs N` on the bin) — the HTTP path is untouched (already
+# solved by row-group pruning + `--file`, see the module doc).
+vike-archive = ["dep:bytes", "dep:vike-bridge-core", "dep:rayon"]
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true
+
+# --- the venue-direct collectors (feature `venue-backfill`) ---------------------------------------
+# Each links a bridge crate; a default build has neither the module nor the dep.
+[[bin]]
+name = "binance_backfill"
+required-features = ["venue-backfill"]
+
+[[bin]]
+name = "bybit_backfill"
+required-features = ["venue-backfill"]
+
+[[bin]]
+name = "okx_backfill"
+required-features = ["venue-backfill"]
+
+# A `.P`-suffixed SYMBOL fetches the USDⓈ-M perpetual (routed inside vike-aster); bare = spot.
+[[bin]]
+name = "aster_backfill"
+required-features = ["venue-backfill"]
+
+# SYMBOL is a Deribit instrument NAME verbatim (`BTC-PERPETUAL`) — this venue has no `.P` suffix.
+[[bin]]
+name = "deribit_backfill"
+required-features = ["venue-backfill"]
+
+[[bin]]
+name = "dukascopy_backfill"
+required-features = ["venue-backfill"]
+
+[[bin]]
+name = "hyperliquid_backfill"
+required-features = ["venue-backfill"]
+
+[[bin]]
+name = "hyperliquid_funding_backfill"
+required-features = ["venue-backfill"]
+
+# LOOKS bridge-free, but routes through `crate::funding_rate` -> vike-hyperliquid.
+[[bin]]
+name = "funding_rate_backfill"
+required-features = ["venue-backfill"]
+
+# Drives the three crypto klines collectors through `supervisor/registry.rs`.
+[[bin]]
+name = "collector_supervisor"
+required-features = ["venue-backfill"]

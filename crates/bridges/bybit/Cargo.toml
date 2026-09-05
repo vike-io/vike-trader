@@ -1,0 +1,57 @@
+[package]
+name = "vike-bybit"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "Bybit V5 venue bridge — linear-perp exec (REST + private WS) and spot klines, plus a live vike_data::DataClient kline feed and public L2/tick market data (HFT track). Moved into crates/bridges/bybit (crate-reorg Phase 3, PR E — first venue move with a real external consumer + real integration tests)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+vike-exec = { path = "../../vike-exec" }
+# shared venue-bridge plumbing (credentials, signer, transport, http, user_data, format, json,
+# ws/rest/klines fragments) — crate-reorg Phase 3 (D4); the direct-path style survives every
+# later venue move unchanged.
+vike-bridge-core = { path = "../../vike-bridge-core" }
+# D2 (crate-reorg spec): bybit's market_feed::Feeds implements the live DataClient seam directly
+# (default features only — the DataFusion tree stays behind hist-datafusion and must NOT enable).
+vike-data = { path = "../../vike-data" }
+# universal cross-venue instrument catalog (`Instrument`/`FieldMap`/`CatalogProvider`) — the
+# `BybitCatalog` provider in catalog.rs (crate-reorg catalog workstream, Task 10).
+vike-catalog = { path = "../../vike-catalog" }
+serde = { workspace = true }        # #[derive(Deserialize)] on the live kline WS frame (market_feed.rs)
+serde_json = { workspace = true }
+indexmap = { workspace = true }     # BybitInstrument map keyed by symbol (perp.rs)
+ureq = { workspace = true }         # blocking REST (rustls, no OpenSSL) — kline fetch + signed transport
+tungstenite = { workspace = true }  # blocking WS: private user-data pump + public market-data/kline feeds
+tracing = { workspace = true }      # adapter diagnostics
+
+[dev-dependencies]
+arc-swap = { workspace = true }   # smoke test reads the CoreSnapshot cell
+vike-log = { path = "../../vike-log" }  # dev-only: test_init() for smoke/dev test diagnostics
+# dev-only: smoke tests spawn a real core; the library itself must never depend on vike-core
+# (crate-reorg D3 — bridges depend on exec, not core).
+vike-core = { path = "../../vike-core" }
+# dev-only, test-support feature: the DataFusion-free MemHistStore + PropertiesRecorder test double for
+# the PIT filter-recording wiring test — the normal [dependencies] vike-data entry above stays
+# default-features so the venue's DEFAULT build never pulls DataFusion in.
+vike-data = { path = "../../vike-data", features = ["test-support"] }
+# dev-only, capture feature: the sanitized real-frame capture harness (testing-arch plan §5) —
+# the opt-in capture arm (bybit_capture_smoke.rs) writes tests/fixtures/captured/, and the
+# normal CI'd captured_wire_replay.rs decodes the committed fixtures back through the real
+# event_mapper. The normal [dependencies] entry above stays default-features, so the shipped
+# adapter never compiles the fixture writer.
+vike-bridge-core = { path = "../../vike-bridge-core", features = ["capture"] }
+# dev-only: the parser property harness (tests/mapper_props.rs) — arbitrary + mutated JSON through
+# the real event_mapper / route_frame; totality (no panic, no event flood).
+proptest = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

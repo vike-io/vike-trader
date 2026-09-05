@@ -1,0 +1,40 @@
+[package]
+name = "vike-user-strategies"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "The compiled user-strategy HOST: build.rs scans <workspace>/user_data/strategies/rust/<name>/<name>.rs (VIKE_USER_DATA_DIR overrides the root at BUILD time) and generates a name->constructor registry the backtest and live registries consult AFTER every built-in arm. User code stays in gitignored user_data — it compiles into the operator's own binary and never enters the repo — and compiles against the platform's PUBLIC API only: a separate compilation unit, not a module of vike-strategy, so an internals refactor can never break a user strategy and user strategies can never freeze framework internals (the spec's v2/v3 argument, docs/superpowers/specs/2026-08-11-user-native-strategies-design.md). No user_data (every CI checkout) => an EMPTY registry, byte-identical behavior everywhere."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Between vike-strategy (30,
+# the framework this crate's user code writes against) and the registry consumers vike-backtest
+# (50) / vike-tradehub (65).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[lints]
+workspace = true
+
+[dependencies]
+# The traits user strategies implement (`Strategy<B>`, `Broker`/`HftBroker`) and everything a
+# strategy legitimately reaches: domain types from vike-model, the Controller/PositionExecutor
+# framework from vike-strategy, the indicator catalog from vike-indicators. This dependency set IS
+# the user-strategy API surface — a user file resolves `use vike_model::…` against THIS manifest,
+# so adding a crate here (with a root-Cargo.toml rationale) is how a user strategy gains a
+# dependency; the framework crates never change for it.
+vike-model = { path = "../vike-model" }
+vike-strategy = { path = "../vike-strategy" }
+vike-indicators = { path = "../vike-indicators" }
+# The `params: &toml::Value` table every `build` constructor reads — the same lenient-reader
+# convention as the built-in `from_params` arms. Workspace-pinned already.
+toml = { workspace = true }
+
+[build-dependencies]
+# build.rs parses each strategy folder's optional `strategy.toml` manifest (`live = true`). Same
+# workspace-pinned `toml`, no new supply-chain entry.
+toml = { workspace = true }
+
+# No dev-dependencies: the pipeline test carries its own ~30-line `HftBroker` double
+# (`vike_model::MockBroker` implements only `Broker`, not the tagged-verb extension the generated
+# registry's bound requires).

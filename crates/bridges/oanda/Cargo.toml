@@ -1,0 +1,41 @@
+[package]
+name = "vike-oanda"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "OANDA v20 FX venue bridge — co-located data + exec (pure-Rust Bearer REST, no native SDK). Moved into crates/bridges/oanda (crate-reorg Phase 3, PR B — first venue move)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+vike-exec = { path = "../../vike-exec" }
+# shared venue-bridge plumbing (credentials::Environment, exec_actor, http::blocking_agent) —
+# crate-reorg Phase 3 (D4); the direct-path style survives every later venue move unchanged.
+vike-bridge-core = { path = "../../vike-bridge-core" }
+vike-catalog = { path = "../../vike-catalog" }
+# the live market-data seam: market_feed::Feeds implements vike_data::DataClient (quotes stream +
+# candle poller), riding the shared FeedRegistry per-subscription bookkeeping.
+vike-data = { path = "../../vike-data" }
+serde_json = { workspace = true }
+ureq = { workspace = true }   # blocking REST (rustls, no OpenSSL) + the transactions-stream reader
+tracing = { workspace = true } # A3 reconnect-resync-failure diagnostics
+
+[dev-dependencies]
+# test-only: the ExecActor-wiring integration test drains a tokio::sync::mpsc Ingest receiver
+# with a timeout (same pattern as vike-bridge-core/tests/exec_actor_dead_thread.rs).
+tokio = { workspace = true }
+# dev-only: test_init() for the gated live demo smoke test's diagnostics.
+vike-log = { path = "../../vike-log" }
+# dev-only: the shared NoopSink LiveDataSink double for the market_feed lifecycle tests (testing-arch
+# Phase 4d) — the normal [dependencies] vike-data entry above stays default-features.
+vike-data = { path = "../../vike-data", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

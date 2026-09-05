@@ -1,0 +1,67 @@
+[package]
+name = "vike-model"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — domain model (Bar/ticks/orders/events) + the compute_fill primitive. Exact port of vike-trader-app core/model, core/ticks, core/fill, core/order_intent, exec/events."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `vocabulary` — vike-model itself: the shared domain vocabulary every other layer names.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 10
+
+[dependencies]
+serde = { workspace = true }
+# Strategy durable-state hooks (save_state/load_state): the production signature is
+# `Option<serde_json::Value>`, so this is a real dependency, not just test/bench scaffolding.
+serde_json = { workspace = true }
+indexmap = { workspace = true }  # RateBook pair registry — insertion order is the path-search law (cash.rs)
+# Interned symbol/venue on the Event schema (serde-transparent, bounded-cardinality — see events.rs).
+ustr = { version = "1.1", features = ["serde"] }
+# High-cardinality id fields (trade_id / venue_order_id / reason): SSO string, inline ≤24 B else heap,
+# serde-transparent. NOT interned (unbounded per-fill cardinality would leak the ustr arena).
+compact_str = { version = "0.10", features = ["serde"] }
+# Bachelier up-probability (`fair::p_up`) needs erf — the same libm the vike-options greeks port
+# pins bit-identical to CPython's math.erf. Shared here so the cheap_np backtest AND the live A-S
+# maker call ONE definition (no duplication).
+libm = { workspace = true }
+
+[features]
+# Exposes the shared `strategy::MockBroker` (the `Broker` test double) as a `pub` item for the
+# strategy-layer crates' tests — one recording mock instead of a near-identical copy per crate
+# (Phase 4 test-support consolidation). Empty/additive + the mock is gated
+# `#[cfg(any(test, feature = "test-support"))]`, so a default (production) build never compiles it.
+# Mirrors the `vike-data` `test-support` model; consumers enable it as a dev-dependency feature.
+test-support = []
+
+[dev-dependencies]
+# strong-types spike benches (dev-only): the head-to-head string/number candidates.
+ustr = "1.1"
+arrayvec = "0.7"
+rust_decimal = { workspace = true } # fixed-point-vs-f64 numerics bench
+# Property-based testing (testing-arch plan Phase 6): tests/scalar_props.rs proves the pinned
+# round_to_step/round_to wire-rounding invariants (idempotence, step-multiple) over random inputs.
+# Root-pinned; dev-dep only.
+proptest = { workspace = true }
+
+[[bench]]
+name = "strtypes"
+harness = false # custom timing harness, repo style (mirrors vike-chart/vike-backtest benches)
+
+[[bench]]
+name = "numerics"
+harness = false # fixed-point (i64/i128/Decimal) vs f64 — the "parity retired" question
+
+[[bench]]
+name = "enumbox"
+harness = false # box-the-fill-variants vs inline enum — measure-first on the 208 B god-enum
+
+[[bench]]
+name = "orderside"
+harness = false # side: i32 vs enum OrderSide (+.sign()) vs signed-qty — the Tier-1b order_side cost
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

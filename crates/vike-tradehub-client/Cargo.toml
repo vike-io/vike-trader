@@ -1,0 +1,42 @@
+[package]
+name = "vike-tradehub-client"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — PR-10 Layer-2 auth+proto primitive for the headless live-core (\"tradehub\") thin-client. The node wire protocol (proto: Hello/Auth/Subscribe/Snapshot/Command over the shared length-prefixed serde_json framing), the HMAC-SHA256 nonce-challenge auth handshake (auth: sign/verify + scoped NodeKeys), and the standalone serde wire mirrors of the core snapshot + order-command types (wire). DataFusion-FREE and network-FREE by construction (no server, no I/O) — the security primitive built in isolation BEFORE anything listens. Rides the FAST CI lane."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `service` — a library composed over the engine crates.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 50
+
+[dependencies]
+# ONE framing across both localhost services: re-use vike-datahub's length-prefixed serde_json
+# frame codec (read_frame/write_frame/MAX_FRAME_LEN) rather than growing a second one. DEFAULT
+# features (the HistStore TRAIT only, no hist-datafusion), so this edge stays DataFusion-free and
+# on the FAST CI lane — the same reason vike-datahub-client itself is light.
+vike-datahub-client = { path = "../vike-datahub-client" }
+serde = { workspace = true }        # derive on the Request/Response wire enums + the wire mirrors
+serde_json = { workspace = true }   # (transitively) the frame payload codec re-exported from proto
+# ⚠ `hmac`/`sha2` are NO LONGER named here. The auth primitive MOVED DOWN into
+# vike-datahub-client's `node_auth` when `docs/decisions/0025-datahub-remote-posture.md` gave the
+# datahub the same handshake — one implementation generalized over its domain separator, the same
+# "one framing, not two" argument the vike-datahub-client edge above already makes. `src/auth.rs`
+# is now this service's BINDING of it (its own DOMAIN + its own key names) and does no crypto of its
+# own, so the crates arrive transitively through that same edge and this manifest stops claiming a
+# direct use it no longer has. Still ZERO new external deps overall: they are the exact crates
+# vike-bridge-core/src/signer.rs already links (deny.toml bans a second crypto crate).
+# The receive thread's latest-wins snapshot cell (PR-11 RemoteCoreHandle): the SAME lossy arc-swap
+# primitive vike-core publishes CoreSnapshots through, so the remote read mirrors the in-process one.
+# Already a workspace dep (vike-core) — NOT a new external crate; keeps this crate DataFusion-free.
+arc-swap = { workspace = true }
+# NOTE: no `.env` / credentials dep on purpose. `NodeKeys::from_vars` takes an already-loaded var
+# MAP so the CALLER (the server/CLI binary, which reads the workspace `.env` via
+# `vike_bridge_core::credentials::load_workspace_dotenv`) owns the I/O — this crate stays a pure,
+# I/O-free, transport-free wire primitive and never drags the bridge stack (ureq/tungstenite/rustls)
+# into a LIGHT client that a thin GUI/CLI links.
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

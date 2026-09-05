@@ -1,0 +1,108 @@
+[package]
+name = "vike-chart"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "The vike chart engine: egui_plot renderer, bar-index render model, style transforms, indicator paint adapter. Extracted from vike-app (chart roadmap phase 2)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `ui-widget` — an egui widget / engine crate (no eframe/wgpu).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 75
+
+[dependencies]
+vike-model = { path = "../vike-model" }             # Bar conversion at the indicator-adapter seam
+vike-indicators = { path = "../vike-indicators" }   # chart overlay compute + registry (one source of truth)
+vike-orderflow = { path = "../vike-orderflow" }     # per-bar footprint substrate → CVD/profile/footprint render (SP2)
+vike-options = { path = "../vike-options" }         # the options-chain engine renders vike_options::OptionChain (options_chain.rs)
+vike-ui-theme = { path = "../vike-ui-theme" }       # the canonical palette + number/byte formatters (no more hand-copied Color32 consts / fmt copies)
+egui = { workspace = true }
+egui_plot = { workspace = true }
+serde = { workspace = true }  # render-model Bar derives Deserialize (legacy IPC shape, still the wire format for tests)
+chrono = { workspace = true } # local-time x-axis labels + hourly grid marks
+chrono-tz = { workspace = true } # named-timezone display (DisplayTz)
+indexmap = { workspace = true } # study uid -> pane map borrowed into draw (C1: authored study-pane model)
+# Deterministic transcendentals for the render path. IEEE 754 requires `+ - * /` and `sqrt` to be
+# correctly rounded and requires NOTHING of `log10`/`pow`/`exp`/`sin`/`cos`, so an `f64` METHOD call
+# reaches the PLATFORM's libm — glibc on the CI runners, the MSVC runtime on the Windows dev box —
+# and the two are entitled to different last bits for identical inputs. This crate's exposure is
+# concentrated in `crates/vike-chart/src/scale.rs`, where `nice_step_ceil` and `log_nice_values`
+# feed a logarithm straight into `.floor()`/`.round()`/`as i32`: at an exact power of ten a last-bit
+# disagreement flips that integer by one, which is a TEN-FOLD change in the chosen tick step or the
+# decade loop's bounds, not a rounding wobble. `crates/vike-chart/src/interact.rs`'s `y_drag_zoom`
+# `exp` and `crates/vike-chart/src/render.rs`'s `draw_pnf` ring `cos`/`sin` are the milder siblings,
+# converted so no per-site judgement call about which transcendental is "allowed" to be
+# platform-dependent has to be re-made later. ⚠ ONE power is deliberately NOT converted —
+# `log_nice_values`'s `10f64.powi(k)`, measured bit-identical on both platforms; its own comment
+# carries the measurement. Already a workspace-pinned transitive lockfile crate (vike-options'
+# Black-Scholes erf) — no new lock entry, no new deny.toml surface.
+libm = { workspace = true }
+# ---- `png-export` feature ONLY (examples/export_png.rs) ----
+# OPTIONAL, and off by default: a default `cargo build/test/clippy -p vike-chart` resolves none of
+# these, so the crate stays GPU-free and the CI lanes never compile the wgpu stack (verified with
+# `cargo tree -p vike-chart --edges normal`). They live here rather than in [dev-dependencies]
+# because Cargo forbids OPTIONAL dev-deps — a dev-dep would be unconditional and drag wgpu into
+# every `--all-targets` run, which is exactly what this gate exists to prevent.
+# Versions reuse what vike-app/eframe already resolves (egui-wgpu 0.36 → wgpu 30, image 0.25,
+# pollster 0.4), so nothing new enters the lockfile's dependency universe or the cargo-deny surface.
+egui-wgpu = { version = "0.36", optional = true }   # the production egui renderer — eframe drives this same one
+wgpu = { version = "30", optional = true }          # offscreen render target (headless DX12/WARP on Windows)
+pollster = { version = "1.0", optional = true }     # block_on the wgpu async device/queue/map handshakes
+image = { version = "0.25", default-features = false, features = ["png"], optional = true } # RgbaImage → PNG
+
+[features]
+# Headless chart→PNG export (examples/export_png.rs): renders the REAL engine — candles, indicator
+# overlays, pattern markers — through egui-wgpu to an offscreen texture, so a chart image is the
+# engine's own pixels rather than a mockup. Off by default: opting in is what pulls wgpu.
+png-export = ["dep:egui-wgpu", "dep:wgpu", "dep:pollster", "dep:image"]
+
+# `required-features` is what keeps the wgpu stack out of a plain `--all-targets` run: without
+# `--features png-export` cargo skips this target entirely instead of building it.
+[[example]]
+name = "export_png"
+required-features = ["png-export"]
+
+[dev-dependencies]
+serde_json = { workspace = true } # PaneKey wire-format regression tests (old "Osc" tag compat)
+# draw() characterization harness (tests/draw_characterization.rs): integration-test crates cannot
+# see the library's own [dependencies], so egui + indexmap — already workspace-pinned NORMAL deps of
+# this crate — must be re-listed here to drive `chart::draw` headlessly (fabricate RawInput/pointer
+# events) and to name the `IndexMap` study/series-pane maps `ChartInputs` requires. Dev-only: the
+# non-test `cargo build -p vike-chart` is unaffected.
+egui = { workspace = true }
+indexmap = { workspace = true }
+# frame_record_gate.rs's golden-file mechanics. A REAL tempdir, not `temp_dir().join(<fixed name>)`:
+# a fixed name under a shared /tmp belongs to whoever created it first, so on a CI runner a leftover
+# from another user's job makes the write fail with EACCES while every developer box — same user,
+# same leftover — passes. That is how this suite first went red.
+tempfile = "3"
+# options_chain_characterization.rs builds OptionChain/Expiry/StrikeRow/OptionQuote fixtures
+# directly — same integration-test visibility gap as egui/indexmap above (vike-options is already
+# a NORMAL dependency of this crate; re-listed here so the test crate can see it too).
+vike-options = { path = "../vike-options" }
+# `frame_sanity::assert_frame_sane` — the ONE shared headless-frame geometry assertion, which every
+# `ctx.run_ui` harness in `tests/` calls. Already a NORMAL dependency of this crate (the palette),
+# re-listed here with `test-support` because that feature is what compiles the module at all: a
+# default `cargo build -p vike-chart` still sees none of it. Do NOT copy the helper in here.
+vike-ui-theme = { path = "../vike-ui-theme", features = ["test-support"] }
+# Accessibility-tree tests over the two IN-CHART DIALOGS (`tests/chart_settings_a11y.rs`,
+# `tests/indicator_settings_a11y.rs`, sharing `tests/dialog_harness/mod.rs`). They exist because
+# `dialogs.rs` renders SEMANTIC state that neither existing rung of this crate's render coverage
+# can see: `draw_characterization.rs` asserts the `ChartActions` a frame RETURNS and
+# `tessellation_goldens.rs` the shapes it EMITS, while "this control is disabled because its gate
+# is off", "this tab rail says Canvas is selected" and "this spinner would read 6 aloud" live only
+# in the accesskit tree egui builds beside the shapes. NO wgpu / NO snapshot — that tree is
+# computed by `Context::run_ui` on the CPU, so these run on the GPU-less CI runners like every
+# other test here rather than needing the dev box. See the workspace manifest's `egui_kittest`
+# rationale for why the two rasterizing features stay off and why the minor tracks egui's.
+egui_kittest = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true
+
+[[bench]]
+name = "render"
+harness = false               # it's a main() that prints a report, not a libtest bench (mirrors vike-backtest/benches/engines.rs)

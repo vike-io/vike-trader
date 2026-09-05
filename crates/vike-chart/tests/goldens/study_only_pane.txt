@@ -1,0 +1,14 @@
+# vike frame record v1 (vike_ui_theme::frame_record)
+# scenario: study_only_pane
+ppp 1  primitives 10  vertices 5812  triangles 6948
+----
+   0  clip [0 0 960 620]  tex M0  v 4  t 2  solid [0 0 960 620]  glyph -  runs 2  #161b24ff*2 #0d1117ff*2  d 262bfec614c2df93
+   1  clip [0 0 960 620]  tex M0  v 420  t 210  solid -  glyph [892 2 935 372]  runs 3  #08080912*180 #6b7480ff*24 #08080912*216  d c3515244960cbdbe
+   2  clip [0 0 888 374]  tex M0  v 2760  t 3630  solid [-1 -1 889 376]  glyph -  runs 17  #07080a34*72 #22272fff*8 #5bbe91ff*54 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*54  +..  d 585728c92edb5b7c
+   3  clip [0 0 960 620]  tex M0  v 216  t 152  solid [-1 306 961 378]  glyph [8 13 925 319]  runs 11  #d95458ff*20 #0d1117ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*72 #242931ff*4  d c59faee610ceda2a
+   4  clip [0 0 960 620]  tex M0  v 12  t 6  solid -  glyph [892 416 906 483]  runs 1  #6b7480ff*12  d bb6696e4ff27aeca
+   5  clip [0 379 888 479]  tex M0  v 504  t 630  solid [-1 379 889 481]  glyph -  runs 16  #0e101369*4 #22272fff*8 #2d8238b3*12 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*12  d 02ba8690cfaccdc2
+   6  clip [0 0 960 620]  tex M0  v 80  t 84  solid [-1 396 961 483]  glyph [6 385 907 408]  runs 4  #9aa4b1ff*24 #f85249ff*20 #e7ecf4ff*8 #242931ff*4  d 6a7782dfc30d0932
+   7  clip [0 0 960 620]  tex M0  v 32  t 16  solid -  glyph [681 484 913 599]  runs 1  #6b7480ff*32  d 2af6a95e4ff3add9
+   8  clip [0 484 888 588]  tex M0  v 1640  t 2108  solid [-1 484 889 589]  glyph -  runs 5  #0404051d*32 #15181d9c*4 #22272fff*4 #505050ff*660 #57a5ffff*120  d 2db8ec899e223e78
+   9  clip [0 0 960 620]  tex M0  v 144  t 110  solid [889 484 920 501]  glyph [6 488 913 502]  runs 3  #9aa4b1ff*92 #57a5ffff*20 #0d1117ff*12  d f39ff861af5868bd

@@ -1,0 +1,124 @@
+[package]
+name = "vike-app-core"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike-app's eframe-free / wgpu-free logic, extracted so it runs in CI (like vike-chart): live-data sink wiring (CoreSinkAdapter/BookStore/TradeStore), orderflow + tick/volume aggregation, and the per-tool view/data model + fetchers. vike-app (the wgpu GUI shell) depends on it; egui IS used (the workspace/tool_views draw modules) but nothing here touches eframe/wgpu, so it builds and tests on CI."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `ui-shell` — an egui shell assembled from the widget crates.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 80
+
+[dependencies]
+# Pure logic modules — NO eframe/wgpu (that's why this crate is CI-able, unlike vike-app). They wire
+# the live-data seam onto the core lanes, aggregate orderflow/tick/volume bars, and hold the tool
+# view/data model + REST fetchers.
+vike-model = { path = "../vike-model" }
+vike-catalog = { path = "../vike-catalog" }
+vike-exec = { path = "../vike-exec" }
+# CoreSnapshot/VenueBlock — equity_panel shapes the cross-venue equity panel view-model from it
+# (PR-2 T4). vike-core itself depends on vike-exec + vike-model only, so this stays a down-only
+# edge (mirrors vike-app's existing dependency on vike-core).
+vike-core = { path = "../vike-core" }
+vike-data = { path = "../vike-data" } # feature-free: only the pure SeriesId/SeriesCoverage + live seam (no DataFusion)
+# The inventory tree-model (build_tree/VenueNode/…) moved here — re-exported under the old
+# `vike_app_core::inventory` path via a `pub use` compat shim in lib.rs.
+vike-data-manager = { path = "../vike-data-manager" }
+vike-orderflow = { path = "../vike-orderflow" }
+vike-chart = { path = "../vike-chart" }
+# shared egui trading widgets — the DOM (depth-of-market) ladder lives here now (ToolView.dom /
+# dom_actions), moved out of vike-chart. Depends on vike-model + egui only (no egui_plot/wgpu).
+vike-panels = { path = "../vike-panels" }
+# Polymarket scalp-cockpit egui widgets (chain rail / Price-to-Beat header / probability ladder /
+# one-click ticket) the Polymarket tool window mounts — same egui-only, data-in/actions-out shape as
+# vike-panels. Its per-window view state lives in ToolView (cockpit_* fields).
+vike-cockpit = { path = "../vike-cockpit" }
+vike-options = { path = "../vike-options" }
+vike-deribit = { path = "../bridges/deribit" }
+# The live-tearsheet reader — `tool_views::tearsheet` (the Tearsheet tool body, moved here from
+# vike-app in tool-view extraction batch 1) computes a LiveTearsheet from the command journal
+# (reconstruct_trades → vike-backtest metrics). Default features only (its vike-backtest edge is
+# the trait-only, DataFusion-free default build), so this crate stays on the fast CI lane; the
+# store-backed MTM curve stays in vike-report's own `tearsheet` CLI bin.
+vike-report = { path = "../vike-report" }
+vike-ui-theme = { path = "../vike-ui-theme" } # canonical palette (rail.rs) — no more hand-copied Color32 consts
+# reconcile_config's feed-status → health map reads parse_feed_status/ConnectionState from here.
+# vike-connections depends only on vike-bridge-core/vike-catalog/vike-ui-theme, so this stays a
+# down-only edge (no cycle back to vike-app-core).
+vike-connections = { path = "../vike-connections" }
+# The TYPED settings model — this crate reaches it for exactly two things, both belonging to the
+# Data Manager's Venues (arming) sub-tab: `VenueMode`/`VenuePolicy`/`VenueArming` (the row type the
+# tab renders) and `set_setting` (the comment-preserving, loader-validated, atomic per-key write the
+# switch performs LOCALLY). ⚠ It is deliberately NOT `vike-mount`, which is what actually COMPUTES a
+# row: vike-mount is vike-app's OPTIONAL `fat` dependency, so an unconditional edge here would drag
+# every venue bridge into the thin `--observe` build and undo what `thin` exists for. vike-config is
+# layer 20 and depends on vike-model + serde/toml only, so this edge adds no compile weight to
+# either build; the rows arrive as DATA (`tool_views::VenueArmingInputs`).
+vike-config = { path = "../vike-config" }
+# The credential-store PATH resolver for the Data Manager's proxy box `save_polymarket_proxy`.
+# vike-secrets is the leaf that OWNS `workspace_dotenv_path` (vike-bridge-core only re-exports it)
+# and carries no vike-* dependency of its own, so this adds no layering edge.
+vike-secrets = { path = "../vike-secrets" }
+# The OFF-FOLD operations layer (alerting / journal_mat / reconcile_config / scan / settings /
+# shutdown), re-exported from lib.rs under its historical paths. It moved OUT of this crate so
+# `vike-tradehub` — the headless daemon on the production trading box — can reach those six modules
+# without compiling the egui widget stack below (egui/egui_plot/epaint/vike-chart/vike-panels/
+# vike-cockpit/…). vike-ops depends on vike-core/-model/-exec/-data/-bridge-core only and NEVER on
+# egui, so this stays a down-only edge and adds no new compilation unit here (its whole tree is
+# already in this crate's graph).
+vike-ops = { path = "../vike-ops" }
+# thin-client Scope::Control WRITE path (`tradehub_control`): the WireCommand vocabulary +
+# RemoteControlHandle a `vike-app --observe` observer uses to drive a remote headless vike-tradehub
+# daemon's core. LIGHT + DataFusion-free (serde + framing + in-tree hmac/sha2 only), so this stays a
+# down-only edge with no heavy compile weight — vike-app already links this crate for `--observe`.
+vike-tradehub-client = { path = "../vike-tradehub-client" }
+# The datahub wire client (`backfill_wire`): the Data-Manager/chart-gap backfill's REMOTE arm
+# (split-plane REQ-9, GUI half) drives `DatahubClient::backfill` from here so the routing logic is
+# CI-tested against scripted loopback servers instead of living untestable in vike-app's main.rs.
+# LIGHT + DataFusion-free (serde + framing over one blocking TcpStream, layer 30) and already in
+# vike-app's own tree unconditionally (split-plane I7), so this down-only edge adds no new
+# compilation weight to either build.
+vike-datahub-client = { path = "../vike-datahub-client" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+egui = { workspace = true } # the workspace module (window state/layout/persist/menu/rail) is egui — but NOT eframe/wgpu, so still CI-able
+indexmap = { workspace = true } # deterministic window ordering in the workspace state
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Deterministic `log10`/`pow` for `orderflow::nice_orderflow_tick`, which is the single largest
+# per-platform divergence the libm survey found — not a last-bit one. IEEE 754 requires `+ - * /`
+# and `sqrt` to be correctly rounded and requires NOTHING of `log10`/`pow`, so an `f64` METHOD call
+# reaches the PLATFORM's libm (glibc on the CI runners, the MSVC runtime on the Windows dev box).
+# That function feeds a logarithm straight into `.floor()`, which QUANTIZES it: the two libms agree
+# everywhere except arbitrarily close to an exact power of ten, and exactly there a last-bit
+# disagreement flips the floor by one and the derived footprint/volume-profile bucket width by a
+# factor of TEN. A price of 5_000 or 50_000 lands on such a boundary (`raw = price * 0.0002`), so
+# these are ordinary instrument prices, not contrived ones. The `libm` crate's pure-Rust FDLIBM
+# answers identically on every target. Already a workspace-pinned transitive lockfile crate
+# (vike-options' Black-Scholes erf) — no new lock entry, no new cargo-deny surface.
+libm = { workspace = true }
+ureq = "3.3" # blocking REST (tool fetchers)
+tracing = { workspace = true } # tool-fetcher / sink diagnostics (subscriber lives in vike-log)
+
+[dev-dependencies]
+# The headless render gate for the Data Manager's Venues (arming) sub-tab
+# (`tests/venue_arming_screen.rs`). ⚠ It is the accessibility TREE that makes the gate possible:
+# the tab's whole promise is that the Effective column and the typed-confirm ceremony REACH the
+# screen, and a pure test of the view-model would stay green with the renderer wired to nothing.
+# The same argument (and the same dependency) as `vike-connections`'s `connections_a11y.rs`, whose
+# masked-field rule is likewise invisible without a tree. NO wgpu / NO snapshot — see the workspace
+# manifest's `egui_kittest` rationale. Already a workspace dependency, so it adds no package to the
+# `cargo deny` surface.
+egui_kittest = { workspace = true }
+# the DataFusion-free MemHistStore test double (`tools`' ChainRecorder tests).
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# back for `workspace::persist`'s disk round-trip: a FIXED `<temp>/<name>` is unusable on a box
+# where CI and agents run as different users (whoever creates it owns it), so the test takes a
+# unique self-deleting directory instead. Not a workspace dep — matches the vike-cli/vike-data/
+# vike-ops convention.
+tempfile = "3"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

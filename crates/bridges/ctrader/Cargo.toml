@@ -1,0 +1,67 @@
+[package]
+name = "vike-ctrader"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (exempts from deny.toml license checks)
+description = "cTrader Open API venue bridge — one multiplexed protobuf/TLS socket carrying data + exec; OAuth2 token auth."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+vike-exec = { path = "../../vike-exec" }
+vike-data = { path = "../../vike-data" }
+vike-bridge-core = { path = "../../vike-bridge-core" }
+vike-catalog = { path = "../../vike-catalog" }
+# the credential STORE — read by every root, and WRITTEN here (and only here, in this crate) when
+# the venue rotates its OAuth grant, through `vike_secrets::save_credentials`'s byte-preserving
+# upsert. Zero-dependency crate: it widens no audit surface. See src/token_store.rs.
+vike-secrets = { path = "../../vike-secrets" }
+prost = { workspace = true }
+rustls = { workspace = true }
+webpki-roots = { workspace = true }
+serde = { workspace = true }        # token JSON field mapping (camelCase wire structs)
+serde_json = { workspace = true }   # token JSON
+tracing = { workspace = true }
+
+# unix only, and for ONE constant: `libc::O_NOFOLLOW` in `ctrader_authorize`'s `write_private`, so
+# the open of the live-OAuth-token file cannot follow a symlink (see that function). ZERO new
+# packages — libc is already a direct workspace dependency of vike-core and already in Cargo.lock,
+# so the `cargo deny --all-features` audit surface is unchanged. There is no std spelling of the
+# flag: `OpenOptionsExt::custom_flags` takes a raw `i32` whose value is per-platform.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+# NO [build-dependencies]: the protobuf bindings are PRE-GENERATED and committed at
+# src/generated/openapi.rs (there is no build.rs), so prost-build/protoc-bin-vendored/vendored
+# protoc are OUT of the normal build + supply chain. The committed file is kept byte-identical to a
+# fresh prost-build regen by .github/workflows/ctrader-proto.yml (the drift gate, which pins the
+# prost-build/protoc versions used to regenerate). `prost` (runtime, in [dependencies]) still backs
+# the generated derives.
+
+[dev-dependencies]
+# dev-only, test-support feature: the shared NoopSink/RecordingSink LiveDataSink doubles
+# (testing-arch Phase 4d) — the normal [dependencies] vike-data entry above stays
+# default-features.
+vike-data = { path = "../../vike-data", features = ["test-support"] }
+vike-log = { path = "../../vike-log" }
+# test-only: the live demo smoke test drains a tokio::sync::mpsc Ingest receiver with a timeout
+# (same pattern as crates/bridges/oanda/tests/oanda_demo_smoke.rs).
+tokio = { workspace = true }
+# test-only: throwaway project trees + files for `ctrader_authorize`'s token-path resolver and its
+# 0600 permission assertion — neither may touch the real settings directory or a real token.
+tempfile = "3"
+# dev-only: the framing property harness (tests/framing_props.rs) -- encode/decode round-trip and
+# totality over arbitrary byte streams.
+proptest = { workspace = true }
+
+[[bin]]
+name = "ctrader_authorize"
+path = "src/bin/ctrader_authorize.rs"
+
+[lints]
+workspace = true

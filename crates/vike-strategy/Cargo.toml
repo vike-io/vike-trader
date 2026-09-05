@@ -1,0 +1,48 @@
+[package]
+name = "vike-strategy"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike strategy-authoring layer: the PositionExecutor triple-barrier state machine, the Controller/ControllerHarness/MomentumController framework, and the portable reference strategies (Grid/DcaAccumulate, PairsZScore, TrailingScalper, FundingCapture) — each a generic `impl<B: Broker> Strategy<B>` that runs UNCHANGED on the backtest and live engines. Depends on vike-model (+ vike-indicators) alone, down-only: nothing here reaches up into the simulator, so a consumer that just wants the strategies does not compile vike-backtest to get them. The PARAM types these consume (TripleBarrier, ControllerParams) stay in vike-model because they ride the StrategyParams payload the exec lane carries."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `engine` — a runtime / simulation / transport core over the domain crates.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 30
+
+[dependencies]
+# Behavior (the executor state machine + controller framework) references ONLY vike-model domain
+# types + its own siblings — so this crate depends on vike-model alone, keeping down-only layering
+# intact (nothing here reaches up into vike-exec/vike-core).
+vike-model = { path = "../vike-model" }
+serde = { workspace = true }
+# `MomentumController::from_params` / `FundingCarryController::from_params` read a harness/registry
+# TOML params table (the `BuyHold`/`Grid` reader convention) so the backtest strategy registry can
+# resolve + tune the controllers by name. `toml` is ALREADY a workspace-pinned dependency (pure-Rust,
+# in the tree via vike-backtest) — reusing it adds NO new crate to the supply chain / audit surface.
+toml = { workspace = true }
+# `pairs::PairsZScore`'s opt-in mean-reversion regime gate (`half_life_ok`) drives the REAL
+# `vike_indicators::pairs::HalfLife` pair indicator rather than re-deriving an OU half-life here —
+# ONE oracle for the statistic, shared with the chart/studio surfaces that plot it. Down-only, no
+# cycle: vike-indicators depends on vike-model ALONE and carries no external dependency at all, so
+# this edge adds ZERO crates to the supply-chain / audit surface.
+vike-indicators = { path = "../vike-indicators" }
+# `registry`'s two MAKER arms (`spread_maker`/`gueant_maker` -> `vike_mm::SpreadMaker`). The registry
+# is the name -> strategy lookup BOTH the simulator and the live daemon resolve through, so it must
+# be able to name every strategy either one may mount — and the A-S maker is the one the daemon has
+# mounted since it existed. Down-only (vike-mm is layer 20, this crate 30) and CHEAP: vike-mm depends
+# on vike-model ALONE and carries no external dependency, so this edge adds ZERO crates to the
+# supply-chain / audit surface of anything that links this crate.
+vike-mm = { path = "../vike-mm" }
+
+[dev-dependencies]
+# The moved executor/controller tests do serde round-trips on the param/outcome types.
+serde_json = { workspace = true }
+# The executor/controller machine tests drive vike-model's shared `MockBroker` (the `Broker` test
+# double) — enabled here as a test-only feature so it never reaches the normal (production) dep.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

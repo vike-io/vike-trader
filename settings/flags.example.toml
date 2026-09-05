@@ -1,0 +1,128 @@
+# <project>/settings/flags.toml — FEATURE FLAGS. Every one is a bool, every one DEFAULTS TO FALSE.
+#
+#     cp settings/flags.example.toml settings/flags.toml
+#     $EDITOR settings/flags.toml
+#     vike-cli config show --filter flags    # confirm what the binaries will read
+#
+# Every line below is COMMENTED OUT and set to its default (`false`), so this file AS SHIPPED
+# configures NOTHING, and uncommenting a line as written still turns nothing on. Set a flag by
+# uncommenting its line AND changing it to `true`.
+#
+# Override chain, highest first: environment variable > this file > default. The environment grammar
+# is the EXACT string "1" or "0" — any other value is a startup ERROR, never a silent false.
+#
+# ⚠ `vike-cli config show`'s READ column is worth a look before you set one of these. Most flags in
+# this file are read by a LIBRARY that resolves its own environment variable rather than by the
+# settings loader, so setting them HERE does nothing yet — the column says `NO` for exactly those,
+# and the `--json` view carries each one's reason. That is a wiring gap being closed key by key, not
+# a broken file; the ones that already read this file report `yes`.
+
+# -- reconciliation: diff venue reports against local state ---------------------------------------
+# The master gate. Off = no ReconDriver, no thread, byte-identical to pre-activation behaviour.
+# Env: VIKE_RECONCILE
+# reconcile = false
+# Adopt a venue order with no local match (a TERMINAL one whose fills fell outside the lookback).
+# Env: VIKE_RECONCILE_GENERATE_MISSING
+# reconcile_generate_missing = false
+# Env: VIKE_RECONCILE_BALANCE
+# reconcile_balance = false
+
+# -- order emulation ------------------------------------------------------------------------------
+# Env: VIKE_OCO_CANCEL_SIBLING_ON_DEAD_EXIT
+# oco_cancel_sibling_on_dead_exit = false
+
+# -- the headless daemon (vike-tradehub) ----------------------------------------------------------
+# Mount the LIVE twelve-venue core instead of the paper exchange. ⚠ REAL MONEY, gated additionally
+# by the per-venue credentials being present — absent creds keep that venue paper regardless.
+# Env: VIKE_TRADEHUB_LIVE
+# tradehub_live = false
+# Accept WRITES on the node server. Off, a Control-scope peer is refused at the handshake and every
+# connection is observe-only, however good its key.
+# Env: VIKE_TRADEHUB_CONTROL
+# tradehub_control = false
+# ⚠ Let the node server bind a NON-LOOPBACK address (`0.0.0.0`, `::`, or a specific interface).
+# Off — the default — the daemon REFUSES such a bind and keeps trading headless, because that
+# surface's handshake is plaintext and authenticates the connection rather than each frame: reach it
+# over an SSH tunnel instead (`ssh -L 7879:localhost:7879 <host>`), the way vike-datahub is reached.
+# Turn this on only when the listening network is itself trusted (a VPN interface, a private LAN);
+# every start then warns that the surface is exposed.
+# Env: VIKE_TRADEHUB_ALLOW_PUBLIC_BIND
+# tradehub_allow_public_bind = false
+# ⚠ The Telegram control channel: a REMOTE ORDER-ORIGINATION path reachable from a third-party chat
+# service. This runtime flag is the LAST of its gates — a default build does not compile the module
+# at all (`--features telegram`), and the bot token plus a non-empty chat allowlist must be in
+# `secrets.env` on top of this.
+# Env: VIKE_TELEGRAM_CONTROL
+# telegram_control = false
+# Env: VIKE_TRADEHUB_RECORD
+# tradehub_record = false
+# Cancel every RESTING ORDER while the daemon shuts down. OFF (the default, and what has always
+# happened) leaves your quotes live at the venue with nothing left running to manage them. It never
+# FLATTENS — positions survive either way; `market-exit` is the verb that closes them.
+# ⚠ Only reached by a stop that actually tears down: an interactive `shutdown`/`quit`/Ctrl-D. Under
+# the shipped systemd unit stdin is /dev/null and SIGTERM has no handler, so `systemctl stop` kills
+# the process before this can run. See docs/ops/kill-switches.md §D.
+# Env: VIKE_CANCEL_ORDERS_ON_SHUTDOWN
+# cancel_orders_on_shutdown = false
+
+# -- polymarket -----------------------------------------------------------------------------------
+# Mount the LIVE execution client. ⚠ This also STARTS THE USER-WS FILL PUMP: on this venue every
+# post-acceptance terminal arrives only on the user channel, so exec without the pump would accept
+# orders that can never reach a terminal. The two are deliberately inseparable.
+# Env: POLY_EXEC
+# poly_exec = false
+# ⚠ Reconcile WITHOUT `poly_exec` diffs live venue state against a PAPER engine, so under the
+# `hybrid` policy every local order diffs as an orphan and auto-cancels every pass. Alone, run
+# `quarantine`.
+# Env: POLY_RECONCILE
+# poly_reconcile = false
+# Env: POLY_PRESUBMIT_REGISTER
+# poly_presubmit_register = false
+# Env: POLY_HEARTBEAT
+# poly_heartbeat = false
+# Env: POLY_RATE_GATE
+# poly_rate_gate = false
+# The on-chain settlement watcher. Its verdict OUTRANKS the data-api's `redeemable` flag, which is
+# NOT a winner flag — every position of a resolved condition reports it, losers included, so
+# trusting that flag settles losers at 1.0 and fabricates profit.
+# Env: POLY_CHAIN_WATCH
+# poly_chain_watch = false
+# Env: POLY_CHAIN_PROXY
+# poly_chain_proxy = false
+# Redeem resolved WINNING positions via the gasless relayer (at-most-once, ledger-backed).
+# Env: POLY_AUTO_REDEEM
+# poly_auto_redeem = false
+# ⚠ INVERTED — the auto-redeem KILL SWITCH. `true` HALTS redemption. Its environment layer is
+# PRESENCE-based (the variable existing arms it, whatever the value), because a kill switch no value
+# can un-set is the only kind worth having.
+# Env: POLY_REDEEM_HALT
+# poly_redeem_halt = false
+# Env: VIKE_PM_RESOLVE
+# pm_resolve = false
+
+# -- per-venue behaviour --------------------------------------------------------------------------
+# Env: VIKE_HL_OUTCOME
+# hl_outcome = false
+# Env: VIKE_BYBIT_FAST_EXEC
+# bybit_fast_exec = false
+# Env: VIKE_BINANCE_TRADE_LITE_FILL
+# binance_trade_lite_fill = false
+# Env: HYPERLIQUID_HIP3
+# hyperliquid_hip3 = false
+
+# -- recorders (write extra series into the hist store) --------------------------------------------
+# Env: VIKE_RECORD_PROPERTIES
+# record_properties = false
+# Env: VIKE_RECORD_CHAINS
+# record_chains = false
+# Env: VIKE_RECORD_DVOL
+# record_dvol = false
+
+# -- SAFETY OVERRIDES: read the sentence twice ----------------------------------------------------
+# ⚠ Permit API keys that carry WITHDRAW permission. The default refusal exists because a key that
+# can move funds off the venue has no business signing orders.
+# Env: VIKE_ALLOW_WITHDRAW_KEYS
+# allow_withdraw_keys = false
+# ⚠ Skip the startup preflight — the checks that catch a misconfigured mount BEFORE it trades.
+# Env: VIKE_PREFLIGHT_SKIP
+# preflight_skip = false

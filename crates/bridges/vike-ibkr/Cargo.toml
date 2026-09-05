@@ -1,0 +1,88 @@
+[package]
+name = "vike-ibkr"
+version = "0.1.0"
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "Interactive Brokers venue bridge — one crate, three switchable transports (socket/cpapi/oauth) behind IbkrTransport. Phase 1: TWS/IB Gateway socket exec on a copied-in-tree ibapi (sync). Live+paper via IBKR_{DEMO|LIVE}_* config."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+vike-exec = { path = "../../vike-exec" }
+vike-bridge-core = { path = "../../vike-bridge-core" } # ExecActor, credentials, halt
+tracing = { workspace = true }       # adapter lifecycle diagnostics (never per-message on a hot path)
+# ustr is NOT workspace-pinned (only vike-model depends on it directly, with its own
+# `version = "..."` — see crates/vike-model/Cargo.toml); `{ workspace = true }` here would fail
+# workspace resolution since the key doesn't exist under the root Cargo.toml's
+# `[workspace.dependencies]`. event_mapper.rs interns FillEvent's venue/symbol/commission_asset
+# (Ustr) so this crate needs its own pin, matching vike-model's version.
+ustr = "1.1"
+# compact_str (venue_order_id / trade_id) is not needed as a direct dep: FillEvent.trade_id and
+# OrderAccepted.venue_order_id are populated via `.into()` from `String`, using the `From<String>`
+# impl re-exported transitively through vike-model.
+
+# Socket backend: the copied-in-tree IBKR wire-protocol client (vendor/ibapi, v3.2.1). BOTH
+# `default-features = false` AND `features = ["sync"]` are LOAD-BEARING — ibapi's default feature is
+# `async` (tokio); disabling defaults + selecting only `sync` forces the blocking (crossbeam-backed)
+# client so NO tokio enters the otherwise-blocking bridge tree
+# (see docs/superpowers/specs/2026-07-14-vike-ibkr-bridge-design.md §4). Optional: pulled in only by
+# the `ibkr-socket` feature via `dep:ibapi`, so a default build never compiles it.
+ibapi = { path = "vendor/ibapi", default-features = false, features = ["sync"], optional = true }
+
+# Historical backfill (PR-3b) builds `OffsetDateTime` from epoch-ms for the `.ending()` paging
+# request. Optional + pulled only by `ibkr-socket` (where ibapi — which pins the same time 0.3 —
+# exists). Version matches ibapi's pin (vendor/ibapi/Cargo.toml).
+time = { version = "0.3", optional = true }
+
+# Live market-data seam (DataClient/LiveDataSink) for the Phase-3 realtime feed. Optional: only the
+# ibkr-socket backend (which has the ibapi Client) serves market data. default-features = false — no
+# hist-datafusion; this crate never touches the DataFusion tree.
+vike-data = { path = "../../vike-data", default-features = false, optional = true }
+
+# cpapi backend (Client Portal Web API): plain REST/JSON + WS, named directly by
+# `transport/cpapi/*.rs` (`ureq::Agent`/`ureq::http::Response`, `serde_json::Value`,
+# `tungstenite::connect`). All pure-Rust (rustls, no native). Optional: pulled in ONLY by the
+# `ibkr-cpapi` feature via `dep:`, so a default build never compiles them.
+serde_json = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
+tungstenite = { workspace = true, optional = true }
+# The cpapi WS pump connects to the LOOPBACK Client Portal Gateway, which serves a self-signed
+# (often expired) cert — the REST side already bypasses verification via ureq's
+# `blocking_agent_loopback_insecure`; the WS side needs the same, so it builds a rustls ClientConfig
+# with a loopback-gated no-verify verifier and hands it to tungstenite as a `Connector::Rustls`.
+# Matches the workspace rustls pin (ring, no OpenSSL). Optional: only the cpapi backend needs it.
+rustls = { workspace = true, optional = true }
+
+[dev-dependencies]
+vike-log = { path = "../../vike-log" } # test_init() for lifecycle + smoke
+# The lifecycle integration test names `tokio::sync::mpsc::Receiver<Ingest>` (the ingest lane's
+# receiver type returned by `event_channel`) in its `drain` helper — hence a dev-only tokio pin.
+# It never spins a runtime: `try_recv` off a plain test thread is the only surface used.
+tokio = { workspace = true }
+# tests/ibkr_mktdata_map.rs builds ibapi realtime-tick/Trade fixtures directly, which carry `time`
+# (`OffsetDateTime`) fields — same crate ibapi itself pins (vendor/ibapi/Cargo.toml: "0.3.36"), not
+# workspace-pinned since only this one test needs it.
+time = "0.3"
+
+[features]
+default = []
+# `test-support` exposes the `testing` surface (FakeTransport + run_exec_for_test) so the exec
+# lifecycle is drivable with NO Gateway. It is dep-free (no optional dep table) — a pure cfg gate.
+# The integration test runs under `--features test-support`; the default build never sees it.
+test-support = []
+# `ibkr` is the umbrella feature the app root / CI turn on to compile the live socket backend;
+# `ibkr-socket` is the backend itself (`dep:ibapi` pulls in the vendored blocking client). Split so
+# Phase-2 backends (cpapi/oauth) can slot in as sibling features under the same `ibkr` umbrella.
+ibkr = ["ibkr-socket", "ibkr-cpapi"]
+ibkr-socket = ["dep:ibapi", "dep:vike-data", "dep:time"]
+# cpapi (Client Portal Web API) backend: pulls the pure-Rust REST/WS/JSON deps. A default build
+# compiles only the stub; `--features ibkr` (or `ibkr-cpapi`) compiles the cpapi module tree.
+ibkr-cpapi = ["dep:serde_json", "dep:ureq", "dep:tungstenite", "dep:rustls"]
+
+[lints]
+workspace = true

@@ -1,0 +1,179 @@
+# `momentum` — the FIRST validation of the registry's `MomentumController` (`vike-strategy`'s
+# reference controller, wrapped by `ControllerHarness`), as an ANCHORED WALK-FORWARD over 24
+# months of Binance 1-minute BTCUSDT bars.
+#
+# Run it (walk-forward is served by the datahub, NOT the `backtest` bin — that bin only does a
+# single run / `[sweep]`, it has no `[walkforward]` arm):
+#   vike-cli walkforward --profile crates/vike-backtest/profiles/wf_momentum.toml \
+#       --addr 127.0.0.1:7878 --json          # over `ssh -L 7878:localhost:7878 the CI box`
+# A single (non-walk-forward) run of the SAME file, to eyeball trade count / fee drag first:
+#   cargo run -p vike-backtest --features datafusion-store --bin backtest -- \
+#       --profile crates/vike-backtest/profiles/wf_momentum.toml --store ~/vike_hist_24mo --json
+#
+# ============================================================================================
+# WHAT THE STRATEGY ACTUALLY DOES  (`vike-strategy/src/controller.rs`)
+# ============================================================================================
+# `MomentumController::evaluate` is a 3-line decision: read the current mark
+# (`Broker::price` == THIS bar's close, set by the engine loop before `on_bar`), compare it to the
+# mark at its PREVIOUS invitation (`last_ref`), and open LONG on `px - prev >= threshold`, SHORT on
+# `px - prev <= -threshold`, else decline. It then hands the harness a `PositionIntent::market`
+# (market entry, no refresh, no retry) carrying the triple barrier below; a `PositionExecutor`
+# owns the exit. There is no indicator, no lookback window, no volume/volatility term, and no
+# sizing model — `qty` is a flat unit count.
+#
+# ⚠ THE LOOKBACK IS NOT ONE BAR — IT IS "SINCE THE LAST INVITATION". `ControllerHarness::maybe_open`
+# calls `evaluate` ONLY while the pair is flat AND past cooldown, and `last_ref` is written only
+# inside `evaluate`. So: while flat it IS a 1-minute momentum rule; but the first invitation AFTER a
+# round trip compares the current price to the price at the LAST ENTRY DECISION — hours ago — so
+# `threshold` is almost always cleared and the re-entry direction is the SIGN OF THE BARRIER THAT
+# JUST FIRED. In practice this makes the mount a stop-and-reverse machine: a stop-loss exit
+# re-enters SHORT, a take-profit exit re-enters LONG, on the very next eligible bar. That is a
+# property of the code, not of these numbers; it is the single biggest thing to know when reading
+# the result.
+#
+# ============================================================================================
+# WHY EACH VALUE  (every key below was read off `from_params`, not guessed)
+# ============================================================================================
+# All of `threshold` / `tp` / `sl` / `trailing` are ABSOLUTE PRICE OFFSETS IN QUOTE UNITS (USDT) —
+# `position_executor.rs`'s frozen wire shape. There is no bps/percent form reachable from TOML
+# (`TripleBarrier::from_bps` exists but `barriers_from_params` never calls it), so every number
+# here is dollars of BTC, and every one of them drifts in RELATIVE terms as BTC moves from ~$50k
+# (Aug 2024) to ~$120k+ (2026). See the CAVEATS block.
+#
+# Volatility anchor used for the sizing below: BTC realized vol ≈ 50 % annualized over this window
+# ⇒ σ(1 min) ≈ 0.069 % ⇒ ≈ $34 at $50k, ≈ $62 at $90k, ≈ $87 at $126k.
+#
+#   threshold = 60.0   — the entry impulse filter, ≈ 1.8σ at the START of the sample and ≈ 0.7σ at
+#                        the end. SANITY CHECK (this is the "does it trade?" argument): even in the
+#                        least active regime a ≥1.8σ one-minute move is ~7 % of bars under a normal
+#                        and materially more under BTC's fat tails, i.e. a signal roughly every 14
+#                        minutes while flat — and at the rich end of the sample it fires on ~40 % of
+#                        bars. The strategy therefore cannot sit flat anywhere in the 24 months.
+#                        Do NOT leave this at its default `0.0`: with `threshold = 0` the FIRST
+#                        match arm (`px - prev >= 0.0`) swallows every up-or-flat bar, so the
+#                        controller opens on EVERY invitation and the run degenerates into pure
+#                        fee churn.
+#   tp = 900.0         — take-profit, ≈ 1.0 % at $90k. Sized against COST, not against a hunch: the
+#   sl = 450.0           round-trip taker cost is 2 × 0.001 × price × qty, i.e. $180 per BTC at
+#                        $90k, so a $900 target gives up ~20 % of a win to fees and a $450 stop
+#                        adds ~40 % on top of a loss. Anything tighter measures the fee schedule
+#                        rather than the signal. 2:1 is the canonical trend-following payoff; it
+#                        needs a > 46.7 % hit rate to clear costs, which is exactly the question
+#                        this walk-forward exists to answer.
+#   time_limit_ms      — 8 h backstop (28_800_000). Expected time to touch the ±0.5 % stop side at
+#                        σ = 0.069 %/min is ≈ 70 min, so the clock leg is a tail-cutter for quiet
+#                        stretches, not the dominant exit. ⚠ MUST BE A TOML INTEGER: the reader is
+#                        `Value::as_integer` (NOT the lenient `as_f64` the price legs use), so
+#                        `28_800_000.0` would be silently dropped and the position would have no
+#                        time barrier at all.
+#   trailing           — DELIBERATELY ABSENT (un-armed). `evaluate_barriers` checks it BEFORE the
+#                        take-profit, so arming it would pre-empt `tp` on most trades and confound
+#                        what is being measured. One exit family at a time.
+#   qty = 0.05         — 0.05 BTC ≈ $2.5k–$6.3k notional, i.e. 2.5–6.3 % of `cash`. Deliberately
+#                        unlevered: `EngineParams` defaults `cash_gate = false` and
+#                        `maint_margin = 0.0`, and this profile arms no `[risk]` table, so NOTHING
+#                        stops the sim from taking the position size past the account. Sizing is
+#                        the only control there is. At ~1,250 round trips per OOS window the worst
+#                        case fee drag is ≈ 11 % of `cash` per window, which keeps equity strictly
+#                        positive — load-bearing, because `walk_forward_strategy` stitches windows
+#                        MULTIPLICATIVELY (`start * (v / cash)`) and a negative window equity would
+#                        flip the sign of everything after it.
+#   cooldown_ms        — 5 min (300_000), read by `controller_harness`, not by the controller. Also
+#                        `Value::as_integer` only. Spaces successive positions so the mount cannot
+#                        re-open on the same bar its close fills; 5 bars is small against the ~2 h
+#                        expected hold, so it costs almost no exposure.
+#   venue = "binance"  — COSMETIC in backtest: it is only the `(venue, symbol)` executor-key half
+#                        and the tag echoed into the intent. Orders route to `SimBroker` by SYMBOL.
+#                        (Default is `"sim"`.)
+#
+# `[strategy.params]` is a free-form `toml::Value` — it is NOT `deny_unknown_fields`. A typo'd key
+# is silently ignored and its default applies. `threshold` typo'd ⇒ `0.0` ⇒ trades every bar;
+# `qty` typo'd ⇒ `1.0` ⇒ 20× the intended size. Diff this table against `MomentumController::
+# from_params` + `barriers_from_params` + `controller_harness` before trusting a number.
+#
+# ============================================================================================
+# CAVEATS — read these before believing the report
+# ============================================================================================
+# 1. ⚠ `engine.snap_to_properties` MUST STAY OFF. The documented bar-mode footgun ("bars get
+#    re-tagged SYMBOL.VENUE, so a symbol-inferring strategy needs an explicit
+#    strategy.params.symbol") is WORSE here than for `buy_hold`: `ControllerHarness::on_bar` takes
+#    the symbol from `bar.symbol` UNCONDITIONALLY and there is no `symbol` param anywhere in this
+#    strategy's reader chain to override it. With snapping on, the harness would ask
+#    `broker.price("BTCUSDT.BINANCE")` while `SimBroker::symbols` still holds the bare `"BTCUSDT"`,
+#    and `SimBroker::idx` PANICS on an unknown symbol. There is no workaround — the knob is simply
+#    unusable with this strategy.
+# 2. ⚠ THE BARS ARE BINANCE **SPOT** (`vike-backfill/src/binance.rs` fetches
+#    `api.binance.com/api/v3/klines`) BUT THE STRATEGY SHORTS. Roughly half the entries are
+#    unexecutable on the venue the data came from. Read the result as a proxy for the USDⓈ-M perp,
+#    whose 1m closes track spot within basis; `fee_rate` below is nonetheless set to the CONSERVATIVE
+#    spot taker rate, so the cost model matches the data provenance rather than the cheaper venue.
+# 3. ⚠ ABSOLUTE BARRIERS + A 2.5× PRICE RANGE = WINDOWS THAT ARE NOT COMPARABLE. `tp = 900` is
+#    1.8 % of a $50k BTC and 0.7 % of a $126k BTC; `threshold = 60` is 0.12 % vs 0.048 %. A
+#    walk-forward that "decays" across windows may be reporting BTC's price level, not decaying
+#    edge. Any window-to-window comparison must be read with the price level in hand.
+# 4. ⚠ "ANCHORED WALK-FORWARD" HERE FITS NOTHING. `walk_forward_strategy` computes anchored train
+#    ranges and then runs ONLY `bars[test_start..test_end]`; these params are fixed and identical in
+#    all six windows. This is a segmented out-of-sample STABILITY check, not an optimize-then-test
+#    protocol — `wf_consistency` is "how many of six contiguous quarters were profitable", nothing
+#    more. (Good news on the other side: each window builds a FRESH strategy + engine at `cash`, so
+#    there is no state carried across splits and no path dependence between them.)
+# 5. ⚠ `oos_sharpe` IS NOT ANNUALIZED. `harness::report::periods_per_year` returns 252 for anything
+#    that is not `interval = "1d"`, so a 1-minute run is scaled by √252 instead of √525_600 — the
+#    printed Sharpe is understated by ≈ 45×. Compare windows to each other; do not compare the
+#    number to a published Sharpe.
+# 6. The barrier price is DIAGNOSTIC, the fill is not. `evaluate_barriers` reports the
+#    `order_fill_price` trigger, but the executor then sends a plain opposite-side MARKET which the
+#    engine fills at the NEXT bar's open. Every stop therefore realizes one minute of gap risk that
+#    the `ExecutorOutcome.exit_px` does not show. Entries have the same 1-bar lag (signal on bar i,
+#    fill at bar i+1's open), which is realistic, not a bug.
+# 7. A position still open on the last bar of a window is MARKED, not closed (`close_inactive` is
+#    inert without an `active_mask`), so its exit fee is unpaid and its PnL is unrealized in
+#    `final_equity`. One trade per window — negligible at ~1,250 trades, but it is not zero.
+
+name = "wf momentum — BTCUSDT 1m, 24mo, 6 anchored OOS windows"
+
+[data]
+kind = "bar"
+interval = "1m"
+# 2024-08-02 → 2026-08-02, bare epoch-ms (a `YYYY-MM-DDTHH` label would parse too).
+from = "1722556800000"
+to = "1785628800000"
+venue = "binance"
+# ONE symbol, and that is a HARD requirement, not a preference: `run_walkforward` rejects a
+# multi-series profile ("walk-forward runs over ONE bar series") because the splitter divides a
+# single `&[Bar]` by index. BTCUSDT is the deepest full-history series in the slice; KAITO/LIT are
+# excluded from every profile in this batch because their history is short.
+symbols = ["BTCUSDT"]
+
+[engine]
+cash = 100000.0
+# Binance SPOT taker, VIP0, no BNB discount = 0.10 % per side (0.20 % round trip). This is the
+# venue the bars actually came from and the conservative reading; the USDⓈ-M perp taker (0.0005)
+# would halve it, and halving an unproven strategy's costs is how a dead edge looks alive.
+fee_rate = 0.001
+# No flat slippage on top: at $2.5k–$6.3k of BTCUSDT notional a market order is inside the top of
+# book, and stacking an invented slippage on a real 0.1 % taker fee would double-count the cost.
+slippage = 0.0
+# snap_to_properties is left OFF — see CAVEAT 1: with this strategy it is a PANIC, not a misroute.
+# attach_funding is left OFF too: spot bars carry no funding, and the controller never reads it.
+
+[strategy]
+name = "momentum"
+
+[strategy.params]
+# --- MomentumController::from_params ---
+qty = 0.05
+threshold = 60.0
+# --- barriers_from_params (all four legs optional; `trailing` intentionally omitted) ---
+tp = 900.0
+sl = 450.0
+time_limit_ms = 28800000
+# --- controller_harness (harness-level, not controller-level) ---
+venue = "binance"
+cooldown_ms = 300000
+
+[walkforward]
+# 6 anchored OOS windows. `walk_forward_splits` uses `chunk = n / (n_splits + 1)`, so with
+# ~1,051,200 one-minute bars each window is ~150k bars ≈ 104 days, tiling the last 6/7 of the
+# sample. Each window runs fresh at `engine.cash` and the OOS curves are stitched multiplicatively.
+n_splits = 6
