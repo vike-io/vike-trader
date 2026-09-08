@@ -1,0 +1,106 @@
+# Cross-sectional top-k momentum ROTATION over a 24-month Binance 1m bar slice.
+#
+# ⚠ THIS IS DELIBERATELY *NOT* `wf_rotation_top_k.toml`, AND IT CARRIES NO `[walkforward]`
+# SECTION. `rotation_top_k` cannot be walk-forwarded, and the two reasons are mutually
+# exclusive rather than merely inconvenient:
+#
+#   1. `harness::walkforward::run_walkforward` rejects any profile resolving to more than one
+#      bar series — "walk-forward runs over ONE bar series … name a single symbol"
+#      (`src/harness/walkforward.rs`, the `series.len() != 1` guard). The splitter divides a
+#      single `&[Bar]` BY INDEX; it has no notion of an aligned cross-section.
+#   2. With exactly ONE symbol the strategy is INERT by construction: `RotationTopK::on_schedule`
+#      early-returns at `if scores.len() < K` with `const K: usize = 2`
+#      (`src/ref_strategies.rs`). A one-symbol walk-forward would therefore NOT error — it would
+#      return six perfectly flat, zero-trade OOS windows and a 0.0 return, which is worse than a
+#      failure because it looks like a result.
+#
+# Any symbol count that lets this strategy trade (>= 2) is refused by the walk-forward runner;
+# the only count the runner accepts (1) silences the strategy. There is no supported workaround
+# in the code as written — do not add one by naming a single symbol.
+#
+# What this profile IS: a plain multi-symbol `run_backtest` over the full 24 months, which is the
+# ONLY shape the harness supports for this strategy.
+#
+#     cargo run -p vike-backtest --features datafusion-store --bin backtest -- \
+#       --profile crates/vike-backtest/profiles/rotation_top_k_multi.toml \
+#       --store ~/vike_hist_24mo
+#
+# ⚠ ALIGNED-LENGTH PRECONDITION. `StrategyEngine::new` asserts
+# `"all symbol series must have the same length (aligned)"` (`src/engine.rs`), and NOTHING in the
+# harness reindexes or pads: `load_profile_bars` issues one `store.load_bars` per symbol and hands
+# the raw results straight in. Two Binance symbols whose 1m tape differs by even ONE minute
+# (a maintenance halt on one pair, a later listing) PANIC the run rather than erroring. Count the
+# rows per symbol over the range BEFORE running, and drop any symbol that disagrees. The five
+# below were chosen because all listed years before 2024-08-02 — KAITO (listed ~2025) and LIT
+# (spot delisted ~2025-02) are excluded for exactly this reason, not merely for liquidity.
+
+name = "rotation_top_k-binance-1m-24mo"
+
+[data]
+kind = "bar"
+interval = "1m"
+venue = "binance"
+# >= K = 2 is MANDATORY (see the K guard above). Five majors, all with full history across the
+# window, keeps the cross-section wide enough for the rank to actually change hands while keeping
+# the aligned-length precondition tractable. ORDER IS LOAD-BEARING: `resolved_series` preserves it
+# into `ctx.symbols`, and `on_schedule`'s tie-break is a STABLE sort, so on the very first
+# rebalance (bar 0, where every score is exactly 1.0 because `h.last()/h[0]` reads one close) the
+# winners are the FIRST TWO listed here. BTCUSDT/ETHUSDT lead deliberately — the seed book should
+# be the two deepest names, not an accident of alphabetization.
+symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
+from = "1722556800000"   # 2024-08-02
+to   = "1785628800000"   # 2026-08-02
+
+[engine]
+# 100k, not 10k: the strategy is ALWAYS ~100% invested (two winners at `1/k` = 50% each, via
+# `strategy_order_target_percent`), and each rebalance sizes through
+# `vike_model::units_from_percent` = pct*eq/(price*mult). At 10k a 50% BTC leg is a ~0.08-unit
+# position whose per-rebalance delta is dominated by f64 noise against the 1e-12 dead-band; 100k
+# puts every leg in a size range where the drift trade is economically real.
+cash = 100000.0
+# Binance SPOT VIP0 TAKER, no BNB discount. Taker is the correct side, not a pessimism:
+# `strategy_order_target_percent` submits with `market = true` on EVERY rebalance — this strategy
+# has no passive leg at all. Use 0.0005 instead if this store's `venue = "binance"` series are
+# USD-M PERP klines rather than spot.
+fee_rate = 0.001
+# The book walk is not modelled and these are the five deepest USDT pairs on the venue, so a flat
+# adverse-price add would be double-counting on top of `fee_rate`. The honest cost here is the
+# COMMISSION on a very high trade count, which `fee_rate` already carries.
+slippage = 0.0
+# OFF — and this is the one knob whose default matters. On, `bar_engine_params` sets
+# `default_venue`, `StrategyEngine::new` re-tags every bar `SYMBOL.BINANCE`, and the CLAUDE.md
+# bar-mode footgun bites a symbol-inferring strategy. `rotation_top_k` happens to be IMMUNE (its
+# `sym_key` does `split_once('.')` and hands back the bare symbol, which is exactly what
+# `ctx.symbols` holds), so leaving it off is not a workaround for a bug — it is simply the
+# cheaper, byte-identical default. Turning it on would add ~5.25M point-in-time grid lookups for
+# no behavioural change.
+snap_to_properties = false
+
+[strategy]
+name = "rotation_top_k"
+# NO `[strategy.params]` TABLE, ON PURPOSE. The registry arm is
+# `"rotation_top_k" => Ok(Box::new(RotationTopK::default()))` — it never reads `params`. Every
+# number this strategy uses is a hard-coded literal in `src/ref_strategies.rs`:
+#   K            = 2         `const K: usize = 2`      — winners held, weighted 1/k = 0.50 each
+#   rebalance    = 10 bars   `DateRule::every_n_bars(10)` registered in `on_start`
+#   score        = h.last()/h[0] — cumulative return since the FIRST close ever seen
+#   sizing       = `strategy_order_target_percent(sym, 1/k)`, long-only, market
+#   exit         = a held drop-out is targeted to 0.0; there is no stop, no TP, no flat state
+# A `params` table here would parse (StrategyCfg accepts any `toml::Value`) and be silently
+# discarded — which is precisely the "profile whose knobs do nothing" failure this comment exists
+# to prevent. It also means a `[sweep]` over this strategy is a no-op that runs the identical
+# backtest N times.
+#
+# SANITY CHECK THAT IT TRADES (traced by hand through the engine loop, no knob-tuning involved):
+# `run()` fires every symbol's `on_bar` at index i, THEN `schedule.check_due(ts, i)`; `EveryNBars`
+# is `bar_index.is_multiple_of(n)`, so the first rebalance is bar 0 — with 5 closes recorded,
+# `scores.len() = 5 >= K`, the guard passes, and two 50% market legs go on immediately. Thereafter
+# a rebalance lands every 10 minutes (~105k over the window) and re-targets against price drift
+# with a 1e-12 dead-band, so it trades essentially every one. Flat-and-never-trading is not a
+# reachable outcome for this profile; the risk runs the OTHER way (see the turnover note below).
+#
+# ⚠ INTERPRET THE RESULT WITH THIS IN HAND: the score is `h.last()/h[0]`, an ANCHORED total return
+# since the first bar of the run — NOT a rolling momentum window. After the first weeks the ranking
+# is effectively frozen, so this degenerates into "hold the two best performers since 2024-08-02,
+# rebalanced to 50/50 every ten minutes". Its headline number is therefore a lookahead-free but
+# nearly-static buy-and-hold plus ~105k round-trips of commission drag, not a momentum edge.

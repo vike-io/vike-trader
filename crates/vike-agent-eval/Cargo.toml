@@ -1,0 +1,51 @@
+[package]
+name = "vike-agent-eval"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "The agent-driving crate. `vike-agent-eval` is the MODEL-IN-THE-LOOP evaluation harness: a real LLM agent drives the real `vike-cli mcp` server against a real paper `vike-tradehub` node, and every outcome is graded DETERMINISTICALLY from the MCP transcript plus node state — never by another model; its `--scripted` driver runs the same pipeline with no model at all, which is the half CI can gate. `vike-agent-run` is the UNATTENDED runner that shares that machine: one session against the OPERATOR's own node, read-only by default, bounded, leaving an append-only record — the local-first answer to a hosted agent cloud."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `daemon` — a headless
+# top-of-graph binary: nothing may depend on it. The rank is chosen to match `vike-cli`, the tool
+# this harness DRIVES: an evaluation harness sits at least as high as its subject, and a crate below
+# it could otherwise take an edge onto this one and drag a model client into a trading graph.
+# ⚠ The strictly-lower rule is VACUOUS here on purpose — this crate has no `vike-*` dependency at
+# all, normal or dev. It reaches every part of the system the way an operator does, by SPAWNING the
+# shipped binaries, so it cannot compile against an internal API the shipped surface does not expose
+# and then report a green the operator's own path would not have produced.
+[package.metadata.vike]
+layer = 65
+
+[[bin]]
+name = "vike-agent-eval"
+path = "src/main.rs"
+
+# ⚠ THE SECOND BINARY IS `src/bin/vike-agent-run.rs` AND IS DELIBERATELY NOT LISTED HERE. Cargo
+# auto-discovers `src/bin/*.rs`, and the PATH is what the settings-registry gate keys on:
+# `crates/vike-ops/tests/settings_registry.rs`'s `layer_for` scores `/src/bin/` and `/src/main.rs` as
+# `Layer::Binary` and everything else under `src/` as `Layer::Library` — the ratcheted work-list. A
+# `[[bin]] path = "src/run_main.rs"` would compile identically and land this crate's two model
+# credentials on that ratchet. The directory is the declaration.
+#
+# It is the UNATTENDED runner (crates/vike-agent-eval/src/unattended.rs), which shares this crate's
+# MCP client and its three model drivers with the evaluation harness and builds no world of its own.
+# That module's doc argues why it is a second bin here rather than a second crate.
+
+[dependencies]
+# The MCP wire is newline-delimited JSON-RPC and the Anthropic Messages API is JSON; both are
+# handled as `Value` rather than as typed mirrors, deliberately — a typed mirror of a surface this
+# harness exists to OBSERVE would silently normalise away the drift it is looking for.
+serde_json = { workspace = true }
+# The ONE sanctioned blocking HTTP client (root Cargo.toml's rationale; `deny.toml`'s `[bans]`
+# rejects reqwest/isahc/curl). Used for exactly one endpoint — the Anthropic Messages API.
+ureq = { workspace = true }
+
+[dev-dependencies]
+# The throwaway project root each test's paper node runs in — unique per run and self-deleting on
+# the panic path, which is what `crates/vike-ops/tests/temp_path_gate.rs` asks of test scratch.
+tempfile = "3"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

@@ -1,0 +1,55 @@
+[package]
+name = "vike-connections"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false
+description = "Venues x Sim/Demo/Live credential-status grid + in-app masked key editing (which venues have API keys configured in .env), mounted by vike-app."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `ui-widget` — an egui widget / engine crate (no eframe/wgpu).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 75
+
+[dependencies]
+# credential loader + Environment + .env reader — the naming authority this crate reads through,
+# never reimplements (`load_credentials_from`/`load_workspace_dotenv`/`workspace_dotenv_path`).
+vike-bridge-core = { path = "../vike-bridge-core" }
+# the authoritative bridge-venue slug list (BRIDGE_VENUES) — single source, so a new venue bridge
+# only needs to be added there, not duplicated here.
+vike-catalog = { path = "../vike-catalog" }
+# canonical palette — the Status column's "configured" dot reads the one ACCENT green, not a copy.
+vike-ui-theme = { path = "../vike-ui-theme" }
+# the pure live connection-state model + string classifier (`feed_status::{ConnectionState,
+# parse_feed_status}`), re-exported from lib.rs under this crate's historical paths. It is 142
+# dependency-free lines and lives at the BOTTOM layer: its other consumer,
+# `vike_ops::reconcile_config::health_from_feed_status`, is called by the HEADLESS daemon, which must
+# not link this (egui) crate to reach it — and this crate must not link vike-ops (hence vike-core,
+# vike-data, vike-alerting: ~42k lines) to reach 142 lines. vike-model costs neither side anything;
+# it is already in this crate's closure via vike-bridge-core and vike-catalog.
+vike-model = { path = "../vike-model" }
+# the credential STORE itself — this crate re-exports `vike_secrets::env_write`'s byte-preserving
+# upsert rather than keeping a second copy of it (the transform grew a headless caller, see
+# src/env_write.rs). Zero-dependency crate: it widens nothing.
+vike-secrets = { path = "../vike-secrets" }
+egui = { workspace = true }
+# non-secret status logging only ("saved credentials for binance/live") — never a key/secret value.
+tracing = { workspace = true }
+
+[dev-dependencies]
+# Accessibility-tree tests over the REAL grid + edit form (`tests/connections_a11y.rs`). This is
+# the crate where the a11y tree is not merely convenient but LOAD-BEARING: the module's security
+# contract says the edit fields are masked, and `Role::PasswordInput` vs `Role::TextInput` is
+# exactly what `TextEdit::password(true)` decides. NO wgpu / NO snapshot — see the workspace
+# manifest's `egui_kittest` rationale.
+egui_kittest = { workspace = true }
+# TEST-ONLY. `tests/credential_write_journal.rs` reads the change-journal line the Save arm wrote and
+# asserts on its FIELDS. Parsing it is the point: a `contains`-based assertion over the raw text
+# cannot tell `"tier":"LIVE"` from a tier that leaked into some other cell, and this is the one
+# surface where a value landing in the wrong field is the whole failure mode. Already in the
+# lockfile (a workspace dependency of a dozen crates), so it adds ZERO packages to the `cargo deny`
+# surface, and being a dev dep it never reaches a shipped binary.
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
