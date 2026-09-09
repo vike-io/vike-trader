@@ -1,0 +1,46 @@
+[package]
+name = "vike-okx"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "OKX V5 venue bridge — SWAP perp exec (REST + private WS) and REST kline history, plus a live vike_data::DataClient kline feed and public L2/tick market data (HFT track). Moved into crates/bridges/okx (crate-reorg Phase 3, PR G)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+vike-exec = { path = "../../vike-exec" }
+# shared venue-bridge plumbing (credentials, signer, transport, http, user_data, format, json,
+# ws/rest/klines fragments) — crate-reorg Phase 3 (D4); the direct-path style survives every
+# later venue move unchanged.
+vike-bridge-core = { path = "../../vike-bridge-core" }
+# D2 (crate-reorg spec): okx's market_feed::Feeds implements the live DataClient seam directly
+# (default features only — the DataFusion tree stays behind hist-datafusion and must NOT enable).
+vike-data = { path = "../../vike-data" }
+vike-catalog = { path = "../../vike-catalog" }
+serde_json = { workspace = true }
+indexmap = { workspace = true }     # OkxInstrument map keyed by instId (perp.rs)
+ureq = { workspace = true }         # blocking REST (rustls, no OpenSSL) — kline fetch + signed transport
+tungstenite = { workspace = true }  # blocking WS: private user-data pump + public market-data/candle feeds
+rust_decimal = { workspace = true } # to_contracts — the SECOND pinned Decimal wire site (perp.rs)
+tracing = { workspace = true }      # adapter diagnostics
+
+[dev-dependencies]
+arc-swap = { workspace = true }   # smoke test reads the CoreSnapshot cell
+vike-log = { path = "../../vike-log" }  # dev-only: test_init() for smoke/dev test diagnostics
+# dev-only: smoke tests spawn a real core; the library itself must never depend on vike-core
+# (crate-reorg D3 — bridges depend on exec, not core).
+vike-core = { path = "../../vike-core" }
+# dev-only, test-support feature: the DataFusion-free MemHistStore + PropertiesRecorder test double for
+# the PIT filter-recording wiring test — the normal [dependencies] vike-data entry above stays
+# default-features so the venue's DEFAULT build never pulls DataFusion in.
+vike-data = { path = "../../vike-data", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

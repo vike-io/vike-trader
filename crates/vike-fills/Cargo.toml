@@ -1,0 +1,23 @@
+[package]
+name = "vike-fills"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — the shared FILL cluster extracted out of vike-backtest: the canonical cost scalars (adverse slippage / fee / funding), the tiered fill-price models (bar / L1 tick / L2 book-walk), intrabar fill resolution (adverse-first + SL/TP bracket cap) and the stale-price wait discipline. Depends on vike-model ONLY — no engine, no execution, no data layer — so the paper exchange and the backtest engine can share ONE definition of a fill instead of each carrying a copy."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+# The ONLY dependency, by design (see the crate doc): Bar / L2Book / OrderKind / WorkingOrder, the
+# `order_fill_price` trigger oracle and the `book_taker_price` taker law all live in vike-model.
+# Adding vike-exec, vike-core or vike-data here would defeat the reason this crate exists — it must
+# stay a leaf that BOTH the simulator and a live-adjacent paper executor can depend on.
+vike-model = { path = "../vike-model" }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

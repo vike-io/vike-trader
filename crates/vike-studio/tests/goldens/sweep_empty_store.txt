@@ -1,0 +1,20 @@
+# vike frame record v1 (vike_ui_theme::frame_record)
+# scenario: sweep_empty_store
+ppp 1  primitives 16  vertices 3582  triangles 2419
+----
+   0  clip [0 0 1440 53]  tex M0  v 458  t 435  solid [-1 -1 1441 53]  glyph [8 8 558 40]  runs 17  #1b1b1bff*4 #aa82faff*4 #ffffffff*24 #3c3c3cff*4 #54545499*16 #3c3c3cff*20 #b4b4b4ff*55 #3c3c3cff*20 #aa82faff*20 #2d224f80*20 #80808080*16 #3c3c3cff*20 #b4b4b4ff*32 #54545499*28 #005c80ff*20 #c0deffff*20  +..  d da09e10d87ded526
+   1  clip [0 0 1440 960]  tex M0  v 8  t 10  solid [-1 52 1441 54]  glyph -  runs 1  #3c3c3cff*4  d 453e5b6136cc74da
+   2  clip [0 53 460 960]  tex M0  v 152  t 158  solid [-1 53 460 961]  glyph [14 60 154 72]  runs 6  #1b1b1bff*4 #3c3c3cff*20 #b4b4b4ff*4 #ffffffff*24 #0c1e0c26*20 #4ec94eff*36  d fdc7c5a24a1e8a3c
+   3  clip [0 80 460 958]  tex M0  v 8  t 10  solid [8 80 452 962]  glyph -  runs 1  #282828ff*4  d e81ff51a66346a51
+   4  clip [7 80 25 958]  tex M0  v 428  t 214  solid -  glyph [8 83 23 947]  runs 1  #928374ff*428  d d89faa44707faebe
+   5  clip [32 80 451 958]  tex M0  v 40  t 58  solid [32 80 518 962]  glyph -  runs 1  #282828ff*20  d ea34176fe26b186d
+   6  clip [35 81 451 958]  tex M0  v 1064  t 532  solid -  glyph [36 84 511 306]  runs 88  #fb4934ff*20 #ebdbb2ff*16 #fe8019ff*4 #d3869bff*4 #fe8019ff*4 #fb4934ff*20 #ebdbb2ff*16 #fe8019ff*4 #d3869bff*8 #fe8019ff*4 #fb4934ff*20 #ebdbb2ff*12 #fe8019ff*4 #d3869bff*12 #fe8019ff*4 #928374ff*144  +..  d aa2a3367cb348cd1
+   7  clip [0 80 460 958]  tex M0  v 4  t 2  solid [431 80 451 961]  glyph -  runs 1  #14141480*2  d 40e9f196fe143666
+   8  clip [0 53 460 960]  tex M0  v 4  t 2  solid [8 938 451 958]  glyph -  runs 1  #02020215*2  d 91355544ea293e7e
+   9  clip [0 0 1440 960]  tex M0  v 8  t 10  solid [459 53 461 961]  glyph -  runs 1  #3c3c3cff*4  d 846869d5a03617b6
+  10  clip [1400 53 1440 960]  tex M0  v 84  t 92  solid [1397 53 1446 961]  glyph [1413 71 1428 294]  runs 5  #1b1b1bff*4 #1f172d2e*20 #b4b4b4ff*4 #aa82faff*4 #b4b4b4ff*24  d 7fe6a483099d3d02
+  11  clip [0 0 1440 960]  tex M0  v 8  t 10  solid [1405 53 1407 961]  glyph -  runs 1  #3c3c3cff*4  d 2e3e4d1b8ba90c46
+  12  clip [1065 53 1405 960]  tex M0  v 8  t 10  solid [1066 53 1406 961]  glyph -  runs 1  #1b1b1bff*4  d 54766f36fafc10bd
+  13  clip [1065 55 1405 958]  tex M0  v 856  t 638  solid [1074 85 1398 253]  glyph [1074 62 1394 250]  runs 17  #aa82faff*4 #ffffffff*56 #3c3c3cff*4 #54545499*32 #3c3c3cff*20 #b4b4b4ff*35 #3c3c3cff*20 #b4b4b4ff*79 #3c3c3cff*4 #ffffffff*52 #3c3c3cff*20 #b4b4b4ff*56 #54545499*236 #2d224f80*20 #80808080*36 #1e1e1e80*20  +..  d de6de0ff5d050820
+  14  clip [0 0 1440 960]  tex M0  v 8  t 10  solid [1065 53 1067 961]  glyph -  runs 1  #3c3c3cff*4  d 12798facdf43f9fa
+  15  clip [460 53 1065 960]  tex M0  v 444  t 228  solid [460 53 1066 961]  glyph [586 304 938 406]  runs 4  #1b1b1bff*4 #4d3b7173*4 #ffffffff*48 #54545499*384  d e1eb97bf95a3aae2

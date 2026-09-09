@@ -1,0 +1,98 @@
+[package]
+name = "vike-recorder"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — the HEADLESS live-tape recorder daemon. A customer subscribes to symbols or market FAMILIES; this records the venue feed into their local DataFusion+Parquet store, one grouped commit per family. Separate binary from vike-datahub by design (see docs/superpowers/specs/2026-08-02-live-recorder-design.md): the backtest server stays free of bridge/crypto dependencies and a feed panic cannot take serving down."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `daemon` — a headless top-of-graph binary: nothing may depend on it.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 65
+
+[dependencies]
+# The store + the RecorderSink write engine. `hist-datafusion` because a recorder writes Parquet.
+vike-data = { path = "../vike-data", features = ["hist-datafusion"] }
+# Domain types on the sink verbs (QuoteTick/TradeTick/BookUpdate).
+vike-model = { path = "../vike-model" }
+# The BIN calls vike_log::init and holds the returned guards (see crates/vike-log).
+vike-log = { path = "../vike-log" }
+# The silence watchdog's DELIVERY half (`src/alerts.rs`). DEFAULT FEATURES ON PURPOSE — deliberately
+# NOT `features = ["core"]`: that feature is the crate's only vike-* edge (vike-core + vike-model),
+# and the whole reason vike-alerting was split out of vike-ops was so a watchdog could page without
+# it. The engine, the rule model, the evaluator's signal path and the webhook sinks are all in the
+# default half, so this edge adds serde_json + indexmap + ureq to the recorder and NOTHING to
+# vike-alerting's own dependency graph. `scripts/ci_feature_suite.sh`'s `alerting-standalone` lane
+# is the gate on that (a `cargo tree` check, not a compile check).
+vike-alerting = { path = "../vike-alerting" }
+# The credential store the BIN reads to resolve webhook targets (`VIKE_ALERT_*`). Zero dependencies
+# of its own — no vike-* crate and no external crate — so this costs the recorder nothing, and the
+# read stays at `Layer::Binary` where the settings-registry rule puts it.
+vike-secrets = { path = "../vike-secrets" }
+# The BUILD IDENTITY `--version` prints and the daemon logs on its first line: which commit this
+# binary came from. ZERO dependencies of its own, same argument as `vike-secrets` directly above.
+# ⚠ This daemon is the reason the crate exists: the near-miss was a release binary built from a bare
+# repo four commits behind `main`, about to be installed on the LIVE RECORDER.
+vike-buildinfo = { path = "../vike-buildinfo" }
+# The STARTUP SEQUENCE's one owner — the ONE project walk this `main` performs, and the startup
+# DISCLOSURE (`Booted::boot_lines`) it feeds. This daemon still reads no settings key of its own; the
+# disclosure is what makes "which settings directory answered, and is there a credential store
+# beside it?" a line in the log instead of a mystery, because a recorder that resolved the wrong
+# project silently records into the wrong store root and alerts nowhere. It REPLACES the direct
+# vike-config edge: `main` used to resolve that directory twice, with two different functions, which
+# is exactly the "two walks, two answers" defect the disclosure exists to surface. Its whole closure
+# (vike-config + vike-model + vike-secrets + vike-buildinfo) is already in this graph, so the swap
+# adds no package.
+vike-boot = { path = "../vike-boot" }
+# The graceful stop: `vike_ops::stop` (one stop flag, many triggers — SIGTERM/SIGINT raise the SAME
+# flag the stdio `quit` word does) and `vike_ops::shutdown::run_with_deadline` (so the final flush
+# cannot outrun the unit's `TimeoutStopSec=` and be SIGKILLed mid-write). Without a handler,
+# `systemctl stop` ran none of this daemon's teardown and every restart lost a window of tape.
+#
+# ⚠ `default-features = false` is LOAD-BEARING, exactly as in `vike-cli`'s manifest. vike-ops'
+# default `full` feature is the OPERATIONAL half — vike-core -> vike-exec, vike-data, vike-alerting
+# -> ureq — and this daemon places no orders and holds no trading credentials, so it must not link
+# the live core to obtain a stop flag. Off, vike-ops is `settings` + `scan` + `shutdown` + `stop`:
+# std, vike-model (already here), and one `cfg(unix)` package. The reverse — moving `stop` into a
+# crate this daemon already had — was refused because the primitive belongs beside the bounded
+# teardown it feeds, and vike-ops IS the headless daemons' operations layer.
+vike-ops = { path = "../vike-ops", default-features = false }
+serde = { workspace = true, features = ["derive"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+# OPTIONAL, and off by default: the polymarket venue feed. Enabling it pulls the bridge's
+# k256/keccak/tungstenite tree into this binary, which is exactly why it is a feature and not a
+# plain dep — a build recording only static-symbol venues should not link an EIP-712 signer.
+vike-polymarket = { path = "../bridges/polymarket", optional = true }
+vike-binance = { path = "../bridges/binance", optional = true }
+# The `Instrument` model a binance family glob filters (bridge-free, vike-model only).
+vike-catalog = { path = "../vike-catalog", optional = true }
+
+[features]
+default = []
+# One feature per recordable venue. The daemon binary builds either way; a profile naming a venue
+# this build cannot serve is a startup ERROR naming the missing feature, never a silent no-record.
+polymarket = ["dep:vike-polymarket", "vike-polymarket/feeds"]
+# The binance venue feed. Records the trade tape PLUS the conflating `depth` lane — the venue serves
+# no quotes and no lossless book, but `RecorderSink` DOES persist that lane, under its own
+# `kind=depth` series. ⚠ This comment used to say it did not, and `venues/binance.rs`'s module doc
+# records what that cost: the stale sentence was used as EVIDENCE that no depth socket is ever
+# opened, which left `connect_depth` dialing unbounded inside the recorder's teardown budget. Read
+# that module doc, not this line, for what a binance recording contains. `vike-catalog` comes with it
+# for the instrument list a family glob filters.
+binance = ["dep:vike-binance", "dep:vike-catalog"]
+
+[[bin]]
+name = "vike-recorder"
+path = "src/bin/vike_recorder.rs"
+
+[dev-dependencies]
+tempfile = "3"
+# `vike_data::NoopSink` — the workspace's ONE owned `LiveDataSink` double ("one owned double behind
+# a test-support feature"), so this crate does not grow a private copy of it.
+vike-data = { path = "../vike-data", features = ["hist-datafusion", "test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

@@ -1,0 +1,225 @@
+# Anchored WALK-FORWARD of the two-sided `grid` maker over a 24-month Binance 1m BTCUSDT slice.
+#
+# Run it (the `backtest` BIN CANNOT run this — see the runner note below):
+#
+#     # on the box that holds the store:
+#     cargo run -p vike-datahub --features serve-datafusion --bin vike-datahub -- \
+#       --store ~/vike_hist_24mo
+#     # from anywhere (over `ssh -L 7878:localhost:7878 the CI box`):
+#     cargo run -p vike-cli -- walkforward \
+#       --profile crates/vike-backtest/profiles/wf_grid.toml --json
+#
+# ⚠ RUNNER. `src/bin/backtest.rs` has NO walk-forward arm — it dispatches `run_sweep` on a
+# `[sweep]` table and `run_backtest` otherwise, and a `[walkforward]` table is simply INERT there
+# (the profile still parses, and you get ONE full-range backtest, not six OOS windows). The only
+# caller of `harness::walkforward::run_walkforward` is vike-datahub's `RunWalkforwardProfile` verb,
+# which `vike-cli walkforward` drives. Running this file through `backtest` is not an error, and
+# that is exactly the trap: it silently answers a different question.
+#
+# ============================================================================================
+# WHAT `grid` DOES  (`crates/vike-strategy/src/grid_dca.rs`, registry arm
+# `"grid" => Ok(Box::new(Grid::from_params(params)))`)
+# ============================================================================================
+# On the FIRST bar it anchors at that bar's close and rests `rungs` buy limits BELOW and `rungs`
+# sell limits ABOVE, spaced `step` apart, `size` units each — 2*rungs resting orders, placed ONCE
+# and never re-priced. Each rung is an oscillator: its ENTRY fill places a take-profit limit one
+# `step` back toward the anchor; that TP's fill RE-ARMS the entry. Inventory is bounded by
+# `rungs * size` per side. A HARD STOP fires the first time a bar CLOSE leaves
+# `[anchor - band, anchor + band]`: it flattens at market and HALTS PERMANENTLY — no re-arms, no
+# new legs, only a per-bar mop-up of stray fills for the rest of the window. It consumes BARS ONLY
+# (`on_bar` -> `bar.close`; `on_quote_tick` is the unused tick twin) — one symbol, no funding, no
+# book, no second series, no indicator warmup.
+#
+# THE HALT IS THE HEADLINE. Each of the six OOS windows is ~1/7 of 24 months (~3.4 months of 1m
+# bars, ~150k), and this grid is expected to stop out PART-WAY THROUGH each window and then sit
+# flat. That is the strategy's design, not a misconfiguration; `band` is the one knob that trades
+# "survives the window" against "size of the trend-out tail loss", and it is the first axis a
+# follow-up `[sweep]` should grid over.
+#
+# ============================================================================================
+# PARAMETER CHOICES — every one is an ABSOLUTE PRICE, not a fraction (`Grid::from_params`)
+# ============================================================================================
+
+name = "wf-grid-binance-1m-BTCUSDT-24mo"
+
+[data]
+kind = "bar"
+interval = "1m"
+venue = "binance"
+# EXACTLY ONE symbol is mandatory: `run_walkforward` rejects anything else with "walk-forward runs
+# over ONE bar series ... name a single symbol" (`harness/walkforward.rs`, the `series.len() != 1`
+# guard — the splitter divides a single `&[Bar]` BY INDEX). BTCUSDT and not a smaller cap for two
+# reasons that both bite THIS strategy specifically: (1) `Grid::handle_fill` matches a fill back to
+# its rung by NEAREST (side, price), and a gapped fill (`price.min(bar.open)` for a buy) on a thin
+# 1m tape can land closer to the WRONG rung and desynchronise the ladder — the deepest book
+# minimises that; (2) full history across the whole range, so no window is short. Never KAITO/LIT
+# here (listed ~2025 / spot-delisted ~2025-02): a short series silently shrinks every window.
+symbols = ["BTCUSDT"]
+from = "1722556800000"   # 2024-08-02
+to   = "1785628800000"   # 2026-08-02
+
+[engine]
+# 100k, not 10k, because `size` is in RAW BTC UNITS and NOTHING enforces cash on this lane:
+# `cash_gate` defaults to `false`, `leverage`/`risk_limits` to `None`, and a `[risk]` table would
+# not help even if added — `gate_market_order` is consulted by `submit_market` only, and every rung
+# is a LIMIT (`SimBroker::submit_limit` never touches the gate). So the cash budget is enforced BY
+# THE ARITHMETIC CHOICE OF `size` BELOW, or not at all: an over-sized grid would simply drive
+# `cash` negative and still print an equity curve.
+cash = 100000.0
+# Binance SPOT VIP0, no BNB discount. At VIP0 spot maker AND taker are both 0.1000%, which matters
+# because the harness has no maker/taker split: `bar_engine_params` sets `fee_rate` only, leaving
+# `maker_fee`/`taker_fee` `None`, so `maker_fee.unwrap_or(fee_rate)` charges this same rate to the
+# passive rung fills (`is_maker = kind == Limit`) and to the market flatten alike. If this store's
+# `venue = "binance"` series turn out to be USDM PERP klines rather than spot this is WRONG and
+# PESSIMISTIC by ~5x on the rungs (perp VIP0 is 0.0200% maker / 0.0500% taker) — and the sell-side
+# rungs become legal, which on spot they are not (see the trust caveats at the bottom).
+fee_rate = 0.001
+# 0.0 deliberately. Every rung fills as a resting LIMIT at its own price (`order_fill_price`'s
+# Limit arm returns `price.min(bar.open)` / `price.max(bar.open)`), so a flat adverse-price add
+# would charge a spread cross this strategy never pays. The honest cost is the commission on a high
+# round-trip count, which `fee_rate` already carries. (`[engine.impact]` is off for the same
+# reason: 0.03 BTC per rung is noise against BTCUSDT depth.)
+slippage = 0.0
+# OFF, and this is a real choice rather than an inherited default. ON, `bar_engine_params` sets
+# `default_venue`, `StrategyEngine::new` re-tags every bar `"BTCUSDT.binance"`, and the CLAUDE.md
+# bar-mode footgun applies. `Grid` happens to be IMMUNE here because `strategy.params.symbol` is
+# set below and `Grid::on_bar` prefers it over `bar.symbol` — which is exactly the footgun's
+# documented fix — so turning it on would still route correctly, it would just buy ~5.25M
+# point-in-time grid lookups per window for zero behavioural change.
+snap_to_properties = false
+# NOT SET, on purpose: `attach_funding` (no funding series in this store, and a spot grid accrues
+# none), `queue_model` / `fill_model` / `feed_latency` / `order_latency_ms` / `fill_latency_ms` /
+# `equity_sample_every` (all TICK-MODE ONLY — `BacktestProfile::validate` REJECTS a bar profile
+# that sets any of them), and `emulator_release_stops` (harness-default `true`, but INERT: `Grid`
+# submits only `Limit` and `Market`, never an `OrderKind::Stop` — its "hard stop" is a
+# strategy-side band check on `bar.close`, not a resting stop order).
+
+[strategy]
+name = "grid"
+
+[strategy.params]
+# ---- symbol -------------------------------------------------------------------------------
+# Explicit, even though it is redundant at `snap_to_properties = false` (bars keep their bare
+# symbol via `format_instrument(None, "BTCUSDT")`, so `Grid`'s `bar.symbol` fallback would resolve
+# identically). `SimBroker::idx` PANICS on an unknown symbol, so pinning the string the engine
+# registered is cheap insurance against ever flipping the snap knob.
+symbol = "BTCUSDT"
+
+# ---- anchor -------------------------------------------------------------------------------
+# "first" = center on the first bar CLOSE of the window. This is the whole reason a walk-forward is
+# meaningful for this strategy: `run_walkforward` builds a FRESH `Grid` per OOS window, so each of
+# the six windows re-anchors on its own opening price. `"fixed"` (+ `anchor_price`) would pin all
+# six to one 2024 price level and leave five of them permanently outside their own band.
+anchor = "first"
+
+# ---- step: rung spacing, IN DOLLARS -------------------------------------------------------
+# THE break-even constraint: a completed round trip grosses exactly `step` per unit and pays two
+# commissions, so it is profitable only while `step > 2 * fee_rate * price` = 0.20% of price. $500
+# clears that by 2.1x-4.2x across the entire plausible BTC range in this window:
+#     price      step/price   fee cost/unit   net per round trip/unit
+#     $60,000      0.83%          $120            $380  (76% of gross)
+#     $85,000      0.59%          $170            $330  (66% of gross)
+#     $120,000     0.42%          $240            $260  (52% of gross)
+# ⚠ THE ABSOLUTE-PRICE WEAKNESS, stated plainly: `step`/`band` are dollars, and BTC roughly doubles
+# across these 24 months, so the LATE windows run a materially tighter grid (in %) than the early
+# ones. $500 is sized for the geometric middle of the range so both ends stay inside the table
+# above; `Grid` has no percent-of-price mode with which to fix this properly.
+step = 500.0
+
+# ---- rungs: per SIDE ----------------------------------------------------------------------
+# 16 => 32 resting orders spanning +/- $8,000 (+/-9.4% at $85k). High deliberately: rung count is
+# the ONE lever that raises round-trip COUNT without touching the fee margin (`step`) or the tail
+# (`band`), and the measured difference is decisive — see the sanity check below. `rungs * step`
+# (=$8,000) is 2/3 of `band` (=$12,000), which is the shape to keep: if `rungs * step` exceeded
+# `band` the outer rungs would sit OUTSIDE the stop and could only ever fill on the excursion that
+# halts the strategy, and if it were a small fraction of `band` the grid would hold max inventory
+# through a wide dead zone with nothing working in it — one un-hedged directional bet per window.
+rungs = 16
+
+# ---- size: units per rung, RAW BTC --------------------------------------------------------
+# Chosen so the cash budget holds arithmetically (nothing else enforces it — see `cash` above).
+# Worst-case one-sided inventory = rungs * size = 0.48 BTC:
+#     $60,000 -> $28,800 (29% of cash)   $85,000 -> $40,800 (41%)   $120,000 -> $57,600 (58%)
+# so the grid stays unlevered at every price level in the window and `cash` never goes negative.
+# It also bounds the stop-out: a full one-sided scale-in averages entry at anchor -$4,250, the band
+# fires at anchor -$12,000, so the tail loss is 0.48 * $7,750 = ~$3,720 = 3.7% of cash per window.
+# Round-trip income at this size is ~$9.90 net per completed round trip at $85k — deliberately the
+# SAME order of magnitude as that tail, so the window result is decided by whether real BTC 1m
+# mean-reverts enough to beat commission, not by one side of the config dominating the other.
+size = 0.03
+
+# ---- band: hard-stop half-width, IN DOLLARS -----------------------------------------------
+# +/-$12,000 = +/-14.1% at $85k, 1.5x the ladder half-width. This is the knob that decides whether
+# a window is a grid backtest or a five-day sample, and it is the FIRST axis to sweep. Tighter and
+# every window halts almost immediately; wider and the dead zone above swallows the ladder.
+band = 12000.0
+
+# ---- bounded01 / tick: NOT SET, and that is a correctness requirement ----------------------
+# These are the Polymarket 0..1 knobs. `bounded01 = true` would clamp the anchor to
+# `[tick, 1 - tick]` — i.e. to 0.999 for a BTC price — and `on_grid` would then reject EVERY rung,
+# leaving a grid that rests nothing and reports a flat, zero-trade, zero-return window that LOOKS
+# like a result. Leave them at their `false` / 0.001 defaults for any USD-priced instrument.
+
+# ---- HOW THESE VALUES WERE SANITY-CHECKED -------------------------------------------------
+# A profile whose params make the strategy sit flat is worthless, so the ladder was measured, not
+# guessed. The real store is remote, so the check ran the REGISTRY-resolved `Grid` through the REAL
+# `StrategyEngine` at this `[engine]` cost over a synthetic BTC-like 1m tape: driftless GBM,
+# per-minute sigma 6bp (~43%/yr), 150,000 bars (= one OOS window), 5 seeds x 3 price levels
+# ($60k/$85k/$120k). Measured, per window, averaged over seeds:
+#     step=500 rungs=4  size=0.15 band=5,000   ->  19-42 round trips, active 23-31 days
+#     step=500 rungs=16 size=0.03 band=12,000  -> 161-227 round trips, active 34-83 days   <-- THIS
+# i.e. this config round-trips ~6x more often and stays in the market 1.5-2.7x longer, so a window
+# is a sample rather than an anecdote. It is NOT flat and it is NOT a config that only trades at
+# one price level: the round-trip count holds up at all three.
+# ⚠ THE SYNTHETIC SAYS NOTHING ABOUT PROFIT, and must not be quoted as if it did. A martingale has
+# no mean reversion for a grid to harvest, so its expected PnL there is exactly minus fees minus
+# the stop-out tail — and indeed every configuration tried printed -1% to -5% on it. The synthetic
+# was used to calibrate ACTIVITY only; whether real BTC 1m reverts enough to pay for 0.1% a side is
+# precisely the question the walk-forward exists to answer.
+
+[walkforward]
+# 6 anchored OOS windows. `walk_forward_splits(n, 6, Anchored)` sets chunk = n/7 and tiles the last
+# six sevenths as the test ranges — the first seventh is train-only and never traded.
+#
+# ⚠ READ THE REPORT WITH TWO FACTS IN HAND:
+#  1. `run_walkforward` runs `run_window(&bars[test_start..test_end])` and IGNORES the training
+#     half entirely — nothing is fitted. So this is "six consecutive out-of-sample segments, fresh
+#     grid each", and `wf_consistency` answers "in how many of 6 segments did the grid make money",
+#     NOT "did fitted parameters generalise". For a parameter-free strategy that is the right
+#     question; just do not read it as an overfitting verdict.
+#  2. `oos_sharpe` IS WRONG BY CONSTRUCTION HERE and must not be quoted. `periods_per_year` returns
+#     `DAILY_PERIODS_PER_YEAR` only for `interval == "1d"`, so a 1m run annualises a PER-MINUTE
+#     equity curve at 252 — understating Sharpe by sqrt(525600/252) ~= 45.7x. Read `oos_return`,
+#     the per-window `oos_return`s, and `wf_consistency`.
+n_splits = 6
+
+# ============================================================================================
+# WHY THE RESULT MAY STILL BE UNTRUSTWORTHY EVEN WHEN IT RUNS
+# ============================================================================================
+#  * NO QUEUE POSITION, AND NO WAY TO ADD ONE ON THIS LANE. `engine.queue_model` is tick-mode only
+#    and `validate` REJECTS it on a bar profile, so a bar-mode grid fills EVERY rung the bar's
+#    high/low merely TOUCHED, at its own limit price, in full size. Real passive fills happen only
+#    when someone crosses you, and the ones you get are adversely selected. This is the single
+#    largest optimism in the run and it cannot be modelled here — a tick/book profile with
+#    `queue_model` + `queue_min_hold_ms` is the only honest version of a maker backtest.
+#  * SPOT CANNOT SHORT. Half of every ladder (`entry_side = -1`) is an OPENING SHORT. If these are
+#    spot klines that half is unexecutable, and the sim charges no borrow for it, so roughly half
+#    the reported round trips are fictional. Establish whether the store's `binance` series are
+#    spot or USDM perp before quoting any number from this run.
+#  * SAME-BAR AMBIGUITY. A 1m bar whose high reaches a sell rung and whose low reaches a buy rung
+#    fills both; `resolve_intrabar_fills` imposes the adverse-first ordering, but which side
+#    actually traded first is unknowable from OHLC. A grid is the archetype of the strategy this
+#    flatters, and at 32 resting rungs it happens often.
+#  * FILL->RUNG MISMATCH. `handle_fill` matches a fill to the resting leg with the nearest
+#    (side, price). A gapped fill (a buy limit fills at `min(limit, bar.open)`) can be nearer a
+#    DIFFERENT rung's price and flip the wrong leg's state — the ladder then double-arms one rung
+#    and orphans another. Rare at $500 spacing on BTC 1m, not impossible in a crash minute.
+#  * RESIDUAL ORDERS AFTER THE HALT. The portable `Broker` surface has no cancel verb, so the rungs
+#    resting at the halt are never pulled; each can still fill ONCE and is then mopped up by the
+#    per-bar market flatten (paying a commission). Bounded at ~32 stray fills per window and
+#    documented in `grid_dca.rs`'s module doc — but it is cost a live operator would avoid by
+#    cancelling, so it is a small pessimism sitting inside a larger optimism.
+#  * PATH DEPENDENCE ACROSS WINDOWS IS ABSENT BY DESIGN, WHICH CUTS BOTH WAYS. Each window starts
+#    fresh at `cash` and re-anchors, so a window that stops out cannot poison the next — but the
+#    stitched `oos_equity_curve` compounds them as if an operator had re-deployed instantly at the
+#    new anchor after every stop-out, which is a decision the backtest makes on your behalf.

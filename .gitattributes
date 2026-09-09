@@ -1,0 +1,22 @@
+# EOL policy (2026-07 hardening): the index is LF; shell scripts and gradlew MUST stay LF or
+# they break with "bad interpreter" on the Linux CI/prod runners the moment a Windows
+# contributor without core.autocrlf=input commits them. Windows cmd scripts stay CRLF.
+* text=auto
+*.sh text eol=lf
+gradlew text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Tessellated-frame text goldens (crates/vike-chart/tests/tessellation_goldens.rs) — compared
+# line-by-line by a test. `* text=auto` already normalizes them to LF in the index, but a Windows
+# checkout with core.autocrlf=true would materialize CRLF and redden every golden at once, with a
+# diff in which no line looks different. Pinned explicitly so the working copy matches the index.
+# (The comparator ALSO trims trailing \r — belt and braces, since this rule cannot retroactively
+# fix a working copy checked out before it existed.)
+crates/vike-chart/tests/goldens/*.txt text eol=lf
+
+# Binaries — never EOL-normalized (git auto-detects, this makes it explicit for the committed
+# jar the CI drift gate byte-compares).
+*.jar binary
+*.png binary
+*.ico binary

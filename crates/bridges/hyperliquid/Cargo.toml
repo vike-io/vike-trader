@@ -1,0 +1,78 @@
+[package]
+name = "vike-hyperliquid"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "Hyperliquid venue bridge — spot + perpetuals. From-scratch EIP-712/msgpack action signing (no HL SDK dep) on the shared workspace stack (ureq REST + tungstenite WS + reused k256/tiny-keccak). ExecutionClient (place/cancel/modify/batch) + live vike_data::DataClient feed (candles/bbo/trades/l2Book) + ReconClient + CatalogProvider. Design: docs/superpowers/specs/2026-07-16-hyperliquid-bridge-design.md."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+vike-exec = { path = "../../vike-exec" }
+# shared venue-bridge plumbing (credentials::load_workspace_dotenv, ExecActor, transport, ws helpers).
+# Its `eip712` feature — the generic EIP-712 primitive block `signing/eip712.rs` re-exports (ONE
+# shared golden-vector-gated copy — the former verbatim local copy was deleted) — now rides this
+# crate's own `exec` feature (default-on) rather than the dep line, so a feeds-only build stays
+# k256-free.
+vike-bridge-core = { path = "../../vike-bridge-core" }
+# the live DataClient seam market_feed::Feeds implements directly (default features — no DataFusion).
+vike-data = { path = "../../vike-data" }
+# universal cross-venue instrument catalog (`Instrument`/`CatalogProvider`) — HyperliquidCatalog.
+vike-catalog = { path = "../../vike-catalog" }
+serde = { workspace = true }        # #[derive(Serialize/Deserialize)] on action + wire structs
+serde_json = { workspace = true }   # /info + /exchange JSON bodies, WS frames
+# The three signer-stack deps are `exec`-optional (split-plane Phase-5 hardening): every module
+# that names them is `#[cfg(feature = "exec")]`, so the feeds-only build links no signing crate.
+rmp-serde = { workspace = true, optional = true }    # msgpack action hashing (to_vec_named — field-order signing)
+k256 = { workspace = true, optional = true }         # secp256k1 recoverable ECDSA (order signing)
+tiny-keccak = { workspace = true, optional = true }  # keccak256 (action hash + EIP-712 hashing)
+hex = { workspace = true }          # hex signatures / addresses
+rust_decimal = { workspace = true } # float_to_wire decimal-string formatting (px.rs)
+indexmap = { workspace = true }     # instrument maps keyed by symbol (insertion order)
+ureq = { workspace = true }         # blocking REST (rustls, no OpenSSL) — /info + /exchange
+tungstenite = { workspace = true }  # blocking WS: user-data pump + market feeds
+tracing = { workspace = true }      # adapter diagnostics (per-order boundaries, not the hot fold)
+
+[dev-dependencies]
+# dev-only, test-support feature: the shared RecordingSink LiveDataSink double (testing-arch
+# Phase 4d) — the normal [dependencies] vike-data entry above stays default-features.
+vike-data = { path = "../../vike-data", features = ["test-support"] }
+vike-log = { path = "../../vike-log" }  # dev-only: test_init() for unit/smoke diagnostics
+# dev-only, test-support feature: the shared scripted WS stream doubles (testing-arch Phase 4c) —
+# `ScriptedUserStream` drives the REAL run_user_data_forever loop across a reconnect in
+# tests/hyperliquid_userdata_reconnect.rs. The [dependencies] entry above is untouched for normal
+# builds; features are additive, so the normal `eip712` stays on. Mirrors aster/binance.
+vike-bridge-core = { path = "../../vike-bridge-core", features = ["test-support"] }
+
+[[bin]]
+# One-time on-chain approveBuilderFee grant (task 7, unified-venue-attribution) — an operator
+# utility, not part of the live exec/mount path. Only built under the builder-fee-approve feature
+# (needs no new deps — everything it calls is already a plain dependency of this crate).
+name = "hyperliquid_builder_fee_approve"
+required-features = ["builder-fee-approve"]
+
+[features]
+# The exec/feeds seam (split-plane Phase-5 hardening; the design's §7 measured the whole +26-crate
+# cost of client feeds as the shared secp256k1/EIP-712 stack). DEFAULT-ON, so every existing
+# consumer builds byte-identically; a feeds-only client opts out with `default-features = false`
+# and gets market_feed/market_data/history/instruments/catalog/funding — the keyless `/info` + WS
+# surface — with NO compiled order signer in its binary. `exec` gates exec.rs, signing/,
+# user_data.rs, recon_client.rs, event_mapper.rs, transfer.rs, builder_fee.rs,
+# outcome_settlement.rs and transport.rs's `/exchange` half. The `bridges-feeds` arm of
+# scripts/ci_feature_suite.sh is the gate for the feeds half — a structural cargo-tree check, not
+# just a compile.
+default = ["exec"]
+exec = ["dep:k256", "dep:tiny-keccak", "dep:rmp-serde", "vike-bridge-core/eip712"]
+# Gates the hyperliquid_builder_fee_approve bin so a default build's bin list stays exactly the
+# live-path set (mirrors vike-backfill's per-tool feature idiom). Implies `exec`: the bin signs a
+# real on-chain approval, so it needs the signer stack.
+builder-fee-approve = ["exec"]
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true
