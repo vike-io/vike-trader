@@ -1,0 +1,131 @@
+[package]
+name = "vike-studio-core"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false
+description = "Headless Studio backend: the Run pipeline (compile→backtest→score) + starter templates, extracted from vike-studio so a headless MCP server / AI loop can reuse it without egui (Studio SP3)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `service-stacked` — a service composed over another service crate.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 55
+
+[dependencies]
+vike-script = { path = "../vike-script" }
+# `hist-replay` brings BOTH halves of the native-strategy path: the `harness` module (the
+# name -> `Box<dyn Strategy<SimBroker>>` registry a Studio "Native" run resolves through, plus the
+# bounded sweep pool `map_bounded` its parallel sweep enters rayon by) and `hist_replay`
+# (`replay_ticks`, which a `SliceKind::Ticks` slice routes to instead of `load_bars`). The feature
+# is TRAIT-ONLY (the datafusion-store decouple — see vike-backtest's Cargo.toml), so it adds no
+# native or heavy dep here.
+vike-backtest = { path = "../vike-backtest", features = ["hist-replay"] }
+# Default surface only (NO hist-datafusion): the Run pipeline operates on
+# `StoreHandle = Arc<dyn HistStore + Send + Sync>` (split-plane B12) and the concrete DataFusionHist
+# is named only under #[cfg(test)], so the feature enable lives in [dev-dependencies] below (vike-ai/
+# vike-report's lib-default/dev-feature pattern) — a default build of this crate is DataFusion-free
+# (split-plane I7; the `studio-standalone` suite in scripts/ci_feature_suite.sh is the gate).
+vike-data = { path = "../vike-data" }
+# The INFERENCE half of the model crate, and nothing else follows it in: `cargo tree -p vike-ml -e
+# normal` is `vike-ml -> vike-model`, which this crate already takes on the line below, so the whole
+# cost of this edge in the dependency graph is ZERO new crates. That mattered enough to check before
+# adding it — `crates/vike-app/Cargo.toml` links vike-studio (and so this crate) UNCONDITIONALLY in
+# both the `fat` and `thin` builds since split-plane I7, so anything vike-ml dragged would land in
+# the `--observe`-only client too. It also cannot disturb the `studio-standalone` lane's
+# DataFusion-free tree check (`scripts/ci_feature_suite.sh`), for the same reason: no new crate.
+#
+# Deliberately NOT `features = ["test-support"]`: `crates/vike-ml/src/test_support.rs` is a learner
+# DOUBLE, and a shipped build must compile none of it. Nothing here fits a model anyway — see
+# `crates/vike-studio-core/src/ml.rs`'s module doc for why the surface stops at inference.
+vike-ml = { path = "../vike-ml" }
+vike-model = { path = "../vike-model" }
+# The compiled user-STUDY HOST (layer 35), and the home of the STUDY CONTRACT —
+# `StudyContext` / `StudyOutcome` / `StudyError` / `StudyLearner`. Both study tiers reach it from
+# here: `study_run.rs` resolves a COMPILED study through its generated registry, and
+# `src/rhai_study/` registers those same contract types as Rhai custom types so an INTERPRETED
+# study satisfies the identical entry contract (R7: rhai OR rust, the author's choice).
+#
+# The edge goes DOWN and it is the only direction available, for BOTH tiers:
+#   * run persistence lives in `vike-backtest` at 50, so nothing at or below the study host can
+#     mint a run — `docs/decisions/0031-the-study-runner-lives-above-run-persistence.md`;
+#   * `vike-script` (30) would be the obvious home for the interpreted tier, beside `RhaiStrategy`,
+#     but 30 may not name 35, and moving the contract types down would undo
+#     `crates/vike-user-research/src/lib.rs`'s argument for where they live.
+# This crate is therefore the lowest one that can host either.
+#
+# It costs exactly ONE crate in the dependency graph — itself — and NO datafusion. Every entry in
+# that manifest is already in this crate's normal tree: vike-model, vike-ml and vike-data (DEFAULT,
+# trait-only) are named right here, and vike-analytics and vike-indicators arrive through
+# vike-backtest and vike-script above. MEASURED with `cargo tree -p vike-studio -e normal` rather
+# than reasoned about — TWO earlier versions of this comment claimed two new crates and both were
+# wrong, which is why the measurement is named here instead of the reasoning.
+# It matters for the reason the vike-ml comment above states: vike-app links this crate in both the
+# `fat` and `thin` builds, and the `studio-standalone` lane in scripts/ci_feature_suite.sh greps
+# that same default normal dep tree for `^datafusion`.
+#
+# ⚠ Its build.rs scans `<workspace>/user_data/research/studies/rust/` and compiles what it finds
+# into this build. In every CI checkout and every fresh clone that directory is absent, so the
+# generated registry is EMPTY and the edge costs a no-op build script. That is not a new class of
+# thing here either: `vike-backtest`'s `hist-replay` above already enables `vike-user-strategies`,
+# whose build.rs does the same for the strategy tier.
+vike-user-research = { path = "../vike-user-research" }
+# The interpreter itself. Already in this crate's tree through vike-script, so naming it adds no
+# crate; named directly because `src/rhai_study/bind.rs` registers types and functions against
+# `rhai::Engine` rather than going through a wrapper — the registration list IS the interpreted
+# tier's boundary and it must be readable as what it is.
+rhai = { workspace = true }
+# A study's `print`/`debug` are REDIRECTED into the facade rather than left on stdout, where they
+# would corrupt a root whose stdout is a protocol (`vike-cli mcp`). Facade only — this is a library.
+tracing = { workspace = true }
+indexmap = { workspace = true }
+# `study_run.rs` serializes a `StudyOutcome` — the study returns DATA and the caller writes it
+# (`crates/vike-user-research/src/contract.rs` refuses serde in the study crate for that reason), so
+# the JSON has to be built on this side of the seam.
+serde_json = { workspace = true }
+# Native strategies read their params ad hoc from a `toml::Value` (`BuyHold::from_params`) — this is
+# the type the Studio's free-form key/value param editor serializes into.
+toml = { workspace = true }
+
+[dev-dependencies]
+# Test-only DataFusion (split-plane I7): run.rs's #[cfg(test)] module and tests/templates_execute.rs
+# seed a real DataFusionHist over a temp dir. Dev targets resolve vike-data with the feature ON; the
+# plain lib build does not.
+#
+# `test-support` rides the same line, now for BOTH tiers: `study_run.rs`'s tests and
+# `tests/rhai_study_pipeline.rs` each build a `StudyContext` over the workspace's OWN store double
+# (`vike_data::test_support::MemHistStore`) rather than a bespoke one, which is the "one owned
+# double behind a `test-support` feature" rule — so the interpreted tier is proven on a box with no
+# DataFusion at all. It reaches no shipped build for the same reason `hist-datafusion` does not —
+# this is a dev-dependency, and the `studio-standalone` lane runs without `--all-targets` precisely
+# so dev-dep features stay out of the resolution.
+vike-data = { path = "../vike-data", features = ["hist-datafusion", "test-support"] }
+# `ScriptedLearner` — the shared learner DOUBLE, pushed through the erased `StudyLearner` seam by
+# `study_run.rs`'s tests and by tests/rhai_study_pipeline.rs, so the fitting half of a study context
+# is proven on a box with no LightGBM binary: every CI runner and every Windows box. ⚠ Deliberately
+# a DEV edge only, for the reason the normal `vike-ml` line above states — a shipped build compiles
+# none of this crate's test doubles, and a dev feature is not unified into the lib build.
+vike-ml = { path = "../vike-ml", features = ["test-support"] }
+# Seed a real DataFusionHist over a temp dir for the moved bar-store tests, and a scratch/runs root
+# for `study_run.rs`'s. ⚠ This line used to explain itself as "MemHistStore is a filters/equity-only
+# stub and cannot store bars" — that stopped being true when the double grew real bar storage
+# (`crates/vike-data/src/test_support.rs`'s `append_bars`), so the reason is now the narrower one it
+# always should have been: those tests are about the CONCRETE store, and this is the crate that
+# creates a directory to put one in. Ad hoc, not workspace-pinned — same as vike-studio.
+tempfile = "3"
+
+[lints]
+workspace = true
+
+# The `vike-study` bin's extra surface, OFF BY DEFAULT — and the default is the load-bearing part.
+# `scripts/ci_feature_suite.sh`'s `studio-standalone` lane greps this crate's DEFAULT normal-dep
+# tree for a datafusion crate and FAILS if it finds one; a feature nobody enables cannot appear
+# there, and `required-features` below keeps the bin out of every build that has not asked for it.
+[features]
+study-cli = ["vike-data/hist-datafusion"]
+
+# The study runner that can FIT — see the bin's own module doc for why it lives beside
+# `run_study_plan` rather than in `vike-cli`, which is deliberately DataFusion-free.
+[[bin]]
+name = "vike-study"
+path = "src/bin/vike-study.rs"
+required-features = ["study-cli"]

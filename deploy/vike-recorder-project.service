@@ -1,0 +1,402 @@
+# systemd SYSTEM unit for the vike-recorder headless live-tape RECORDER daemon — this deployment's
+# INSTALLED ARTIFACT, with its real project root filled in. See docs/ops/recorder-deploy.md for the
+# runbook, and `deploy/vike-recorder.service` for the placeholder-root TEMPLATE this is rendered
+# from. Sibling pair, exactly like `vike-tradehub.service` / `vike-tradehub-project.service`.
+#
+# ⚠ THE PATHS BELOW ARE REAL, NOT PLACEHOLDERS. That is the difference between this file and its
+# template, and it is why this one exists: until 2026-09-08 the box ran a 36-line hand-written unit
+# that no tracked file described, so `deploy/` documented a deployment nobody had and the box ran a
+# unit nobody could review. This file is what is installed.
+#
+#   sudo install -Dm644 deploy/vike-recorder-project.service \
+#        /etc/systemd/system/vike-recorder.service
+#   sudo systemctl daemon-reload && sudo systemctl restart vike-recorder
+#
+# ⚠ A RESTART IS NOT FREE HERE and no other unit in this directory carries that warning. The profile
+# runs with `backfill = "off"` and one of its venues (binance) serves no lossless order book, so
+# whatever the tape misses between stop and start is GONE — there is no endpoint that can refill it.
+# Schedule a restart; never fire one to tidy something up.
+#
+# ⚠ FOUR THINGS HERE ARE NOT IN THE TEMPLATE, and each is this deployment's own fact rather than a
+# drift to reconcile away:
+#   User=/Group=the operator            the template leaves the account to the operator, commented out
+#   WantedBy=multi-user.target       a SYSTEM install; the template's `default.target` is the --user shape
+#   Environment=POLY_PROXY_ENABLED   load-bearing on this box — a pre-flight that rebuilt the unit's
+#                                    environment by hand and lost this line failed for that reason alone
+#   MemoryMax=8G                     raised from the template's 4G against a MEASURED peak; see its
+#                                    own comment below, which carries the numbers
+#
+# ⚠ A SYSTEM install is the shape to prefer, and add `User=`/`Group=` naming the account that owns
+# the project root — a daemon reading public market data has no business running as root. This
+# recipe prescribed a `--user` install until 2026-08-17, and the CI box ran one; the hardening block at
+# the bottom is why it stopped. Under a --user manager on a stock Ubuntu box those directives are
+# applied as NO-OPS (measured, down there and in docs/ops/tradehub-the CI box.md), so a --user install
+# buys the convenience of no sudo and gives up the entire sandbox, silently. For a --user install
+# anyway, put it in ~/.config/systemd/user/, drop the sudo and the `User=`, and read that block
+# first so the trade is one you made on purpose.
+#
+# ⚠ /opt/vike is GONE. This unit used to put the binary in /opt/vike, the log in /var/log and the
+# tape in a third place; the runbook then walked an operator into `install -d /opt/vike/settings`.
+# The settings walk and the log destination both key off the PROJECT ROOT, so splitting them bought
+# nothing and cost a class of "the daemon started with no settings at all" bugs. One folder, like
+# Freqtrade and OctoBot: nothing in /opt, nothing in /var/log. The profile's `store =` then points
+# INSIDE the root (`<project>/data/hist`), which is what keeps the write grant at the bottom to two
+# named sub-directories instead of the whole root.
+#
+# The shape is MACHINE-CHECKED: crates/vike-ops/tests/deploy_layout_gate.rs reads every unit in this
+# directory and fails if one names a second location, spreads its write grant over more than one
+# ReadWritePaths= LINE, grants a path that covers a binary it runs or its own settings directory,
+# sets VIKE_LOG_DIR, points EnvironmentFile= at the credential store, or runs an ExecStartPre= binary
+# from outside the project folder (or behind a `-`, which would make the pre-check non-fatal).
+#
+# The recorder subscribes to venue feeds and writes the tape into a DataFusion+Parquet store the
+# customer owns. It places NO orders, holds NO trading credentials, and has NO network control
+# surface — the only thing it can do to the outside world is subscribe to public market data.
+#
+# ⚠ It is a WRITER. The store root should be written by exactly ONE recorder process: the store's
+# per-series `SeriesLock` is an OS advisory lock, so a second writer serializes rather than corrupts,
+# and a killed writer's lock is released by the kernel — but serialized writers are slow, and a stall
+# past the flush retry budget DISCARDS buffered rows. One project folder per recorder.
+
+[Unit]
+Description=vike-recorder — headless live-tape recorder (market data in, Parquet out)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# ⚠ UNCOMMENT AND FILL THESE IN FOR THE SYSTEM INSTALL THE HEADER PRESCRIBES. They are commented
+# rather than guessed because the account is per-deployment and a wrong name is a unit that will not
+# start; but a system unit with NEITHER runs as root, and then ReadWritePaths= below hands root the
+# tape and the state directory. Name the account that owns the project root — the CI box uses the operator.
+# A `--user` install needs neither line: the manager already supplies the identity.
+User=the operator
+Group=the operator
+
+# Build with the venue features this deployment records. A DEFAULT build has NO venue module at all
+# and refuses at startup with the feature name — it never silently records nothing.
+#
+# ⚠ **THIS BOX RUNS THE MULTICALL SINCE 2026-09-09**, which is why ExecStart below reads
+# `bin/vike-backend recorder`: the release attaches the multicall and `vike-cli` and nothing else,
+# because the multicall already contained every per-tool binary and shipping both shipped the same
+# program twice (629 MB against 148 MB, measured on v0.1.20). Dispatch is on a SUBCOMMAND — no
+# symlink, so no `203/EXEC` class to inherit. The multicall is built `--features full`, which
+# forwards `vike-recorder/polymarket` AND `vike-recorder/binance`, so this box's recorder gained
+# `binance` in the move; the profile is still what decides what it records.
+#   cargo build --release -p vike-backend --bin vike-backend --features full          # the shipped one
+#   cargo build --release -p vike-recorder --features polymarket --bin vike-recorder  # this tool alone
+#
+# ⚠ THE BINARY WAS RENAMED `vike` -> `vike-backend` AND THE VERB LOST ITS PREFIX IN THE SAME CHANGE,
+# so this line's two halves move together or not at all: `crates/vike/src/lib.rs`'s `resolve` matches
+# a tool by EXACT string with no aliases, and `bin/vike-backend vike-recorder` / `bin/vike recorder`
+# are each `Route::Usage(2)` — exit 2 with a tool list, a recorder that will not start. This block
+# used to say "the tool name is the FULL binary name", which was true of the old binary and is now
+# the opposite of the truth; it is rewritten rather than deleted so the next reader does not restore
+# the old spelling from it.
+#
+# ⚠ `bin/vike-recorder` may still be on this box — the hand-placed binary that predates this line.
+# It is no longer started by anything once this unit is installed and reloaded, and removing it is a
+# separate operator step, deliberately: doing it in the same breath as the ExecStart change is how a
+# `203/EXEC` gets discovered by a stopped recorder rather than by a reader.
+# `deploy/sbin/vike-trader-ci-deploy status` reports the leftover with that condition attached.
+# ⚠ `bin/vike` — the PRE-RENAME multicall — is the same kind of leftover with a wider condition: the
+# deploy helper installs `bin/vike-backend` BESIDE it for one release rather than over it, and it is
+# removed only once EVERY unit on this box names the new binary and has been RESTARTED. This unit is
+# the one that waits longest: the helper restarts vike-tradehub.service alone, so a recorder started
+# before the flip keeps running from `bin/vike`'s live inode until somebody restarts it.
+#
+# WorkingDirectory IS the project root, and that is what makes the rest of this file short: the
+# settings walk and the rolling log both resolve off it with no extra variable
+# (crates/vike-model/src/state_path.rs's `project_state_dir`).
+WorkingDirectory=/var/lib/vike
+ExecStart=/var/lib/vike/bin/vike-backend recorder --profile /var/lib/vike/settings/recorder.toml
+
+# --- PRE-FLIGHT: refuse a broken configuration instead of starting degraded -----------------------
+# Without this line the daemon STARTS ANYWAY when its settings tree is broken, and the failure is
+# silent by construction: a `settings/` that was never created makes the project walk answer
+# nothing, and a `secrets.env` that has become unreadable logs one line and returns an EMPTY map.
+# The blast radius here is smaller than the trading daemon's — this daemon holds no venue
+# credentials — but it is not zero, and it is the SAME silence: VIKE_SETTINGS_DIR steers both the
+# rolling trace log and the credential store the silent-series pager reads (see the settings block
+# below), so a settings tree that resolves to nothing costs the pager its Telegram/webhook target
+# and turns the silence watchdog into a line in a journal nobody is reading. That is exactly the
+# incident the watchdog exists for, wearing the watchdog's own clothes.
+# docs/decisions/0013-degrade-vs-refuse.md is the rule this implements.
+#
+# `vike-cli config check` resolves the SAME settings directory through the SAME loader (see
+# crates/vike-config/src/load.rs's `load`) and makes the EXIT CODE the product. A non-zero status
+# fails the unit BEFORE ExecStart runs.
+#
+# ⚠ It refuses only what a silent difference would MISREPRESENT: a settings file that does not parse
+# or carries an unknown/removed key, a REMOVED environment variable (which the EnvironmentFile= below
+# can still deliver), and a VIKE_SETTINGS_DIR naming a directory that is not there. An ABSENT
+# credential store is NOT a failure: this daemon needs none, and absent credentials ARE the live gate
+# everywhere else.
+#
+# ⚠ An UNREADABLE credential store — one that exists and cannot be opened — WARNS here rather than
+# refusing, and becomes a refusal only when the process environment ARMS a live venue
+# (crates/vike-config/src/arming.rs's `CREDENTIAL_FILE_ARMING_REFUSED`). ⚠⚠ THAT DISPOSITION IS
+# LOAD-BEARING FOR THIS DAEMON IN PARTICULAR: it holds no venue credentials and arms nothing, so a
+# refusal here could only ever stop a recorder over a file it does not use — and this daemon's
+# downtime destroys tape that cannot be re-fetched. The WARN still lands in the journal, which is
+# the point: "not configured" and "cannot open" are different states
+# (crates/vike-secrets/src/store.rs's `SecretsError` keeps them apart), and the silent-series pager
+# reads that same store.
+#
+# ⚠ Deliberately NOT `--strict`, and NO leading `-`. `--strict` promotes every WARNING — including a
+# 0644 `secrets.env`, which crates/vike-secrets/src/store.rs's `PermissionWarning` argues must never
+# be a refusal; a leading `-` would make a failed pre-check non-fatal, i.e. delete this line while
+# appearing to have it. ⚠ And on THIS daemon's prescribed layout `--strict` exits 1 on a correct
+# install: docs/ops/recorder-deploy.md creates `<project>/.env` (the EnvironmentFile= below) and no
+# credential store, which is exactly the pair crates/vike-secrets/src/store.rs's
+# `LegacyStoreWarning` reports. Audit mode being literal, not a defect — run it knowing that.
+#
+# ⚠ IT NEEDS A SECOND BINARY IN bin/, or systemd fails the unit with status=203/EXEC. Build and
+# install `vike-cli` with the recorder (it is DataFusion-free, so it adds a small binary and no
+# runtime dependency):
+#   cargo build --release -p vike-cli --bin vike-cli
+#   install -m755 target/release/vike-cli /var/lib/vike/bin/vike-cli
+ExecStartPre=/var/lib/vike/bin/vike-cli config check
+
+# --- stop -----------------------------------------------------------------------------------------
+# `systemctl stop` IS a graceful stop. SIGTERM raises the recorder's stop flag — the SAME flag the
+# interactive `quit` word raises — and the ordinary teardown runs: unsubscribe every feed, FLUSH the
+# writer (this is the tape), report dropped rows, join the compaction scheduler. One stop flag, many
+# triggers; the decision and the the CI box measurements are in docs/ops/graceful-stop.md.
+#
+# Under systemd stdin is /dev/null, which reads EOF immediately — the daemon deliberately does NOT
+# treat that as a stop (it would exit on startup), so it runs headless until the signal arrives.
+#
+# ⚠ Before 2026-08-07 this was NOT true, and a box still running an older binary is unchanged: with
+# no signal handler the OS reaped the process and everything still buffered was LOST on EVERY
+# restart. docs/ops/recorder-deploy.md section 2 has the arithmetic for what that costs. Check
+# `journalctl -u vike-recorder` for `SIGTERM/SIGINT will stop gracefully` at startup; a build without
+# it should still be stopped during a quiet period.
+#
+# There is deliberately NO ExecStop=: the daemon stops on the signal, so a stop command could only
+# add a second stop route. (The the CI box measurement behind that: an ExecStop= which touches a sentinel
+# and RETURNS is a no-op anyway, because the kill lands before the daemon's next poll.)
+KillSignal=SIGTERM
+# ⚠ MUST EXCEED the daemon's WHOLE stop budget, not just its hard-capped tail. That budget is
+# `TOTAL_STOP_BUDGET_SECS` in crates/vike-recorder/src/bin/vike_recorder.rs — unsubscribing every
+# feed (budgeted, measured and warned on, because a non-Send VenueFeed cannot move onto the
+# orchestration thread) PLUS the capped flush and compaction join — and it is checked against THIS
+# line by that file's `the_whole_stop_fits_inside_the_units_stop_timeout`. The flush runs FIRST and a
+# compaction merge runs last, so what a hard cap abandons is a restartable pass, never the rows.
+#
+# ⚠ This line was 30 while the daemon's test compared only the capped TAIL against it, leaving the
+# feed unsubscribe out of the sum entirely — on a wide profile SIGKILL would have landed during the
+# final Parquet flush. Raising it is the headroom that makes the total honest; raise the constants
+# and raise this with them.
+TimeoutStopSec=45
+
+# --- turn the trace FILE log DOWN -----------------------------------------------------------------
+# RUST_LOG/VIKE_LOG filter the CONSOLE only; the file layer defaults to `trace` and captures the
+# log->tracing bridge from DataFusion/arrow. This daemon runs for WEEKS and writes continuously —
+# a prior backfill once wrote 341 GB and nearly filled the disk hosting a live trading node.
+Environment=VIKE_LOG_FILE_LEVEL=warn
+Environment=POLY_PROXY_ENABLED=false
+# ⚠ Deliberately NO VIKE_LOG_DIR. Unset, the project layer resolves the rolling log to
+# <project>/settings/state/logs — inside the single write grant at the bottom, and on the same disk
+# the operator is already watching. Check it with `du -sh /var/lib/vike/settings/state/logs`.
+
+# --- WHERE SETTINGS AND CREDENTIALS LIVE ---------------------------------------------------------
+# `<project>/settings/` holds the profile, policy.toml, config.toml, preferences.toml, flags.toml,
+# secrets.env and state/. The binary finds it by walking UP from its working directory for a project
+# marker: a checkout's `Cargo.toml` declaring `[workspace]`, else the NEAREST marker of either kind —
+# for a DEPLOYMENT, its own `settings/` directory.
+#
+# ⚠ A DEPLOYED box has a BINARY, not a source checkout, so until the `settings/` marker existed the
+# walk returned NOTHING here. The recorder holds no trading credentials, so its blast radius was
+# smaller than the trading daemon's — but it reads the same settings tree, so give it the same
+# directory:
+#   install -d -m700 /var/lib/vike/settings /var/lib/vike/settings/state
+#
+# The line below makes the answer EXPLICIT and independent of WorkingDirectory.
+#
+# ⚠ It was DECORATIVE on this daemon until 2026-08-08 — `strings` on the shipped binary found the
+# name ZERO times, so resolution depended entirely on WorkingDirectory= and this comment was a false
+# claim. It now steers both things this daemon resolves from the settings tree: the rolling log
+# (`<settings>/state/logs`) and the credential store its silent-series pager reads. ⚠ It still does
+# NOT steer the Polymarket PROXY configuration: those keys are read through the credential store's
+# own walk (crates/bridges/polymarket/src/exec.rs's `dotenv_proxy_vars`), which takes no override,
+# so on this unit the two agree only because WorkingDirectory= happens to be the same project root.
+Environment=VIKE_SETTINGS_DIR=/var/lib/vike/settings
+
+# Operator tunables (NOT credentials) from a plain env file at the PROJECT ROOT. Harmless if absent —
+# the `-` makes it optional. Polymarket needs NO trading credentials to record — the market-data WS
+# is public and keyless — but it IS geo-blocked from the US, so a US-hosted box needs POLY_PROXY_*
+# pointing at an EU egress. A box already in the EU reaches Gamma and the CLOB WS directly and sets
+# `POLY_PROXY_ENABLED=false`, which is the whole content of the CI box's file.
+#
+# ⚠ It MUST NOT be settings/secrets.env, and the reasoning is the trading daemon's, unchanged by this
+# daemon holding no venue keys: the credential store is the one file in this workspace that is
+# deliberately NEVER an environment source, and four gates are built on that guarantee —
+# VIKE_TRADEHUB_LIVE, VIKE_TRADEHUB_CONTROL, VIKE_RECONCILE and VIKE_TELEGRAM_CONTROL are read off
+# the REAL process env (`std::env::vars()`), NOT the credential map, precisely BECAUSE the store
+# never reaches there (crates/vike-ops/src/reconcile_config.rs's module doc is the authority).
+# EnvironmentFile= at the store inverts that for every binary on the box that inherits this
+# environment, and exports every key it holds into /proc/<pid>/environ and
+# `systemctl show -p Environment`. the CI box's recorder unit pointed here at `settings/secrets.env` until
+# 2026-08-08; nothing was exposed (the store is empty) but the route shipped.
+#
+# A silent-series pager's credentials MAY go here — they are pager credentials, not venue keys, and
+# `webhook_targets` in crates/vike-recorder/src/bin/vike_recorder.rs layers the process environment
+# OVER the store, so either channel works:
+#   VIKE_ALERT_TELEGRAM_TOKEN=...  +  VIKE_ALERT_TELEGRAM_CHAT_ID=...  ->  the "telegram" target
+#   VIKE_ALERT_WEBHOOK_URL=...                                        ->  the "webhook" target
+# and the profile's `[alerting].webhooks` names which of them a silent-series alert is sent to.
+# Absent both, the alert still FIRES and still reaches this unit's log — see below.
+EnvironmentFile=-/var/lib/vike/.env
+
+# --- the silence watchdog: alerting is ON, exiting is NOT -----------------------------------------
+# A feed that is subscribed, CONNECTED and receiving nothing raises no error, loses no rows, and
+# leaves the socket ESTABLISHED — invisible from every vantage point except "rows are not arriving".
+# The daemon watches for it every tick (`--silent-secs`) and raises a real alert naming the SERIES.
+# With no webhook target configured that alert lands in THIS UNIT'S LOG at `error`, so
+# `journalctl -u vike-recorder -p err` is a greppable notification surface with no setup at all.
+#
+# ⚠ `--exit-on-silence` (exit status 3) is deliberately NOT in ExecStart above. Combined with the
+# `Restart=on-failure` below it turns a quiet venue into a crash loop, and a venue CAN be
+# legitimately quiet — an illiquid market, a closed session, a Polymarket window between rotations.
+# Add it only where every subscription is a continuously-trading market, and expect systemd to
+# restart the daemon each time it fires. ⚠ This alternate is a DIRECTIVE an operator swaps in, not
+# prose, so it carries the same binary+verb pair as the live line above and moves with it — a stale
+# spelling here is a line that exits 2 the moment somebody uses it, months later, with nothing
+# nearby saying why:
+#   ExecStart=/var/lib/vike/bin/vike-backend recorder --profile /var/lib/vike/settings/recorder.toml --exit-on-silence
+
+# --- keep the recorder from starving a live node --------------------------------------------------
+# prod boxes may also host live trading. The writer buffers up to max_rows per series in memory and
+# a compaction merge is materialized whole, so cap it. Tune to the box's headroom, to how many series
+# the profile subscribes, and — the knob that actually decides the peak — to `max_merge_rows`.
+#
+# ⚠ 8G here, against the sibling template's 4G, and the number is MEASURED rather than chosen.
+# Taken on this box 2026-09-08, on the running recorder, BEFORE this unit was installed:
+#   cgroup MemoryPeak  3.17 GB      VmHWM  2.29 GB      RSS  1.90 GB
+# A 4G HARD cap over a 3.17 GB peak is 26% headroom on a process that flushes Parquet in bursts,
+# and `MemoryMax=` is a kill, not a throttle. The failure it would produce is an OOM-killed recorder
+# — which costs exactly the unrecoverable tape this deployment exists to collect, since the profile
+# runs with `backfill = "off"` and binance serves no lossless book to refill from. 8G keeps a
+# runaway bounded, which is the whole point of having a cap, at 2.5x the measured peak. The box has
+# 125 GB, so the ceiling is protecting the live trading daemon beside it, not the box.
+#
+# Re-measure before lowering it: the peak follows the profile's series count and `max_merge_rows`,
+# and both have moved before.
+MemoryMax=8G
+# Restart on a crash (an OOM kill included), but not on a clean exit / operator stop. A restart
+# re-resolves every family from scratch and re-subscribes, so the tape resumes on its own; the gap is
+# the restart window plus whatever was buffered (see the SIGTERM note above).
+Restart=on-failure
+RestartSec=10
+# ⚠ Restart=on-failure is not a notifier: `OnFailure=` fires only when the unit enters the FAILED
+# state, which a successful restart does not. deploy/attach-onfailure.sh attaches the pager as a
+# drop-in; `systemctl show vike-recorder -p NRestarts` is the check that catches the silent
+# recover-and-crash loop it cannot.
+
+# Hardening: the daemon needs no privileges. It reads market data and writes its store + log.
+NoNewPrivileges=true
+# ⚠ ProtectSystem=strict mounts the WHOLE filesystem read-only except /dev, /proc, /sys and whatever
+# ReadWritePaths= names. READS are unaffected, so the settings above load normally.
+#
+# ⚠ MEASURED on the CI box (systemd 255, Ubuntu 24.04): under a `systemd --user` manager with the
+# distribution default `kernel.apparmor_restrict_unprivileged_userns=1`, these directives are applied
+# as NO-OPS — no warning, no failed unit, and `systemctl --user show` still reports them as
+# configured. They enforce under the SYSTEM manager. Do not read them as protection that is in force
+# until you have checked; docs/ops/tradehub-the CI box.md has the probe.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+# ONE grant LINE naming TWO paths — the one place this unit differs from
+# deploy/vike-tradehub.service, and deliberately: this daemon writes in two places under the root,
+# the rolling log at `<project>/settings/state/logs` and the tape at `<project>/data/…` (the
+# profile's `store =`). The trading daemon needs only the first, because it has no store to write.
+#
+# ⚠ It used to name the PROJECT ROOT instead, which was the only SINGLE path covering both — and
+# crates/vike-ops/tests/deploy_layout_gate.rs demanded a single path, so the WIDEST possible grant
+# was the only one that passed its "one project folder" rule. The cost is not theoretical on the CI box,
+# where this daemon and the trading daemon SHARE one project folder — and where the trading daemon is
+# a LIVE bybit mount, not the paper one its own unit claimed (measured 2026-08-16; deploy/
+# vike-tradehub-project.service's header carries the evidence). The root grant covers
+# `bin/vike-backend` (the daemon the multicall dispatches), `bin/vike-cli`, `settings/policy.toml` (`max_notional_per_order = 100` — the
+# armed ceiling), `settings/secrets.env` (the venue keys orders are signed with) and
+# `settings/state/HALT` (the ARMED kill switch, which a writable directory also lets you delete after
+# somebody touches it). So under an ENFORCED sandbox a market-data recorder holds write access to a
+# live trading daemon's code, its cap, its credentials and its stop button. ⚠ That hazard is no
+# longer hypothetical on the CI box: both daemons became SYSTEM units on 2026-08-17, so the sandbox that
+# was inert under the user manager is in force and a root grant here WOULD reach the trading
+# daemon's tree for real. The narrow pair below is what keeps it from doing so. The gate now checks
+# CONTAINMENT rather than counting — every granted path under the root, none of them reaching a
+# binary this unit runs or the settings directory that configures it — so the narrow pair is
+# expressible and the root is refused. Anything writable by this unit must be data, never code.
+#
+# ⚠ Neither path is optional: without `settings/state` the daemon cannot write its own rolling log,
+# and without `data` it fails at store open. ⚠ `<project>/data` is the DIRECTORY, not the store —
+# the profile's `store =` MUST be inside it (`<project>/data/hist` here and on the CI box), which is also
+# what lets an operator move the tape between sub-directories without editing this line. A store
+# outside it fails the daemon at open with a permission error, which is at least loud. That grant is
+# also what made the CI box's 2026-08-21 rename of `data/tape` to `data/hist` an ordinary `mv`: both names
+# sit under the one granted directory, so nothing about the sandbox had to change.
+#
+# ⚠ BOTH paths must EXIST — create them in the install recipe. Under the SYSTEM manager systemd
+# refuses to start a unit whose ReadWritePaths= names a missing path (status=226); under a --user
+# manager it does NOT, and starts with the sandbox applied as a no-op — the same root cause as the
+# measured note above. docs/ops/tradehub-the CI box.md carries the probe for both halves. Do not read the
+# refusal as a safety net on a --user install.
+#
+# ...and deliberately NO Environment=VIKE_HALT_FILE — the mirror-image reason. The tradehub unit sets
+# it for explicitness, but the HALT sentinel is checked at the venue-adapter SUBMIT boundary, and
+# this daemon has no submit boundary: it links the bridge crates only for their market-data feeds and
+# constructs no `ExecutionClient` at all. A VIKE_HALT_FILE line here would name a file nothing in
+# this process ever reads — worse than absent, because an operator who touches it during an incident
+# believes the recorder stopped. It did not, and it did not need to: no orders, no trading
+# credentials, nothing to panic about. The only stop is `systemctl stop`, and its whole cost is the
+# buffered tape named in the SIGTERM note above. See docs/ops/kill-switches.md §F.
+ReadWritePaths=/var/lib/vike/settings/state /var/lib/vike/data
+
+
+# --- syscall / capability hardening, MEASURED ON THE REAL BINARIES -------------------------------
+# ⚠ MEASURED on the CI box 2026-08-17, systemd 255, with throwaway SYSTEM units running these exact
+# binaries — the set below is not a template copied from a hardening guide, every line survived a
+# run. The recorder's own `--once` dry run exits 0 under it, and that run dials 8 live polymarket
+# streams and 2 binance streams, so the TLS handshakes and WebSocket dials happen UNDER the seccomp
+# filter; vike-tradehub reaches `{"kind":"ready"}`. `systemd-analyze security`: recorder 8.7 -> 1.9,
+# tradehub 8.3 -> 1.7. Before this block the units carried the four filesystem directives above and
+# NONE of these — the whole syscall and capability surface was open.
+#
+# Nothing here is a guess about what the daemon needs: it runs as an ordinary user, acquires no
+# capability, creates no namespace of its own, takes no realtime priority and executes one ABI.
+#
+# ⚠ PrivateNetwork= is deliberately ABSENT and always will be — these daemons ARE network clients.
+# `systemd-analyze` charges 0.5 for that plus 0.3 for holding AF_INET sockets at all; both are
+# unrecoverable for anything that talks to a venue, and adding it to chase the number would produce a
+# daemon that cannot do its job. RestrictAddressFamilies= therefore ALLOWS the three families in use
+# rather than pretending the internet is optional.
+#
+# ⚠ The one line with a real blast radius is UMask=0077: new files become owner-only. Checked on
+# the CI box before adopting — `lsof +D <project>` shows exactly one user touching the tree, so nothing
+# else reads the store today. A future reader under a DIFFERENT account breaks on it, loudly, with a
+# permission error rather than silence. That is the intended trade for a tree holding venue keys.
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @module @reboot @swap @raw-io @debug @clock @cpu-emulation
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0077
+[Install]
+WantedBy=multi-user.target

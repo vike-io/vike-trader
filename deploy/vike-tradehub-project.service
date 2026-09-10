@@ -1,0 +1,333 @@
+# systemd SYSTEM unit for the vike-tradehub headless trading DAEMON — the CI box's INSTALLED ARTIFACT,
+# with its real project root filled in.
+#
+# Sibling of deploy/vike-tradehub.service, which is the same ONE-PROJECT-FOLDER shape carrying the
+# placeholder root /srv/vike-<unit> for an operator to substitute. Four real differences, all
+# deliberate: this file names /var/lib/vike outright, carries the OnFailure= notifier
+# INLINE (below), sets no VIKE_HALT_FILE, and carries no ExecStartPre= pre-flight check — read those
+# blocks rather than diffing the two and assuming a drift.
+#
+# ⚠ MIGRATED FROM A `systemd --user` UNIT TO A SYSTEM UNIT ON 2026-08-17, and the sandbox block at
+# the bottom is the reason. Those directives were DECLARED under the user manager and applied as
+# no-ops; the measurement that says so is still down there, unedited, because it is the rationale
+# for this move and not a stale note. What changed is the REMEDY, nothing else:
+#   /etc/systemd/system/vike-tradehub.service   (was ~/.config/systemd/user/vike-tradehub.service)
+#   User=the operator / Group=the operator            so the execution identity is unchanged
+#   WantedBy=multi-user.target                  (was default.target)
+# Verified on the switched-over daemon: it has its own mount namespace, / is mounted ro, bin/ and
+# settings/*.toml are no longer writable, settings/state and data/ still are, and the ready banner
+# came back `"mode":"LIVE (venue=bybit)"` — asserted equal to its pre-migration mode. The HALT
+# sentinel is UNAFFECTED: a sentinel touched from an ordinary shell OUTSIDE the namespace is visible
+# to the daemon INSIDE it, verified before the switch. docs/ops/tradehub-the CI box.md carries the
+# switch-over gap and the security-score change.
+#
+# ⚠ The operator verbs moved with it. `sudo systemctl <verb> vike-tradehub` for anything that
+# changes state; a read-only `systemctl show`/`systemctl cat` needs no sudo; and the journal is
+# `journalctl -u vike-tradehub`, with no --user (the unit runs as the operator, so that account reads
+# its own journal without privileges). Commands quoted below in DATED measurement blocks keep the
+# --user form they were run with — they are records, not recipes.
+#
+# ⚠ THE ROOT ON THIS PAGE WAS WRONG FOR A WEEK, and it is the failure mode a file that calls itself
+# an installed artifact has. Until 2026-08-16 every path here said /var/lib/vike, which
+# **has never existed on the CI box**: the running unit reports
+# `WorkingDirectory=/var/lib/vike` and the daemon shares that one project folder with
+# the tape recorder. The block you are reading REPLACED one that had already MEASURED the difference
+# on 2026-08-09, written it down, and left the paths alone — so the page documented its own defect
+# for a week while an operator running its `install -Dm644` recipe would have pointed the live unit
+# at an empty directory and taken the daemon down. Re-measured 2026-08-16, both daemons up 7 days
+# (the verb was `systemctl --user show` that day — pre-migration):
+#   systemctl show vike-tradehub -p WorkingDirectory            # the root that is actually in force
+#   ls -l <that root>/bin                                       # /var/lib/vike/bin
+# → `/var/lib/vike/bin` carries `vike-cli`, `vike-recorder` AND `vike-tradehub`. Ask the
+# box, never this page: a file that claims to BE the artifact is exactly the file nobody re-checks.
+#
+# ⚠ On the FOURTH difference: the template runs `ExecStartPre=<root>/bin/vike-cli config check`,
+# which refuses a broken settings tree instead of letting the daemon start degraded (its own block
+# explains what that buys). It is absent HERE because this file is the artifact ALREADY INSTALLED on
+# the CI box, and systemd fails a unit whose ExecStartPre= binary is missing with status=203/EXEC — a
+# daemon stopped by its own guard, on the next `install -Dm644` redeploy.
+#
+# ⚠ That blocker is now MEASURED AWAY, and the line is still not added here, deliberately.
+# `bin/vike-cli` was installed beside the daemon on 2026-08-08 and is present under the root this
+# file now names (the listing above) — so the 203/EXEC risk is gone and this is a one-line change
+# whenever an operator wants it. It stays out because adding it to the artifact ARMS a new pre-flight
+# on the next redeploy of a daemon that has been up 7 days, and the rule has always been that the
+# line lands in the change that VERIFIES it with `sudo systemctl start vike-tradehub` before
+# enabling. Not in a change that only edits text. Until then this box gains no pre-flight, which is a
+# declared partial, not an oversight.
+#
+#   sudo install -Dm644 deploy/vike-tradehub-project.service \
+#       /etc/systemd/system/vike-tradehub.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vike-tradehub
+#
+# Runbook, including the exact install recipe and the measurements this file cites:
+# docs/ops/tradehub-the CI box.md.
+#
+# ⚠ THIS DEPLOYMENT IS LIVE, NOT PAPER — and this block claimed PAPER until 2026-08-16. MEASURED
+# read-only on the CI box that day, on a daemon up 7 days (pre-migration, hence --user; today the same
+# question is `journalctl -u vike-tradehub`, and the answer after the switch was the same string):
+#   journalctl --user -u vike-tradehub | grep '"kind":"ready"'  ->  "mode":"LIVE (venue=bybit)"
+#   tr '\0' '\n' < /proc/<MainPID>/environ                      ->  VIKE_TRADEHUB_LIVE=1
+#   <root>/settings/secrets.env  (key NAMES only)               ->  BYBIT_DEMO_API_KEY/_API_SECRET
+#   <root>/settings/policy.toml                                 ->  max_notional_per_order = 100
+# The venue is bybit's DEMO account, so no mainnet money is at stake — but a REAL venue adapter is
+# mounted, orders go on a real wire, and vike_run::build_paper_maker_core is not what runs.
+#
+# ⚠ THE BANNER ABOVE IS A TRANSCRIPT, AND ITS `venue=` NO LONGER MEANS WHAT IT MEANT. That string
+# was rendered from the PROFILE's mount set; today it names the set that actually ARMED
+# (build_node's own `live_venues` record — one entry per venue that got a real ExecutionClient),
+# which the CREDENTIAL STORE decides rather than tradehub.toml. A later measurement on this box
+# logged NINE venues in that record under this same one-venue banner, which is what got it changed.
+# So do not diff a today's banner against the line above and read the difference as a redeploy —
+# re-measure, and see docs/ops/tradehub-the CI box.md's "What `mode` names". `LIVE (venue=none)` is a
+# valid answer there: gate on, nothing armed.
+#
+# ⚠ NONE OF THAT IS CONFIGURED IN THIS FILE, which is why the claim rotted unnoticed for a week. The
+# escalation arrives through `EnvironmentFile=-<root>/.env` below — that file carries
+# VIKE_TRADEHUB_LIVE=1 and VIKE_RUN_PROFILE=<root>/settings/run-live.toml — and the credentials sit
+# in the settings tree beside it. Every escalation is still a separate explicit gate, each documented
+# in the runbook; the lesson is that **a unit cannot state its own paper-vs-live mode**, because a
+# one-line edit to a file it merely REFERENCES flips it with nothing here changing. Ask the running
+# binary: the ready banner's `"mode"` is the authority, and docs/ops/tradehub-the CI box.md's "confirm
+# what is actually deployed" section is the procedure.
+
+[Unit]
+Description=vike-tradehub — headless trading daemon (A-S maker; paper-vs-live comes from <project>/.env)
+After=network-online.target
+Wants=network-online.target
+
+# --- SAY SOMETHING WHEN IT FAILS ------------------------------------------------------------------
+# ⚠ Not optional decoration, and its absence already cost something: on 2026-08-08 this daemon
+# CRASH-LOOPED SIX TIMES in 26 s on a missing profile and nobody was paged — the only record was a
+# red line in a journal nobody was reading. With `Restart=on-failure` below, a start failure, a
+# panic and an OOM kill against `MemoryMax=` all look identical from outside: silence.
+#
+# The notifier is deploy/vike-notify (installed to /usr/local/bin, 0755 root:root) driven by the
+# vike-notify@.service template; `%n` passes THIS unit's name to it, and its credentials live in an
+# EnvironmentFile the template names, never here. It is started as an INDEPENDENT job, so it cannot
+# block, delay or serialize this daemon's own failure handling.
+#
+# Carried INLINE rather than attached as a drop-in because this unit file IS the deployment artifact
+# — an `install -Dm644` redeploy keeps the hook, where a drop-in has to be re-attached out of band
+# and is exactly the step that gets forgotten. ⚠ So do NOT also run deploy/attach-onfailure.sh
+# against this unit: `OnFailure=` is a LIST directive and the drop-in APPENDS, giving two entries
+# for one failure. That script remains the right tool for units whose file you do not own.
+OnFailure=vike-notify@%n.service
+
+[Service]
+Type=simple
+
+# The daemon keeps the execution identity it had under the user manager, so every file it owns —
+# the project root, the settings tree, the tape it shares with the recorder — needs no chown and no
+# permission change to survive the move to a SYSTEM unit. This pair is the whole of what a system
+# unit adds over the user one, and getting it wrong runs a live trading daemon as root.
+User=the operator
+Group=the operator
+
+# ONE project folder — binary, settings, state, logs and data all under it. Nothing in /opt, nothing
+# in /var/log. The rolling trace file lands in settings/state/logs and the HALT sentinel resolves to
+# settings/state/HALT with no extra variable (crates/vike-model/src/state_path.rs's
+# `project_state_dir`, crates/vike-bridge-core/src/halt.rs's `resolve_halt_path`).
+# ⚠ Environment=VIKE_SETTINGS_DIR below NAMES that directory, so no walk from WorkingDirectory
+# actually runs — and the sentinel follows the named one too, because the daemon hands its single
+# resolved settings directory to crates/vike-bridge-core/src/halt.rs's `declare_project_state_dir`.
+# On THIS deployment the two answers are identical, which is why the difference was invisible.
+WorkingDirectory=/var/lib/vike
+# ⚠ THIS ONE LINE CARRIES BOTH HALVES OF THE MULTICALL RENAME, AND THEY ARE ONE EDIT. The binary
+# went `bin/vike` -> `bin/vike-backend` and the verb lost its prefix (`vike-tradehub` -> `tradehub`)
+# in the same change; `crates/vike/src/lib.rs`'s `resolve` matches a tool by EXACT string with no
+# aliases, so a half-applied edit is `Route::Usage(2)` — exit 2 with a tool list, a LIVE
+# order-signing daemon that "started" and did nothing, not a crash anybody would notice.
+# ⚠ AND EDITING IT HERE CHANGES NOTHING ON THE BOX. This file IS the installed artifact, but the
+# copy in force is /etc/systemd/system/vike-tradehub.service; only the `install -Dm644` +
+# `systemctl daemon-reload` recipe at the top of this file moves it. Meanwhile
+# `deploy/sbin/vike-trader-ci-deploy` replaces the BINARY unattended on a tag, and for one release
+# it installs `bin/vike-backend` BESIDE `bin/vike` rather than over it — so an un-flipped unit keeps
+# starting the OLD version rather than dying 203/EXEC with nobody watching. That deploy prints a
+# SKEW warning and `status` shows both files; `bin/vike` is removed by hand only once every unit on
+# this box names the new one AND has been restarted.
+ExecStart=/var/lib/vike/bin/vike-backend trade --config /var/lib/vike/settings/tradehub.toml
+
+# --- stop ----------------------------------------------------------------------------------------
+# `sudo systemctl stop` IS a graceful stop: SIGTERM raises the same flag the interactive
+# `shutdown` word raises and the ordinary teardown runs. Measured on this deployment — see
+# docs/ops/tradehub-the CI box.md's deployment section for the number and the journal lines.
+#
+# Under systemd stdin is /dev/null, so the stdio words are unreachable here and a non-tty EOF
+# deliberately does NOT stop the daemon (it would exit at startup). There is deliberately no
+# ExecStop=: the daemon stops on the signal, so a stop command could only add a second stop route
+# to a design whose whole invariant is that there is one. The cost of this stop is quantified in
+# docs/ops/graceful-stop.md, which is also where the decision to take that shape is recorded.
+KillSignal=SIGTERM
+# ⚠ MUST EXCEED the profile's `[daemon] shutdown_deadline_ms`, or SIGKILL wins the race and the
+# teardown is cut in half. `the_default_shutdown_deadline_fits_inside_the_units_stop_timeout` in
+# crates/vike-tradehub/src/main.rs checks THIS FILE's line against the shipped default, alongside
+# deploy/vike-tradehub.service's — it reads both units, so this value is gated rather than a second
+# hand copy of a number whose whole purpose is that it cannot drift. (It read only the template
+# until 2026-08-08, and this comment claimed the coverage it did not have.) crates/vike-ops/tests/
+# graceful_stop_pin.rs additionally holds this unit to stating the timeout explicitly and to
+# carrying no ExecStop=. Raise the profile deadline and raise this too.
+TimeoutStopSec=10
+
+# --- turn the trace FILE log DOWN ----------------------------------------------------------------
+# RUST_LOG/VIKE_LOG filter the CONSOLE only; the file layer defaults to `trace`. A long headless run
+# would otherwise grow a JSON file no console setting can turn down.
+Environment=VIKE_LOG_FILE_LEVEL=warn
+# No VIKE_LOG_DIR: the project layer resolves it to <project>/settings/state/logs, which is inside
+# the one grant below. Naming it here would put the log somewhere the grant does not cover.
+
+# --- WHERE SETTINGS AND CREDENTIALS LIVE ---------------------------------------------------------
+# `<project>/settings/` holds the profile, secrets.env and state/. The line below makes the answer
+# EXPLICIT and independent of WorkingDirectory — with it set, no walk happens at all.
+Environment=VIKE_SETTINGS_DIR=/var/lib/vike/settings
+
+# Operator tunables (NOT credentials) from a plain env file, at the PROJECT ROOT — the same slot
+# every other shipped unit carries at ITS project root. Harmless if absent (the `-` makes it
+# optional), and on THIS deployment the file is comment-only.
+#
+# ⚠ It MUST NOT be settings/secrets.env, and this unit pointed at exactly that until 2026-08-08.
+# The credential store is the one file in this workspace that is deliberately NEVER an environment
+# source, and four separate gates are built on that guarantee: VIKE_TRADEHUB_LIVE,
+# VIKE_TRADEHUB_CONTROL, VIKE_RECONCILE and VIKE_TELEGRAM_CONTROL are all read off the REAL process
+# env (`std::env::vars()`), NOT the credential map, precisely BECAUSE the store never reaches there
+# — crates/vike-ops/src/reconcile_config.rs's module doc is the authority on that reasoning.
+# EnvironmentFile= at the store inverts it: one line appended to a file every operator is told holds
+# credentials would then mount live venues or open the remote control surface, with no unit edit and
+# no review. It also exports every venue key into /proc/<pid>/environ and `systemctl show -p
+# Environment`, inherited by every child process — the leak the separation exists to prevent.
+#
+# ⚠ Whatever DOES go here still reaches the process environment, where a removed setting is refused
+# at startup rather than ignored (crates/vike-config/src/lib.rs's `REMOVED_ENV`).
+EnvironmentFile=-/var/lib/vike/.env
+
+# --- the OUT-OF-BAND kill switch (HALT sentinel) --------------------------------------------------
+# ⚠ Deliberately NO Environment=VIKE_HALT_FILE — for ONE reason now, not two. The second reason was
+# DELETED on 2026-08-16 because it had gone false, and it was the worst kind of claim to be wrong
+# about: it told whoever reached for the kill switch not to bother.
+#
+# 1. It is unnecessary. The built-in default already resolves to <project>/settings/state/HALT —
+#    from Environment=VIKE_SETTINGS_DIR above, which the daemon hands to
+#    crates/vike-bridge-core/src/halt.rs's `declare_project_state_dir`, falling back to a walk up
+#    from WorkingDirectory when no root declares one. Either way a unit that names nothing is no
+#    longer silently disarmed (crates/vike-bridge-core/src/halt.rs's `resolve_halt_path`). Leaving
+#    the line out is what EXERCISES that default rather than papering over it.
+#
+# 2. ⚠ REMOVED — IT WAS FALSE, AND IT SAID THE KILL SWITCH WAS DEAD. It read: the sentinel is
+#    checked at the venue adapter's submit boundary (crates/vike-bridge-core/src/exec_actor.rs's
+#    `ExecActor`), a PAPER mount has no venue adapter, so `touch settings/state/HALT` stops nothing
+#    here and the arming report is never even emitted. All of that is true OF A PAPER MOUNT and this
+#    deployment is not one (see the LIVE block at the top). MEASURED in the running daemon's own
+#    journal, 2026-08-16:
+#      INFO vike_bridge_core::halt: HALT sentinel path resolved; `touch` it to stop new orders
+#        path=/var/lib/vike/settings/state/HALT
+#    Only `ExecActor::spawn` asks for that path, so the line's PRESENCE is itself the proof that a
+#    venue adapter is mounted. **THE SWITCH WORKS ON THIS BOX: `touch` that file to stop new
+#    orders.** The paper-mount reasoning still holds for deploy/vike-recorder.service, which mounts
+#    no `ExecutionClient` at all — docs/ops/kill-switches.md gap 4 and §F.
+#
+#    ⚠ Its half-life is the lesson. The claim was verified when written, on the binary and the mode
+#    of that day, and neither this file nor the runbook is re-read when a `.env` line escalates the
+#    mount. A page may say what a switch DOES; only the running process can say whether it is armed,
+#    and the journal line above is where it says so.
+
+# --- keep the daemon from starving the box's other work -------------------------------------------
+# the CI box also runs the live tape recorder. Cap memory so a runaway can never starve it.
+MemoryMax=2G
+# Restart on a crash (an OOM kill included), but not on a clean exit / operator stop.
+#
+# ⚠ Read this together with the OnFailure= hook above, because the pair has one non-obvious edge:
+# `OnFailure=` fires when the unit enters the FAILED state, and with `Restart=on-failure` a crash
+# that restarts successfully does NOT enter it. The unit only fails once restarts exceed
+# systemd's start rate limit (DefaultStartLimitIntervalSec=10s / StartLimitBurst=5), so a FAST
+# crash loop pages — the real 2026-08-08 loop was 6 starts in 26 s and would have — while a daemon
+# that crashes and recovers every few minutes restarts forever, silently, and is visible only as a
+# rising `NRestarts=`. `systemctl show vike-tradehub -p NRestarts -p OnFailure` is the check.
+Restart=on-failure
+RestartSec=5
+
+# --- hardening: INERT under a --user manager (measured), IN FORCE since the SYSTEM migration -------
+# Read this block in order. The measurement came first and is the REASON for the migration; the
+# remedy paragraph at the end of it is what describes this unit today.
+# ⚠ MEASURED ON PROD2, 2026-08-08, systemd 255 on Ubuntu 24.04: with
+# `kernel.apparmor_restrict_unprivileged_userns=1` (the distribution default) a `systemd --user`
+# manager cannot create the mount namespace these four directives are implemented with, so it
+# applies them AS NO-OPS — no warning, no failed unit, and `systemctl --user show` still reports
+# them as configured. A transient user unit carrying exactly these lines ran in the HOST mount
+# namespace, saw an unhidden $HOME under ProtectHome=yes, and could write every path under the
+# project root including its own binary. The identical directives under the SYSTEM manager blocked
+# bin/, settings/*.toml and data/ with `Read-only file system`. docs/ops/tradehub-the CI box.md carries
+# the probe output and what to do about it.
+#
+# They are kept rather than deleted because they are correct, they cost nothing, and they become
+# real the moment this unit is installed system-wide or the box lifts the restriction. What must NOT
+# happen is reading them as protection that is in force today.
+#
+# ⚠ REMEDY APPLIED 2026-08-17 — that last sentence has come true, and this is now the ONE paragraph
+# in the block that describes today. The unit was installed system-wide (see the migration note in
+# the header), so the four directives above are in force: the daemon runs in its own mount
+# namespace, / is mounted ro, and the probe that could write bin/, settings/*.toml and data/ under
+# the user manager is refused on all three while settings/state and data/ stay writable. Everything
+# ABOVE this paragraph is the pre-migration measurement, kept because it is the argument for the
+# move; nothing above it was edited. The paragraphs are in the order they were true.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+# ONE grant, and deliberately the SUB-directory rather than the project root. The daemon writes its
+# rolling log and its state under settings/state and nothing else; granting the root instead would
+# hand it write access to its own `policy.toml` (a daemon that can rewrite its own ceiling has none)
+# and to the binary it is running. Anything writable by this unit must be data, never code.
+#
+# ⚠ Under the SYSTEM manager the path must EXIST or systemd refuses to start the unit (status=226) —
+# that refusal is the point; a silently unwritable state root shows up later as state that never
+# persists. The install recipe in the runbook creates it.
+ReadWritePaths=/var/lib/vike/settings/state
+
+
+# --- syscall / capability hardening, MEASURED ON THE REAL BINARIES -------------------------------
+# ⚠ MEASURED on the CI box 2026-08-17, systemd 255, with throwaway SYSTEM units running these exact
+# binaries — the set below is not a template copied from a hardening guide, every line survived a
+# run. The recorder's own `--once` dry run exits 0 under it, and that run dials 8 live polymarket
+# streams and 2 binance streams, so the TLS handshakes and WebSocket dials happen UNDER the seccomp
+# filter; vike-tradehub reaches `{"kind":"ready"}`. `systemd-analyze security`: recorder 8.7 -> 1.9,
+# tradehub 8.3 -> 1.7. Before this block the units carried the four filesystem directives above and
+# NONE of these — the whole syscall and capability surface was open.
+#
+# Nothing here is a guess about what the daemon needs: it runs as an ordinary user, acquires no
+# capability, creates no namespace of its own, takes no realtime priority and executes one ABI.
+#
+# ⚠ PrivateNetwork= is deliberately ABSENT and always will be — these daemons ARE network clients.
+# `systemd-analyze` charges 0.5 for that plus 0.3 for holding AF_INET sockets at all; both are
+# unrecoverable for anything that talks to a venue, and adding it to chase the number would produce a
+# daemon that cannot do its job. RestrictAddressFamilies= therefore ALLOWS the three families in use
+# rather than pretending the internet is optional.
+#
+# ⚠ The one line with a real blast radius is UMask=0077: new files become owner-only. Checked on
+# the CI box before adopting — `lsof +D <project>` shows exactly one user touching the tree, so nothing
+# else reads the store today. A future reader under a DIFFERENT account breaks on it, loudly, with a
+# permission error rather than silence. That is the intended trade for a tree holding venue keys.
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @module @reboot @swap @raw-io @debug @clock @cpu-emulation
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0077
+[Install]
+# multi-user.target, not default.target: this is a SYSTEM unit (header). default.target on a system
+# manager is an alias an operator can repoint; multi-user.target is what an `enable` should hang a
+# headless daemon off.
+WantedBy=multi-user.target

@@ -1,0 +1,99 @@
+# <project>/settings/config.toml — DEPLOYMENT CONFIG: where things live, what listens where.
+#
+#     cp settings/config.example.toml settings/config.toml
+#     $EDITOR settings/config.toml
+#     vike-cli config show --filter config    # confirm what the binaries will read
+#
+# Every line below is COMMENTED OUT, so this file AS SHIPPED configures NOTHING — copy it and you
+# still have the compiled-in defaults. Uncomment only what you mean to SET: where a key has a real
+# default the line shows it, and where its default is absence (an `Option`) the line shows a working
+# example value, so uncommenting THAT line sets it.
+#
+# Full override chain, highest first: environment variable > this file > default. Each key names its
+# own variable below; `vike-cli config show` prints which layer actually won on this box.
+#
+# A path key that is omitted does NOT mean "no directory" — it means the reading binary falls back to
+# its own default, which is not the same for every binary. `config show`'s DEFAULT column is the
+# authority for each one.
+
+# Historical data store root — the DataFusion+Parquet hist store every backtest, backfill and Studio
+# read opens. Omitted = the platform user-data directory (`~/.local/share/vike-data` on Linux).
+# Env: VIKE_HIST_STORE
+# store_root = "/data/vike/hist"
+
+# Where the rolling JSON trace log is written. Omitted = `<project>/settings/state/logs`, falling
+# back to `<exe_dir>/logs` when no project sits above the working directory.
+# ⚠ This is the SIZE knob's neighbour, not the size knob: the file layer defaults to `trace` and
+# ignores RUST_LOG entirely. Turn the volume down with `preferences.log_file_level`.
+# Env: VIKE_LOG_DIR
+# log_dir = "/var/log/vike"
+
+# The write-ahead command journal directory (crash-recoverable order intents). Omitted = disabled.
+# Env: VIKE_JOURNAL_DIR
+# journal_dir = "/var/lib/vike/journal"
+
+# ⚠ vike-app's strategy-state SIDECAR directory — NOT the state ROOT that vike-tradehub, vike-ops
+# and vike-studio resolve, which is `<project>/settings/state/` and is not configurable from here.
+# The two have collided by name before; `vike_model::state_path`'s module doc records it. Setting
+# this on a headless box does nothing, because only the GUI reads it.
+# Env: VIKE_STATE_DIR
+# state_dir = "/var/lib/vike/strategy-state"
+
+# Where `vike-cli backtest|sweep|walkforward` ships its profile — the vike-datahub server, usually
+# reached over an SSH tunnel (`ssh -L 7878:localhost:7878 the CI box`). Must contain a ':'.
+# Env: VIKE_DATAHUB_ADDR
+# datahub_addr = "127.0.0.1:7878"
+
+# The address vike-tradehub's authenticated node server BINDS, and the one `vike-cli trade --node`
+# connects to. Omitted (the default) = NO node server at all: the daemon trades headless and has no
+# network surface. Must contain a ':'.
+# ⚠ Setting this opens a socket. Observe (read) is always available to a peer holding
+# VIKE_TRADEHUB_OBSERVE_KEY; WRITES additionally need `flags.tradehub_control`.
+# Env: VIKE_TRADEHUB_ADDR
+# tradehub_addr = "127.0.0.1:7879"
+
+# The datahub dial address this daemon ADVERTISES to its clients (split-plane REQ-2): set, and every
+# `Welcome.features` the node server sends carries `datahub=<addr>`, so a client that has NOT set its
+# own `datahub_addr` dials the data service there — one configured address reaches both planes.
+# Omitted (the default) = advertise nothing. Must contain a ':'.
+# ⚠ THREE of the FOUR addresses in this file meet here — `node_addr` at the bottom is the fourth,
+# and its comment sorts all four by whose box holds the value. `tradehub_addr` above is where the
+# DAEMON LISTENS; `datahub_addr` above is where THIS box's CLIENT dials (an explicit value always
+# WINS over any advertisement); this key is where the daemon TELLS clients to dial the datahub it
+# fronts. So its value must be valid FROM THE CLIENT'S SIDE of the wire — with the tunnel posture
+# both servers ship with, that is the client-local tunnel mouth (`ssh -L 7878:localhost:7878`), not
+# this box's private interface.
+# Advertisement, never proxying: data traffic never flows through the process holding live orders.
+# Env: VIKE_DATAHUB_ADVERTISE_ADDR
+# datahub_advertise_addr = "127.0.0.1:7878"
+
+# This deployment's ORIGIN TAG — 1 to 4 letters/digits, stamped into the client order id of every
+# order this instance places (`<origin>V<session><seq>`), so a SECOND instance trading the SAME
+# venue account is recognisable on reconcile instead of anonymous. Omitted (the default) = ids
+# exactly as they have always been minted, and every reconcile fold decision unchanged.
+# ⚠ SET A DIFFERENT VALUE ON EVERY DEPLOYMENT THAT SHARES A VENUE API KEY. Two boxes carrying the
+# same tag read as ONE instance, which is the honest answer to the only evidence the system has —
+# and is exactly the state this key exists to let you leave. Case-insensitive (`West` == `west`).
+# ⚠ It reaches the wire on the next FRESH coid session: a restart RESUMES its journalled session
+# verbatim (replay determinism), so a core that was already running keeps minting its old ids and
+# says so with a startup warning. docs/ops/double-live-instances.md is the operator page.
+# Env: VIKE_INSTANCE_ORIGIN
+# instance_origin = "west"
+
+# Where THIS box's `vike-cli` dials a running vike-tradehub node when `--node` is not given —
+# the CLIENT-side inverse of `tradehub_addr` above. Omitted (the default) = `--node` stays
+# required on every node-facing verb, exactly as before this key existed. Must contain a ':'.
+# ⚠ FOUR addresses, four jobs — sort them by WHOSE box holds the value and whether that box
+# LISTENS on it or DIALS it:
+#   tradehub_addr           the DAEMON's box, LISTEN — where vike-tradehub binds
+#   datahub_addr            a CLIENT's box, DIAL     — where this machine reaches a datahub
+#   datahub_advertise_addr  the DAEMON's box, DIAL-FOR-SOMEBODY-ELSE — what the node tells its
+#                           clients to use for the datahub it fronts
+#   node_addr               a CLIENT's box, DIAL     — where this machine reaches a tradehub node
+# So this key is `datahub_addr`'s exact twin one plane over, and it is NOT called `tradehub_addr`
+# because that spelling is the daemon's BIND: with a tunnel in front the two are set on different
+# machines and only agree by coincidence of the tunnel. It is named for the FLAG it defaults.
+# ⚠ It has NO environment variable, alone among the keys in this file: `--node` is already its
+# per-invocation override, so a third spelling would add a place to look and no capability.
+# `vike-cli backend connect <host>` writes this line for you after it raises the tunnel.
+# node_addr = "127.0.0.1:7879"

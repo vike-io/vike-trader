@@ -1,0 +1,85 @@
+[package]
+# ⚠ There is NO `[[bin]]` and NO `[lib]` section in this manifest, so BOTH the executable and the
+# lib crate follow this name: the shipped artifact is `vike-backend` and the lib is `vike_backend`.
+# Renaming this line renames the release asset, every `ExecStart=` that names it and the container's
+# symlink target, with nothing else in the manifest saying so.
+name = "vike-backend"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+license-file.workspace = true
+publish = false
+
+# The multicall dispatcher. Layer 68 — above every headless top-of-graph binary (65) and below the
+# egui tiers (70), because it depends on those binaries' crates and nothing may depend on it.
+[package.metadata.vike]
+layer = 68
+
+[dependencies]
+# The one NON-optional dep: the dispatcher itself answers `--version`, and a version printer
+# without build identity is what identity_adoption.rs exists to refuse (a release binary was once
+# built four commits behind main). Leaf crate, layer 15 — the light lanes stay light.
+vike-buildinfo = { path = "../vike-buildinfo" }
+# Each tool is an OPTIONAL dependency behind a feature of the same shape as its own binary's
+# `required-features`. ⚠ Optional and NOT default: a dispatcher that always linked every tool would
+# make `cargo check -p vike-backend` build the whole DataFusion closure for anyone touching the
+# routing, and would defeat the per-crate feature lanes that keep the light crates light.
+vike-studio-core = { path = "../vike-studio-core", optional = true }
+vike-report = { path = "../vike-report", optional = true }
+vike-backtest = { path = "../vike-backtest", optional = true }
+vike-datahub = { path = "../vike-datahub", optional = true }
+vike-recorder = { path = "../vike-recorder", optional = true }
+vike-tradehub = { path = "../vike-tradehub", optional = true }
+vike-cli = { path = "../vike-cli", optional = true }
+
+[features]
+# ⚠ A FEATURE NAME AND A TOOL VERB ARE NO LONGER THE SAME STRING, and they used to be. The verbs
+# dropped their `vike-` prefix (`vike-backend trade`, not `vike-backend vike-tradehub`); these
+# feature names did NOT, because each one gates an optional DEPENDENCY whose package genuinely is
+# `vike-tradehub`/`vike-recorder`/`vike-datahub`/`vike-cli` — the prefix is accurate here in a way it
+# was not on a verb. `crates/vike/src/main.rs`'s `TOOLS` rows carry both strings side by side
+# (`#[cfg(feature = "vike-recorder")] Tool { name: "recorder", … }`) and that mismatch is deliberate.
+# Renaming a feature here is a manifest+main.rs pair with `full` rewritten in the SAME edit —
+# `multicall_gate::resolve_forwards` PANICS on a `full` entry naming a feature this table does not
+# define.
+default = []
+# `study-cli` forwards to the crate feature of the same name — the bin it replaces carries
+# `required-features = ["study-cli"]` for the same reason.
+study-cli = ["dep:vike-studio-core", "vike-studio-core/study-cli"]
+# `tearsheet` needs no crate feature — vike-report is DataFusion-free and binutil is feature-free.
+tearsheet = ["dep:vike-report"]
+# `backtest` forwards `datafusion-store` — the bin it replaces carries the same `required-features`.
+backtest = ["dep:vike-backtest", "vike-backtest/datafusion-store", "vike-backtest/venue-fetch"]
+# `vike-datahub` forwards `serve-datafusion`; without it the tool still answers --help and then
+# reports it has no backend, exactly as the standalone binary does.
+vike-datahub = ["dep:vike-datahub", "vike-datahub/serve-datafusion"]
+# `vike-recorder` forwards its VENUE feeds. ⚠ A dropped venue here ships a recorder that records
+# nothing for it — silently, since an unconfigured venue looks the same as an unbuilt one.
+vike-recorder = ["dep:vike-recorder", "vike-recorder/polymarket", "vike-recorder/binance"]
+# ⚠ `fxcm` JOINED 2026-09-09, and this comment said it NEVER would: "that feature links
+# libForexConnect and the ELF then dies at exec wherever the SDK is absent. The fxcm-linked daemon
+# stays its own separately-named release asset." Every word of that was true of the feature as it
+# then was, and none of it is true now. `crates/bridges/fxcm/build.rs` no longer emits
+# `cargo:rustc-link-lib=ForexConnect`: the C++ boundary is a shared object, `libfcshim.so`, that
+# `crates/bridges/fxcm/src/loader.rs` opens at RUNTIME. So this binary carries no `DT_NEEDED` on the
+# SDK, starts everywhere the feature-free one started, and arms FXCM exactly on the boxes where the
+# shim is installed — which is what the separate asset existed to arrange, at the cost of a second
+# 148 MB daemon nobody could reach any other way.
+# ⚠ `ibkr` JOINED 2026-09-08, and it was a plain omission rather than a decision. The feature has
+# existed and been CI-tested (`scripts/ci_feature_suite.sh`'s `ibkr` lane compiles the whole
+# mount chain every PR), and `grep -c ibkr .github/workflows/release.yml` returned **0** — so no
+# shipped binary could reach IBKR at all and the only way to get it was to build from source.
+# Nothing was blocking it: there is no native SDK, no link line and no rpath — `vike-ibkr` is a
+# vendored pure-Rust `ibapi` plus a gateway process the operator runs.
+vike-tradehub = ["dep:vike-tradehub", "vike-tradehub/telegram", "vike-tradehub/polymarket", "vike-tradehub/record-feeds", "vike-tradehub/materialize", "vike-tradehub/ibkr", "vike-tradehub/fxcm"]
+# The set the RELEASE builds. ⚠ It must enumerate exactly what `.github/workflows/release.yml`'s
+# `--features` line does: a silently-dropped tool feature ships a dispatcher whose `--help` lists
+# one tool fewer, and whose installed link for that tool exits 2.
+# ⚠ `vike-cli` is not optional in practice: four systemd units and the container entrypoint run
+# `vike-cli config check` as a pre-flight, so an image whose link for it exits 2 fails every start.
+vike-cli = ["dep:vike-cli"]
+full = ["study-cli", "tearsheet", "backtest", "vike-datahub", "vike-recorder", "vike-tradehub", "vike-cli"]
+
+
+[lints]
+workspace = true

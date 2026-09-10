@@ -1,0 +1,26 @@
+{
+  "_provenance": "REAL GET /confirms/{dealReference} reply captured from demo-api.ig.com on 2026-08-21. TWO separate 0.1 BUY deals in CS.D.EURUSD.MINI.IP were opened (forceOpen:true → two deals), then closed by ONE call: POST /positions/otc + `_method: DELETE` with {epic, expiry, direction: SELL, size: 0.2, orderType: MARKET}. Verbatim except this key. It is the evidence that the epic form nets across deals and answers ONE dealReference for the WHOLE size — one confirm, one fill, exactly one terminal.",
+  "date": "2026-08-21T17:20:37.98",
+  "status": "CLOSED",
+  "reason": "SUCCESS",
+  "dealStatus": "ACCEPTED",
+  "epic": "CS.D.EURUSD.MINI.IP",
+  "expiry": "-",
+  "dealReference": "LJVRYMVLVHQTYS9",
+  "dealId": "DIAAAAYB6YR5EAL",
+  "affectedDeals": [
+    { "dealId": "DIAAAAYB6YR5EAL", "status": "FULLY_CLOSED" },
+    { "dealId": "DIAAAAYB6X28SA3", "status": "FULLY_CLOSED" }
+  ],
+  "level": 1.16791,
+  "size": 0.2,
+  "direction": "SELL",
+  "stopLevel": null,
+  "limitLevel": null,
+  "stopDistance": null,
+  "limitDistance": null,
+  "guaranteedStop": false,
+  "trailingStop": false,
+  "profit": -0.13,
+  "profitCurrency": "USD"
+}

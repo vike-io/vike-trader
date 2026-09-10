@@ -1,0 +1,197 @@
+# Anchored WALK-FORWARD of `dca_accumulate` over a 24-month Binance 1m BTCUSDT slice.
+#
+#     # profile shipped verbatim to a vike-datahub server sitting next to the store
+#     # (ssh -L 7878:localhost:7878 the CI box)
+#     cargo run -p vike-cli -- walkforward \
+#       --profile crates/vike-backtest/profiles/wf_dca_accumulate.toml --json
+#
+# There is NO `--walkforward` flag on the `backtest` bin: `harness::run_walkforward` is reached
+# only through the datahub `RunWalkforwardProfile` verb (`vike-cli walkforward`) — the bin runs
+# `run_backtest`/`run_sweep` and IGNORES a `[walkforward]` table (it is inert there, by design).
+# Running this same file through the bin is therefore a legitimate single-pass sanity run, not a
+# walk-forward.
+#
+# ────────────────────────────────────────────────────────────────────────────────────────────
+# WHAT THE STRATEGY ACTUALLY DOES  (`crates/vike-strategy/src/grid_dca.rs`, `DcaAccumulate`)
+# ────────────────────────────────────────────────────────────────────────────────────────────
+# One cycle, repeated forever:
+#   1. ARM — on the first event with no anchor, set `anchor = bar.close` and rest `rungs` LIMIT
+#      entries at `anchor − side·k·step`, k = 1..rungs (long ⇒ buys below). A rung whose price
+#      steps at or below zero is skipped. This happens ONCE per cycle; the ladder is never
+#      re-priced afterwards.
+#   2. ACCUMULATE — every same-side fill folds into a volume-weighted `avg_entry` and grows
+#      `filled_size`. There is no per-rung state: the ladder is a bag of resting limits.
+#   3. EXIT — on any bar where `filled_size > 0` and `close >= avg_entry·(1 + tp)` (long),
+#      submit ONE MARKET order for the whole `filled_size` and latch `closing`.
+#   4. RE-ANCHOR — the opposite-side fill resets `filled_size`/`avg_entry`/`closing` and drops
+#      the anchor, so the NEXT bar re-arms a fresh ladder at the then-current close.
+# It consumes CLOSED BARS only (`on_bar` → `bar.close`; the `on_quote_tick` twin is unused in bar
+# mode). No funding, no book, no second symbol, no indicator, no warmup.
+#
+# ⚠ THERE IS NO STOP AND NO TIME EXIT. `Grid` has a `band` hard stop; `DcaAccumulate` has none.
+# A cycle that never reaches `avg_entry·(1+tp)` stays open FOREVER — see the caveats at the end.
+#
+# ────────────────────────────────────────────────────────────────────────────────────────────
+# WHY THIS PROFILE'S SHAPE
+# ────────────────────────────────────────────────────────────────────────────────────────────
+# ONE SYMBOL is mandatory, not a preference. `harness::walkforward::run_walkforward` rejects any
+# profile resolving to more than one bar series ("walk-forward runs over ONE bar series … name a
+# single symbol") because `walk_forward_splits` divides a single `&[Bar]` BY INDEX. Unlike
+# `rotation_top_k` that costs nothing here: `DcaAccumulate` is single-instrument by construction
+# (it holds ONE anchor / ONE `avg_entry`), so one symbol is its natural shape, not a mutilation.
+# BTCUSDT is chosen for full history across the whole window (KAITO listed ~2025 and LIT spot
+# delisted ~2025-02, so neither can span it) and for the deepest book on the venue, which is what
+# makes `slippage = 0.0` defensible below.
+
+name = "dca_accumulate-binance-1m-btcusdt-24mo-wf6"
+
+[data]
+kind = "bar"
+interval = "1m"
+venue = "binance"
+symbols = ["BTCUSDT"]
+from = "1722556800000"   # 2024-08-02
+to   = "1785628800000"   # 2026-08-02
+
+[engine]
+# 100k. The exposure arithmetic that fixes it: one full ladder is `rungs · size` = 3 × 0.02 =
+# 0.06 BTC, i.e. ~$3.6k at $60k and ~$7.2k at $120k — 4–7% of cash per cycle. That looks timid
+# on purpose. The strategy places limits it can never CANCEL (the portable `Broker` surface has
+# no cancel verb — see the module doc's "Portability constraint"), so unfilled deep rungs from
+# every past cycle stay resting at their old prices and a sharp drawdown fills a whole lattice of
+# them at once. Sizing one cycle at ~5% of cash leaves roughly 15–20x headroom for that tail,
+# which matters because NOTHING ELSE BOUNDS IT: `EngineCfg` exposes no `cash_gate` knob, so the
+# un-gated `fill_pending` lane runs and a fill is never refused for want of cash — the account
+# simply goes negative and the whole run is garbage. Scale `size`, not `cash`, if you want more
+# exposure, and re-check the tail before you do.
+cash = 100000.0
+# Binance SPOT VIP0, no BNB discount — 0.1000% both sides, which is why one flat number is
+# faithful here even though the entries are MAKER limits and the exit is a TAKER market: the
+# profile schema has no maker/taker split (`EngineCfg` carries only `fee_rate` + the
+# `probability_scaled` `[engine.fee]` schedule), so `maker_fee = taker_fee = fee_rate`. Round
+# trip = 0.20%, i.e. `tp = 0.04` nets ~3.8%. Use 0.0005 instead if this store's
+# `venue = "binance"` series are USD-M PERP klines rather than spot.
+fee_rate = 0.001
+# 0.0, and this one is NOT laziness. `slippage` is applied by `adverse_fill_price` to EVERY fill
+# regardless of order kind — including the resting LIMIT entries, which by definition fill at
+# their own price. Any non-zero value would therefore charge a spread-crossing cost to the three
+# passive legs of every cycle in order to model it on the one aggressive leg. The market exit is
+# consequently un-slipped, which is a known optimism worth ~1 bp on a $2k BTCUSDT clip — an order
+# of magnitude below the 20 bp of commission already charged.
+slippage = 0.0
+# OFF, and load-bearing for routing. On, `bar_engine_params` sets `default_venue`,
+# `StrategyEngine::new` re-tags every bar `"BTCUSDT.BINANCE"`, and the CLAUDE.md bar-mode footgun
+# bites — `SimBroker` still indexes positions by the BARE `"BTCUSDT"`. `DcaAccumulate` IS a
+# symbol-inferring strategy (`bar.symbol` is its fallback), so with snapping on and no explicit
+# override it would submit against `"BTCUSDT.BINANCE"` and panic in `SimBroker::idx`. The
+# explicit `strategy.params.symbol` below makes this profile immune either way; the knob stays
+# off because there is no instrument grid worth 1.05M point-in-time lookups here (a 0.02 BTC clip
+# clears every plausible min_qty/min_notional, so snapping would change nothing but the runtime).
+snap_to_properties = false
+
+[strategy]
+name = "dca_accumulate"
+
+# EVERY key `DcaAccumulate::from_params` reads is spelled out below, including the ones set to
+# their own default — this is a READER, not a schema (unknown keys are silently ignored), so a
+# typo'd knob is invisible and the only defence is naming the full set. Read from
+# `crates/vike-strategy/src/grid_dca.rs`, not guessed.
+#
+#   key           type    default   meaning
+#   ────────────  ──────  ────────  ─────────────────────────────────────────────────────────
+#   side          str/int "long"    "short"/"sell" or a NEGATIVE integer ⇒ −1; anything else +1
+#   anchor        str     "first"   "fixed" ⇒ use `anchor_price`; anything else ⇒ first close
+#   anchor_price  float   0.0       the fixed anchor, only read when anchor = "fixed"
+#   step          float   1.0       ABSOLUTE price gap between scale-in rungs
+#   rungs         int     3         number of scale-in entries (negative clamps to 0)
+#   size          float   1.0       order size per rung, in BASE units
+#   tp            float   0.05      take-profit as a FRACTION of `avg_entry`
+#   symbol        str     —         explicit symbol override; else the first bar's symbol
+#
+# `rungs` reads via `Value::as_integer` ONLY — write `rungs = 3`, never `rungs = 3.0`, or it
+# silently falls back to the default 3. Every other numeric key goes through `as_f64`, which
+# accepts an int or a float.
+[strategy.params]
+# LONG. Not a market view so much as the only side whose failure mode is survivable: a short DCA
+# ladders SELLS above the anchor with an unbounded loss tail and, again, no stop. Read the result
+# knowing the 2024-08→2026-08 BTC drift is broadly up, so a long-only dip-buyer inherits some of
+# it (the walk-forward's per-window `oos_return` split is what separates drift from edge).
+side = "long"
+# FIRST-price. "fixed" is unusable here twice over: BTC spans roughly $58k–$120k+ across the
+# slice, and each of the six OOS windows starts at a DIFFERENT price level (each window is a
+# fresh `StrategyEngine` over its own `&[Bar]` slice), so one hard-coded `anchor_price` would put
+# the whole ladder out of reach in five of them.
+anchor = "first"
+# $2,000 ≈ 1.7% of BTC at $120k, 3.4% at $58k. `step` is ABSOLUTE, and the strategy has no
+# percent mode, so its economic meaning DRIFTS ~2x across this slice — deliberately accepted, and
+# the single largest reason to read the six windows separately rather than the stitched headline.
+# Ladder: −$2,000 / −$4,000 / −$6,000 from each cycle's anchor.
+step = 2000.0
+# 3 rungs (the default, named anyway). Kept small on purpose: an unfilled rung is a permanent
+# resting order, so `rungs` is also the residual-generation rate — each completed cycle strands up
+# to `rungs − 1` limits below the market forever. 3 keeps that lattice in the low tens per OOS
+# window; 8 would put it in the hundreds and turn the pending-order scan (O(pending) per bar over
+# ~150k bars/window) into the run's dominant cost as well as its dominant risk.
+rungs = 3
+# 0.02 BTC/rung ≈ $1.2k–$2.4k across the slice. See `[engine].cash` for the exposure arithmetic;
+# this is the number to change if you want the headline percentages to be economically legible.
+size = 0.02
+# +4% off the volume-weighted entry. Chosen against `step` so cycles actually CLOSE: with only
+# rung 1 filled the exit sits at (A − 2000)·1.04 ≈ A + 2.2%, a move BTC makes routinely on this
+# tape; with the whole ladder filled the average is ≈ A − 4000 and the exit ≈ A + 0.1%, so even a
+# fully-loaded cycle unwinds on a modest bounce rather than needing a new high. Net of the 20 bp
+# round trip that is ~3.8%.
+tp = 0.04
+# EXPLICIT, per the CLAUDE.md bar-mode footgun. Redundant while `snap_to_properties = false`
+# (bars keep their bare symbol and the `bar.symbol` fallback resolves correctly), and load-bearing
+# the moment anyone flips that knob. Costs nothing to state; costs a panic to omit later.
+symbol = "BTCUSDT"
+
+# ────────────────────────────────────────────────────────────────────────────────────────────
+# SANITY CHECK THAT IT TRADES (traced through the engine loop; no numbers were tuned to a result)
+# ────────────────────────────────────────────────────────────────────────────────────────────
+# `StrategyEngine::run` fires the fill phase for bar i BEFORE `on_bar(i)`, so an order placed on
+# bar i is first eligible on bar i+1 — no look-ahead, and no "armed but never filled" dead state.
+# `warmup()` is 0 (the trait default; `DcaAccumulate` does not override), so the ladder is armed
+# on bar 0 of every window.
+#   • ENTRY reachability — `order_fill_price`'s Limit arm fills a buy when `bar.low <= price`, at
+#     `min(price, bar.open)`. Rung 1 sits $2,000 (1.7–3.4%) under the anchor; on 1m BTCUSDT bars a
+#     move of that size takes hours, not weeks, so rung 1 fills many times per OOS window.
+#   • EXIT reachability — see the `tp` comment: the target is +2.2% above the anchor in the
+#     one-rung case and roughly flat to it in the full-ladder case.
+#   • CYCLE RATE — a dip of ~2% followed by a ~4% recovery is a multi-day round trip on this tape,
+#     so expect O(10–40) completed cycles per ~104-day OOS window, not O(1) and not O(10k).
+# The failure mode this rules out is the one that matters: a profile whose `step` is so wide that
+# rung 1 never fills reports six flat windows and a 0.0 return, which LOOKS like a result.
+#
+# ────────────────────────────────────────────────────────────────────────────────────────────
+# ⚠ READ THE RESULT WITH ALL OF THIS IN HAND
+# ────────────────────────────────────────────────────────────────────────────────────────────
+# 1. NO STOP, NO TIME EXIT. A cycle underwater at the end of a window is still open; the window's
+#    `final_equity` marks it at the last close. A window that ends mid-drawdown books an unrealised
+#    loss it might "never" have taken, and one that ends mid-recovery books the reverse. Compare
+#    `n_trades` across windows before comparing returns.
+# 2. UNCANCELLABLE RESIDUALS. Stranded rungs from earlier cycles fill on later dips and fold into
+#    the NEXT cycle's `avg_entry`, so the realised ladder is not always the 3 rungs configured.
+#    This is documented strategy behaviour ("residual entries … may re-fill if price revisits
+#    those levels"), not a bug — but it makes exposure path-dependent and unbounded above.
+# 3. `[risk]` CANNOT FIX (2). `SimBroker::build_risk_gate` mounts a gate consulted ONLY by
+#    `gate_market_order`, called from `submit_market`/`submit_market_close`. Every ladder entry is
+#    a LIMIT and bypasses it entirely. A `[risk]` table here would bound the exit and nothing else
+#    — a false sense of a cap — which is why this profile has none.
+# 4. STATE DESYNC ON A WIDE BAR. The exit market order is sized from `filled_size` at SUBMIT time
+#    and pending is walked in insertion order, so if a residual entry fills on the same bar the
+#    exit does, `handle_fill` zeroes `filled_size` while the broker still holds the extra clip —
+#    stranding inventory the strategy no longer knows about, permanently. Needs a bar whose range
+#    spans both the TP level and a rung, so it is rare on 1m BTCUSDT, not impossible.
+# 5. THIS "WALK-FORWARD" FITS NOTHING. `run_walkforward` runs the profile's FIXED params on each
+#    OOS window; `Split.train_start/train_end` are computed and then ignored by
+#    `walk_forward_strategy`, which only ever slices `test_start..test_end`. So this is a
+#    six-fold REGIME-CONSISTENCY test (does the same parameter set survive six consecutive
+#    ~104-day regimes?), not an out-of-sample test of a fitted parameter. `wf_consistency` is the
+#    number to read; the stitched `oos_return` compounds six independent windows and flatters a
+#    strategy that had one good regime.
+# 6. n_splits = 6 ⇒ chunk = n/7, so the FIRST ~1/7 of the slice (≈ 2024-08 → 2024-11) is never
+#    traded, and the LAST window absorbs the remainder and is ~2x the others.
+[walkforward]
+n_splits = 6

@@ -1,0 +1,164 @@
+# cargo-deny policy — the ONE scanner over every locked package that signs live orders.
+# (`grep -c '^\[\[package\]\]' Cargo.lock` is the count; it is not written here because this line
+#  said ~678 while the lockfile held 764, and the number differs BETWEEN BRANCHES besides.)
+# CI: .github/workflows/deny.yml — on the SELF-HOSTED the CI box pool, NOT ubuntu-latest. It was moved
+# off the GitHub-hosted runner when those stopped provisioning (jobs died in ~3s with 0 steps, no
+# runner assigned), which reds this gate regardless of policy; the job is metadata-only, so it adds
+# no untrusted-code execution beyond the full build+test the CI box already runs on every PR. That
+# workflow's `cargo-deny` job pins the `the CI box` label rather than a bare `self-hosted, linux` —
+# which also matches the the latency runner box — and its own comments carry both arguments.
+# Local: `cargo deny check` (or `just deny`).
+#
+# Policy intent (2026-07-08 security-hardening audit):
+#   advisories — RustSec vulns/unmaintained/yanked surface as failures, triaged via `ignore`
+#                entries WITH reason comments (never silently widened).
+#   bans       — no wildcard version requirements; duplicate versions are visible but don't
+#                block (ecosystem churn: hashbrown x4, getrandom x3, windows-sys x3...); PLUS the
+#                "ONE transport stack" denylist — no second HTTP/WS/TLS/secp crate (see [bans].deny).
+#   sources    — crates.io ONLY. The workspace has zero git dependencies; keep it that way.
+#   licenses   — permissive allow-list; anything new must be added here consciously.
+
+[graph]
+# Scan what we actually build everywhere: all workspace crates with every crate-local feature
+# on (polymarket k256/keccak, fxcm stub, hist-datafusion Arrow tree) so the gate sees the
+# full attack surface, not just the default build.
+all-features = true
+
+[advisories]
+# Explicit denies (cargo-deny's defaults are weaker than a supply-chain gate wants: `yanked`
+# defaults to "warn" and `unmaintained` to a subset — pin the strict posture we actually mean).
+# `ignore` entries below are the ONLY escape hatch, each with a reason.
+yanked = "deny"        # a yanked dep fails the gate (default is only "warn")
+unmaintained = "all"   # fail on direct AND transitive unmaintained crates (default excludes direct)
+ignore = [
+    # rhai's interned-string type; unmaintained-but-frozen (1.0.1 since 2022), pure in-memory
+    # string storage — no I/O, no parsing of external input, no network surface. Advisory is
+    # "unmaintained", not a vulnerability. Drops out when rhai moves off it — recheck on rhai bumps.
+    { id = "RUSTSEC-2026-0249", reason = "smartstring: unmaintained via rhai; in-memory only, no attacker-facing surface" },
+    # datafusion's build-time proc-macro helper; unmaintained-but-frozen, no runtime surface.
+    # Drops out whenever datafusion moves off it — recheck on major datafusion bumps.
+    { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained proc-macro via datafusion-macros; build-time only, no fixed alternative upstream yet" },
+    # Both quick-xml advisories sit in wayland-scanner, a BUILD-TIME proc-macro parsing the
+    # Wayland protocol XML *shipped inside trusted crates* (never attacker input), and only on
+    # the Linux-GUI target (vike-app is Windows-dev-only; the Linux CI/prod builds are core
+    # crates without eframe/winit). No compatible fixed version as of 2026-07-08.
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml DoS: build-time wayland-scanner over trusted XML on a never-built target (Linux GUI)" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml DoS: same wayland-scanner build-time path, trusted input, never-built target" },
+    # egui/winit font fallback chain on the Linux-GUI target only (sctk-adwaita titlebars);
+    # parses LOCAL system fonts, not remote input. Rechecked at every egui/winit bump.
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser: unmaintained; Linux-GUI-only decoration path never built; local font files only" },
+]
+
+# --- thrift 0.17.0 / GHSA-2f9f-gq7v-9h6m (CVE-2026-43868) — DELIBERATELY NOT an `ignore` ---------
+# Assessed 2026-08-05 after a Dependabot alert (dismissed `not_used`). No entry above, because an
+# entry would enforce nothing: RustSec never assigned an ID, so `cargo deny` answers a GHSA id with
+# `warning[unknown-advisory]` + `warning[advisory-not-detected]` and moves on (verified by probe).
+# Three facts that are expensive to rediscover, in the order they mislead people:
+#
+#  1. NOT REACHABLE. parquet moved metadata decoding to its own in-crate parser in 57.0.0. In our
+#     58.3.0 the thrift crate backs only the deprecated `parquet::format` (lib.rs `#[deprecated]`,
+#     zero in-crate callers) and `src/bin/parquet-layout.rs`, gated `required-features = ["cli"]`,
+#     which our graph does not enable. Nothing in this workspace names `parquet::format` or
+#     `TCompactInputProtocol`.
+#  2. THE BLOCKER IS DATAFUSION'S ARROW PIN, not parquet's thrift pin. parquet 58.4.0 still requires
+#     thrift `^0.17`, so `cargo update` can never fix this; parquet >= 59 drops thrift outright, but
+#     datafusion 54.1.0 (newest) requires arrow/parquet `^58.3.0` and no released datafusion is on
+#     59. Resolves for free when datafusion adopts arrow 59 — recheck at every datafusion major,
+#     same trigger as RUSTSEC-2024-0436 above.
+#  3. PARQUET 59 DOES NOT MAKE HOSTILE-PARQUET DECODING SAFE. arrow-rs's own replacement carries the
+#     same CWE-789 shape — `read_thrift_vec` does `Vec::with_capacity(list_ident.size)` on an
+#     unvalidated wire i32, still present verbatim in 59.1.0. Do not close this out believing the
+#     bump fixed it. Our own bound against that class lives at `HttpRangeReader::get_bytes`
+#     (`crates/vike-backfill/src/vike_archive.rs`, `MAX_CHUNK_BYTES`), which is the only lever we
+#     actually control; third-party parquet reaches a decoder via the pmxt, vike-archive,
+#     ClickHouse and `--archive`-dir read paths.
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace-internal `{ path = "..." }` deps carry no version requirement (this workspace is
+# private/unpublished — versions would be noise); only REGISTRY wildcards stay denied.
+allow-wildcard-paths = true
+
+# --- "ONE transport stack" invariant, machine-enforced (CLAUDE.md "Conventions...") ---------
+# CLAUDE.md mandates every venue adapter reuse ONE stack — `ureq` (blocking REST/HTTP),
+# `tungstenite` (blocking WS), `rustls`+ring (TLS), `k256` + the vike-bridge-core signers —
+# "rather than pulling a second HTTP/WS/TLS/crypto crate. The whole workspace links into ONE
+# order-signing binary, so every adapter's transitive tree is part of the merge-gate audit
+# surface (`cargo deny --all-features`)." A second stack widens that surface and trips the
+# duplicate-version bans above. Each crate below is a HIGH-SIGNAL "second stack" marker,
+# VERIFIED absent from the resolved --all-features tree (`cargo tree -i <crate> --all-features`
+# → not found; full Cargo.lock scan → 0 matches) — so every entry is GREEN today and only bites
+# a FUTURE PR that introduces one (proven to bite by temporarily adding `reqwest`, then
+# reverting). Lockfile proof this cements: the dep-hygiene round-3 analysis, Angle 1.
+#   NOT banned, deliberately: our own stack (ureq/tungstenite/rustls/ring/k256), and the shared
+#   HTTP TYPE/parse libs `http`/`httparse` (already present as non-client plumbing) or lower-level
+#   `hyper` (a common transitive lib, not itself a client) — a ban on any of those would
+#   false-positive RED the gate rather than catch a genuine second stack.
+deny = [
+    # Second HTTP client — ours is ureq.
+    { crate = "reqwest", use-instead = "ureq", reason = "ONE transport stack (CLAUDE.md): no second HTTP client" },
+    { crate = "isahc", use-instead = "ureq", reason = "ONE transport stack (CLAUDE.md): no second HTTP client" },
+    { crate = "attohttpc", use-instead = "ureq", reason = "ONE transport stack (CLAUDE.md): no second HTTP client" },
+    { crate = "curl", use-instead = "ureq", reason = "ONE transport stack (CLAUDE.md): no second HTTP client" },
+    { crate = "curl-sys", use-instead = "ureq", reason = "ONE transport stack (CLAUDE.md): no second HTTP client (libcurl bindings)" },
+    # Second WebSocket — ours is the blocking tungstenite.
+    { crate = "tokio-tungstenite", use-instead = "tungstenite", reason = "ONE transport stack (CLAUDE.md): no second WS stack" },
+    { crate = "async-tungstenite", use-instead = "tungstenite", reason = "ONE transport stack (CLAUDE.md): no second WS stack" },
+    # Alternative TLS — ours is rustls, ring-backed ONLY (no OpenSSL, no aws-lc).
+    { crate = "native-tls", use-instead = "rustls", reason = "ONE transport stack (CLAUDE.md): rustls+ring only, no native-tls" },
+    { crate = "openssl", use-instead = "rustls", reason = "ONE transport stack (CLAUDE.md): rustls+ring only, no OpenSSL" },
+    { crate = "openssl-sys", use-instead = "rustls", reason = "ONE transport stack (CLAUDE.md): rustls+ring only, no OpenSSL (native bindings)" },
+    { crate = "aws-lc-rs", use-instead = "ring", reason = "ONE transport stack (CLAUDE.md): rustls is ring-backed, no aws-lc provider" },
+    { crate = "aws-lc-sys", use-instead = "ring", reason = "ONE transport stack (CLAUDE.md): rustls is ring-backed, no aws-lc (native bindings)" },
+    # Second secp256k1 / ECDSA impl — ours is the RustCrypto k256.
+    { crate = "secp256k1", use-instead = "k256", reason = "ONE transport stack (CLAUDE.md): one curve impl, use k256" },
+    { crate = "secp256k1-sys", use-instead = "k256", reason = "ONE transport stack (CLAUDE.md): one curve impl, use k256 (libsecp256k1 bindings)" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = []
+
+[licenses]
+# Workspace crates are FSL-1.1-ALv2 (root `LICENSE.md`, declared as `license-file` in
+# `[workspace.package]`) and unpublished (`publish = false` in every manifest that has a
+# `[package]` — the root workspace manifest has none and needs none) — exempt from the license
+# check, which exists for THIRD-PARTY code. ⚠ The exemption is what keeps this gate green: FSL is
+# source-available rather than OSI-approved, so it has NO SPDX identifier and could never appear in
+# the `allow` list below. Removing `private = { ignore = true }` therefore reds the merge gate on
+# our OWN crates, not on a dependency. This comment read "proprietary" until 2026-09-01; the
+# licence changed, the exemption did not, and the reason it holds is now written down rather than
+# inferred. Verdict: `docs/decisions/0034-fsl-1-1-alv2-two-year-conversion.md`.
+private = { ignore = true }
+# Every license in the current tree, reviewed 2026-07-08. All permissive (or weak-copyleft
+# file-scoped MPL-2.0). Additions require a conscious edit here.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-2-Clause-Patent", # ustr (Tier-1 symbol/venue interning, #112/#113) — BSD-2-Clause + explicit patent grant; OSI-approved, strictly more permissive than plain BSD-2-Clause
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "CDLA-Permissive-2.0",
+    "BSL-1.0",
+    "Unlicense",
+    "0BSD",
+    "CC0-1.0",
+    "OpenSSL",
+    "OFL-1.1",            # epaint_default_fonts — egui's EMBEDDED FONTS (SIL OFL), not code
+    "Ubuntu-font-1.0",    # epaint_default_fonts — Ubuntu Font Licence, same font bundle
+    "bzip2-1.0.6",        # libbz2-rs-sys (datafusion compression) — BSD-style permissive
+]
+
+# ring bundles BoringSSL-derived code; its license expression needs clarifying (standard
+# cargo-deny incantation from the ring README/cargo-deny docs).
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
