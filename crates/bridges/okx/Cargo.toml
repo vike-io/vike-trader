@@ -1,0 +1,82 @@
+[package]
+name = "vike-okx"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "OKX V5 venue bridge — SWAP perp exec (REST + private WS) and REST kline history, plus a live vike_data::DataClient kline feed and public L2/tick market data (HFT track). Moved into crates/bridges/okx (crate-reorg Phase 3, PR G)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+vike-exec = { path = "../../vike-exec" }
+# shared venue-bridge plumbing (credentials, signer, transport, http, user_data, format, json,
+# ws/rest/klines fragments) — crate-reorg Phase 3 (D4); the direct-path style survives every
+# later venue move unchanged.
+vike-bridge-core = { path = "../../vike-bridge-core" }
+# D2 (crate-reorg spec): okx's market_feed::Feeds implements the live DataClient seam directly
+# (default features only — the DataFusion tree stays behind hist-datafusion and must NOT enable).
+vike-data = { path = "../../vike-data" }
+vike-catalog = { path = "../../vike-catalog" }
+serde_json = { workspace = true }
+# EXEC-plane only — the `OkxInstrument` map and `to_contracts`, both in perp.rs, which rides the
+# default-on `exec` feature. Declared optional so the manifest says which plane names them.
+# ⚠ Both still RESOLVE into a feeds-only tree anyway (indexmap through vike-model/vike-exec,
+# rust_decimal through vike-bridge-core's `full`), so no `cargo tree` grep can assert their
+# absence — see the [features] block below.
+indexmap = { workspace = true, optional = true }
+ureq = { workspace = true }         # blocking REST (rustls, no OpenSSL) — kline fetch + signed transport
+tungstenite = { workspace = true }  # blocking WS: private user-data pump + public market-data/candle feeds
+rust_decimal = { workspace = true, optional = true } # to_contracts — the SECOND pinned Decimal wire site (perp.rs)
+tracing = { workspace = true }      # adapter diagnostics
+
+[dev-dependencies]
+arc-swap = { workspace = true }   # smoke test reads the CoreSnapshot cell
+vike-log = { path = "../../vike-log" }  # dev-only: test_init() for smoke/dev test diagnostics
+# dev-only: smoke tests spawn a real core; the library itself must never depend on vike-core
+# (crate-reorg D3 — bridges depend on exec, not core).
+vike-core = { path = "../../vike-core" }
+# dev-only, test-support feature: the DataFusion-free MemHistStore + PropertiesRecorder test double for
+# the PIT filter-recording wiring test — the normal [dependencies] vike-data entry above stays
+# default-features so the venue's DEFAULT build never pulls DataFusion in.
+vike-data = { path = "../../vike-data", features = ["test-support"] }
+
+[features]
+# The exec/feeds seam (ruling 8 of docs/superpowers/specs/2026-09-09-datahub-market-data-wire-design.md),
+# copied from vike-hyperliquid/vike-aster verbatim — DEFAULT-ON, so every existing consumer
+# (vike-mount, vike-tradehub, vike-backfill and vike-bridge-core's conformance dev-deps all take
+# default features) builds byte-identically. A feeds-only consumer opts out with
+# `default-features = false` and gets the keyless public surface — data/market_data/market_feed/
+# book_checksum/catalog/ratelimit — with none of the order plane COMPILED into its binary. `exec`
+# gates transport.rs (the SIGNED V5 REST transport) and everything built on it: perp.rs, exec.rs,
+# user_data.rs, ws_auth.rs, recon_client.rs, funding.rs, event_mapper.rs, history.rs and
+# error_codes.rs.
+#
+# ⚠ WHAT THIS SPLIT DOES NOT DO, MEASURED on the CI box 2026-09-10 rather than assumed. Unlike
+# hyperliquid's and aster's, this seam removes NO CRATE from the dependency tree: `diff`ing this
+# crate's default `cargo tree -e normal` against its `--no-default-features` one prints one line,
+# and it is `rust_decimal (*)` — the DEDUP REPEAT of a crate present in both trees, dropping only
+# because `exec` is what names it directly here. The crate SET is identical. Okx signs with
+# HMAC-SHA256 over a base64 signature through `vike_bridge_core::signer` — hmac/sha2/hex/
+# rust_decimal ride that crate's `full` feature, base64 rides `ureq` as well, and indexmap arrives
+# through vike-exec/vike-model/vike-catalog/vike-data. The FEEDS half needs `full` too (http/ws/
+# depth/market_pump all live behind it), so no `cargo tree` grep can assert any of them absent, and
+# splitting a `signer` feature out of `full` would remove only hmac, sha2 and hex — a change to a SHARED
+# HOME every bridge consumes, for two crates, so a STOP-AND-REPORT under root CLAUDE.md (recorded
+# under ruling 8 in docs/superpowers/specs/2026-09-09-datahub-market-data-wire-design.md) rather
+# than a local patch. `crates/bridges/binance/Cargo.toml`'s `exec` block carries the full per-crate
+# measurement.
+# What the seam buys today is the COMPILE surface, which is what ruling 8 asked for in as many
+# words: a data daemon linking this crate compiles no signed REST transport, no private user-data
+# pump and no reconcile client.
+default = ["exec"]
+exec = ["dep:indexmap", "dep:rust_decimal"]
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

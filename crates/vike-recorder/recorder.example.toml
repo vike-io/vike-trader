@@ -1,0 +1,110 @@
+# The recorder profile — the ONE reviewable file naming what to record.
+#
+# ⚠ UNCHANGED BY RULING 10, and that is deliberate: the recorder daemon merged into the data server
+# (docs/superpowers/specs/2026-09-09-datahub-market-data-wire-design.md §0.5), so what READS this
+# file is `vike-backend datahub --record` rather than `vike-recorder --profile`. An operator's
+# existing profile keeps working byte for byte; only the command in front of it moved.
+#
+#   cargo run -p vike-datahub --features record-polymarket -- \
+#       --record crates/vike-recorder/recorder.example.toml --once
+#
+# ⚠ `store` below must name the SAME directory the daemon resolved (VIKE_DATAHUB_STORE, then
+# VIKE_HIST_STORE, then the project walk) — one process now owns venue connections, the store and
+# serving, and it REFUSES to start when the two disagree rather than picking a winner.
+#
+# `--once` runs a single tick and exits: it proves the profile parses, the store opens, and each
+# family resolves to live symbols, without leaving a daemon running. ⚠ Read its EXIT CODE, not its
+# log — `0` only if every feed ended that tick with a live subscription, `4` otherwise, naming each
+# feed that would record nothing. It exited 0 on a total resolve failure until 2026-08-08.
+#
+# A MISSPELLED KEY IS REFUSED BY NAME, with the line number and the keys that WOULD have been
+# accepted — it is never silently ignored. Until 2026-08-10 it was: `webhook` for `webhooks` left
+# the operator believing a pager was armed, a misspelled `retention_days` kept the tape forever
+# after they asked for 30 days, and `backfil` fell back to venue-REST backfill, which on Polymarket
+# cannot restore the book at all. Comments (`#`) are unaffected — only bare KEYS are checked.
+
+# Store root. ⚠ ONE process writes AND serves it since ruling 10 — this used to be two processes
+# over one directory (spec §8.1), which is why the store's SeriesLock is a lockfile and why that
+# lockfile is still what makes a leftover `vike-recorder.service` merely slow rather than corrupting.
+# This key must name the same directory `VIKE_DATAHUB_STORE` does; the daemon refuses to start
+# otherwise (`crates/vike-datahub/src/recorder.rs`'s `one_store_root`).
+#
+# ⚠ This RELATIVE path resolves against the PROCESS working directory — right for the daemon (the
+# unit sets `WorkingDirectory=<project>`) and wrong for every command you run by hand, which runs
+# from wherever you are standing. Measured: a hand-run `--once` from a source checkout wrote its
+# tape INTO THE CHECKOUT while the project's own `market_data/` stayed empty. A deployment should rewrite
+# this to an absolute path under its project root — `docs/ops/recorder-deploy.md`'s install block
+# does exactly that, with one `sed`.
+#
+# ⚠ The DIRECTORY NAME is `hist`, and it is not a free choice: it is the same name every binary's own
+# default resolves to (`crates/vike-model/src/state_path.rs`'s `HIST_SUBDIR`, under
+# `PROJECT_DATA_DIR`). A store called anything else is one the code cannot name — a reader run
+# without `--store` opens `<project>/market_data/hist`, finds nothing, and reports zero rows rather than
+# failing. the CI box spelled this `data/tape` until 2026-08-21 and was exactly that store.
+store = "market_data/hist"
+
+# A rolling FAMILY: recorded as ONE grouped series, so a 5-minute rotation costs one commit per
+# flush instead of one per token. The name is the venue's own slug template minus its `-<unix>`
+# suffix — `btc-updown-5m` names the windows `btc-updown-5m-1754092800`, which you can paste into
+# polymarket.com to check. The trailing `-5m` is the window length; nothing else is configured.
+[[subscribe]]
+venue = "polymarket"
+family = "btc-updown-5m"
+backfill = "off"
+
+# Explicit symbols stay PER-SYMBOL (no group): grouping only pays across a wide subscription, and a
+# handful of named instruments is not that. A subscription may name a family OR symbols, never both.
+# [[subscribe]]
+# venue = "polymarket"
+# symbols = ["71321045679252212594626385532706912750332728571942532289631379312455583992563"]
+# backfill = "venue"
+
+# Background compaction + retention. This whole table is OPTIONAL and its ABSENCE MEANS DEFAULTS,
+# not off — the recorder commits once per buffer flush, so a busy series writes a part every few
+# seconds (measured live: 23 parts in 150 s for one family's book, ~57 KB each ⇒ ~13,000 files a day
+# if nothing merges them, and every later scan pays for all of them). It runs in its own thread and
+# takes the same per-series lock the appends do, so a racing flush just serializes and loses nothing.
+[maintenance]
+interval_secs = 300   # 0 disables maintenance entirely
+min_parts = 4         # a `date=` needs at least this many fragments to be worth merging (min 2)
+target_mb = 384       # target sealed-part SIZE — what compaction converges toward. NOT a memory knob.
+max_merge_rows = 1000000
+                      # THE MEMORY KNOB: the most rows one merge may decode at once. A merge is
+                      # materialized whole (its output is ts-sorted, and a sort cannot stream), so
+                      # this is what stands between a pass and the OOM killer. Rows, not bytes:
+                      # measured on a live Polymarket book series, parts were only 2.5x compressed
+                      # yet a 64 MB budget peaked at 8.95 GB. That series costs ~1 KB of peak RSS
+                      # per row, so this default lands near 1 GB for the widest rows and far less
+                      # for bars or trades. If this daemon runs under a MemoryMax, size THIS against
+                      # it — and measure before raising it: the ratio belongs to your data, not to
+                      # the code.
+# retention_days = 30 # OMITTED = keep forever. A recorder exists to ACCUMULATE tape, so deleting
+                      # any of it is always an explicit choice. `0` is rejected: it would prune the
+                      # tape continuously, as it is being written.
+
+# Where a SILENT SERIES goes. This table is OPTIONAL and its ABSENCE MEANS DEFAULTS, not off —
+# the failure it catches (subscribed, connected, receiving nothing: no error, no lost rows, no
+# growing store) is silent by nature, so an operator who has to know to switch the alarm on is
+# exactly the operator who will not. With no `webhooks` the alert still fires and still reaches the
+# log; naming a target escalates that same alert to a pager.
+#
+# ⚠ NO CREDENTIAL GOES IN THIS FILE. `webhooks` names TARGETS; the token behind a name comes from
+# the credential store (`<project>/settings/secrets.env`) or the process environment:
+#   VIKE_ALERT_TELEGRAM_TOKEN + VIKE_ALERT_TELEGRAM_CHAT_ID  =>  the "telegram" target
+#   VIKE_ALERT_WEBHOOK_URL                                   =>  the "webhook" target (generic JSON)
+# A target named here with no credentials configured logs a warning at mount and delivers nowhere.
+[alerting]
+# webhooks = ["telegram"]   # OMITTED = log-only delivery
+repeat_secs = 3600    # how often a STILL-silent series re-alerts. 0 = once per silence episode; a
+                      # recovery re-arms it either way. The watchdog ticks every 30 s and an outage
+                      # outlives a shift, so re-paging is wanted — but not 120 times an hour.
+# series_prefix = "book/polymarket/"
+                      # OMITTED = every subscribed series. A PREFIX on the series key
+                      # (`{kind}/{venue}/{symbol}`), not an exact name: a Polymarket token id does
+                      # not exist yet when this file is written, so an exact name is unusable as a
+                      # scope by construction.
+
+# Not in this file: `--exit-on-silence`, the THIRD possible reaction, which is a command-line flag
+# because it belongs beside `--silent-secs` and beside the systemd unit's Restart= policy. It stops
+# the daemon with status 3 when a series is silent. OFF by default: a venue can be legitimately
+# quiet, and a quiet market must not kill a daemon recording five healthy ones.

@@ -1,0 +1,691 @@
+# Virtual workspace manifest: the trading core grows in crates/; the egui/wgpu GUI
+# lives in crates/vike-app (R5 moved it out of the root — the root is now package-less).
+[workspace]
+# Explicit since R5: a virtual workspace defaults to resolver "1"; the old root package implied
+# "2" via edition 2021. Feature-gated crates (vike-polymarket polymarket, vike-fxcm fxcm,
+# vike-data hist-datafusion) want "2"'s per-target feature resolution — not the older global
+# unification.
+resolver = "2"
+members = [
+    "crates/vike-model",
+    # the TYPED settings model + layered loader (settings-unification Phase 1): Policy / Config /
+    # Preferences / Flags, one type per AUTHORITY level, with per-type override power enforced by
+    # the TYPE SYSTEM — Policy has no env and no CLI layer at all, so overriding a risk ceiling
+    # from the environment is unrepresentable rather than merely discouraged. Depends on
+    # vike-model only (it IMPORTS the shared utilization bounds rather than restating them) plus
+    # serde/toml, so it stays a leaf every layer above can take. NOTHING consumes it yet —
+    # Phase 1 is additive and dead by design, so the loader is proven before any store moves.
+    "crates/vike-config",
+    # bridge-free cross-venue instrument catalog (Instrument/AssetClass/CatalogProvider/registry/
+    # fuzzy search) — depends on vike-model only, so bridges and vike-chart depend on it down-only
+    "crates/vike-catalog",
+    "crates/vike-data",
+    "crates/vike-exec",
+    # the single-writer live core (runtime/snapshot) extracted from vike-exec — crate-reorg Phase 2 (D3)
+    "crates/vike-core",
+    # the HFT market-maker crate — SpreadMaker + pure helpers extracted from vike-core (vike-mm extraction)
+    "crates/vike-mm",
+    # Rhai-scripted strategies — run a Rhai script as a vike-model Strategy<B> (Rust Studio SP1)
+    "crates/vike-script",
+    # the strategy-authoring layer — PositionExecutor state machine + Controller framework extracted
+    # from vike-model (params TripleBarrier/ControllerParams stay in vike-model for the exec lane)
+    "crates/vike-strategy",
+    # the compiled USER-strategy host: build.rs scans user_data/strategies/rust/<name>/ into a
+    # generated registry the backtest/tradehub registries consult AFTER every built-in arm — a new
+    # native strategy is a gitignored folder, never a framework edit. Separate crate ON PURPOSE:
+    # user code compiles against the platform's PUBLIC API only (spec
+    # docs/superpowers/specs/2026-08-11-user-native-strategies-design.md). Empty registry in CI.
+    "crates/vike-user-strategies",
+    # the pure performance-analytics cluster extracted OUT of vike-backtest — the metrics catalog,
+    # BacktestResult/BacktestReport, benchmark/excursions/periods/montecarlo/stability/overfit/
+    # validation, the sizer registry and the zero-trade diagnoser. Depends on vike-model ONLY (no
+    # exec, no core, no data), so vike-report gets the numbers without compiling the simulator that
+    # produced them; vike-backtest re-exports every module, so no call site moved.
+    "crates/vike-analytics",
+    # the general-purpose gradient-boosted-model crate: the upstream LightGBM CLI binary DRIVEN as a
+    # child process for TRAINING (the shape `vike-backfill` already uses for `clickhouse-client`),
+    # and a PURE-RUST tree walker for INFERENCE, which is what lets a live daemon predict from a
+    # trained model with no native dependency at all. Depends on vike-model only, declares no
+    # features, and adds nothing to Cargo.lock; nothing in its API names a strategy, so the second
+    # model-using strategy does not write its own trainer.
+    "crates/vike-ml",
+    # the shared FILL cluster extracted OUT of vike-backtest — the canonical cost scalars
+    # (adverse slippage / fee / funding), the tiered fill-price models (bar / L1 tick / L2
+    # book-walk), intrabar fill resolution and the stale-price wait discipline. Depends on
+    # vike-model ONLY, so the R7 paper exchange and the simulator can share ONE definition of a
+    # fill instead of each carrying a copy — the dedup crate-reorg Phase 0 (D8) wanted when it
+    # dissolved vike-paper. vike-backtest re-exports all four modules, so no call site moved.
+    "crates/vike-fills",
+    # the R7 PAPER exchange (PaperExecutionClient + replay_bars) — the backtest fill semantics
+    # behind the live core's ExecutionClient seam. A crate AGAIN, now that vike-fills above gives
+    # the shared fill core its own home: D8's "dedups the fill model's home" concern is answered by
+    # a common DEPENDENCY instead of a common crate, so the equivalence law still cannot drift.
+    # Depends on vike-model + vike-exec + vike-fills — no engine, no harness, no analytics — so
+    # vike-mount/vike-run stop compiling the simulator just to obtain an ExecutionClient.
+    "crates/vike-paper",
+    "crates/vike-backtest",
+    # shared bridge plumbing (WS pump, transports, signers, credentials, ExecActor) — crate-reorg Phase 3 (D4)
+    "crates/vike-bridge-core",
+    # per-venue bridge crates (crate-reorg Phase 3, D4/D5) — every venue adapter lives here now,
+    # one crate per venue on top of vike-bridge-core; oanda was the first (PR B), the template for
+    # the rest, and PR K deleted the now-empty shell crate they were all extracted out of
+    "crates/bridges/oanda",
+    "crates/bridges/ig",
+    "crates/bridges/fxcm",
+    "crates/bridges/bybit",
+    "crates/bridges/deribit",
+    "crates/bridges/okx",
+    "crates/bridges/binance",
+    "crates/bridges/polymarket",
+    "crates/bridges/dukascopy",
+    "crates/bridges/vike-ibkr",
+    "crates/bridges/alpaca",
+    "crates/bridges/ctrader",
+    "crates/bridges/aster",
+    # Hyperliquid spot + perp bridge (from-scratch EIP-712/msgpack signing on the shared stack) —
+    # the tenth venue crate; design in docs/superpowers/specs/2026-07-16-hyperliquid-bridge-design.md
+    "crates/bridges/hyperliquid",
+    # vike:new-venue:row "crates/bridges/{venue}", # TODO(new-venue: {venue}): replace with one line saying what this bridge IS
+    "crates/vike-indicators",
+    "crates/vike-orderflow",
+    # the venue-free options pure core (BS price/greeks/IV, OptionChain model, column math)
+    # extracted from vike-app — vike-indicators-style: egui-free, I/O-free, CI-able
+    "crates/vike-options",
+    "crates/vike-chart", # the chart engine (renderer/model/transforms/indicator paint adapter) extracted from vike-app — chart roadmap phase 2
+    # shared egui trading widgets (chart-engine-free) — future home for reusable egui panels;
+    # today it holds only the DOM (depth-of-market) ladder, moved verbatim out of vike-chart
+    "crates/vike-panels",
+    # the Polymarket scalp-cockpit widgets (chart-engine-free egui, like vike-panels) — today the
+    # window-chain rail: current + next-N rolling up/down windows with live MM:SS countdowns
+    "crates/vike-cockpit",
+    # the Data-Manager cached-series catalog (venue→symbol→series tree model + egui view over the
+    # vike-data HistStore inventory), extracted for reuse by both vike-app and the Studio
+    "crates/vike-data-manager",
+    # read-only venues x Sim/Demo/Live credential-status grid (first slice of the Connections
+    # tool) — egui-without-wgpu like vike-chart/vike-data-manager (CI-testable)
+    "crates/vike-connections",
+    # the ONE canonical egui UI theme (palette + font-weight helpers + byte/count formatters) —
+    # a leaf crate (egui dep only) every GUI crate reads so palette/fmt values live in one place
+    # (kills the historical 1-bit accent drift). vike-studio keeps its local brand ACCENT.
+    "crates/vike-ui-theme",
+    # the egui Studio shell — Rhai editor + store-backed slice picker + worker-thread Run + tabbed
+    # backtest results, over the merged vike-script. egui-without-wgpu like vike-chart (CI-testable);
+    # vike-app mounts it (Rust Studio SP2)
+    "crates/vike-studio",
+    "crates/vike-studio-core", # headless Studio backend (Run pipeline + templates) — reused by vike-ai (SP3)
+    "crates/vike-ai", # headless in-app AI copilot: LlmClient seam + develop_strategy agentic loop (SP3 Part B)
+    # the alerting primitive (rule model + alerts.json persist + delivery sinks), split OUT of
+    # vike-ops on the seam that was already there: only its `eval`/`AlertEngine` half ever named a
+    # vike type. A DEFAULT build has ZERO vike-* deps (serde/serde_json/ureq/tracing), so a
+    # STANDALONE watchdog binary — page when an external recorder stops writing — links this
+    # without vike-core -> vike-exec -> vike-model behind it. `core`/`workspace-env` are opt-in;
+    # vike-ops turns both on and re-exports the tree as `vike_ops::alerting`.
+    "crates/vike-alerting",
+    # the credential store: ONE file, `<project>/settings/secrets.env`, and the reader for it.
+    # ZERO dependencies at all — no vike-* crate and no external crate — so vike-bridge-core (which
+    # OWNS the transport stack) and vike-cli (DataFusion-free, fast lane) both link it without
+    # dragging each other in, and it adds nothing to the `cargo deny --all-features` audit surface.
+    "crates/vike-secrets",
+    # the BUILD IDENTITY a shipped binary states about itself: the git commit it was built from,
+    # whether that tree was dirty, when, and with which toolchain — resolved at COMPILE time by a
+    # build script that shells out to `git`. ZERO dependencies at all, for the vike-secrets reason
+    # one line up: every top-of-graph binary links it and none of them may pay for it (`vergen` /
+    # `built` would drag anyhow/cargo_metadata/time/git2 into the build graph of the binaries that
+    # sign real orders). It exists because a release binary was once built from a bare repo four
+    # commits behind `main` and nearly installed on the live recorder.
+    "crates/vike-buildinfo",
+    # the STARTUP SEQUENCE's one owner: refuse a removed environment, resolve <project>/settings
+    # ONCE, load the settings, load the credentials, and hand back what a binary needs to build its
+    # log subscriber and disclose what it resolved. Five composition roots hand-assembled that order
+    # from five copies; the walk happening in five places is what made the CI box's "no policy, no
+    # credentials, every venue silently paper" expensive to fix. Takes the environment as a
+    # PARAMETER and links no logging, transport or DataFusion, so vike-cli shares the order without
+    # acquiring vike-app's tree (measured: a vike-log edge alone would be +43 packages there).
+    "crates/vike-boot",
+    # the headless-usable OFF-FOLD operations layer (alerting re-export / journal_mat /
+    # reconcile_config / feed_status / scan / settings / shutdown) extracted OUT of vike-app-core,
+    # so the headless vike-tradehub daemon stops compiling the whole egui widget stack to reach
+    # three pure modules. egui-FREE by construction; vike-app-core re-exports every module under
+    # its historical path.
+    "crates/vike-ops",
+    # vike-app's egui-free logic (data-sink/orderflow/tickvol/tools) extracted so it runs in CI (A5)
+    "crates/vike-app-core",
+    "crates/vike-backfill",
+    # the LIVE tearsheet reader (PR-2 of the live-tearsheet arc): reconstruct Trade round-trips from
+    # the vike-core journal's fill stream through vike_model::compute_fill, then reuse vike-backtest's
+    # pure metrics catalog. Leaf crate — nothing depends on it.
+    "crates/vike-report",
+    # The LIGHT client half of the vike-datahub data-service (Phase 2): the wire proto + DatahubClient
+    # + RemoteHistStore (a vike_data::HistStore served over RPC). DataFusion-free (vike-data DEFAULT
+    # features = the trait only), so the GUI can link it without the Arrow/DataFusion tree — it rides
+    # the FAST CI lane, unlike vike-datahub. vike-datahub (the server) depends on it for the proto.
+    "crates/vike-datahub-client",
+    # Phase 1 of the vike-datahub data-service ("thin-client GUI" architecture): a headless
+    # compute-to-data backtest server (localhost TCP + serde_json frames) that runs the existing
+    # vike-backtest engine next to the data. Depends on vike-datahub-client for the proto.
+    "crates/vike-datahub",
+    # the HEADLESS live-tape recorder daemon — a customer records their own tape locally, subscribing
+    # to symbols or market FAMILIES. Its OWN binary, deliberately NOT a mode of vike-datahub: feeds
+    # drag k256/keccak/tungstenite into whatever links them, and the backtest server must stay free of
+    # them (docs/superpowers/specs/2026-08-02-live-recorder-design.md §8.1).
+    "crates/vike-recorder",
+    # the unified DataFusion-free command-line surface over the LIGHT client crates (git-style
+    # subcommands). First subcommand `backtest` = the compute-to-data offload to a vike-datahub
+    # server; sweep/walkforward/trade/repl are future siblings. Links only vike-datahub-client, so it
+    # rides the FAST CI lane and never pulls the Arrow/DataFusion tree.
+    "crates/vike-cli",
+    # the MODEL-IN-THE-LOOP agent evaluation harness: it spawns the SHIPPED `vike-cli mcp` server
+    # and a real paper `vike-tradehub` node, lets a driver (a real model, or the canned `--scripted`
+    # one CI runs) drive the MCP surface, and grades the outcome DETERMINISTICALLY from the
+    # transcript plus node state. Depends on NO vike-* crate — it reaches the system the way an
+    # operator does, by spawning binaries, so it cannot pass through an internal API the shipped
+    # surface does not expose. The MODEL half is nondeterministic and is therefore dispatch-only
+    # (.github/workflows/agent-eval.yml); the scripted half is this crate's own tests, so it rides
+    # the derived roster lane like any other member.
+    "crates/vike-agent-eval",
+    # the multicall dispatcher (layer 68) — one executable carrying every headless tool, so the
+    # DataFusion closure is linked ONCE instead of per binary. Empty tool table in S0: the routing
+    # and its gate ship before anything moves.
+    "crates/vike",
+    # PR-10 Layer-2 auth primitive for the headless live-core ("tradehub") thin-client: the node wire
+    # proto + the HMAC-SHA256 nonce-challenge auth handshake + standalone serde wire mirrors of the
+    # core snapshot / order commands. LIGHT + DataFusion-free (reuses vike-datahub-client's framing +
+    # in-tree hmac/sha2 — ZERO new external deps), NO server / NO I/O — it rides the FAST CI lane.
+    "crates/vike-tradehub-client",
+    # PR-9 Layer-2 headless trading DAEMON ("tradehub"): runs a strategy on a server with NO GUI,
+    # controlled by a TOML profile + newline-JSON stdio, surviving an SSH disconnect. PAPER variant —
+    # mounts the A-S SpreadMaker over the paper exchange by REUSING vike_run::build_paper_maker_core;
+    # proves the daemon LIFECYCLE + stdio control with NO network surface. Real-venue mounting (the
+    # 12-venue build_node assembly) is a follow-up (PR-8). Top-of-graph bin, like vike-app/vike-run.
+    "crates/vike-tradehub",
+    # run/composition layer: top-of-graph binaries that MOUNT a strategy on the live core (first
+    # mount: the A-S SpreadMaker on a Polymarket market via the paper exchange). Like vike-app it sits
+    # at the top of the graph (nothing depends on it), so it may compose core+backtest+mm+bridge.
+    "crates/vike-run",
+    # the venue→ExecutionClient/ReconClient composition root (make_engine + reconcile-client factory
+    # + per-venue fallback grids) extracted from vike-app so its live-exec wiring runs in CI (A-mount)
+    "crates/vike-mount",
+    "crates/vike-desktop",
+    "crates/vike-log",
+    # the compiled USER-study host: build.rs scans user_data/research/studies/rust/<name>/ into a
+    # generated name->entry registry a study engine consults — a new study is a gitignored folder,
+    # never a framework edit. The strategy tier's mechanism (crates/vike-user-strategies), applied
+    # to R7 of docs/superpowers/specs/2026-08-24-research-engine-user-split-design.md: a study may
+    # be written in Rhai OR in Rust, exactly as a strategy may. Layer 35 — above the four layer-20
+    # crates it re-exports as the study API surface. It used to be "below the layer-45 engine that
+    # consults it", and there is no layer-45 crate any more: the research ENGINE (vike-research)
+    # dissolved and the cohort study moved into gitignored user_data, so this host is now the top
+    # of that tier and the rank's lower bound is the only half still doing work.
+    # Empty registry in CI, where there is no user_data.
+    "crates/vike-user-research",
+    # `cargo xtask <cmd>` — the repository's own build tooling: the ONE implementation of "what does
+    # CI run", consumed by the justfile, by the workflows and by a developer at a prompt. A MEMBER
+    # and a full CI crate (it is NOT in EXCLUDE_FROM_CI), which is what tests and clippy-gates the
+    # code that derives the merge gate, and what makes an xtask-only change select a job at all —
+    # `crate_of` maps a path under a non-member to no crate, so an excluded xtask could change and
+    # CI would plan nothing. It takes ONE dependency (serde_json) and no vike-* crate: the question
+    # has to be answerable before the workspace is built.
+    "xtask",
+]
+exclude = [
+    # Copied-in-tree third-party IBKR wire-protocol client (vendored by Task 9) — kept OUT of
+    # fmt/clippy/deny gates. Excluding it now (before it exists) is inert; cargo doesn't require
+    # excluded paths to exist.
+    "crates/bridges/vike-ibkr/vendor/ibapi",
+    # The cTrader protobuf REGEN recipe (own [workspace], `=`-pinned prost-build/protoc + committed
+    # lockfile). Only the drift gate (.github/workflows/ctrader-proto.yml) builds it; excluding it
+    # keeps prost-build/protoc out of the main build graph, fmt/clippy/deny gates entirely — same
+    # posture as the vendored ibapi above. vike-ctrader itself now includes the committed bindings.
+    "crates/bridges/ctrader/protogen",
+    # The cargo-fuzz deep tier (fuzz/Cargo.toml; run by .github/workflows/fuzz.yml). Own
+    # standalone package with path deps on the bridge crates; excluding it keeps libfuzzer-sys
+    # and its nightly-only fuzzing flags out of the main build graph and the fmt/clippy/deny
+    # gates -- same posture as the protogen recipe above.
+    "fuzz",
+]
+
+[workspace.package]
+# ⚠ THE ONE PLACE A VERSION IS SPELLED, and it is the LAST RELEASED TAG rather than a next-version
+# guess. Every member takes `version.workspace = true`; `just release X` rewrites this line, commits
+# it and then tags `vX`, so the manifest and the tag can never disagree about what was shipped.
+#
+# Until 2026-09-08 all 64 member manifests each said `version = "0.1.0"` and NOTHING ever bumped
+# them — the release recipe cut a tag and touched no manifest. That was not a decision; no record
+# argued it, and the tree carried the workaround in three places instead:
+#   * `crates/vike-cli/Cargo.toml`'s binstall block had to point at `releases/latest/download/`
+#     rather than `releases/download/v{ version }/`, because `{ version }` rendered `0.1.0` for
+#     EVERY tag — so `cargo binstall` could install the newest release and no other, and reported
+#     any installed copy "up to date" whatever the tag.
+#   * the scoop manifest renderer (deleted 2026-09-09 with the bucket itself) had to take the
+#     version from the TAG, so `scoop list` would say `0.1.19` while the binary it installed said
+#     `0.1.0`. Kept as history because it is the third independent witness that the `0.1.0` manifest
+#     was a defect rather than a decision — not because anything still renders one.
+#   * that same binstall block already named the fix — "the day the release recipe bumps this
+#     manifest's version to the tag, switch this to `{ repo }/releases/download/v{ version }/`" —
+#     which is this line, and that switch landed with it.
+#
+# A build BETWEEN releases reports the last released version, and that is deliberate: the identity
+# that actually moves is the git commit, which `vike_buildinfo::version_line` already prints beside
+# it and which cannot go stale. A `-dev` prerelease here would be a third spelling for one fact and
+# would make every installer treat the tree as a prerelease.
+version = "0.1.24"
+# MSRV = the pinned toolchain (rust-toolchain.toml); no trailing window — nothing is published.
+# Bump together with rust-toolchain.toml and EVERY workflow's `toolchain:` input. This line used to
+# name "the ci.yml inputs" and was already wrong — deny.yml and ctrader-proto.yml carry copies too —
+# so the list is a test now instead of a comment:
+# `crates/vike-ops/tests/unsafe_and_toolchain_gate.rs`'s `the_toolchain_version_has_exactly_one_value`.
+rust-version = "1.97.1"
+
+# ⚠ `license-file`, NOT `license` — the latter takes an SPDX EXPRESSION, and FSL-1.1-ALv2 is not an
+# SPDX identifier (it is source-available, not OSI-approved, so it has no SPDX id to spell). Writing
+# it into `license` makes cargo reject the manifest on any publish and confuses every downstream
+# licence scanner; `license-file` is the sanctioned escape for exactly this case.
+# The verdict, and why the two-year conversion is the load-bearing half:
+# `docs/decisions/0034-fsl-1-1-alv2-two-year-conversion.md`.
+license-file = "LICENSE.md"
+
+[workspace.lints.rust]
+# The workspace is unsafe-free by construction; enforce it.
+#
+# ⚠ Two things to know, both of which this comment previously got wrong:
+#
+#   1. This table binds a member ONLY if that member opts in with `[lints] workspace = true`. A
+#      crate that never wrote those two lines is silently OUTSIDE the policy and nothing about it
+#      looks wrong — `crates/vike-catalog` sat that way from PR #274 until the gate below found it.
+#   2. There is NOT "one exception". There are two, and they differ on purpose: `crates/bridges/fxcm`
+#      omits `[lints]` entirely (it IS the quarantined FFI surface), while `crates/vike-core`
+#      downgrades to `unsafe_code = "deny"` so a per-site `#[allow(unsafe_code)]` can carve out its
+#      audited OS-mmap entry points and nothing else.
+#
+# The exemption set and the per-file unsafe COUNTS are pinned and ratcheted (may shrink, never grow)
+# in `crates/vike-ops/tests/unsafe_and_toolchain_gate.rs`'s `UNSAFE_EXEMPT` / `UNSAFE_SITES` — which
+# is also why no site count is written here. The one that used to be ("7 unsafe sites" for fxcm) was
+# off by three by the time anyone checked.
+#
+# ⚠ And the LEVEL on the line below is pinned too, by `the_workspace_unsafe_policy_is_forbid` in that
+# same file. It has to be: every other pin there measures a member's posture RELATIVE to this level
+# and none of them used to read it, so weakening this one line — or deleting the table — left the
+# whole gate green. `forbid` is not a stricter `deny`, it is the level a local
+# `#[allow(unsafe_code)]` cannot lift, and both exemptions above are spelled the way they are
+# BECAUSE of that difference. Changing it means arguing with the test, which is the point.
+unsafe_code = "forbid"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+# `float_roundtrip` makes f64 parsing CORRECTLY-ROUNDED — without it serde_json's default fast float
+# parser can be off by 1 ULP, so `f64 -> ryu string -> parse` is NOT bit-identical for full-precision
+# values (short decimals happen to survive; a computed value like a trade pnl does not). The whole
+# compute-to-data design asserts local-vs-wire BIT-PARITY (vike-datahub RunSlice, the tradehub
+# snapshot stream), so the wire f64 codec MUST round-trip exactly — the vike-datahub run_slice parity
+# gate caught this. Serialization already uses ryu (shortest round-trip); this fixes the parse half.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+# RunProfile config loader (vike-core run_profile.rs): deserialize the single TOML run-profile
+# artifact (mode / event source / broker / sinks / risk stack) into serde structs. Read-only
+# (from_str), no serialize-back. 0.9 is the `+spec-1.1.0`/toml_parser-1.1 line already in the
+# lockfile (shares toml_parser + serde_spanned); it adds the thin `toml` facade + toml_writer.
+toml = "1.1"
+# Settings-file WRITE (vike-config write.rs, split-plane REQ-7): edit ONE key in a
+# `<project>/settings/*.toml` PRESERVING the operator's comments and the formatting of every
+# untouched line — the standard comment-preserving TOML editor, and the one thing the read-only
+# `toml` facade above deliberately does not do (its serializer would re-emit the file and drop
+# every comment). 0.25 is the exact version ALREADY in the lockfile (via proc-macro-crate), same
+# `+spec-1.1.0` parser family as `toml` 1.1 (shares toml_parser/winnow), so this adds no new
+# package version and no second TOML parser to the audit surface.
+toml_edit = "0.25"
+indexmap = { version = "2", features = ["serde"] } # Python-dict insertion order (bit-parity of f64 sums)
+# montecarlo.rs resampling (vike-backtest): seeded for reproducibility, but deliberately NOT
+# bit-parity-gated against CPython's random.Random — a from-scratch MT19937+shuffle/_randbelow
+# port was ruled out as not worth it for this one file; same seed gives statistically
+# equivalent, not bit-identical, resampled paths vs. the Python oracle.
+rand = "0.10"
+# The cohort study's `--search tpe` mode (`user_data/research/studies/rust/cohort/search.rs`,
+# reached through the vike-user-research host — this pin's in-tree consumer is that crate's
+# manifest): the seeded ChaCha8 stream behind the
+# deterministic TPE mode. rand_chacha rather than `rand`'s StdRng because the mode's whole contract
+# is "same seed, same winner": StdRng is documented as free to change algorithm across releases,
+# while ChaCha8Rng is a named, portable, versioned stream (and re-exports the rand_core traits, so
+# no `rand` facade is needed).
+# ⚠ 0.10 is a DUPLICATE, not a replacement: proptest -> rand 0.9 keeps rand_chacha 0.9.0 in the
+# lockfile regardless, so this pin costs exactly one extra package (rand_core 0.10.1 was already
+# there via `rand` 0.10). `deny.toml` has `multiple-versions = "warn"`, so it is visible, not fatal.
+# The reason it is worth paying: the STREAM is unchanged. Measured 0.9.0 vs 0.10.0 over seeds
+# {0, 1, 7, 42, 1234567890, u64::MAX} — `next_u64` x32, `next_u32` x32, `fill_bytes` 64B, the
+# `unit_f64` derivation bitwise, and the real 10-of-243 TPE startup deal — all byte-identical, as is
+# `from_seed` with no `seed_from_u64` expansion in front of it. `seed_from_u64` itself is the same
+# PCG32 expansion with the same MUL/INC constants in rand_core 0.9.5 and 0.10.1. So "same seed, same
+# winner" survives the bump; only the TRAIT moved (rand_core 0.10 renamed `RngCore` -> `Rng` and left
+# `RngCore` behind as a deprecated METHOD-LESS marker trait, which is why the old import compiled
+# nothing — see `user_data/research/studies/rust/cohort/search.rs`'s `next_below`).
+# ⚠ The obvious way to stop paying that extra package was MEASURED and NOT taken, so nobody has to
+# measure it twice: `rand` 0.10 gained a `chacha` feature that pub-exports `chacha20`'s `ChaCha8Rng`
+# (rand 0.10 dropped rand_chacha for chacha20 internally), and it streams IDENTICALLY — seeds
+# {0, 42, 1234567890}, `seed_from_u64` then `next_u64` x8, byte-for-byte equal to rand_chacha 0.9.0.
+# chacha20 is already in the lockfile via `rand`, so that route would be net ZERO packages. It was
+# still declined here: it swaps a two-file crate whose NAME is the algorithm for a re-exported type
+# behind an optional feature of a large facade — which is the shape of dependency this pin's first
+# paragraph deliberately walked away from. Worth revisiting only if the duplicate starts costing
+# something real; it is a design change, not a version bump, and it belongs in its own PR.
+rand_chacha = "0.10"
+# R5b live-core runtime (pinned channel contract: ingest = tokio::mpsc, core blocking_recv)
+tokio = { version = "1", default-features = false, features = ["sync", "time", "rt-multi-thread", "macros"] }
+arc-swap = "1"                                     # core -> GUI snapshot (lossy observer, never back-pressures)
+# Opt-in HFT thread-to-core pinning (vike-exec `affinity` module, driven by VIKE_PIN_CORES; OFF by
+# default). Cross-platform: Linux sched_setaffinity / Windows SetThreadAffinityMask / macOS
+# thread_policy — keeps the md-reader/core/exec threads off the scheduler's migration path so the
+# arc-swap hot hop the p99<10µs gate measures stays on a fixed core. Tiny, no transitive weight.
+core_affinity = "0.8"
+# Write-ahead command journal (vike-core journal.rs): pre-allocated mmap segments — append is a
+# ~100ns memcpy (no syscall) so durable-before-fold fits the p99<10µs core-hop gate. Kernel owns
+# the pages ⇒ survives process crash; power-cut tail bounded by flush_async cadence + reconcile.
+memmap2 = "0.9"
+# ONE syscall the std library does not expose: `posix_fallocate`, used by vike-core journal.rs to
+# materialize a segment's BLOCKS at journal OPEN. `File::set_len` only moves the size marker, leaving
+# a SPARSE file, so ext4 defers block allocation to the first write-fault on each page — i.e. onto
+# the append path the p99<10µs core-hop gate measures (measured on the latency box: 3-9 appends per 100_000
+# over 100µs with a 220µs max; reserved, 0-1 and a ~40µs max). Segment ROLL deliberately does NOT
+# reserve — it runs on the append hot path and fallocate costs ~1.7ms there; see `map_segment`.
+# No new supply-chain surface: libc is already in the lockfile transitively, and this is the only
+# direct use in the workspace.
+libc = "0.2"
+# The graceful SIGTERM/SIGINT stop for the two headless daemons (`vike_ops::stop`) — the workspace's
+# ONLY signal surface, and `cfg(unix)`-gated so a Windows build never sees it. It is here because
+# neither daemon installed a signal handler at all: `systemctl stop` ran NOT ONE LINE of Rust, so
+# `vike-recorder` lost every buffered row on every restart and `vike-tradehub` never reached
+# `crates/vike-core/src/runtime/watchdog.rs`'s `cancel_resting_on_shutdown` — the resting book was
+# abandoned at the venue, while `systemctl status` reported success. `docs/ops/graceful-stop.md` has
+# the the CI box measurements and why the two dependency-free alternatives were refused (hand-rolled
+# `sigaction` needs `unsafe` + an `UNSAFE_EXEMPT` carve-out in a binary that signs orders; an
+# `ExecStop=` sentinel puts the correctness in the unit FILE, where an older deployment silently
+# gets today's behaviour with no error).
+#
+# WHY THIS CRATE, measured against the no-new-external-dep rule rather than waved past it: of the
+# six packages it resolves, FIVE are already in `Cargo.lock` — `signal-hook-registry` (via the GUI's
+# zbus tree), `libc`, `errno`, `windows-sys`, `windows-link` — so it adds EXACTLY ONE package. Its
+# flag registration is a SAFE api whose installed handler does nothing but store into an
+# `AtomicBool`, which is the only thing legal in a signal context anyway (see `vike_ops::stop`'s
+# module doc), so it needs no `unsafe` and relaxes no lint. It touches none of `deny.toml`'s bans —
+# those are the second-HTTP/WS/TLS/curve-stack list — and is MIT OR Apache-2.0, both already allowed.
+# `default-features = false` drops the unused `channel`/`iterator` modules; they pull no crate of
+# their own, so this trims code rather than dependencies.
+signal-hook = { version = "0.4", default-features = false }
+# The WINDOWS twin of signal-hook, for the same one consumer (`vike_ops::stop::install_handlers`,
+# split-plane B10): bridges the console control events (Ctrl-C / Ctrl-Break / window close) to the
+# stop flag through a SAFE SetConsoleCtrlHandler wrapper. The raw route is `windows-sys`'s
+# `unsafe extern "system"` registration, and vike-ops inherits the workspace `unsafe_code = "forbid"`
+# — this crate is what keeps the daemons' Windows stop path out of the `UNSAFE_EXEMPT` ratchet.
+# Target-gated to `cfg(windows)` in vike-ops, so Linux CI and the prod boxes never compile it.
+# Not in `deny.toml`'s bans (those are the second-HTTP/WS/TLS/curve list); MIT OR Apache-2.0.
+ctrlc = "3"
+# ONE syscall the std library does not expose, for ONE caller: `statvfs`, used by
+# `vike_mount::startup::free_space_bytes` to arm the startup preflight's DISK-HEADROOM leg. That leg
+# shipped unwired and stayed dark for its whole life, with "free space needs a platform syscall, and
+# the workspace forbids `unsafe_code`" as the stated reason — while a full filesystem silently kills
+# the live `RecorderSink` writer and the journal WAL, and the CI box was measured at ~70% of one
+# filesystem consumed with the gate still off. The trade was wrong; this closes it.
+#
+# WHY THIS CRATE, measured against the no-new-external-dep rule rather than waved past it: rustix is
+# ALREADY in `Cargo.lock` at this exact version (many transitive consumers), and so are all four of
+# its deps (`bitflags`, `errno`, `libc`, `linux-raw-sys`) — so on Linux, where both shipped daemons
+# run, this adds ZERO packages to the audit surface. It is `target.'cfg(unix)'`-scoped in vike-mount,
+# so a Windows build never compiles it at all. `statvfs` is a SAFE fn, which is the point: the
+# alternative was `libc::statvfs` behind an `unsafe` block and an `UNSAFE_EXEMPT` carve-out in the
+# binary that signs orders. `default-features = false` + only `fs` drops the net/process/termios
+# trees. It touches none of `deny.toml`'s bans (those are the second-HTTP/WS/TLS/curve list) and is
+# `Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT`, all already allowed.
+rustix = { version = "1", default-features = false, features = ["fs", "std"] }
+# vike-data hist store (feature "hist-datafusion" ONLY — default builds never pull this tree).
+# Pure Rust (no C++/server/Python); use datafusion's RE-EXPORTED arrow/parquet (datafusion::arrow,
+# datafusion::parquet) so there is ONE arrow version. Pin exact + bump deliberately (monthly majors).
+# `default-features = false` + a minimal explicit set: the hist store (vike-data datafusion_hist.rs,
+# vike-backfill ingest) uses ONLY the DataFrame read/write API over parquet —
+# SessionContext::read_parquet + col()/lit() ts filters, and ArrowWriter with Compression::ZSTD. It
+# NEVER calls `.sql()`, reads CSV/JSON, uses nested/array or crypto functions. So four heavy default
+# features are dropped (≈134 cold-build unit-seconds, verified round-2 dep analysis):
+#   - `sql`                  → sqlparser + bigdecimal (no `.sql()` anywhere; DataFrame API is core)
+#   - `compression`          → liblzma-sys + bzip2 (a 36s C build; the store is parquet+zstd, never
+#                              reads compressed CSV/JSON — parquet's OWN zstd is unaffected, see below)
+#   - `recursive_protection` → stacker/psm/object/ar_archive_writer (only sqlparser needed the deep stack)
+#   - `crypto_expressions`   → blake3 + blake2 + md-5 (SQL crypto scalar fns; unused)
+# KEPT `parquet` — it pulls `dep:parquet` with parquet's DEFAULT codecs (incl. zstd), so the
+# `datafusion::parquet` re-export AND `Compression::ZSTD` at datafusion_hist.rs keep working (this is
+# what preserves zstd-sys, NOT the datafusion-level `compression` feature). The remaining kept features
+# are the cheap datafusion-functions expression families (no external-crate weight). NOTE: arrow
+# `prettyprint` is hardcoded in datafusion's own arrow dependency, not a datafusion feature, so it can
+# not be trimmed from here.
+datafusion = { version = "55", default-features = false, features = [
+    "parquet",
+    "nested_expressions",
+    "datetime_expressions",
+    "encoding_expressions",
+    "regex_expressions",
+    "string_expressions",
+    "unicode_expressions",
+] }
+# Bridge datafusion's async SendableRecordBatchStream -> a sync Iterator for bounded-memory streaming
+# scans: `StreamExt::next` pulls ONE RecordBatch at a time. datafusion does NOT re-export futures, and
+# futures-util is already in the tree via datafusion (no new lockfile crate). Feature-gated (hist-datafusion).
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# R6 venue adapters (crates/bridges/*, on top of vike-bridge-core)
+ureq = "3.3"                                        # blocking REST (rustls, no OpenSSL)
+# `bytes::Bytes` — already resolved in the lockfile (a transitive dep of both `ureq`'s `http` crate
+# and `parquet`/`datafusion-datasource-parquet`), so naming it directly here adds ZERO new lockfile
+# entries. Needed by vike-backfill's `vike-archive` feature to implement `parquet::file::reader::
+# ChunkReader` over a ranged-HTTP reader (its `get_bytes` returns `bytes::Bytes`) — `datafusion`
+# re-exports `parquet` (`datafusion::parquet`) but not `bytes` itself, so the type must be named
+# directly to implement the trait.
+bytes = "1"
+tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] } # blocking WS (user data + market)
+# SOCKS5 client for the WS lane (vike-bridge-core's opt-in `socks-proxy` feature → ws_proxy.rs).
+# Polymarket is US-geo-blocked and its REST already tunnels via `ureq/socks-proxy`, but every
+# WebSocket dialled DIRECT — so the feeds could not connect at all from a blocked host (spec
+# 2026-07-22-polymarket-workstreams §0). Rationale for THIS crate rather than another: it is the
+# EXACT crate (and version) `ureq`'s own socks-proxy feature already resolves to, so it is not a
+# second transport stack under deny.toml's "ONE transport stack" ban list, adds nothing new to the
+# lockfile, and cannot trip the duplicate-version bans.
+socks = "0.3"
+hmac = "0.13"
+sha2 = "0.11"
+hex = "0.4"
+# OKX signatures are base64, not hex (vike-bridge-core's `hmac_sha256_base64`); Polymarket's L2 auth
+# is base64**url**. Both go through the SCALAR `general_purpose::{STANDARD,URL_SAFE}` engines.
+# ⚠ `default-features = false, features = ["std"]` is NOT tidiness and must not be dropped back to
+# the default: 0.23 added a DEFAULT-ON `simd-unsafe` feature (hand-vectorised AVX2/NEON engines),
+# which takes the crate from 2 `unsafe` blocks to 22 — compiled into the one binary that signs real
+# orders, to back `Simd`/`Avx2`/`Neon` engines this workspace names nowhere. `std = ["alloc"]` is
+# exactly what 0.22's default resolved to, so this is the 0.22 feature set on the 0.23 line rather
+# than a new restriction. A future caller that genuinely wants a SIMD engine turns it back on and
+# says why. (The root manifest's `[workspace.lints.rust] unsafe_code = "forbid"` governs OUR code
+# only — nothing in the tree measures a dependency's unsafe, which is why this is a comment on the
+# pin and not a gate.)
+base64 = { version = "0.23", default-features = false, features = ["std"] }
+rust_decimal = "1"                                  # the ONE Decimal wire site (format_to_step)
+# Polymarket EIP-712 order/auth signing (feature-gated — the ONLY secp256k1/keccak surface)
+k256 = { version = "0.14", features = ["ecdsa"] }   # secp256k1 ECDSA (recoverable), RustCrypto
+tiny-keccak = { version = "2", features = ["keccak"] } # keccak256 (EIP-712 hashing)
+# Hyperliquid action-hash msgpack (vike-hyperliquid signing). The venue signs every L1 action over
+# msgpack(action) in struct-declaration field order; `to_vec_named` reproduces the official SDK's
+# byte layout exactly (proven by the official Rust SDK's own signature vectors). The ONLY msgpack
+# surface in the workspace — kept minimal, pure-Rust, no new transitive HTTP/TLS.
+rmp-serde = "1.3"
+# gzip codec for the raw-frame tap writer + re-parse reader (raw_tap.rs / vike-backfill reparse).
+# Pure-Rust miniz_oxide backend (no C/zlib) — keeps default builds native-dep-free.
+flate2 = "1.1.9"
+# Dukascopy FX history source (data-only, keyless)
+chrono = { version = "0.4", default-features = false, features = ["clock"] } # UTC calendar math for the .bi5 URL
+lzma-rs = "0.3"                                     # pure-Rust LZMA decode of Dukascopy .bi5 archives
+chrono-tz = "0.10" # named-timezone display (chart axis/clocks); IANA db compiled in — desktop app, size accepted
+# vike-options Black–Scholes: pure-Rust MUSL/FDLIBM erf (Rust std has none). Empirically ≤1 ulp
+# of CPython 3.14 math.erf (23/25 probes bit-identical; the whole ported BS stack incl. the
+# 64-step IV bisection matched the oracle bit-for-bit) and deterministic across dev-Windows /
+# CI-Linux, unlike a platform libm. Already a transitive lockfile crate — no new lock entry.
+libm = "0.2"
+# Structured logging (tracing-native; see docs/superpowers/specs/2026-07-06-tracing-logging-design.md).
+# `tracing` facade goes in library crates (spans + events); subscriber/appender live ONLY in vike-log.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "ansi", "fmt", "tracing-log"] }
+tracing-appender = "0.2"                             # non-blocking daily-rolling file writer (off-thread)
+tracing-test = "0.2"                                 # dev-only: assert on emitted events (#[traced_test])
+log = "0.4"                # dev-only (vike-log): log->tracing bridge verification test
+tracing-log = "0.2"        # dev-only (vike-log): explicit LogTracer for the bridge test
+# Property-based testing (testing-arch plan Phase 6) — the workspace's FIRST proptest framework,
+# pinned here because the workspace centralizes every dep. DEV-DEPENDENCY ONLY: it never reaches
+# the shipped order-signing binary's embedded SBOM (`just audit-bin` scans the artifact, not
+# dev-deps), though it does join the source-lockfile `cargo deny` merge-gate tree — the accepted
+# cost of the first property framework. Randomized inputs over the pure cores (sizing, the pinned
+# round/format wire sites, the RiskGate<->SimBroker parity) find edges the golden fixtures miss.
+# Commit any generated proptest-regressions/ seed files so a CI-found counterexample reproduces.
+proptest = "1"
+# egui ACCESSIBILITY-TREE testing (the widget-crate twin of proptest above: a testing framework
+# pinned here because the workspace centralizes every dep). DEV-DEPENDENCY ONLY — it never reaches
+# a shipped binary.
+#
+# ⚠ Taken with `default-features = false`, and the two features that must stay OFF are `wgpu` and
+# `snapshot`: both RASTERIZE, and neither CI runner nor the CI box has a GPU (see CLAUDE.md's
+# "GUI verification splits on RASTERIZATION" — shapes→pixels is dev-box-only). Without them
+# egui_kittest drives `Context::run_ui`, which is pure CPU, and asserts over the accesskit tree
+# egui already builds (`accesskit` is a NON-optional dependency of egui, so no egui feature is
+# needed to turn it on). That is why these tests join the ordinary CI crate roster rather than a
+# GPU lane. `default-features = false` is belt-and-braces — egui_kittest 0.36.1 declares NO default
+# features at all — and states the constraint where a future `--all-features` reader will see it.
+#
+# The minor MUST track egui's (0.36 today): egui_kittest builds the harness against egui's own
+# `Context`/`Ui` types, so a mismatched minor is a type error, not a runtime surprise. Bump it in
+# the same PR as the egui/egui_plot/eframe row above.
+egui_kittest = { version = "0.36.1", default-features = false }
+# Data-parallel parameter sweeps (vike-backtest `harness::sweep`/`harness::euler`, behind that
+# crate's OPTIONAL `hist-replay` feature — a default workspace build never compiles it). A sweep is
+# N fully independent single-run backtests sharing one `Arc<DataFusionHist>` HANDLE; before this
+# they ran one at a time on one core. Rayon's `par_iter().map().collect::<Vec<_>>()` is
+# order-PRESERVING, which is the property the sweep needs: ranking must not depend on completion
+# order, so the parallel report is byte-identical to the sequential one (pinned by
+# `parallel_and_sequential_sweeps_are_byte_identical`). NB the shared handle shares NO loaded data —
+# each point re-scans and materializes its own slice — so concurrency is a peak-RSS multiplier and
+# the sweep therefore runs on a BOUNDED pool (`sweep::install_bounded`, default
+# `min(4, available_parallelism())`, `VIKE_SWEEP_THREADS`), never rayon's global one-per-core pool.
+# Deliberately NOT an async runtime — the backtest engines are synchronous CPU work, so a
+# work-stealing thread pool is the right shape and adds no HTTP/WS/TLS surface to the `cargo deny`
+# audit tree (rayon + rayon-core + crossbeam only).
+rayon = "1"
+# egui/egui_plot pairing re-verified 2026-08-16: egui_plot 0.37 REQUIRES egui ^0.36; eframe 0.36
+# (crates/vike-app) bundles egui 0.36 — vike-app (eframe) and vike-chart must bump these TOGETHER,
+# and `egui_code_editor` below is a THIRD member of the same lockstep, which is what held this bump
+# back: its 0.3.7 required egui ^0.35, so bumping egui alone put two egui versions in the tree and
+# `vike-studio/src/editor.rs` failed with `expected egui::ui::Ui, found Ui`. 0.3.8 (2026-08-11)
+# moved to egui ^0.36, which is what made this possible.
+egui = "0.36"
+egui_plot = "0.37"
+# Code-editor widget for the vike-studio Rhai editor. Pure-egui (eframe is dev-only, not propagated),
+# targets egui 0.36 = our pinned version — but ONLY from 0.3.8 onward, so the lockfile floor matters
+# here in a way a caret range does not express: 0.3.7 still required egui ^0.35. Default features (`editor` + `egui`) are REQUIRED: the
+# `CodeEditor` widget lives behind `editor`, and its egui `.show()` behind `egui` — turning either
+# off compiles the widget out entirely. `opener` (click-to-open-links) is bundled into the `egui`
+# feature and cannot be dropped without losing the widget; it's a small OS-link-opener crate, not
+# a GUI backend, so CI stays clean.
+egui_code_editor = { version = "0.4" }
+# Embedded scripting engine for vike-script user strategies. `sync` => Arc-backed Engine/AST/Scope
+# so a RhaiStrategy is Send and mounts live as Box<dyn Strategy<LiveBroker> + Send>.
+rhai = { version = "1", features = ["sync"] }
+# cTrader Open API venue bridge (crates/bridges/ctrader): pure-Rust protobuf runtime for the
+# ProtoMessage wire schema (vendored proto/, proto2 + custom payloadType extension — prost
+# ignores the unknown option, harmless). RUNTIME only: the bindings are PRE-GENERATED and committed
+# (crates/bridges/ctrader/src/generated/openapi.rs), so prost-build/protoc are NO LONGER workspace
+# deps — the regen recipe (=-pinned prost-build/protoc + its own lockfile) lives in the excluded
+# crates/bridges/ctrader/protogen project, invoked only by the .github/workflows/ctrader-proto.yml
+# drift gate.
+prost = "0.14"
+# blocking TLS for the cTrader raw socket (port 5035, one multiplexed protobuf/TLS connection) —
+# rustls only, no OpenSSL, matches repo policy. default-features off + explicit `ring` keeps the
+# default workspace build native-dep-free (bare rustls 0.23 defaults to aws-lc-rs, which drags in
+# aws-lc-sys + cmake + a C toolchain) — matches ureq/tungstenite's rustls-with-ring convention.
+rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
+# Mozilla root store for rustls (cTrader demo/live endpoints are public CA-signed). Pinned to the
+# 1.0 major (the one ureq already resolves) rather than the 0.26 shim; rustls 0.23's RootCertStore
+# API is identical across both. A 0.26.11 copy still appears in Cargo.lock, but that is tungstenite's
+# transitive dep (rustls-tls-webpki-roots feature) — 0.26.11 is itself just a thin re-export of
+# 1.0.8 — not ours to remove here.
+webpki-roots = "1.0"
+# (prost-build / protoc-bin-vendored removed as workspace deps — see the `prost` note above: the
+# cTrader bindings are pre-generated + committed, so build-time codegen is gone from the workspace.
+# Their `=`-pinned copies live only in the excluded crates/bridges/ctrader/protogen regen recipe.)
+# Studio ChatPane "review changes" diff view (vike-studio chat.rs): line-level diff between the
+# current editor buffer and the AI-generated script so Apply is a reviewed action, not a blind
+# whole-buffer clobber. Pure Rust, no native dep; the de-facto standard Rust text-diff crate.
+similar = "3"
+# BUILD-GRAPH ENTRY (not a used API): this line selects the Unicode back end of the transitive
+# `idna` crate (pulled by `url` via datafusion/object_store/webbrowser/tungstenite). `idna` picks
+# its back end by whichever `idna_adapter` version the top-level lockfile resolves — the
+# upstream-blessed opt-out (see idna_adapter's README). The three streams: 1.0.x is a STUB (NO
+# Unicode data at all — every non-ASCII host is rejected as U+FFFD, and neither icu4x NOR unicode-rs
+# is linked), 1.1.x is the unicode-rs back end, 1.2.x is ICU4X.
+#
+# ⚠ AS WRITTEN THIS SELECTS ICU4X, AND THE TOWER IS IN THE GRAPH — which is the OPPOSITE of what
+# this entry was added for. `~1.2` resolves idna_adapter 1.2.2 -> icu_normalizer + icu_properties,
+# and with them icu_collections / icu_locale_core / icu_normalizer_data / icu_properties_data /
+# icu_provider / litemap / potential_utf / tinystr / writeable / yoke / zerofrom / zerotrie /
+# zerovec and their derive crates. Read it off the tree rather than off this comment:
+# `cargo tree -e normal -i idna_adapter`.
+#
+# The entry landed as `~1.0` in the round-2 cold-build trims (#606) precisely to keep that tower
+# out; the Dependabot cargo-minor-patch group bump (#778) moved it to `~1.2`, reversing the pin
+# while leaving its rationale standing — so the "forces the backend OFF the ICU4X path" sentence
+# that used to be here described a build this workspace has not had since 2026-07-28. The ARGUMENT
+# for `~1.0` still holds (every URL parsed in this workspace is an ASCII host — venue REST/WS
+# endpoints, object_store file:// paths — so IDNA processing never fires), but restoring the pin
+# re-resolves the lockfile and moves the cargo-deny audit surface: a reviewed dependency decision,
+# not a comment fix. If real non-ASCII (IDN) hostnames are ever needed, `~1.1` is the landing spot.
+#
+# Either way the entry stays, because it is what binds the constraint into resolution at all: a
+# single `idna_adapter = { workspace = true }` + `use idna_adapter as _;` in vike-log (a virtual
+# workspace has no root package to hang a plain dep on).
+idna_adapter = "~1.2"
+# Pure-Rust line editor for the interactive `vike-cli trade` REPL — history + in-line editing (arrow
+# keys, Ctrl-C/Ctrl-D). NOT an HTTP/WS/TLS/crypto crate, so deny.toml's "one transport stack" bans do
+# not apply; it only reaches the vike-cli fast-lane binary, never the order-signing GUI tree.
+rustyline = "18"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+
+# Third-party debuginfo, dev profile only — the inner loop's cheapest available win.
+#
+# `package."*"` matches DEPENDENCIES and never a workspace member: that is cargo's own override
+# precedence rule, not a convention, so every crate under `crates/` keeps the profile's full
+# `debug = 2` and stays steppable line by line. What is given up is debuginfo for code nobody in
+# this repo steps through — and on the MSVC dev box that debuginfo IS the link: it is emitted per
+# rlib, then merged into a PDB on every single relink, whether or not a debugger will ever open it.
+#
+# MEASURED 2026-08-09 (dev box, 32 cores, rustc 1.96.0, MSVC `link.exe`, sccache disabled; the link
+# step isolated with a timing wrapper installed as `linker`, medians of 5 alternating reps) on a
+# synthetic crate mirroring vike-cli's external dependency closure, built outside this repository
+# because the local cold-build guard denies a `cargo build` naming a worktree path:
+#
+#   deps debuginfo              clean build   target/    binary PDB   final link
+#   default (debug = 2)              19.4 s    324 MB       43.2 MB       300 ms
+#   debug = 0            (this)      14.0 s    205 MB        6.6 MB       182 ms
+#   debug = "line-tables-only"       15.1 s    248 MB       19.9 MB       212 ms
+#
+# ⚠ THE COLUMNS DO NOT TRANSFER EQUALLY, and the quotable one transfers WORST. `target/`,
+# `binary PDB` and `final link` are ratios of debuginfo VOLUME: less DWARF is less to emit, store
+# and merge, whatever the crate is, so those carry here. `clean build` does NOT — its -28% is a
+# property of WHICH crates were measured. That proxy's closure (rhai + serde_json + toml +
+# rustyline + indexmap + tracing) is cheap to codegen and debuginfo-heavy relative to it, so
+# debuginfo is a large share of its total build time; this workspace's dev build is dominated by
+# DataFusion/arrow/wgpu codegen, where that share is much smaller. Expect materially less than 28%
+# here. Directionally cheaper is the claim; 28% is the proxy's number and belongs to the proxy.
+#
+# `line-tables-only` is the documented fallback and it is a real trade, not a worse option: it keeps
+# FILE AND LINE for dependency frames in a panic backtrace, for about half the win. `debug = 0` was
+# chosen because a dependency frame still carries its SYMBOL NAME either way — the name is in the
+# symbol table, not in the debuginfo — and a function name has been enough every time a panic in
+# this workspace came from inside a dependency. Swap the value, do not delete the table, if that
+# stops being true.
+#
+# ⚠ BLAST RADIUS, deliberately accepted: this changes the fingerprint of every dev-profile
+# dependency unit, so the FIRST build after it merges is a cold dependency rebuild on every box —
+# each dev machine and every self-hosted runner, once. It touches no release profile, so the
+# `p99 < 10µs` latency gate (which runs `--release`) cannot see it at all. The Linux side is
+# unmeasured here: the mechanism is the same (less DWARF to emit, read and link) but the dev box is
+# the only host this branch could measure, and CI is the one that will report the Linux number.
+[profile.dev.package."*"]
+debug = 0

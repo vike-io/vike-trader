@@ -1,0 +1,84 @@
+[package]
+name = "vike-recorder"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — the live-tape RECORDING LIBRARY. A customer subscribes to symbols or market FAMILIES; this resolves them, drives the venue feeds and writes the rows into their local DataFusion+Parquet store, one grouped commit per family. It is no longer a daemon of its own: ruling 10 of docs/superpowers/specs/2026-09-09-datahub-market-data-wire-design.md merged the recorder process into the data server, so the mount, the tick cadence and the teardown live in crates/vike-datahub/src/recorder.rs and this crate is what that mount is built from."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Every NORMAL (non-dev)
+# vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+#
+# ⚠ **65 -> 55 (`daemon` -> `service-stacked`), and the tier change IS the ruling.** This crate was
+# a `daemon` — "a headless top-of-graph binary: only the layer-68 dispatcher may depend on it" — and
+# that stopped being its truth the moment its `[[bin]]` retired into `vike-datahub`. Ruling 10 asks
+# the data server to own venue connections, the store and serving in ONE process; measured against
+# the gate, `vike-datahub` also declares 65, so an edge in EITHER direction fails `to >= from` and
+# neither crate could consume the other while both claimed to be a top-of-graph binary. The
+# resolution is not a number chosen to fit an edge: this crate is now a LIBRARY the data daemon
+# composes, so it takes the rank that says so. `crates/vike-datahub/Cargo.toml`'s `vike-backfill`
+# comment records the identical move for the identical reason ("it was already consumed as a LIBRARY
+# by vike-app, so 'daemon: nothing may depend on it' had stopped being its truth before this edge
+# existed").
+#
+# ⚠ 55 rather than 50 is forced by the graph, not chosen: `vike-alerting` (the silence watchdog's
+# delivery half) declares 50, so `service` is unavailable and `service-stacked` — "a service
+# composed over another service crate" — is the exact description. What made 55 REACHABLE at all is
+# that the five composition-root edges (vike-log, vike-secrets, vike-buildinfo, vike-boot and
+# vike-ops, the last of which declares 55 itself) left with `recorder_cli.rs`: every one of them was
+# named by that file and by no other, which is why the daemon body is the only thing that had to
+# move.
+[package.metadata.vike]
+layer = 55
+
+[dependencies]
+# The store + the RecorderSink write engine. `hist-datafusion` because a recorder writes Parquet.
+vike-data = { path = "../vike-data", features = ["hist-datafusion"] }
+# Domain types on the sink verbs (QuoteTick/TradeTick/BookUpdate).
+vike-model = { path = "../vike-model" }
+# The silence watchdog's DELIVERY half (`src/alerts.rs`). DEFAULT FEATURES ON PURPOSE — deliberately
+# NOT `features = ["core"]`: that feature is the crate's only vike-* edge (vike-core + vike-model),
+# and the whole reason vike-alerting was split out of vike-ops was so a watchdog could page without
+# it. The engine, the rule model, the evaluator's signal path and the webhook sinks are all in the
+# default half, so this edge adds serde_json + indexmap + ureq to the recorder and NOTHING to
+# vike-alerting's own dependency graph. `scripts/ci_feature_suite.sh`'s `alerting-standalone` lane
+# is the gate on that (a `cargo tree` check, not a compile check).
+vike-alerting = { path = "../vike-alerting" }
+serde = { workspace = true, features = ["derive"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+# OPTIONAL, and off by default: the polymarket venue feed. Enabling it pulls the bridge's
+# k256/keccak/tungstenite tree into whatever links this, which is exactly why it is a feature and
+# not a plain dep — a build recording only static-symbol venues should not link an EIP-712 signer.
+vike-polymarket = { path = "../bridges/polymarket", optional = true }
+vike-binance = { path = "../bridges/binance", optional = true }
+# The `Instrument` model a binance family glob filters (bridge-free, vike-model only).
+vike-catalog = { path = "../vike-catalog", optional = true }
+
+[features]
+default = []
+# One feature per recordable venue. The mount builds either way; a profile naming a venue this build
+# cannot serve is a startup ERROR naming the missing feature, never a silent no-record.
+# ⚠ The DAEMON forwards these under its own names — `crates/vike-datahub/Cargo.toml`'s
+# `record-polymarket` / `record-binance` — because since ruling 10 the process that carries a venue
+# feed is `vike-backend datahub`, and a feature called `polymarket` on the daemon would collide with
+# the venue's EXEC plane it does not link.
+polymarket = ["dep:vike-polymarket", "vike-polymarket/feeds"]
+# The binance venue feed. Records the trade tape PLUS the conflating `depth` lane — the venue serves
+# no quotes and no lossless book, but `RecorderSink` DOES persist that lane, under its own
+# `kind=depth` series. ⚠ This comment used to say it did not, and `venues/binance.rs`'s module doc
+# records what that cost: the stale sentence was used as EVIDENCE that no depth socket is ever
+# opened, which left `connect_depth` dialing unbounded inside the recorder's teardown budget. Read
+# that module doc, not this line, for what a binance recording contains. `vike-catalog` comes with it
+# for the instrument list a family glob filters.
+binance = ["dep:vike-binance", "dep:vike-catalog"]
+
+[dev-dependencies]
+tempfile = "3"
+# `vike_data::NoopSink` — the workspace's ONE owned `LiveDataSink` double ("one owned double behind
+# a test-support feature"), so this crate does not grow a private copy of it.
+vike-data = { path = "../vike-data", features = ["hist-datafusion", "test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

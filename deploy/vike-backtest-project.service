@@ -1,0 +1,133 @@
+# systemd SYSTEM unit for the vike COMPUTE daemon — this deployment's INSTALLED ARTIFACT, with its
+# real project root filled in. `deploy/vike-backtest.service` is the placeholder-root TEMPLATE this
+# is rendered from. Sibling pair, exactly like `vike-tradehub.service` /
+# `vike-tradehub-project.service` and `vike-recorder.service` / `vike-recorder-project.service`.
+#
+# Ruling 7 of docs/superpowers/specs/2026-09-09-datahub-market-data-wire-design.md; the runbook is
+# docs/ops/backtest-daemon.md.
+#
+# ⚠ THE PATHS BELOW ARE REAL, NOT PLACEHOLDERS. That is the difference between this file and its
+# template.
+#
+#   sudo install -Dm644 deploy/vike-backtest-project.service \
+#        /etc/systemd/system/vike-backtest.service
+#   sudo systemctl daemon-reload && sudo systemctl restart vike-backtest
+#
+# ⚠ THREE THINGS HERE ARE NOT IN THE TEMPLATE, and each is this deployment's own fact rather than a
+# drift to reconcile away:
+#   User=/Group=the operator        the template leaves the account to the operator
+#   WantedBy=multi-user.target   a SYSTEM install; the template's `default.target` is the --user shape
+#   VIKE_BACKTEST_ADDR=…:7880    once a DEPARTURE from the template, now agreement: the compiled
+#                                default moved to 7880 with the client half of ruling 16, and the
+#                                template was corrected to match. Kept in this list because the
+#                                line is still SET here explicitly — this box runs the trading
+#                                node's control server on 7879, and an operator reading a deployed
+#                                unit should see the port it binds without resolving a ladder.
+#
+# ⚠ A RESTART IS FREE HERE, unlike the recorder's: this daemon holds no tape and no position. It
+# answers RPCs, so a restart costs the in-flight runs their answers and nothing else.
+
+[Unit]
+Description=vike backtest daemon — the compute plane of the node protocol
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=the operator
+Group=the operator
+
+# The multicall binary, dispatching on the `backtest` SUBCOMMAND. `--addr` with NO value: the flag
+# is what says "become a daemon", and the VALUE comes from VIKE_BACKTEST_ADDR below so this box
+# names its port in exactly one place.
+WorkingDirectory=/var/lib/vike
+ExecStart=/var/lib/vike/bin/vike-backend backtest --addr
+
+# The same pre-flight the other units on this box run — a settings file that does not parse fails
+# the unit BEFORE ExecStart. No leading `-`: a non-fatal pre-check is the same as no pre-check.
+ExecStartPre=/var/lib/vike/bin/vike-cli config check
+
+# --- the listen address --------------------------------------------------------------------------
+# ⚠ 7880, and it is now the COMPILED DEFAULT rather than a departure from it. This block used to
+# read "NOT the compiled default 7879 — the one line an operator must not copy back from the
+# template", and that warning was carried by this file alone. The client half of ruling 16 moved
+# `vike_config::DEFAULT_BACKTEST_ADDR` to 7880 and corrected the template with it, so the reason
+# survives and the exception does not: `vike-cli backend setup` writes
+# `config.tradehub_addr = 127.0.0.1:7879`, this box runs that node, and two daemons on 7879 means
+# whichever started second exits with AddrInUse. Loud, never silent — the two speak different
+# protocols and neither answers the other's handshake — but a compute CLIENT defaulting to 7879
+# would have dialled the order-signing socket quietly, which is what moved the constant.
+# The line stays SET rather than left to the ladder: a deployed unit should name the port it binds.
+# A laptop reaches this one with `ssh -L 7880:localhost:7880 <box>`.
+Environment=VIKE_BACKTEST_ADDR=127.0.0.1:7880
+
+# --- the hist store this daemon computes NEXT TO -------------------------------------------------
+# The SAME root the datahub daemon serves on this box. Compute-to-data only holds while both
+# processes open one store.
+#
+# ⚠⚠ **`data/hist` IS A DECLARED DEPARTURE FROM THE SHIPPED SPELLING, AND IT IS DELIBERATE.** The
+# authoritative one is `<project>/market_data/hist` — `crates/vike-model/src/state_path.rs`'s
+# `PROJECT_DATA_DIR` + `HIST_SUBDIR`, which both templates,
+# `crates/vike-recorder/recorder.example.toml` and the install runbook all derive from. THIS BOX
+# PREDATES IT, and this line is not an independent choice: it is the SAME 26 GB of live tape that
+# `deploy/vike-datahub-project.service` names for the same reason (measured 2026-09-10 under
+# `/var/lib/vike/data`, with the box's own `settings/recorder.toml` reading
+# `store = "/var/lib/vike/data/hist"`). Compute-to-data means this daemon opens the
+# directory the data daemon actually fills, so on THIS box the two must depart together — moving
+# only this one would point the compute plane at a directory holding no `kind=` partitions, and
+# every backtest would load zero bars and answer cleanly, emptily and wrongly.
+#
+# Reconciling the spelling is an `mv` of 26 GB plus a stop/start of a live recorder, i.e. a
+# scheduled operation over BOTH units and not a side effect of a merge PR. Until then: always pass
+# `--store` when running `vike-cli data ls` by hand on this box, because with no `--store` a reader
+# resolves `<project>/market_data/hist` rather than the live tape — the sibling unit's store block
+# carries what is actually sitting there.
+# `crates/vike-ops/tests/deploy_layout_gate.rs`'s `every_shipped_store_root_is_one_spelling` exempts
+# this file BY NAME and requires this paragraph's marker, so the departure cannot go quiet.
+Environment=VIKE_HIST_STORE=/var/lib/vike/data/hist
+
+# The file layer defaults to `trace` and captures the DataFusion/arrow log->tracing bridge; this box
+# hosts a live node, and a long run once wrote 341 GB here.
+Environment=VIKE_LOG_FILE_LEVEL=warn
+
+# Names the settings directory explicitly, so resolution never depends on WorkingDirectory.
+Environment=VIKE_SETTINGS_DIR=/var/lib/vike/settings
+
+# Operator tunables (NOT credentials); harmless if absent. Never settings/secrets.env.
+EnvironmentFile=-/var/lib/vike/.env
+
+# The ISOLATION ruling 7 bought: a runaway sweep is OOM-killed inside THIS ceiling and cannot reach
+# the market-data reads or the live node next door.
+MemoryMax=8G
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+ReadWritePaths=/var/lib/vike/settings/state
+
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @module @reboot @swap @raw-io @debug @clock @cpu-emulation
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

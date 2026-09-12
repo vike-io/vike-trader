@@ -1,0 +1,11 @@
+# vike frame record v1 (vike_ui_theme::frame_record)
+# scenario: last_price_chip_off
+ppp 1  primitives 7  vertices 2592  triangles 2906
+----
+   0  clip [0 0 960 620]  tex M0  v 4  t 2  solid [0 0 960 620]  glyph -  runs 2  #161b24ff*2 #0d1117ff*2  d 262bfec614c2df93
+   1  clip [0 0 960 620]  tex M0  v 420  t 210  solid -  glyph [892 3 935 453]  runs 3  #484e56ab*180 #6b7480ff*24 #484e56ab*216  d 46816353a7cde2fa
+   2  clip [0 0 888 457]  tex M0  v 1592  t 2110  solid [-1 8 889 451]  glyph -  runs 12  #08090b3d*72 #22272fff*4 #5bbe91ff*54 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*18  d 459979a61f21827d
+   3  clip [0 0 960 620]  tex M0  v 156  t 84  solid [-1 459 961 461]  glyph [8 13 436 26]  runs 9  #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*72 #242931ff*4  d a88de1f5225af691
+   4  clip [0 0 960 620]  tex M0  v 12  t 6  solid -  glyph [892 510 906 592]  runs 1  #6b7480ff*12  d 923973d360198732
+   5  clip [0 462 888 588]  tex M0  v 336  t 420  solid [-1 471 889 589]  glyph -  runs 12  #10121678*4 #22272fff*4 #2d8238b3*12 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*4  d e24799ec81043fd9
+   6  clip [0 0 960 620]  tex M0  v 72  t 74  solid [889 478 914 495]  glyph [6 468 907 490]  runs 3  #9aa4b1ff*24 #f85249ff*20 #e7ecf4ff*8  d 850e244b7bebec3d

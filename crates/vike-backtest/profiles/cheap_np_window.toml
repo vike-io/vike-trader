@@ -1,0 +1,101 @@
+# `cheap_np` as a `BacktestProfile` — the Polymarket BTC 5-minute up/down fair-value taker,
+# expressed entirely in TOML instead of the hand-written `cheap_np_run` driver.
+#
+# Run it:
+#   cargo run -p vike-backtest --features hist-replay --bin backtest -- \
+#       --profile crates/vike-backtest/profiles/cheap_np_window.toml --store ~/cnp_store --json
+#
+# ONE WINDOW PER PROFILE, and that is not a limitation of the schema — it is the strategy's own
+# shape. `CheapNp` holds ONE window's state (`roll_window` REPLACES it when a print from a
+# different `sts` arrives) and the real tape interleaves adjacent windows, so a single run over a
+# whole month would evict a live window's state and re-enter it later. `cheap_np_run` splits the
+# month into per-window engine runs for exactly this reason (and because `run_ticks`'s k-way merge
+# is O(streams) per tick, which a month of ~17k token series makes quadratic). Windows are
+# independent and one-entry-each, so their PnL is additive: a month is the sum over per-window
+# profiles, which is the same decomposition the published reference numbers use.
+#
+# The three widenings this profile exercises (port backlog G4/G6/G7):
+#   G4  `[[data.series]]` — a Polymarket token series AND a BTC spot series in ONE run, each on
+#       its own venue, each with its own lane filter. The spot series is listed FIRST because
+#       `run_ticks` breaks an equal-`ts` tie by stream order: a same-millisecond spot sample must
+#       reach the strategy BEFORE the print it informs.
+#   G6  `[engine.resolution]` — binary settlement at the window close, so the held position is
+#       closed at the on-chain payout instead of being marked at its last traded price.
+#   G7  `[engine.fee]` — the real `0.072·p·(1−p)` taker cost. A flat `fee_rate` cannot express it.
+#
+# G5 (a non-tradeable "reference" series) needs NOTHING here: `CheapNp` only ever submits against
+# a symbol that parses as `<slug>#<outcome_index>`, so `BTCUSDT` drives σ and can never be traded.
+
+name = "cheap_np btc-updown-5m-1776099600"
+
+[data]
+kind = "tick"
+# The σ lookback (1800 s) before the window open, through the window close plus the tape's
+# observed right tail (~+370 s). Bare epoch-ms; `YYYY-MM-DDTHH` also works.
+from = "1776097800000"
+to = "1776100500000"
+
+# The REFERENCE series: 1-second BTC spot, quotes only. Never traded (see G5 above).
+[[data.series]]
+venue = "spot"
+symbol = "BTCUSDT"
+kind = "quote"
+
+# The two tradeable outcome tokens: the taker TAPE only. `cheap_np` is tape-driven, not
+# book-driven — the favourable ask is usually taken before it ever rests in the book.
+[[data.series]]
+venue = "polymarket"
+symbol = "btc-updown-5m-1776099600#0"
+kind = "trade"
+
+[[data.series]]
+venue = "polymarket"
+symbol = "btc-updown-5m-1776099600#1"
+kind = "trade"
+
+[engine]
+cash = 1000.0
+# `fee_rate` is deliberately absent: the cost model is `[engine.fee]` below, and setting both is
+# a validation error rather than a silent precedence rule.
+slippage = 0.0
+
+# G7 — the live bot's cost, `fee = qty × 0.072 × p(1−p)`, charged at the price each leg actually
+# transacted at. NOTE this does NOT change `fee_schedule_for("polymarket")` (still `Free`); the
+# curve is opt-in, here, per profile.
+[engine.fee]
+kind = "probability_scaled"
+taker_rate = 0.072
+
+# G6 — binary settlement. A token pays 1.0 when its `outcome_index` equals the window's
+# `winning_index`, else 0.0, from `(sts + window_secs) × 1000` onward. `resolution_end_ts` is
+# derived as the LATEST window close in this slice, which pins the end-of-run sweep to the window
+# instead of the `RESOLUTION_PROBE_SENTINEL`.
+#
+# The winners can also come from a `slug,winning_index` CSV (`path = "resolutions.csv"`, resolved
+# relative to THIS file) — the `FORMAT CSVWithNames` export `cheap_np_run --resolutions` reads:
+#
+#   SELECT DISTINCT t.slug, r.winning_index
+#   FROM data_polymarket.polymarket_resolutions_onchain r
+#   INNER JOIN (SELECT DISTINCT slug, condition_id FROM data_polymarket.polymarket_trades
+#               WHERE slug LIKE 'btc-updown-5m-%' AND ts >= '...' AND ts < '...') t
+#     ON t.condition_id = r.condition_id
+#   WHERE r.winning_index >= 0
+#   FORMAT CSVWithNames
+#
+# A non-binary `winning_index` (2/3/4 exist on-chain; -1 means unresolved) is NEVER coerced to
+# "both sides lose": a CSV row like that is dropped with a warning, an inline one is rejected, and
+# running a window with no payout at all is a hard error.
+[engine.resolution]
+kind = "binary_outcome"
+
+[engine.resolution.winners]
+"btc-updown-5m-1776099600" = 0
+
+[strategy]
+name = "cheap_catch_updown_fair_value"
+
+[strategy.params]
+spot_symbol = "BTCUSDT"
+mode = "hold" # hold | flip
+size = 1.0
+theta = 0.055

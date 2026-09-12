@@ -1,0 +1,929 @@
+//! `vike-cli` — the unified vike command-line surface (headless two-layer plan, Layer 1).
+//!
+//! A **git/cargo-style subcommand dispatcher**: `vike-cli <command> [args…]`. Commands: `backtest`
+//! (the compute-to-data offload that ships a profile's TOML to a remote `vike-datahub` server and
+//! prints the compact report, with **no DataFusion in this side's build graph**), `mcp` (a local
+//! stdio MCP server exposing the create+backtest tools to an agent), `config` (settings
+//! provenance — `show` for every setting, its effective value and where that value came from;
+//! `check` for the same tree JUDGED, with the exit code as the product, which is what the shipped
+//! `deploy/*.service` units put in their `ExecStartPre=`) and `init` (scaffold
+//! `<project>/user_data`, the user-content directory, with runnable examples).
+//!
+//! # Library + thin bin
+//!
+//! The dispatcher and subcommand modules live in this LIBRARY; `src/main.rs` is a one-line shim that
+//! calls [`run`]. This matches the sibling bin crates (`vike-tradehub`, `vike-run`) and — load-
+//! bearing for CI — gives the package a LIB TARGET, so `cargo test --doc -p vike-cli` has something
+//! to run (a bin-only crate errors "no library targets found in package vike-cli").
+//!
+//! # Growing the surface
+//!
+//! Each command is a sibling module under [`cmd`] exposing a `run(args) -> ExitCode`. Adding
+//! `walkforward`, `trade`, or an interactive `repl` later is: add the module, add one arm to
+//! [`dispatch`], add one line to [`COMMANDS`]. The dispatcher itself never grows command logic —
+//! it only routes. REMOVING one is the mirror image plus a row in [`RETIRED_COMMANDS`], so the
+//! spelling that is going away fails naming its replacement rather than reading as a typo.
+//!
+//! # The exit ladder
+//!
+//! Every subcommand returns a rung of [`exit::Exit`] rather than the old success-or-failure pair:
+//! `0` did it, `1` ran and failed, `2` the command line was wrong, `3` a service could not be
+//! reached. `0` and `1` mean exactly what they always did, so nothing written against the old
+//! behaviour changes — the rest is a subdivision of what used to be `1`, which is what lets a
+//! wrapper retry a timeout without retrying a typo.
+//!
+//! ⚠ [`exit::Exit`] also declares `4` (refused locally by a ceiling) and `5` (the far side
+//! rejected the order), and **no code path in this crate produces either yet** — they are RESERVED
+//! numbers, not behaviour, and a script may not branch on them today. [`exit`] argues every rung
+//! and carries what has to exist before those two become live;
+//! `crates/vike-cli/tests/exit_codes.rs` asserts the four that ARE live over the shipped binary,
+//! which is the only place a rung is observable at all.
+//!
+//! # Settings, resolved once, before any subcommand
+//!
+//! [`run`] calls [`resolve_policy`] first, which runs the workspace's ONE startup sequence
+//! (`vike_boot::boot`): it REFUSES a removed environment variable (today, the
+//! `VIKE_MAX_ORDER_NOTIONAL` that Phase 5 of the settings-unification design deleted — a ceiling
+//! any exported variable can raise is not a ceiling) and loads this machine's
+//! `<project>/settings/policy.toml`. The resolved `max_notional_per_order` is handed to the two
+//! order-write surfaces (`trade`, `mcp`) for their advisory preview guardrail. The environment read
+//! lives here, in the entry point, per the settings-registry rule that only binaries read env — and
+//! so does the obligation to SURFACE the loader's non-fatal resolutions, which this dispatcher used
+//! to swallow (a preference clamped to a policy ceiling produced no output at all). They print to
+//! **stderr**, never stdout, because `vike-cli mcp`'s stdout is a protocol.
+//!
+//! # The credential-store read is HERE too, and it is LAZY
+//!
+//! The two order-write surfaces authenticate to a `vike-tradehub` node with HMAC keys the DAEMON
+//! reads out of `<project>/settings/secrets.env`. Both used to read `std::env::var` and nothing
+//! else, so a correctly-configured box answered "nothing to do" and exited — see [`cmd::nodekeys`],
+//! which argues the precedence (process env first, store second). The store read belongs at this
+//! composition root for exactly the reason the environment sweep does, and [`node_keyring`]
+//! performs it for the node-facing arms (`trade` and `mcp`, plus the top-level read-only
+//! `report`). `trade` covers the read-only `trade status` too, which uses just the observe half —
+//! it was a top-level `strategy-status` with a dispatch arm of its own until ruling 17 folded it
+//! into the `trade` family, which is why `report` is now the only top-level verb here whose whole
+//! job is a node read.
+//!
+//! ⚠ **There are TWO node key pairs, and the DATAHUB pair had the identical defect** — resolved
+//! from the process environment and nowhere else, so a pair sitting in the credential store, which
+//! is where this binary's own refusal text sends an operator, did nothing at all.
+//! [`datahub_keyring`] fixes it with the same precedence and carries the measurement.
+//!
+//! ⚠ **This widened which arms open the credential store, and the rule that used to sit here is
+//! the thing that changed.** It read: "no other subcommand needs a credential, and a provenance or
+//! backtest command has no business opening the file that holds every venue key on the box." The
+//! first half is simply no longer true — `backtest`, `walkforward`, `data` and `mcp` all
+//! dial a datahub that may require authentication, and `study` dials the COMPUTE daemon under the
+//! same node pair (ruling 7 puts every verb that RUNS an engine there, so it is a different daemon
+//! reached with the same credential — the store read is what it has in common with the five, not
+//! the peer). The second half was written when
+//! nothing in this binary could authenticate to one, and a `backtest --addr` is a NODE-FACING
+//! invocation, the category that sentence already excepted. So the rule now reads: **an arm that
+//! can dial a node may open the store; one that cannot, may not.** `config`, `secrets`, `init`
+//! and `indicators` still never touch it.
+//!
+//! ⚠ It remains genuinely true that a low-sensitivity credential now causes a high-sensitivity file
+//! to be read, and the industrial answer to that is to SEPARATE the classes — a credential helper,
+//! or an OS keyring — not to leave a resolution path that cannot work. That is a larger change than
+//! a bug fix and belongs in `docs/decisions/`, against the "ONE store, no chain, no second
+//! location" rule it would have to argue with. Recorded here so the next reader knows the shape was
+//! considered rather than missed.
+//!
+//! It reaches the store through `vike_secrets::resolve`, which takes the PATH this dispatcher
+//! already resolved — the shape `cmd::secrets` uses, and the one
+//! `crates/vike-ops/tests/settings_registry.rs`'s `CREDENTIAL_STORE_PIN` explicitly blesses ("the
+//! composition root doing exactly what the rule asks for"), as opposed to the sweeping loaders that
+//! open a location nothing in their signature mentions.
+
+use std::collections::HashMap;
+use std::path::Path;
+use std::process::ExitCode;
+
+pub mod cmd;
+pub mod exit;
+
+use crate::cmd::nodekeys::NodeKeyring;
+use crate::exit::Exit;
+
+/// The registered subcommands, as `(name, one-line summary)` — the single source of truth for both
+/// the help text and the "unknown command" hint, so a new command shows up in help for free.
+const COMMANDS: &[(&str, &str)] = &[
+    (
+        "backtest",
+        "run a backtest on a remote vike-datahub server and print the report — or, when the \
+         profile carries a [sweep] grid, a ranked parameter search",
+    ),
+    ("walkforward", "run an anchored walk-forward validation on a remote vike-datahub server"),
+    (
+        "data",
+        "the hist store: fetch real bars or seed the demo tape into it (write, local), list what \
+         it holds and report coverage (read, over --addr)",
+    ),
+    ("config", "settings provenance (`show`) and a validating pre-flight (`check`) for this box"),
+    ("mcp", "serve the create+backtest tools over stdio MCP (for Claude / an agent)"),
+    (
+        "trade",
+        "observe + control a running vike-tradehub node: `trade status|halt|resume` run one \
+         operation and exit, and a bare `trade` opens the interactive REPL (for a human)",
+    ),
+    // ⚠ Both summaries state the REFUSAL, and that is not hedging — it is the same rule the
+    // registry gates for a settings key: a line that describes behaviour the build does not have
+    // hands the reader positive confirmation of something false. These two ship as client halves
+    // whose server arms are follow-ups of ruling 16 (`cmd::report` and `cmd::study` argue each),
+    // so on every box today they refuse and name the local command that works.
+    //
+    // ⚠ `refuses` is the only word both verbs can share, and the clause is worded that narrowly on
+    // purpose. `report` reaches a real node and is declined at the capability negotiation; `study`
+    // usually cannot reach anything at all, because the compute daemon it dials is ruling 7's half
+    // and does not exist yet. An earlier wording promised a NEGOTIATION on both — a refusal no
+    // `study` invocation could reach — which is the exact false confirmation this comment warns
+    // about, one level up. `crates/vike-cli/tests/study_report_refusal_cli.rs` drives both paths.
+    //
+    // The clause goes when the arm lands — and `skills/*/SKILL.md`'s verb tables are RENDERED from
+    // this array by `scripts/gen_skills.sh`, so the two cannot say different things.
+    (
+        "report",
+        "ask a vike-tradehub node for a tearsheet over its live journal (read-only; no node \
+         serves it yet — it refuses and names the command that does)",
+    ),
+    (
+        "study",
+        "ask the backend to run a compiled study over the hist store it holds (no backend serves \
+         it yet — it refuses and names the command that does)",
+    ),
+    (
+        "secrets",
+        "inspect the credential store <project>/settings/secrets.env, and set ONE key in it \
+         (list | path | template | set)",
+    ),
+    (
+        "backend",
+        "stand a vike-tradehub node — the running daemon — up, and attach this box to one \
+         (setup on the daemon | connect | status | disconnect on the client)",
+    ),
+    (
+        "datahub",
+        "MINT the node key pair a vike-datahub server authenticates with (setup), on that \
+         server's box",
+    ),
+    ("init", "create <project>/user_data — strategies, profiles, results — with examples"),
+    ("indicators", "print the indicators a Rhai strategy can call, with their parameters"),
+];
+
+/// Verbs this binary USED to have, and the sentence each one's replacement is named in.
+///
+/// ⚠ **A retired verb is not an unknown verb, and answering it as one is the defect this closes.**
+/// [`dispatch`]'s catch-all prints `unknown command 'sweep'` plus the help — which tells a scripted
+/// caller the verb never existed, for a verb that shipped for months. The operator's own words are
+/// the fastest route to the replacement, so they are matched BEFORE the catch-all and answered with
+/// it.
+///
+/// It is `vike_config::REMOVED_ENV`'s shape applied to a VERB, and the same shape
+/// `crates/vike-backtest/src/backtest_cli.rs`'s `parse_search_flags` gives the retired `--search`
+/// flag. The rung is unchanged — [`Exit::Usage`], because re-running unchanged cannot succeed —
+/// which is deliberately the SAME rung the catch-all uses: what changes is the message, not the
+/// classification, and a test asserting only the code would not see the difference.
+///
+/// ⚠ These names are NOT in [`COMMANDS`]: help must not advertise a verb that refuses, and
+/// `skills/*/SKILL.md`'s verb tables are RENDERED from that array by `scripts/gen_skills.sh`.
+const RETIRED_COMMANDS: &[(&str, &str)] = &[(
+    "sweep",
+    "`vike-cli sweep` is retired — a parameter search is a BACKTEST, run many times and ranked, so \
+     it is `vike-cli backtest` with the same profile. A profile carrying a [sweep] table searches \
+     it; `--rank-by` picks the metric and `--optimizer grid|euler|tpe` picks the method (--local \
+     only; the wire carries no method selector).\n\
+     \n\
+     was:  vike-cli sweep    --profile sweep.toml --rank-by sharpe\n\
+     now:  vike-cli backtest --profile sweep.toml --rank-by sharpe",
+)];
+
+/// Parse the command line (argv WITHOUT the binary name) and dispatch. Returns the process exit
+/// code. The `src/main.rs` shim calls this with `std::env::args().skip(1)`.
+///
+/// Before ANY subcommand runs, the environment is checked for variables that have been REMOVED
+/// (settings unification, Phase 5) and the machine's policy ceiling is resolved — see
+/// [`resolve_policy`]. Both happen here rather than per-subcommand so a stale variable cannot be
+/// honoured by one surface and refused by another, and so `vike-cli trade`'s advisory guardrail
+/// reads the same ceiling the trading binaries enforce.
+pub fn run(mut args: impl Iterator<Item = String>) -> ExitCode {
+    let Some(command) = args.next() else {
+        // No subcommand: print help and exit on the USAGE rung. It is the same class as an unknown
+        // verb — the command line was wrong and re-running it unchanged cannot succeed — and it
+        // used to be indistinguishable from a run that tried and failed.
+        print_help();
+        return Exit::Usage.into();
+    };
+    // A REMOVED environment variable, or a settings tree that will not load. Neither is a usage
+    // error (the command line was fine) and neither is a connect failure, so this stays on the
+    // pre-existing catch-all rung: the box is misconfigured, and the message says how.
+    let resolved = match resolve_policy() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("vike-cli: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    install_user_indicators(resolved.user_data_dir.as_deref());
+    dispatch(&command, args, &resolved)
+}
+
+/// Loads `<project>/user_data/indicators/*.rhai` and installs them process-wide, so a script run by
+/// ANY subcommand can call them.
+///
+/// This is the composition root doing the I/O on the library's behalf — `vike_script`'s
+/// `install_user_indicators` takes already-compiled prototypes precisely so that no library resolves
+/// this directory for itself (its doc is the authority on why, and names `vike_log::init` as the
+/// precedent). The load-plus-install pair is `vike_script::load_and_install_user_indicators`, which
+/// is what a root wires WHEN it is wired — `git grep -l load_and_install_user_indicators -- crates` finds
+/// every file that NAMES the pair — which is not the same as the set of callers: `vike-app`
+/// appears there because it documents why it does NOT use it (it has TWO consumers of one load and
+/// needs the report, not just the messages), and it is deliberately not written down here. ⚠ It is NOT yet every root that
+/// compiles Rhai: `crates/vike-backtest/src/backtest_cli.rs` and its `cheap_np_*` siblings reach
+/// the `"rhai"` arm of `crates/vike-backtest/src/harness/registry.rs`'s `strategy_by_name` and call
+/// none of this, so a user indicator does not resolve there. That is a known gap, not a claim.
+/// This function used to be a hand-written copy of the pair, and a copy per root is exactly how
+/// they would come to disagree about which directory a user's indicators live in.
+///
+/// ⚠ **Every rejected file is REPORTED on stderr, and a bad one never fails the command.** From
+/// inside a strategy, an indicator that failed to load is indistinguishable from a typo in the call
+/// — both are function-not-found — so this is the only place that can say which. Aborting instead
+/// would be worse: one unrelated half-edited indicator file would block every `vike-cli` invocation,
+/// including the `init` that scaffolds the examples. **stderr, never stdout** — `vike-cli mcp`'s
+/// stdout is a protocol, which is also why the messages come back as data rather than being printed
+/// by the library that produced them.
+fn install_user_indicators(user_data_dir: Option<&std::path::Path>) {
+    let Some(dir) = user_data_dir else {
+        return;
+    };
+    for message in vike_script::load_and_install_user_indicators(dir) {
+        eprintln!("vike-cli: {message}");
+    }
+}
+
+/// What the dispatcher resolves ONCE, before any subcommand runs, out of the single
+/// `std::env::vars()` sweep this crate performs — see [`resolve_policy`].
+struct Resolved {
+    /// `max_notional_per_order` from `<project>/settings/policy.toml`, or `None` when unset.
+    policy_max_notional: Option<f64>,
+    /// `<project>/settings` — THE settings directory, or `None` when no project sits above the
+    /// working directory. Resolved here rather than inside a subcommand because the rule is that
+    /// only the composition root reads the environment, and this one already had the map in hand:
+    /// `cmd::secrets` inspects the credential store inside it, and `cmd::trade` persists its REPL
+    /// history under its `state/` sub-directory.
+    settings_dir: Option<std::path::PathBuf>,
+    /// WHICH rung answered for [`Resolved::settings_dir`] — `VIKE_SETTINGS_DIR` or the walk.
+    ///
+    /// Only this composition root can know: below it the two are indistinguishable, because the
+    /// resolver takes the override as a parameter and returns a bare path. `cmd::config_check`
+    /// needs the distinction and nothing else does — a NAMED directory that is not on disk is a
+    /// set-but-unhonoured value and a refusal, while a WALKED one that is not there is an
+    /// unconfigured checkout and merely a warning.
+    settings_dir_origin: cmd::config_check::DirOrigin,
+    /// `<project>/settings/state` — the PROGRAM-WRITTEN state root, off the SAME walk (it is
+    /// `vike_boot::Booted::state_dir`, never re-derived: the `_from`-less resolvers are
+    /// `$VIKE_SETTINGS_DIR`-BLIND, so a second walk could answer with a different project than the
+    /// one the settings and credentials came from).
+    ///
+    /// Reaches TWO arms, both of them appenders. `secrets set` writes one
+    /// `vike_model::change_journal` `credential_write` record beside the store write; `mcp --trace`
+    /// writes the AGENT TRANSCRIPT into a sibling directory (`crate::cmd::mcp_trace`). `None` (no
+    /// project above the working directory) means the first one still writes the store and records
+    /// NOTHING — an append-only ledger in a guessed directory is worse than a counted absence, the
+    /// same rule `vike_boot::journal_boot_settings` follows — while the second REFUSES to start,
+    /// because there the operator ASKED for a record and a silent absence is what they would
+    /// discover after the incident. `crate::cmd::mcp::resolve_trace` argues the asymmetry.
+    state_dir: Option<std::path::PathBuf>,
+    /// The `$VIKE_SETTINGS_DIR` value the boot HONOURED — trimmed, and `None` when blank or unset.
+    ///
+    /// ⚠ **It is the RUNG, and it is carried because only this root can know it.** Below here the
+    /// two are indistinguishable: the resolver takes the override as a parameter and returns a bare
+    /// path. [`Resolved::settings_dir_origin`] answers the same question as a two-state verdict for
+    /// `config check`'s refusal; `cmd::secrets` needs the VALUE.
+    ///
+    /// ⚠ **This used to be "not derivable from [`Resolved::settings_dir`]", and that has CHANGED.**
+    /// `vike_boot::boot` resolved the directory as `spec.cwd.and_then(..)`, so a process whose
+    /// working directory had been removed, unmounted or made unsearchable got `settings_dir: None`
+    /// while this stayed `Some(..)` — the pairing #1514 taught `cmd::secrets` to survive. The boot
+    /// now honours a name with no walk (`vike_secrets::project_settings_dir_for`), so `Some` here
+    /// implies `Some` there, holding the same path, and that fallback rung is unreachable through
+    /// this dispatcher. It is KEPT rather than deleted: it is the belt against the boot regressing,
+    /// and `cmd::secrets`'s `store_path` states its own reachability at its site.
+    settings_dir_override: Option<String>,
+    /// `<project>/user_data` — THE user-content directory (strategies, run profiles, results,
+    /// notebooks), or `None` when no project sits above the working directory.
+    ///
+    /// A SIBLING of [`Resolved::settings_dir`], never a child, and resolved from the SAME walk so
+    /// the two can never answer with different projects — `crates/vike-model/src/state_path.rs`'s
+    /// `PROJECT_USER_DATA_DIR` argues why the ownership split matters. `$VIKE_USER_DATA_DIR` names
+    /// it outright; it is a separate variable from `$VIKE_SETTINGS_DIR` because pointing the app at
+    /// a strategy library on another disk is a different question from relocating a deployment's
+    /// settings, and one variable for both would force them to move together.
+    ///
+    /// ⚠ Unlike `settings_dir`, this is where the directory BELONGS rather than one that was found:
+    /// a tree with no `user_data/` is the ordinary state of a fresh install, which is precisely the
+    /// case `init` exists to fix.
+    user_data_dir: Option<std::path::PathBuf>,
+    /// `<project>` itself — the PARENT of [`Resolved::settings_dir`], and the root the two
+    /// machine-owned siblings hang off: `bin/` (where a project's tools are installed) and `tmp/`
+    /// (where a rewritten profile is staged before it is handed to a child process).
+    ///
+    /// Resolved from the SAME walk as everything else, for the reason that walk exists — "which
+    /// project am I in" must have ONE answer — and by the same `parent()` rule
+    /// `vike_model::state_path::user_data_dir_beside` applies to the sibling beside it. ⚠ Neither
+    /// of those two directories has an environment variable of its own, deliberately
+    /// (`crates/vike-model/src/state_path.rs`'s `PROJECT_TMP_DIR` argues both halves), so unlike
+    /// `user_data_dir` there is nothing to honour here but the parent.
+    ///
+    /// `None` when no project sits above the working directory: the `--local` engine then falls
+    /// back to `PATH`, and a run that would need scratch REFUSES rather than reaching for the
+    /// system temp directory.
+    project_root: Option<std::path::PathBuf>,
+    /// `config.node_addr` — THIS box's dial address for a running `vike-tradehub` node, and the
+    /// default that makes `--node` optional. `None` = the key is unset, which is every box that has
+    /// never attached to one.
+    ///
+    /// ⚠ It is the CLIENT's address, and its daemon-side twin `config.tradehub_addr` is deliberately
+    /// NOT read here: that key is where a daemon BINDS, on the daemon's own box, and with a tunnel
+    /// in front the two agree only by coincidence of the tunnel.
+    /// `crates/vike-config/src/config.rs`'s `Config::node_addr` sorts every one of that file's
+    /// addresses by whose box holds the value and whether that box listens or dials.
+    ///
+    /// Reaches the `backend` arm alone today. The verbs that still REQUIRE `--node`
+    /// (`report`, `trade` — REPL and one-shot alike — and `mcp`) are a deliberately separate
+    /// change: each parses the flag as mandatory, and making it optional is a per-verb migration
+    /// rather than a dispatcher edit.
+    node_addr: Option<String>,
+    /// `config.backtest_addr` — THIS box's dial address for the COMPUTE daemon
+    /// (`vike-backend backtest --addr`), and the middle rung of `study`'s ladder: `--addr` → this
+    /// → `vike_config::DEFAULT_BACKTEST_ADDR`. `None` = the key is unset, which is every box that
+    /// has not been pointed at one.
+    ///
+    /// ⚠ Unlike [`Resolved::node_addr`] it is NOT a client-only key: the compute daemon BINDS the
+    /// same value on its own box, because it runs beside the store it computes over and no tunnel
+    /// separates the two. `crates/vike-config/src/config.rs`'s `Config::backtest_addr` argues why
+    /// one key serves both ends where every other plane here needs a pair.
+    ///
+    /// Reaches the `study` arm alone today, and it is resolved HERE rather than in that arm for
+    /// the rule this whole struct exists for: only the composition root reads settings, and a
+    /// `src/cmd/` file takes what it needs as a parameter.
+    backtest_addr: Option<String>,
+    /// The process environment, kept because [`node_keyring`] and [`datahub_keyring`] need it and it
+    /// is already collected. The dispatcher owns this map; nothing below it reads `std::env` for a
+    /// node key.
+    env: HashMap<String, String>,
+}
+
+/// Refuse a stale environment, then resolve this machine's per-order notional ceiling
+/// (`max_notional_per_order` in `<project>/settings/policy.toml`).
+///
+/// `VIKE_MAX_ORDER_NOTIONAL` is no longer read by anything: it named the same per-order ceiling the
+/// trading binaries enforce, and a ceiling any exported variable can raise is not a ceiling. An
+/// operator who still has it set believes a cap is in force, so this REFUSES rather than ignoring
+/// it — `vike_config::refuse_removed_env` writes the message, naming the file and key that replace
+/// it. The check runs for every subcommand, including read-only ones: a variable that is stale is
+/// stale, and the error is exactly the diagnostic that explains it.
+///
+/// A missing `policy.toml` is not an error (`None` — no advisory cap, today's behaviour); a file
+/// that exists and is broken is.
+///
+/// The read of `std::env::vars()` happens HERE, at the dispatcher, per the settings-registry rule;
+/// neither `vike_config` nor `vike_boot` ever touches `std::env`. The ORDER of the steps below is
+/// `vike_boot::boot`'s — four other roots run the same one — and each way this dispatcher departs
+/// from it is a named arm of [`vike_boot::BootSpec`] carrying its own reason.
+///
+/// It also SURFACES the loader's non-fatal resolutions, which this dispatcher used to drop on the
+/// floor. `vike_config` returns them as DATA rather than logging them, deliberately: it does not
+/// depend on `tracing`, because a library that writes to a caller's stderr on its own initiative
+/// cannot be used by a binary whose STDOUT is a protocol — which `vike-cli mcp`'s is. The obligation
+/// to emit them is therefore the binary's, and a preference clamped to a policy ceiling used to take
+/// effect here with no output at all: a limit the operator believes they set and does not have. They
+/// go to **stderr**, never stdout, for the MCP reason above.
+///
+/// The same sweep also yields THE settings directory, which `cmd::secrets` and `cmd::trade` both
+/// need, and its SIBLING `<project>/user_data` for `cmd::init`. Several consumers, one read — which
+/// is also what keeps `cmd::init` free of any `std::env` call of its own.
+fn resolve_policy() -> Result<Resolved, String> {
+    let vars: HashMap<String, String> = std::env::vars().collect();
+    let cwd = std::env::current_dir().ok();
+    // ⚠ The ORDER — refuse, resolve the directory ONCE, load — belongs to `vike-boot`, not to this
+    // file. Four other composition roots run the same sequence, each used to carry its own copy of
+    // it, and the walk happening in five places is what made the CI box's "no policy, no credentials,
+    // every venue silently paper" expensive to fix. The three arms below are the ways THIS root
+    // genuinely departs, each stating its reason where a diff can see it.
+    let booted = vike_boot::boot(&vike_boot::BootSpec {
+        env: &vars,
+        cwd: cwd.as_deref(),
+        identity: vike_boot::Identity {
+            name: env!("CARGO_PKG_NAME"),
+            version: env!("CARGO_PKG_VERSION"),
+        },
+        removed_env: vike_boot::RemovedEnv::Refuse,
+        settings: vike_boot::SettingsLoad::Load,
+        credentials: vike_boot::Credentials::Deferred(
+            "the credential store is opened ONLY for the node-facing surfaces (trade — the REPL \
+             and the one-shot status/halt/resume alike — mcp, and the top-level read-only \
+             report), inside their own dispatch arms — see `node_keyring`. A provenance \
+             or backtest command has no business opening the file that holds every venue key on \
+             the box, and this crate must not link `vike_bridge_core`'s transport stack to read \
+             it.",
+        ),
+        log_home: vike_boot::LogHome::Elsewhere(
+            "this CLI builds no log subscriber at all: it is a short-lived command whose stdout is \
+             a protocol under `mcp`, and everything it has to say goes to stderr.",
+        ),
+        disclosure: vike_boot::Disclosure::Skip(
+            "`boot_lines` re-reads every settings file to recover each row's ORIGIN, which is a \
+             daemon's one-off cost and a command-line tool's per-invocation one. `vike-cli config \
+             show` is the surface that prints all of it, on request.",
+        ),
+    })?;
+    // ⚠ **NO BOOT ANCHOR is written here, and the exclusion is deliberate.** The two roots that
+    // ENFORCE the ceilings — `vike-app` and `vike-tradehub` — each call
+    // `vike_boot::journal_boot_settings(..)` once, appending one `boot_settings` line per start to
+    // `vike_model::change_journal`. This one does not, for two reasons, and
+    // `crates/vike-boot/tests/boot_journal_wiring.rs` is where the row carrying them lives (it
+    // fails if this file quietly starts writing one).
+    //
+    // First, RATE: this function runs for EVERY subcommand, `secrets path` and `config show`
+    // included, so the ledger's growth would track how often a human or an MCP client types a
+    // command — unbounded, and uncorrelated with anything changing. That is the shape the change
+    // journal's own module doc refuses for connectivity events: a per-invocation stream mixed into
+    // a per-change ledger buries the ledger.
+    //
+    // Second, and worse, TRUTH: a `boot_settings` record claims the EFFECTIVE ceilings, and in this
+    // process none of them is. `max_notional_per_order` is an advisory guardrail on two surfaces
+    // (`trade`, `mcp`); the other two govern a venue mount this binary never performs.
+    //
+    // What is LOST is real and worth naming: on a box where `vike-cli` is the only vike binary that
+    // ever runs, no anchor is ever written, so a hand edit of `policy.toml` there is bracketed by
+    // nothing. `vike-cli config show` still PRINTS the effective values and their origin on
+    // demand — it just does not durably record them.
+    //
+    // WHICH rung answered — see `Resolved::settings_dir_origin`. Derived from the same override
+    // value the resolver was handed (`vike-boot` returns it already trimmed and blank-filtered), so
+    // the two cannot disagree about a blank one.
+    let settings_dir_origin = cmd::config_check::dir_origin(
+        booted.settings_dir_override.as_deref(),
+        booted.settings_dir.as_deref(),
+    );
+    // `<project>/user_data` — the SIBLING of the settings directory, off the SAME walk (see
+    // `Resolved::user_data_dir`). Resolved here, in the one place this crate reads the environment,
+    // so `cmd::init` takes it as a parameter and names no variable of its own.
+    //
+    // ⚠ Literally the same walk now, not merely the same rules: it is `user_data_dir_beside` over
+    // the directory `vike_boot::boot` ALREADY resolved. `project_user_data_dir_from`, which stood
+    // here, falls back to a walk of its own that does not honour `$VIKE_SETTINGS_DIR` — so
+    // `vike-cli init` scaffolded into one project while `config show` reported another, on exactly
+    // the deployments the override exists for.
+    let user_data_dir = vike_model::state_path::user_data_dir_beside(
+        vars.get("VIKE_USER_DATA_DIR").map(String::as_str),
+        booted.settings_dir.as_deref(),
+    );
+    for line in settings_warning_lines(&booted.settings) {
+        eprintln!("{line}");
+    }
+    // `<project>` — see `Resolved::project_root`. The empty-parent filter is the same one
+    // `user_data_dir_beside` applies: a relative `settings` has `""` as its parent, and joining a
+    // sibling onto that would silently name a directory in the working directory.
+    let project_root = booted
+        .settings_dir
+        .as_deref()
+        .and_then(Path::parent)
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf);
+    Ok(Resolved {
+        policy_max_notional: booted.settings.policy.max_notional_per_order,
+        settings_dir: booted.settings_dir,
+        settings_dir_origin,
+        // The boot's OWN answer, not a second derivation — see `Resolved::state_dir`.
+        state_dir: booted.state_dir,
+        // Carried, not re-read: `cmd::secrets`' fallback rung needs the VALUE and not just the
+        // origin verdict above — see `Resolved::settings_dir_override`.
+        settings_dir_override: booted.settings_dir_override,
+        user_data_dir,
+        project_root,
+        // This box's dial default for a node — read off the SAME loaded `Settings` the policy
+        // ceiling above comes from, so `vike-cli config show` and the `backend` verbs can never
+        // disagree about which node this box is pointed at.
+        node_addr: booted.settings.config.node_addr.clone(),
+        // …and this box's dial default for the COMPUTE daemon, off that same loaded `Settings` for
+        // the same reason. `study` is its only reader today; `config show` reports it either way,
+        // which is precisely why it must be READ somewhere — see `vike_config::CONSUMPTION`.
+        backtest_addr: booted.settings.config.backtest_addr.clone(),
+        // ⚠ The datahub pair is NOT resolved here any more. It was, off this same sweep, and that
+        // read the PROCESS ENVIRONMENT AND NOTHING ELSE — so keys sitting in the credential store,
+        // which is where this binary's own refusal text tells an operator to put them, did nothing.
+        // It is now [`datahub_keyring`], lazily, env first and store second: the precedence
+        // `cmd::nodekeys::resolve` already applies to the TRADEHUB pair.
+        env: vars,
+    })
+}
+
+/// The NODE-key store — `<project>/settings/node.env`, falling back to the credential store for a
+/// pair that has not been moved yet, and SAYING SO when it does.
+///
+/// A store that EXISTS but cannot be read is reported on **stderr** (never stdout — `mcp`'s stdout
+/// is a protocol) and treated as EMPTY rather than fatal. Deliberate: an exported key must still
+/// work when the file is broken, and the "no key anywhere" message this then produces NAMES the
+/// store — so the operator is pointed at the same file either way, twice. There is no
+/// silent-wrong-credential hazard to weigh against that: a key that does not resolve cannot open a
+/// connection at all.
+///
+/// ⚠ The warning is emitted here rather than inside `vike-secrets` because that crate carries no
+/// logging dependency and returns findings as DATA — the same division `permission_warning` already
+/// has. It goes to stderr, never stdout, because `vike-cli mcp`'s stdout is a protocol.
+///
+/// ⚠ It is printed ONCE PER RESOLUTION, not once per key. Five arms resolve keys and two pairs
+/// exist; a per-key notice would put four identical lines in front of an operator who has one thing
+/// to do.
+fn node_key_store(resolved: &Resolved) -> HashMap<String, String> {
+    let settings = resolved.settings_dir.as_deref().and_then(|p| p.to_str());
+    match vike_secrets::resolve_node_keys(settings, vike_model::credential_keys::is_platform_key) {
+        Ok((r, source)) => {
+            if let Some(w) = &r.warning {
+                eprintln!("vike-cli: ⚠ {w}");
+            }
+            if source == vike_secrets::NodeKeySource::LegacyCredentialStore {
+                let dir = resolved
+                    .settings_dir
+                    .as_ref()
+                    .map_or_else(|| "<project>/settings".to_string(), |d| d.display().to_string());
+                eprintln!("vike-cli: ⚠ {}", vike_secrets::legacy_node_key_notice(&dir));
+            }
+            r.secrets.into_map()
+        }
+        Err(e) => {
+            eprintln!("vike-cli: cannot read the node-key store: {e}");
+            HashMap::new()
+        }
+    }
+}
+
+/// Resolve the two vike-tradehub NODE KEYS for the surface about to run: the process environment
+/// first, then `<project>/settings/node.env` — the store `vike-tradehub` itself loads them from.
+///
+/// Called ONLY from the node-facing arms of [`dispatch`] — `trade` (the REPL, and the one-shot
+/// `status`/`halt`/`resume`) and `mcp`, plus the top-level read-only `report`. The two READS among
+/// those — `trade status` and `report` — use just the keyring's observe half. Every other
+/// subcommand keeps the file unopened: the least credential exposure that still fixes the defect.
+fn node_keyring(resolved: &Resolved) -> NodeKeyring {
+    // ⚠ The PATH handed on is the NODE store's, and which file it names is the whole question this
+    // branch exists to answer. `cmd::nodekeys::resolve` puts it in the "where would I have found
+    // this" message an operator with NO key reads — and that operator has nothing to migrate, so
+    // naming `secrets.env` would send them to write a key into the deprecated file and then be told
+    // by the notice below to move it. `backend setup` writes `node.env`; the refusal names
+    // `node.env`; the two mouths of this binary say one thing. A box that HAS a legacy pair never
+    // sees this message at all — its keys resolve, and the migration notice is what it gets
+    // instead.
+    let store = node_key_store(resolved);
+    let store_path = resolved.settings_dir.as_ref().map(|d| d.join(vike_secrets::NODE_FILE));
+    cmd::nodekeys::resolve(&resolved.env, &store, store_path.as_deref().map(Path::new))
+}
+
+/// The DATAHUB node pair — `VIKE_DATAHUB_OBSERVE_KEY` / `VIKE_DATAHUB_CONTROL_KEY` — resolved
+/// PROCESS ENVIRONMENT FIRST, CREDENTIAL STORE SECOND.
+///
+/// ⚠ **This used to be a field resolved off the environment sweep alone, and that was the same
+/// defect this file had already found and fixed for the TRADEHUB pair.** The module doc above
+/// records that one: both node keys "used to read `std::env::var` and nothing else, so a
+/// correctly-configured box answered 'nothing to do' and exited". The datahub pair was written to
+/// the same shape afterwards, its doc comment claiming it worked "exactly as `node_keyring` does" —
+/// which it did not. MEASURED 2026-09-08 against a keyed datahub: the pair in
+/// `<project>/settings/secrets.env` gave "no node keys were supplied", and the identical pair
+/// exported into the environment served 6.8 billion rows.
+///
+/// The worst part was the refusal text, not the resolution: `vike-datahub-client`'s message names
+/// the credential store as the remedy, and following it exactly left an operator broken. A refusal
+/// that names the wrong remedy is more expensive than one that names none.
+///
+/// ⚠ The store read is why this is a FUNCTION rather than a field: it opens the file holding every
+/// venue key on the box, and only the arms that can dial a datahub call it. That is a
+/// deliberate widening of the rule the module doc states — "a provenance or backtest command has no
+/// business opening" that file — and the argument for it is that a `backtest --addr` IS a
+/// node-facing invocation, the category the rule already excepts for `trade`/`mcp`. The narrower
+/// alternative (read the store only when the invocation names a remote) was measured and REFUSED:
+/// `cmd::data`'s address resolves to `DEFAULT_ADDR` whether or not `--addr` was passed, and
+/// `vike_config::Config::datahub_addr` is a second way to be remote with no flag at all, so "did
+/// this command go remote" cannot be answered from the argv the dispatcher holds.
+///
+/// The environment still WINS, so a box that exports the pair opens no file at all.
+fn datahub_keyring(resolved: &Resolved) -> Option<vike_datahub_client::NodeKeys> {
+    if let Some(keys) = vike_datahub_client::node_auth::node_keys_from_vars(&resolved.env) {
+        return Some(keys);
+    }
+    // ⚠ The NODE store, not the credential store. Before 2026-09-08 this read `secrets.env`, which
+    // meant an arm needing a low-sensitivity key opened the file holding 168 venue secrets. It now
+    // reads `node.env` and falls back to the old file only while a box has not migrated, saying so.
+    let store = node_key_store(resolved);
+    vike_datahub_client::node_auth::node_keys_from_vars(&store)
+}
+
+/// Every non-fatal resolution the loader made, formatted for stderr — the PURE half of
+/// [`resolve_policy`]'s surfacing step.
+///
+/// A function rather than an inline loop because "the binary that loaded the settings SURFACES the
+/// warnings, never swallows them" is a real property with a real failure mode, and a property worth
+/// stating is worth gating — see `a_clamp_warning_is_surfaced_not_swallowed`.
+fn settings_warning_lines(settings: &vike_config::Settings) -> Vec<String> {
+    settings.warnings.iter().map(|w| format!("vike-cli: settings: {w}")).collect()
+}
+
+/// Route one subcommand to its module. A top-level `--help`/`-h`/`help` prints the command list and
+/// succeeds; `--version`/`-V` prints the version and succeeds; an unknown command prints help to
+/// stderr and fails.
+///
+/// [`Resolved::policy_max_notional`] reaches only the two ORDER-WRITE surfaces, whose mandatory
+/// preview shows an advisory guardrail against it; every other subcommand has no order to size.
+/// [`Resolved::settings_dir`] reaches `secrets`, which inspects the credential store inside it,
+/// `trade`, which persists its REPL history under its `state/` sub-directory, and `config`, which
+/// reports the whole directory — the files in it, what each setting resolved to, and which layer
+/// set it. `config` takes it as a PARAMETER rather than re-deriving it so the directory it prints
+/// is provably the one every other surface reads, and takes
+/// [`Resolved::settings_dir_origin`] alongside it for the same reason: only this root can say which
+/// rung answered. `secrets` takes [`Resolved::settings_dir_override`] as well — its fallback rung
+/// resolves the store the way every credential reader on the box does, so that command can never
+/// print a file nothing opens. (Since the boot honours a name with no walk, a `None` directory now
+/// implies a `None` override too, so that rung is unreachable from here; it is kept as the belt
+/// against a regression, and `cmd::secrets`'s `store_path` argues it at its site.)
+/// [`Resolved::user_data_dir`] — that directory's
+/// SIBLING — reaches `init` alone, the only subcommand that writes to the project. The node KEYS
+/// ([`node_keyring`]) reach the node-facing surfaces only — the two ORDER-WRITE ones (`trade`,
+/// `mcp`) plus the two read-only ones, `trade status` and `report`, which use just the observe
+/// half — and are resolved inside their arms so no other subcommand opens the credential file at
+/// all.
+fn dispatch(command: &str, args: impl Iterator<Item = String>, resolved: &Resolved) -> ExitCode {
+    match command {
+        // ⚠ The two REMOTE run verbs, one of which also has a `--local` arm. That arm SPAWNS the
+        // standalone `backtest` engine rather than linking it (`cmd::engine` argues why at length),
+        // and `Resolved::project_root` is what tells it where a project's `bin/` and `tmp/` are —
+        // a parameter, because a `src/cmd/` file may not read the environment for itself.
+        // `walkforward` takes none: the standalone engine has no walk-forward mode at all, so there
+        // is nothing local to drive (that file's module doc records it).
+        //
+        // ⚠ It was THREE until ruling 13 deleted `sweep`; a parameter search is now `backtest`
+        // with a profile that carries a `[sweep]` table, which is why that verb's arm below dials
+        // one of TWO wire verbs depending on the profile rather than always `RunBacktest`.
+        //
+        // Each dials a datahub, and `required_scope` puts every one of them under
+        // `Scope::Control` — they compile client-supplied Rhai on the server — so they carry the
+        // same keys `data` does. See [`datahub_keyring`] for where they come from.
+        "backtest" => cmd::backtest::run(
+            args,
+            resolved.project_root.as_deref(),
+            datahub_keyring(resolved).as_ref(),
+        ),
+        "walkforward" => cmd::walkforward::run(args, datahub_keyring(resolved).as_ref()),
+        // The store-filling verb. It computes nothing itself — every subcommand is a route to the
+        // same standalone engine, for the same reason `--local` is (this crate may not link
+        // DataFusion), so it takes the same project root and nothing else.
+        "data" => cmd::data::run(
+            args,
+            resolved.project_root.as_deref(),
+            datahub_keyring(resolved).as_ref(),
+        ),
+        "config" => {
+            cmd::config::run(args, resolved.settings_dir.as_deref(), resolved.settings_dir_origin)
+        }
+        // The two ORDER-WRITE surfaces. A node key means the credential store is opened for them
+        // (see [`node_keyring`]) — including for `trade status`, the READ that authenticates to a
+        // node and now rides the `trade` arm.
+        // ⚠ The STATE directory is a fourth parameter here and nowhere else in this arm's history:
+        // `mcp --trace` writes the agent transcript beside the change journal, and the rule
+        // `Resolved::state_dir` states is that the BOOT's answer is the only one — a `src/cmd/` file
+        // re-deriving it would be a second walk, blind to `$VIKE_SETTINGS_DIR`, answering with a
+        // different project than the settings and credentials came from.
+        "mcp" => cmd::mcp::run(
+            args,
+            resolved.policy_max_notional,
+            &node_keyring(resolved),
+            resolved.state_dir.as_deref(),
+            datahub_keyring(resolved),
+        ),
+        // ⚠ ONE arm for FOUR operations, and the collapse is ruling 17 of
+        // `docs/superpowers/specs/2026-09-09-datahub-market-data-wire-design.md`. `trade` used to be
+        // the REPL alone, with the read-only node question promoted to a top-level
+        // `strategy-status` beside it — the only member of that family (`orders`, `positions`, the
+        // old `state`) to be. It is now `trade status`, and `trade halt` / `trade resume` join it as
+        // the two writes, so the same three words work at the prompt and on the command line.
+        // `cmd::trade::run` claims a leading verb and falls through to the REPL when there is none;
+        // the keyring is resolved here either way, since every path authenticates to a node.
+        "trade" => cmd::trade::run(
+            args,
+            resolved.policy_max_notional,
+            resolved.settings_dir.clone(),
+            &node_keyring(resolved),
+        ),
+        // Ruling 16's two OWED client halves — `vike-cli <X>` asks the backend to do X — and they
+        // reach DIFFERENT daemons, which is the whole of their scope decision.
+        //
+        // `report` asks a vike-tradehub NODE, because the live journal a tearsheet is computed
+        // from is written by the trading daemon and exists nowhere else. So it resolves the
+        // tradehub keyring, and like the `trade status` read above it uses only the OBSERVE half:
+        // a tearsheet changes nothing, and a control key cannot authenticate a read. ⚠ That
+        // sibling was the top-level `strategy-status` when this arm was written; ruling 17 folded
+        // it into `trade`, so `report` is now the ONE top-level verb whose whole job is a
+        // read against a node.
+        "report" => cmd::report::run(args, &node_keyring(resolved)),
+        // `study` asks the BACKEND, because a study opens the hist store and drives a trainer next
+        // to it — the same compute-to-data argument as `backtest` directly above. ⚠ It is aimed at
+        // the COMPUTE daemon (`vike-backend backtest --addr`), not the data server: ruling 7 puts
+        // every verb that RUNS an engine there, and that daemon authenticates with the same
+        // datahub node pair under the same domain separator, so this is the same keyring.
+        // Each module doc argues its own half; neither sends a request today (the server arms are
+        // follow-ups) and both say so where an operator will read it.
+        //
+        // ⚠ `backtest_addr` is handed in rather than looked up below: the verb's address ladder is
+        // `--addr` → this key → `vike_config::DEFAULT_BACKTEST_ADDR`, and the middle rung is a
+        // SETTING — which only this composition root may read.
+        "study" => cmd::study::run(
+            args,
+            resolved.backtest_addr.as_deref(),
+            datahub_keyring(resolved).as_ref(),
+        ),
+        // BOTH the resolved directory and the override that produced it — see
+        // `Resolved::settings_dir_override` for why the second is not redundant — plus the three
+        // things its `set` arm needs and no reading subcommand does: the ledger's home, the
+        // environment map (`--from-env NAME`, so nothing under `src/cmd/` reads the environment
+        // itself) and the instant to stamp the record with. `cmd::secrets::Ctx` carries the
+        // argument for why they arrive as one struct.
+        //
+        // ⚠ The CLOCK is read HERE rather than in `cmd/`, and it is read for every `secrets`
+        // invocation including the read-only ones. `vike_model::change_journal` deliberately reads
+        // no clock, so the instant is a parameter all the way down — the same shape
+        // `vike_boot::journal_boot_settings`' `ts_ms` takes. One wall-clock read costs a
+        // `secrets path` nothing and keeps the value a caller can see and a test can pin.
+        "secrets" => cmd::secrets::run(
+            args,
+            cmd::secrets::Ctx {
+                settings_dir: resolved.settings_dir.as_deref(),
+                settings_dir_override: resolved.settings_dir_override.as_deref(),
+                state_dir: resolved.state_dir.as_deref(),
+                env: &resolved.env,
+                now_ms: vike_model::clock::now_ms(),
+            },
+        ),
+        // The ONBOARDING surface for a vike-tradehub node, and the SECOND credential writer in this
+        // binary. It takes the same five facts `secrets` does — the resolved directory, the
+        // override that produced it, the ledger's home, and the instant to stamp a record with —
+        // plus two this dispatcher already holds and no other arm needs: `config.node_addr` (this
+        // box's dial default, which `connect` REWRITES and `status` reports) and the KEYRING, whose
+        // observe half signs the round trip that verifies a fresh attachment.
+        //
+        // ⚠ It takes NO environment map, unlike `secrets`. That is not an oversight — it is the
+        // property that makes this writer narrower than the one 0036 reopened: `secrets set` has a
+        // `--from-env NAME` form because an operator supplies its value, and here there is no
+        // operator-supplied value to source. `setup` MINTS both keys; `connect --manual` reads them
+        // from stdin. Neither path can be pointed at a variable, so no map is needed.
+        //
+        // This arm resolves the keyring too, and it is the only one that also WRITES it. (That
+        // used to read "the FOURTH arm"; `report` made it the fifth on the day it landed, so the
+        // count is gone rather than re-stated — an ordinal over a growing list of arms is the
+        // shape of claim this repository has watched rot.)
+        "backend" => cmd::node::run(
+            args,
+            cmd::node::Ctx {
+                settings_dir: resolved.settings_dir.as_deref(),
+                settings_dir_override: resolved.settings_dir_override.as_deref(),
+                state_dir: resolved.state_dir.as_deref(),
+                node_addr: resolved.node_addr.as_deref(),
+                keys: &node_keyring(resolved),
+                now_ms: vike_model::clock::now_ms(),
+            },
+        ),
+        // The datahub's own key minting. It shares `cmd::node`'s `Ctx` and its store/mint/journal
+        // helpers deliberately — one shape for "mint a node pair", two services — while staying a
+        // separate VERB, because `backend` means a vike-tradehub node and a datahub is not one.
+        // ⚠ `keys` is the TRADEHUB keyring here and this arm uses none of it; it is threaded because
+        // `Ctx` is shared and building a second context type to omit one unread field would be more
+        // to keep in step than it saves.
+        "datahub" => cmd::datahub::run(
+            args,
+            &cmd::node::Ctx {
+                settings_dir: resolved.settings_dir.as_deref(),
+                settings_dir_override: resolved.settings_dir_override.as_deref(),
+                state_dir: resolved.state_dir.as_deref(),
+                node_addr: resolved.node_addr.as_deref(),
+                keys: &node_keyring(resolved),
+                now_ms: vike_model::clock::now_ms(),
+            },
+        ),
+        // The ONE subcommand that writes to the project's USER-CONTENT tree, and it writes ONLY
+        // under `user_data/` — never into `settings/`, and it opens no credential.
+        "init" => cmd::init::run(args, resolved.user_data_dir.as_deref()),
+        // Takes NOTHING from the dispatcher: the callable indicator roster is a property of the
+        // BUILD (`vike_script::RHAI_INDICATORS` joined onto `vike_indicators::registry()`), never
+        // of the project, the environment or a credential.
+        "indicators" => cmd::indicators::run(args),
+        "-h" | "--help" | "help" => {
+            print_help();
+            ExitCode::SUCCESS
+        }
+        "-V" | "--version" => {
+            print_version();
+            ExitCode::SUCCESS
+        }
+        // ⚠ A RETIRED verb is answered with its replacement, before the catch-all can call it
+        // unknown. See [`RETIRED_COMMANDS`] for why an "unknown command" answer to a verb that
+        // shipped for months is the wrong product on the right rung.
+        other if RETIRED_COMMANDS.iter().any(|(name, _)| *name == other) => {
+            let (_, why) = RETIRED_COMMANDS
+                .iter()
+                .find(|(name, _)| *name == other)
+                .expect("the guard just matched it");
+            eprintln!("vike-cli: {why}");
+            Exit::Usage.into()
+        }
+        other => {
+            eprintln!("vike-cli: unknown command '{other}'");
+            print_help();
+            // The USAGE rung — see [`crate::exit`]. An unknown verb is the one failure a caller can
+            // always fix and can never usefully retry, which is exactly what separates it from the
+            // catch-all it used to share a number with.
+            Exit::Usage.into()
+        }
+    }
+}
+
+/// List the binary's usage and its registered subcommands (to stdout — it is normal output for the
+/// `help` path; the unknown-command path prints its own error to stderr first).
+fn print_help() {
+    println!("vike-cli — the unified vike command-line surface");
+    println!();
+    println!("usage: vike-cli <command> [args…]");
+    println!();
+    println!("commands:");
+    for (name, summary) in COMMANDS {
+        println!("  {name:<12} {summary}");
+    }
+    println!();
+    println!("run `vike-cli <command> --help` for a command's own options");
+    println!("run `vike-cli --version` to print this build's version");
+}
+
+/// `<name> <version> (<build identity>)`, on stdout — the shape every `--version` on the box
+/// already prints (`git version 2.x`, `cargo 1.x`) with this build's PROVENANCE appended, so a
+/// packaging script or a bug report can read it without knowing anything about this binary.
+///
+/// Both spellings are accepted (`--version` and the conventional short `-V`, never `-v`, which is
+/// verbosity everywhere else). Until they were added neither was recognised: they fell into the
+/// unknown-command arm and exited 1 with `unknown command '--version'` on stderr — the same class
+/// of defect as a `--help` that fails, and the first thing an installer probes.
+///
+/// The parenthesised half — `vike_buildinfo::version_line` — answers the question a bare version
+/// number cannot: WHICH COMMIT is this? A release binary was once built on a test clone from a bare
+/// repo four commits behind `main` and nearly installed on the live recorder;
+/// `crates/vike-buildinfo/src/lib.rs` carries that incident, and
+/// `crates/vike-buildinfo/tests/identity_adoption.rs` is the gate that keeps every `--version` in
+/// the tree answering it.
+fn print_version() {
+    println!("{}", vike_buildinfo::version_line(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A loader warning is SURFACED, never swallowed. [`resolve_policy`] emits exactly what
+    /// [`settings_warning_lines`] returns, so proving a warning survives that step proves the
+    /// dispatcher prints it — the failure this guards is the loader resolving something the
+    /// operator did not write while they believe their own file is in force. (Warnings were
+    /// swallowed here until Phase 6c.)
+    ///
+    /// ⚠ The warning is HAND-STUFFED, which it deliberately was not before. This drove
+    /// `Settings::clamp_to_policy` — `policy.rate.max_utilization` over
+    /// `preferences.rate_utilization` — and that clamp was removed with both of its fields: a
+    /// ceiling that bounded a value nothing read. The loader HAS a producer again
+    /// (`vike_config::NO_SETTINGS_DIRECTORY_WARNING`), and this test deliberately does not use it:
+    /// driving the real one would test the producer, where what this gates is the half that lives in
+    /// THIS crate and was the actual Phase-6c defect — a warning that exists reaches the operator,
+    /// verbatim.
+    #[test]
+    fn a_loader_warning_is_surfaced_not_swallowed() {
+        let mut settings = vike_config::Settings::default();
+        settings.warnings.push("preferences.something was resolved to 0.5".to_string());
+
+        let lines = settings_warning_lines(&settings);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("preferences.something"), "names the key: {}", lines[0]);
+        assert!(lines[0].contains("0.5"), "carried verbatim, not summarised: {}", lines[0]);
+    }
+
+    /// The quiet path stays quiet: nothing to resolve ⇒ nothing printed, so a line on stderr always
+    /// means something actually happened. Load-bearing for `vike-cli mcp`, whose stdout is a
+    /// protocol and whose stderr an agent may still read.
+    ///
+    /// ⚠ The second half used to drive `load(None, …)` and assert silence, and that is no longer a
+    /// clean load — it is the "no project resolved" case, which now says so
+    /// (`vike_config::NO_SETTINGS_DIRECTORY_WARNING`). Both halves are kept and the second is
+    /// INVERTED rather than deleted: a `vike-cli` run from outside any project must still print
+    /// exactly one line, on stderr, and never on the stdout `mcp` speaks a protocol over.
+    #[test]
+    fn a_clean_load_prints_nothing_and_a_projectless_one_prints_exactly_one_line() {
+        assert!(settings_warning_lines(&vike_config::Settings::default()).is_empty());
+        let settings = vike_config::load(None, &HashMap::new()).unwrap();
+        let lines = settings_warning_lines(&settings);
+        assert_eq!(lines.len(), 1, "no project ⇒ exactly one line: {lines:?}");
+        assert!(lines[0].contains("no settings directory resolved"), "{}", lines[0]);
+    }
+}

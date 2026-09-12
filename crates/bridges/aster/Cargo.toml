@@ -1,0 +1,72 @@
+[package]
+name = "vike-aster"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "Aster DEX venue bridge — spot + USDⓈ-M perp exec (REST + listenKey user-data) with v3 EIP-712 wallet-signature auth, a live vike_data::DataClient feed, and public L2/tick market data. Binance-fork API (same endpoints/filters/streams); sole divergence is v3 signing via the bridge-core eip712 primitive."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `venue-stacked` — a venue bridge built on a SIBLING venue's family driver.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 41
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+vike-exec = { path = "../../vike-exec" }
+# shared venue-bridge plumbing (credentials, signer seam, transport, http, user_data pump, ws,
+# rest/VenueRest, klines, ratelimit). The eip712 primitive for v3 signing now rides this crate's
+# own `exec` feature (default-on) rather than the dep line, so a feeds-only build stays k256-free.
+vike-bridge-core = { path = "../../vike-bridge-core" }
+# Aster's API is a Binance fork, so its PURE wire mappers AND its whole public market-data stack
+# were byte-for-byte copies of Binance's. They now live once in `vike_binance::family` — the shared
+# Binance-wire-grammar core, NOT a venue — and this crate's same-named modules are thin wrappers
+# over it, each passing "aster" plus its own host table
+# (docs/superpowers/specs/2026-07-17-dedup-extraction-design.md):
+#   rung 1 (F0)          — event_mapper/perp_mapper/history/filters_rec (pure, venue as a param)
+#   rung 2 (F8/F9/F11/F17) — market_data/trades/market_feed (hosts as a `UrlTable` param; Aster
+#                            supplies its env-resolved row, Binance a const one)
+# The edge stops there: signing, signed REST, exec, recon, and the catalog all stay Aster's own.
+# ⚠ `default-features = false`, and the `exec` feature below forwards `vike-binance/exec` instead.
+# Ruling 8 gave vike-binance the same feeds/exec seam this crate already had, and a plain dep line
+# would have made that seam unreachable from here: features are additive, so requesting binance's
+# default `exec` would have compiled the family's signed rungs (order_map/exec_loop/listenkey/recon
+# and the exec mappers) into an aster FEEDS build — the very configuration the `bridges-feeds` lane
+# exists to keep signer-free. A DEFAULT aster build is byte-identical, because `exec` is default-on
+# here and forwards it straight back on.
+vike-binance = { path = "../binance", default-features = false }
+vike-data = { path = "../../vike-data" }        # market_feed::Feeds implements the live DataClient seam
+vike-catalog = { path = "../../vike-catalog" }  # AsterCatalog CatalogProvider
+serde_json = { workspace = true }
+indexmap = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+arc-swap = { workspace = true }
+vike-log = { path = "../../vike-log" }
+vike-data = { path = "../../vike-data", features = ["test-support"] } # MemHistStore double for filters_rec test
+# dev-only, test-support feature: the shared scripted WS stream doubles (testing-arch Phase 4c)
+# — the normal [dependencies] vike-bridge-core entry above is untouched for normal builds.
+vike-bridge-core = { path = "../../vike-bridge-core", features = ["test-support"] }
+
+[features]
+# The exec/feeds seam (split-plane Phase-5 hardening; the design's §7 measured the whole
+# +26-crate cost of client feeds as the shared secp256k1/EIP-712 stack). DEFAULT-ON, so every
+# existing consumer builds byte-identically; a feeds-only client opts out with
+# `default-features = false` and gets market_feed/market_data/data/trades/catalog — the keyless
+# public surface — with NO compiled order signer in its binary. `exec` gates signing.rs and
+# everything built on it: exec.rs, spot.rs, perp.rs, listenkey_auth.rs, user_data.rs,
+# perp_user_data.rs, recon_client.rs, plus the exec-plane mappers (event_mapper.rs,
+# perp_mapper.rs, history.rs, filters_rec.rs). The `bridges-feeds` arm of
+# scripts/ci_feature_suite.sh is the gate for the feeds half — a structural cargo-tree check,
+# not just a compile. Aster's own dep list carries no signing crate: the whole stack arrives
+# through vike-bridge-core's `eip712` feature, which is exactly what this feature turns on.
+# ⚠ It also forwards `vike-binance/exec`: since ruling 8 that crate carries the same seam, and this
+# crate's exec plane is built on its family rungs (order_map/exec_loop/listenkey/recon and the exec
+# mappers). Without the forward an aster exec build would not compile; with it, a feeds-only aster
+# build compiles only the family's feeds rungs (catalog/depth/klines/market_feed/trades).
+default = ["exec"]
+exec = ["vike-bridge-core/eip712", "vike-binance/exec"]
+
+[lints]
+workspace = true
