@@ -1,0 +1,61 @@
+[package]
+name = "vike-datahub-client"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike trading core — the LIGHT client half of the vike-datahub data-service (Phase 2, \"thin-client GUI\"): the wire protocol (proto), the blocking DatahubClient, and RemoteHistStore — a vike_data::HistStore whose GUI read verbs are answered by a remote datahub server over RPC. DataFusion-FREE by construction (vike-data DEFAULT features = the HistStore TRAIT only), so the GUI links this without the Arrow/DataFusion tree. The Phase-3 enabler."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `engine` — a runtime / simulation / transport core over the domain crates.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 30
+
+[dependencies]
+# The `HistStore` TRAIT (+ its query/error/row types) — DEFAULT features, so NO hist-datafusion:
+# `RemoteHistStore` IMPLEMENTS the trait purely by RPC and never names the concrete `DataFusionHist`
+# backend. Keeping this edge DataFusion-free is the WHOLE POINT of the Phase-2 split — the GUI links
+# this crate, which must stay light. (The concrete engine lives only in vike-datahub, behind its
+# `serve-datafusion` feature.)
+vike-data = { path = "../vike-data" }
+# The domain value types the wire carries (Bar / QuoteTick / TradeTick / SymbolProperties) — already
+# serde in vike-model, so the proto reuses those derives rather than growing its own mirror types.
+vike-model = { path = "../vike-model" }
+serde = { workspace = true }        # derive on the Request/Response wire enums (proto.rs)
+serde_json = { workspace = true }   # the length-prefixed frame payload codec (proto.rs)
+# The SHARED node-auth primitive (`node_auth.rs`) both localhost services sign with — HMAC-SHA256
+# over a domain-separated nonce challenge. These are the EXACT crates
+# `crates/vike-bridge-core/src/signer.rs` already links (hmac 0.13 + sha2 0.11), so this adds ZERO
+# new external packages to the workspace audit surface (deny.toml bans a second crypto crate). The
+# `Mac` trait's constant-time `verify_slice` is the verification path — no `subtle`, no `==` on the
+# mac bytes. They arrived here from vike-tradehub-client when 0025 was adopted: this is the LIGHT
+# crate BELOW both node protocols, and the module is generalized over its domain constant rather
+# than copied. Still no transport and no I/O — the keys come from a caller-supplied map.
+hmac = { workspace = true }
+sha2 = { workspace = true }
+# The per-connection auth NONCE (`node_auth::fresh_nonce`) — 32 bytes from the OS-backed default
+# generator, which is what makes a captured handshake transcript unreplayable against a later
+# connection. It lives HERE rather than in either server because ruling 7 gave the node protocol a
+# SECOND daemon and that one is `vike-backtest`, which
+# `crates/vike-ops/tests/clock_pin.rs`'s `no_scoped_crate_declares_an_rng_dependency` forbids from
+# naming an RNG at all — it is one of the two sides `tests/r7_gate.rs` compares bit for bit, and
+# randomness in the fold breaks replay exactly as a wall clock does. Already a workspace dep, so no
+# new package enters the audit surface, and it adds no transport and no I/O to this light crate.
+rand = { workspace = true }
+
+[dev-dependencies]
+# End-to-end loopback test: drive the REAL vike-datahub `serve` over a `MemHistStore` and read it
+# back through `RemoteHistStore`. A DEV-dependency (NOT a library dep) — the client library never
+# depends on the server, so the down-only lib graph stays clean and DataFusion-free; this is the
+# same upward-dev-dep pattern the workspace already uses (vike-core [dev]-> vike-script, etc.).
+# vike-datahub's vike-backtest edge is `hist-replay` (DataFusion-free), so even the test build pulls
+# no Arrow/DataFusion tree.
+vike-datahub = { path = "../vike-datahub" }
+# The DataFusion-free in-memory `HistStore` double the loopback server runs over (behind vike-data's
+# `test-support` feature; unified onto the default-features dep above only for the test/bench build).
+vike-data = { path = "../vike-data", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is the sole
+# crate that does NOT inherit this.
+[lints]
+workspace = true

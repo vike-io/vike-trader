@@ -1,0 +1,124 @@
+[package]
+name = "vike-run"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike run/composition crate — top-of-graph binaries that MOUNT a strategy on the live core. First mount: the Avellaneda–Stoikov SpreadMaker (vike-mm) trading a Polymarket market through the PRODUCTION spawn_core path with the paper exchange (vike-paper) as the ExecutionClient and the Polymarket tick feed — validating the maker on the live-core path with zero real-money/creds risk. Like vike-app it sits at the TOP of the dependency graph (nothing depends on it), so it may compose vike-core + vike-paper + vike-mm + the polymarket bridge without violating the down-only layering."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `mount-stacked` — a composition root over vike-mount.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 62
+
+[dependencies]
+vike-model = { path = "../vike-model" }
+# `fee_lane`: the `.P` spot-vs-perp split applied to the FEE table's key. Both fee sites here take a
+# `(venue, symbol)` PAIR — the maker mount's paper book and the xEMM legs' break-even offset — and on
+# binance/aster the SYMBOL picks the order API, so the lane must be resolved before reading
+# `fee_schedule_for`. No external package: vike-catalog depends on vike-model alone.
+vike-catalog = { path = "../vike-catalog" }
+vike-exec = { path = "../vike-exec" }
+# the single-writer live core (spawn_core / StrategyMount / LiveBroker) — the PRODUCTION runtime the
+# mount validates the maker on.
+vike-core = { path = "../vike-core" }
+# the A-S SpreadMaker (impl<B: HftBroker> Strategy<B>) mounted here.
+vike-mm = { path = "../vike-mm" }
+# the venue → ExecutionClient/ReconClient composition root (make_engine + the per-venue fallback
+# grids): `build_node` (PR-8, src/node.rs) drives the whole twelve-venue mount THROUGH this crate, so
+# vike-run names NO bridge crate directly for it. vike-mount is trait-only over vike-data now (the
+# DataFusion-edge cut): the PIT-properties recorder a NodeConfig may carry is CONSTRUCTED by the
+# binary that owns the store backend (vike-app fat / vike-tradehub record-feeds|materialize), so this
+# edge no longer pulls the Arrow/DataFusion tree.
+vike-mount = { path = "../vike-mount" }
+# the paper exchange behind the ExecutionClient seam (R7) — fills the maker's resting book with the
+# backtest fill semantics, so a paper mount is real-fill-faithful with no venue creds.
+# THIS LINE USED TO READ `vike-backtest`, which owned the same module. All 4 call sites in this
+# crate named `vike_backtest::paper::…` and NOTHING else from it, so the whole simulator was
+# compiled to obtain one `ExecutionClient`. The fill semantics are unchanged: vike-paper fills with
+# the SAME vike-fills core the engine uses, which is what keeps "backtest == paper" true.
+vike-paper = { path = "../vike-paper" }
+# the live-data seam: MakerSink implements vike_data::LiveDataSink, and NodeConfig.properties_rec
+# names the ungated PropertiesRecorder type. DEFAULT features (trait surface only): since vike-mount
+# dropped its hist-datafusion enable, a default vike-run build is DataFusion-FREE.
+vike-data = { path = "../vike-data" }
+vike-log = { path = "../vike-log" } # tracing-native logging init (the bin holds the guards)
+tracing = { workspace = true }      # bin diagnostics (subscriber lives in vike-log)
+# `incident` subcommand (src/incident.rs + src/bin/incident.rs): serde derives the bundle manifest,
+# serde_json writes/reads it, flate2 gzips each frozen evidence file (the raw_tap.rs GzEncoder
+# pattern — per-file gz in a timestamped directory; deliberately NO `tar` dep). All three are
+# already-pinned workspace deps, so this adds no new lockfile entry.
+serde = { workspace = true }
+serde_json = { workspace = true }
+flate2 = { workspace = true }
+# Polymarket bridge (GammaClient catalog + the live market Feeds) — optional so a DEFAULT vike-run
+# build (the offline mount test) stays native-dep-free: polymarket's whole module tree is behind its
+# own crate feature, mirrored here exactly as vike-backfill's `poly-reparse` lane does.
+vike-polymarket = { path = "../bridges/polymarket", optional = true }
+# IBKR bridge (socket + cpapi ExecutionClient) — optional so a DEFAULT vike-run build stays
+# native-dep-free. `ibkr` turns on the socket+cpapi backends via the bridge's own umbrella feature.
+vike-ibkr = { path = "../bridges/vike-ibkr", optional = true }
+
+[dev-dependencies]
+vike-log = { path = "../vike-log" } # test_init() for the offline mount test
+# Self-deleting, uniquely-named scratch directories for the tests that need one on disk: the
+# `venue_mounted` journal state dir, and the HALT sentinel each scripted-mount binary pins. Replaces
+# the `env::temp_dir().join(format!("..-{pid}"))` idiom, which leaked one directory per run forever
+# and collided across the two users that run tests on the the CI box box. Per-crate rather than a
+# workspace dep, matching the convention noted in `crates/bridges/polymarket/Cargo.toml`.
+tempfile = "3"
+
+[features]
+# Enables the real Polymarket market-selection + live Feeds wiring (and the runnable bin). OFF by
+# default so the offline mount test compiles + runs with no native deps, no creds, no geo access.
+# ALSO turns on `vike-mount/polymarket` so `build_node`'s feature-gated `("polymarket", …)` make_engine
+# arm (PR-8, src/node.rs) compiles — mirroring vike-app's own `polymarket` feature wiring.
+polymarket = ["dep:vike-polymarket", "vike-polymarket/polymarket", "vike-mount/polymarket"]
+# Enables the runnable IBKR mount binary + the socket/cpapi backends (the bridge's umbrella feature).
+# ALSO turns on `vike-mount/ibkr` so `build_node`'s feature-gated `("ibkr", …)` make_engine arm (PR-8,
+# src/node.rs) compiles — mirroring vike-app's own `ibkr` feature wiring.
+ibkr = ["dep:vike-ibkr", "vike-ibkr/ibkr", "vike-mount/ibkr"]
+# A PURE FORWARD to `vike-mount/fxcm`, and unlike the two above it names no `dep:` of its own —
+# this crate calls nothing in `vike-fxcm`. It exists so a binary at the top of the graph can reach
+# the mount's fxcm arm through the ordinary feature chain (vike-tradehub/fxcm → here →
+# vike-mount/fxcm → vike-fxcm/fxcm), which is what lets `.github/workflows/release.yml` build an
+# fxcm-LINKED `vike-tradehub` asset with a bare `--features fxcm`. Cargo rejects the
+# `--features vike-mount/fxcm` CLI spelling unless vike-mount is itself a `-p` of the invocation,
+# and `--bin` wants one package, so the chain has to be declared rather than passed at the prompt.
+#
+# ⚠ This USED to link the SDK and wire nothing: `build_node` had no fxcm `make_engine` call and
+# `WIRED_MARKETS` no fxcm row, so an operator installing the `vike-tradehub-fxcm` release asset
+# reasonably believed FXCM was live when it was not, with no error anywhere. Both exist now
+# (`src/node.rs`'s `FXCM_MARKET` row + its `#[cfg(feature = "fxcm")]` arm), so this feature mounts a
+# real FXCM execution engine and — under `VIKE_RECONCILE=1` — its reconcile client.
+#
+# ⚠ What it still does NOT do is make fxcm a DAEMON PROFILE venue. `vike-tradehub`'s
+# `LIVE_WIRED_VENUES` is the market-FEED arm list and this bridge has no market-data seam at all
+# (`LiveDataCaps::NONE`), so `validate_for_live` refuses `venue = "fxcm"`. The engine is reachable
+# by ROUTING — a `vike_core::MountLeg::at` from a mount on a venue that does have prices. That
+# const's own doc carries the argument.
+fxcm = ["vike-mount/fxcm"]
+
+[[bin]]
+# The runnable paper mount against a REAL Polymarket market — needs the live Feeds + Gamma catalog,
+# both behind the polymarket feature (its module tree needs it).
+name = "polymarket_maker_paper"
+required-features = ["polymarket"]
+
+[[bin]]
+# Headless IBKR mount — connects the chosen backend (socket|cpapi) to the core and drives
+# place/cancel over stdin. Needs the bridge, hence the ibkr feature.
+name = "ibkr_mount"
+required-features = ["ibkr"]
+
+[[bin]]
+# `incident --since <dur>` — freeze perishable run evidence (journal segments + trace logs
+# overlapping the window, the resolved RunProfile + hash, the latest EngineSnapshot + state_hash,
+# git/build info, a REDACTED env dump) into a timestamped directory of per-file gzips + a manifest.
+# No required-features: feature-free (no venue/native deps), so it builds in the default/CI lane.
+name = "incident"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

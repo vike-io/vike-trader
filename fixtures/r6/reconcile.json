@@ -1,0 +1,254 @@
+{
+ "manifest": {
+  "exporter": "scripts/export_r6_fixtures.py",
+  "oracle": "vike-trader-app origin/main worktree",
+  "source_sha": "023d6e87ced0b495d8575fd247914e14522ccd2d",
+  "generated": "2026-07-03T22:58:50Z",
+  "float_encoding": "ieee754-f64-hex-bits (inputs plain JSON numbers)"
+ },
+ "exchange_info": {
+  "symbols": [
+   {
+    "symbol": "BTCUSDT",
+    "baseAsset": "BTC",
+    "filters": [
+     {
+      "filterType": "PRICE_FILTER",
+      "tickSize": "0.01000000",
+      "minPrice": "0.01",
+      "maxPrice": "1000000"
+     },
+     {
+      "filterType": "LOT_SIZE",
+      "stepSize": "0.00001000",
+      "minQty": "0.00001000",
+      "maxQty": "9000.0"
+     },
+     {
+      "filterType": "NOTIONAL",
+      "minNotional": "5.00000000"
+     }
+    ]
+   },
+   {
+    "symbol": "ETHUSDT",
+    "baseAsset": "ETH",
+    "filters": [
+     {
+      "filterType": "LOT_SIZE",
+      "stepSize": "0.0001"
+     },
+     {
+      "filterType": "MIN_NOTIONAL",
+      "minNotional": "1.0"
+     }
+    ]
+   },
+   {
+    "symbol": "NOFILTERS",
+    "filters": []
+   },
+   {
+    "filters": [
+     {
+      "filterType": "LOT_SIZE",
+      "stepSize": "1"
+     }
+    ]
+   }
+  ]
+ },
+ "parsed_filters": {
+  "BTCUSDT": {
+   "tick_size": "3f847ae147ae147b",
+   "step_size": "3ee4f8b588e368f1",
+   "min_qty": "3ee4f8b588e368f1",
+   "max_qty": "40c1940000000000",
+   "min_notional": "4014000000000000"
+  },
+  "ETHUSDT": {
+   "tick_size": "0000000000000000",
+   "step_size": "3f1a36e2eb1c432d",
+   "min_qty": "0000000000000000",
+   "max_qty": "0000000000000000",
+   "min_notional": "3ff0000000000000"
+  },
+  "NOFILTERS": {
+   "tick_size": "0000000000000000",
+   "step_size": "0000000000000000",
+   "min_qty": "0000000000000000",
+   "max_qty": "0000000000000000",
+   "min_notional": "0000000000000000"
+  }
+ },
+ "account_resp": {
+  "balances": [
+   {
+    "asset": "USDT",
+    "free": "12345.67",
+    "locked": "0"
+   },
+   {
+    "asset": "BTC",
+    "free": "0.75",
+    "locked": "0.1"
+   },
+   {
+    "asset": "ETH",
+    "free": "2.0",
+    "locked": "0"
+   }
+  ]
+ },
+ "open_orders_resp": [
+  {
+   "symbol": "BTCUSDT",
+   "clientOrderId": "co-buy1",
+   "orderId": 111,
+   "side": "BUY",
+   "type": "LIMIT",
+   "origQty": "0.50000000",
+   "executedQty": "0.00000000",
+   "price": "60000.00000000"
+  },
+  {
+   "symbol": "BTCUSDT",
+   "clientOrderId": "co-sell1",
+   "orderId": 222,
+   "side": "SELL",
+   "type": "LIMIT",
+   "origQty": "0.30000000",
+   "executedQty": "0.10000000",
+   "price": "70000.00000000"
+  },
+  {
+   "symbol": "BTCUSDT",
+   "clientOrderId": "co-sell2",
+   "orderId": 333,
+   "side": "SELL",
+   "type": "MARKET",
+   "origQty": "0.20000000",
+   "executedQty": "0.20000000",
+   "price": "0.00000000"
+  }
+ ],
+ "ticker_resp": {
+  "symbol": "BTCUSDT",
+  "price": "62584.56000000"
+ },
+ "order_params": {
+  "limit": [
+   [
+    "symbol",
+    "BTCUSDT"
+   ],
+   [
+    "side",
+    "BUY"
+   ],
+   [
+    "type",
+    "LIMIT"
+   ],
+   [
+    "quantity",
+    "0.30000"
+   ],
+   [
+    "newClientOrderId",
+    "deadbeef1"
+   ],
+   [
+    "newOrderRespType",
+    "ACK"
+   ],
+   [
+    "timeInForce",
+    "GTC"
+   ],
+   [
+    "price",
+    "62584.56"
+   ]
+  ],
+  "market": [
+   [
+    "symbol",
+    "BTCUSDT"
+   ],
+   [
+    "side",
+    "SELL"
+   ],
+   [
+    "type",
+    "MARKET"
+   ],
+   [
+    "quantity",
+    "0.12345"
+   ],
+   [
+    "newClientOrderId",
+    "deadbeef2"
+   ],
+   [
+    "newOrderRespType",
+    "ACK"
+   ]
+  ],
+  "cancel": [
+   [
+    "symbol",
+    "BTCUSDT"
+   ],
+   [
+    "origClientOrderId",
+    "deadbeef1"
+   ]
+  ]
+ },
+ "snapshot": {
+  "positions": [
+   [
+    "BTCUSDT",
+    "3fee666666666666"
+   ]
+  ],
+  "position_avg_px": [
+   [
+    "BTCUSDT",
+    "40ee8f11eb851eb8"
+   ]
+  ],
+  "open_orders": [
+   {
+    "coid": "co-buy1",
+    "status": "ACCEPTED",
+    "venue_order_id": "111",
+    "side": 1,
+    "qty": "3fe0000000000000",
+    "order_type": "limit",
+    "price": "40ed4c0000000000"
+   },
+   {
+    "coid": "co-sell1",
+    "status": "ACCEPTED",
+    "venue_order_id": "222",
+    "side": -1,
+    "qty": "3fd3333333333333",
+    "order_type": "limit",
+    "price": "40f1170000000000"
+   },
+   {
+    "coid": "co-sell2",
+    "status": "ACCEPTED",
+    "venue_order_id": "333",
+    "side": -1,
+    "qty": "3fc999999999999a",
+    "order_type": "market",
+    "price": null
+   }
+  ]
+ }
+}

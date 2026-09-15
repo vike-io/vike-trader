@@ -1,0 +1,30 @@
+[package]
+name = "vike-alpaca"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "Alpaca Broker API venue bridge — OAuth2 Bearer REST exec + market-data WS. US equities + crypto, single pinned account_id."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+vike-exec = { path = "../../vike-exec" }
+vike-data = { path = "../../vike-data" }
+vike-bridge-core = { path = "../../vike-bridge-core" }
+vike-catalog = { path = "../../vike-catalog" }
+serde_json = { workspace = true }
+ureq = { workspace = true }          # blocking Bearer REST + the SSE /v2/events/trades reader
+tungstenite = { workspace = true }   # market-data WebSocket
+tracing = { workspace = true }       # boundary/fault diagnostics only (never hot-path)
+
+[dev-dependencies]
+tokio = { workspace = true }         # ExecActor-wiring test drains a tokio mpsc Ingest receiver
+vike-log = { path = "../../vike-log" } # test_init() for gated live-smoke diagnostics
+
+[lints]
+workspace = true

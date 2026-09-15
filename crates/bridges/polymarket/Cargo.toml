@@ -1,0 +1,100 @@
+[package]
+name = "vike-polymarket"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "Polymarket CLOB venue bridge — prediction markets, native pure-Rust EIP-712 order signing + L2-HMAC CLOB REST (no runtime SDK dep). Split-plane: the `feeds` feature is the keyless market-data surface alone (no signing crate in its tree), `polymarket` (implies `feeds`) adds the exec/signing/settlement plane via the feature-gated `vike_bridge_core::eip712` primitive — a default (no-feature) build is an empty crate. Moved into crates/bridges/polymarket (crate-reorg Phase 3, PR I)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+# The flow-toxicity aggregator's recency decay (`toxicity_agg.rs`'s `SideAccum::decay_to` and
+# `SideAccum::reading`). ⚠ NOT a preference: `f64::exp` calls the PLATFORM's libm, which IEEE 754
+# does not require to be correctly rounded, and this value reaches a QUOTE — the chain is
+# `ToxicityAggregator::current` -> `crates/vike-run/src/lib.rs`'s `ToxicityEmitter` ->
+# `vike_exec::TickSender::flow` -> `crates/vike-mm/src/strategy_impl.rs`'s `on_flow` ->
+# `crates/vike-mm/src/quote.rs`, where it widens the spread and cuts size.
+#
+# ⚠ Declared NON-OPTIONAL deliberately, and the reason is worth stating because `feeds`-gating it
+# would look tidier. This manifest carries ZERO `optional = true` entries today, all six existing
+# `libm` consumers in the workspace declare it non-optional, and `libm` is not in the
+# `bridges-feeds` structural check's needle set (`k256|tiny-keccak`), so a non-optional edge
+# cannot trip that lane. An optional dep would add the crate's first feature-gated dependency for
+# no gain.
+libm = { workspace = true }
+vike-model = { path = "../../vike-model" }
+vike-exec = { path = "../../vike-exec" }
+# shared venue-bridge plumbing (credentials::load_workspace_dotenv, exec_actor, transport,
+# user_data pump) — crate-reorg Phase 3 (D4); the direct-path style survives every later venue
+# move unchanged.
+vike-bridge-core = { path = "../../vike-bridge-core" }
+# D2 (crate-reorg spec): polymarket's market_feed::Feeds implements the live DataClient seam
+# directly (default features only — the DataFusion tree stays behind hist-datafusion and must
+# NOT enable), tick-producer T2 — the venue-agnostic live-data seam every Feeds impl reaches into.
+vike-data = { path = "../../vike-data" }
+# universal cross-venue instrument catalog (`Instrument`/`CatalogProvider`) — the
+# `PolymarketCatalog` provider in catalog.rs (crate-reorg catalog workstream).
+vike-catalog = { path = "../../vike-catalog" }
+serde_json = { workspace = true } # CLOB REST/WS JSON bodies (no serde derive — Value-based)
+# insertion-ordered map: the dust-snap fill tracker's capped coid ledger evicts FIFO (oldest
+# first), which needs insertion order — already a workspace dep, no new external crate.
+indexmap = { workspace = true }
+ureq = { workspace = true }       # blocking REST (rustls, no OpenSSL); `socks-proxy` gated below
+tungstenite = { workspace = true } # blocking WS: user-channel pump
+hex = { workspace = true }        # EIP-712 hex signatures/addresses (order.rs, l1.rs, redeem*.rs)
+base64 = { workspace = true }     # L2 auth signature is base64url (auth.rs)
+tracing = { workspace = true }    # adapter diagnostics (client.rs, l1.rs)
+flate2 = { workspace = true }     # gzip raw-frame tap writer (raw_tap.rs)
+
+[features]
+# The feeds/exec seam (split-plane Phase-5 hardening; the design's §7 measured the whole
+# +26-crate cost of client feeds as the shared secp256k1/EIP-712 stack). BOTH features are OFF
+# by default — a default (no-feature) build is still an empty crate, exactly as before the split.
+#
+# `feeds` is the KEYLESS market-data surface alone: market_feed/ws/data/rtds/raw_tap/instruments/
+# gamma/catalog/neg_risk_set/neg_risk_lookup/universe/rewards/taker_hold/filters_rec/tick_regime/
+# toxicity_agg/wallet_class/discovery/config/ratelimit, plus `egress` (the SOCKS proxy resolution,
+# the proxy-aware ureq agents, the keyless `get_json` and the WS-proxy dial arm the feed pumps
+# need — re-homed there from `exec` for this seam). It enables NO signing crate:
+# vike-bridge-core's `eip712` (the k256/keccak stack) stays out of a `--features feeds` tree,
+# and the `bridges-feeds` arm of scripts/ci_feature_suite.sh is the gate — a structural
+# cargo-tree check, not just a compile.
+#
+# `polymarket` is the FULL venue (implies `feeds`): EIP-712 order signing, L2-HMAC exec, the
+# authed user-channel pumps, reconcile, the mount and the settlement cluster. The shared EIP-712
+# primitive lives ONCE in vike-bridge-core (its `eip712` feature, enabled here), so this crate
+# still declares no k256/tiny-keccak of its own. Every existing consumer spells `polymarket` and
+# builds byte-identically; `--features feeds` alone is the NEW capability.
+#
+# `vike-bridge-core/socks-proxy` is the WS twin of `ureq/socks-proxy`: the CLOB market/user/RTDS
+# WebSockets dialled DIRECT while only HTTP tunnelled (spec §0), so from a geo-blocked host the
+# feeds could not connect at all. Both enable the SAME underlying `socks` crate — which is why
+# they ride `feeds`, the plane whose pumps do the dialling. Whether a WS lane actually uses the
+# tunnel is a separate RUNTIME gate (`POLY_WS_PROXY_ENABLED`, default off — `egress::ws_proxy`);
+# this only compiles the capability in.
+feeds = ["ureq/socks-proxy", "vike-bridge-core/socks-proxy"]
+polymarket = ["feeds", "vike-bridge-core/eip712"]
+
+[dev-dependencies]
+tokio = { workspace = true }         # test-only: tests/polymarket_user_smoke.rs polls a tokio::mpsc receiver
+vike-log = { path = "../../vike-log" } # dev-only: test_init() (client.rs/l1.rs unit tests + the live smoke)
+# dev-only: tests/market_ticks_live_smoke.rs spawns a real core + StrategyMount; the library
+# itself must never depend on vike-core (crate-reorg D3 — bridges depend on exec, not core).
+vike-core = { path = "../../vike-core" }
+tempfile = "3" # dev-only: raw_tap.rs tests write to a temp capture dir (not a workspace dep — matches vike-data/vike-backfill/vike-backtest convention)
+# dev-only, test-support feature: the DataFusion-free MemHistStore + PropertiesRecorder test double for
+# the PIT filter-recording wiring test (filters_rec.rs) — the normal [dependencies] vike-data entry
+# above stays default-features so the venue's DEFAULT build never pulls DataFusion in.
+vike-data = { path = "../../vike-data", features = ["test-support"] }
+# dev-only, test-support feature: the shared scripted WS stream doubles (testing-arch Phase 4c)
+# — the normal [dependencies] vike-bridge-core entry above is untouched for normal builds.
+vike-bridge-core = { path = "../../vike-bridge-core", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

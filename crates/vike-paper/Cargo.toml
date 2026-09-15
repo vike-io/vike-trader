@@ -1,0 +1,43 @@
+[package]
+name = "vike-paper"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io (also exempts it from deny.toml license checks)
+description = "vike R7 PAPER EXCHANGE: the backtest fill semantics running behind the live core's ExecutionClient seam (PaperExecutionClient + replay_bars). Re-extracted out of vike-backtest once vike-fills gave the shared fill core its own home — the dedup concern that folded the original vike-paper crate away in crate-reorg Phase 0 (D8) is now answered by a common dependency instead of a common crate. Depends on vike-model + vike-exec + vike-fills ONLY: no engine, no harness, no analytics, no DataFusion — so vike-mount / vike-run, which wanted nothing from vike-backtest except this client, stop compiling the simulator to get one."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `engine` — a runtime / simulation / transport core over the domain crates.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 30
+
+[dependencies]
+# The domain types (Event/OrderRequest/Fill/FeeSchedule/SymbolProperties/…) this client speaks.
+vike-model = { path = "../vike-model" }
+# The `ExecutionClient` seam this crate implements, plus `ContingencyBook` (the OCO/OTO contingency
+# fold the paper book applies). Down-only: vike-exec depends on vike-model alone.
+vike-exec = { path = "../vike-exec" }
+# THE POINT OF THIS CRATE'S EXISTENCE. "backtest == paper == live" is a law only while ONE
+# definition of a fill exists, so the paper book fills with the ENGINE'S OWN primitives —
+# `BarFillModel::fill_price`, `resolve_intrabar_fills`, `adverse_fill_price`, `broker_sim::fee`.
+# Those now live in vike-fills, shared with vike-backtest's engine, which is exactly what makes this
+# extraction safe: the two sides share a DEPENDENCY rather than a crate, so neither can drift.
+vike-fills = { path = "../vike-fills" }
+# Insertion-ordered maps for the resting book / per-symbol state: this repo's standing rule is
+# IndexMap wherever iteration order can reach an f64 fold order, and the paper book's fills feed
+# `Account`'s PnL accumulation. Already a workspace-pinned dependency.
+indexmap = { workspace = true }
+
+[dev-dependencies]
+# The paper client's own unit tests drive vike-model's shared `MockBroker` / domain fixtures.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# test-only: the self-deleting scratch directories the two HALT suites mint their sentinels in
+# (`crates/vike-paper/tests/paper_halt.rs`'s `sentinel_for`, and the inline one in
+# `crates/vike-paper/tests/paper_halt_process_wide.rs`). They replace a pid-keyed
+# `std::env::temp_dir()` path that leaked 4,957 `/tmp` directories on the CI box and flaked on PID reuse
+# across the box's two test users — `sentinel_for`'s doc carries the measurement and the argument.
+tempfile = "3"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true
