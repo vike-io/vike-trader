@@ -1,0 +1,5030 @@
+{
+  "foreign_structs": [],
+  "keys": [
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "BacktestProfile"
+      },
+      "key": "name",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "name",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Free-form label (logs/report titles only — not used for lookup).",
+      "table": "",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "BacktestProfile"
+      },
+      "key": "data",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": "DataCfg",
+        "table": "data"
+      },
+      "nullable": false,
+      "path": "data",
+      "required": true,
+      "roster_id": null,
+      "shape": "table",
+      "short": null,
+      "table": "",
+      "type": "DataCfg"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "BacktestProfile"
+      },
+      "key": "engine",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": "EngineCfg",
+        "table": "engine"
+      },
+      "nullable": false,
+      "path": "engine",
+      "required": true,
+      "roster_id": null,
+      "shape": "table",
+      "short": null,
+      "table": "",
+      "type": "EngineCfg"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "BacktestProfile"
+      },
+      "key": "strategy",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": "StrategyCfg",
+        "table": "strategy"
+      },
+      "nullable": false,
+      "path": "strategy",
+      "required": true,
+      "roster_id": null,
+      "shape": "table",
+      "short": null,
+      "table": "",
+      "type": "StrategyCfg"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "BacktestProfile"
+      },
+      "key": "risk",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": "ProfileRisk",
+        "table": "risk"
+      },
+      "nullable": true,
+      "path": "risk",
+      "required": false,
+      "roster_id": null,
+      "shape": "table",
+      "short": "Optional pre-trade `RiskGate` limits (runprofile-wiring-step2). The SAME `risk` schema AND the SAME compile-checked converter (`vike_exec::ProfileRisk::to_risk_limits`) `vike-core`'s `RunProfile` uses for paper/live — so a limit proven here (via `BacktestProfile::validate` + a real `SimBroker` denial) carries unchanged into paper and live, rather than being re-derived by a parallel converter that could drift. Absent (the default) ⇒ `crate::EngineParams::risk_limits` stays `None` ⇒ byte-identical to every profile written before this field existed: `engine` today has no `leverage` knob either, so `risk` is the ONLY way a harness profile arms the gate at all (`crate::engine::SimBroker::build_risk_gate`'s `(None, None) => None` arm).",
+      "table": "",
+      "type": "Option<ProfileRisk>"
+    },
+    {
+      "aliases": [
+        "sweep"
+      ],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "BacktestProfile"
+      },
+      "key": "paramscan",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "paramscan",
+      "required": false,
+      "roster_id": null,
+      "shape": "free_form_table",
+      "short": "Optional PARAMETER-SEARCH grid: each key is a `strategy.params` field name, each value an array of TOML values to cross-product over (expansion lives in `super::sweep::expand_paramscan`). Absent or empty means \"not a parameter search\".",
+      "table": "",
+      "type": "Option<toml::Table>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "BacktestProfile"
+      },
+      "key": "walkforward",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": "WalkforwardCfg",
+        "table": "walkforward"
+      },
+      "nullable": true,
+      "path": "walkforward",
+      "required": false,
+      "roster_id": null,
+      "shape": "table",
+      "short": "Optional anchored WALK-FORWARD config — the `paramscan` sibling: present means this profile can ALSO be run through `super::walkforward::run_walkforward` over `walkforward.n_splits` out-of-sample windows. Absent (the default) is byte-identical to every profile written before this field existed, and `run_backtest`/`run_paramscan` ignore the section entirely — exactly as they ignore a `sweep` table they were not asked to expand.",
+      "table": "",
+      "type": "Option<WalkforwardCfg>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "key": "venue",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "data.venue",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Single-venue form: the one venue every entry of `Self::symbols` lives under. Mutually exclusive with `Self::series`.",
+      "table": "data",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "key": "symbols",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "data.symbols",
+      "required": false,
+      "roster_id": null,
+      "shape": "array",
+      "short": "Single-venue form: the symbols to load under `Self::venue`. Mutually exclusive with `Self::series`.",
+      "table": "data",
+      "type": "Vec<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "key": "series",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": "SeriesRef",
+        "table": "data.series"
+      },
+      "nullable": false,
+      "path": "data.series",
+      "required": false,
+      "roster_id": null,
+      "shape": "array_of_tables",
+      "short": "Cross-venue form (`[data.series]`): one entry per series, each naming its own `venue`, `symbol` and (tick mode only) lane `kind`. Mutually exclusive with `Self::venue`/`Self::symbols`.",
+      "table": "data",
+      "type": "Vec<SeriesRef>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "key": "kind",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "data.kind",
+      "required": true,
+      "roster_id": "DataKind",
+      "shape": "scalar",
+      "short": null,
+      "table": "data",
+      "type": "DataKind"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": "default_interval",
+        "kind": "named",
+        "value": "1d"
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "key": "interval",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "data.interval",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": null,
+      "table": "data",
+      "type": "String"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "key": "from",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "data.from",
+      "required": true,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Bare epoch-ms integer (as a string) or `YYYY-MM-DDTHH` UTC — see `BacktestProfile::range`.",
+      "table": "data",
+      "type": "String"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "key": "to",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "data.to",
+      "required": true,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Same format as `from`.",
+      "table": "data",
+      "type": "String"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "key": "warmup",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "data.warmup",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "How much history the strategy's indicators need before the run's FIRST tradeable event — a bar/event count (`\"200bars\"`) or, in bar mode, a duration (`\"7d\"`) the base `Self::interval` divides into one. Absent (the default) is byte-identical to every profile written before this key existed: the gate stays exactly `Strategy::warmup()`.",
+      "table": "data",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "key": "detail_interval",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "data.detail_interval",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Opt-in INTRABAR DETAIL TAPE: a per-symbol series FINER than `Self::interval`, loaded over the same range and bucketed into each coarse step, against which every order is resolved while the strategy keeps deciding on the coarse timeframe. Absent (the default) is byte-identical to every profile written before this key existed. BAR MODE ONLY.",
+      "table": "data",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "key": "explain",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "data.explain",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "PLAN-THEN-APPLY: resolve this profile's whole data slice, report what the store holds for it, and EXIT without computing. Absent (the default) is byte-identical to every profile written before this key existed.",
+      "table": "data",
+      "type": "bool"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "key": "require_coverage",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "data.require_coverage",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "ARM THE COVERAGE GATE: refuse (or warn on) a run whose window the store does not cover. Absent (the default) is byte-identical to every profile written before this key existed — the run loads whatever is there and says nothing.",
+      "table": "data",
+      "type": "bool"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "key": "max_gap",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "data.max_gap",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "How much of the window `Self::require_coverage` tolerates missing in ONE span, as a fixed duration (`\"1d\"`, `\"4h\"`, `\"900000\"` ms). Absent = ZERO tolerance: any missing span at all is a finding.",
+      "table": "data",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "key": "on_gap",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "data.on_gap",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "What `Self::require_coverage` DOES about a finding: `\"refuse\"` (the default — nothing runs), `\"warn\"` (the findings are logged and the run proceeds unchanged), or `\"run\"` (the gate is inert).",
+      "table": "data",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "key": "universe",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "data.universe",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "POINT-IN-TIME UNIVERSE MEMBERSHIP — the survivorship defence. `\"declared\"` (the default, byte-identical: the symbol list is taken verbatim), `\"covered\"` (a member whose tape does not span the window is NAMED and the run proceeds), or `\"strict\"` (that run is REFUSED).",
+      "table": "data",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "cash",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.cash",
+      "required": true,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": null,
+      "table": "engine",
+      "type": "f64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "fee_rate",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.fee_rate",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": null,
+      "table": "engine",
+      "type": "f64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "slippage",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.slippage",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": null,
+      "table": "engine",
+      "type": "f64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "snap_to_properties",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.snap_to_properties",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": null,
+      "table": "engine",
+      "type": "bool"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "attach_funding",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.attach_funding",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Opt-in: window-join the stored market `funding` series onto the replayed bars' `Bar.funding` at each funding-event timestamp, for perp funding accrual + funding-reading strategies. The market funding-rate backfill (#761) writes a `(venue, symbol, \"funding\")` bar series whose each `Bar.funding = Some(rate)` sits at a funding-event ts; with this on, `crate::harness::window_join_funding` attaches each rate to the ONE price bar whose window contains the event (NEVER forward-filled onto every bar — that would make the `SimBroker` bar-loop accrual charge every bar instead of once per 8h/1h interval). Both consumers then work: the accrual (`engine.rs`, charges when `Bar.funding.is_some()`) and a funding-reading strategy's signal (`FundingCarryController` remembers the last rate in its funding book).",
+      "table": "engine",
+      "type": "bool"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "feed_latency",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.feed_latency",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Opt-in feed-latency replay (see `crate::TickReplayConfig::feed_latency`): deliver ticks to the strategy in recorded ARRIVAL (`local_ts`) order instead of venue order, while order matching stays on venue `ts`. Absent (the default `false`) = today's venue-ordered replay, byte-identical. TICK MODE ONLY — a bar has no `local_ts`, so a profile that sets this with `data.kind = \"bar\"` is rejected by `BacktestProfile::validate` rather than silently ignored (the mirror of the bar-only `attach_funding` rule).",
+      "table": "engine",
+      "type": "bool"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "order_latency_ms",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.order_latency_ms",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Opt-in ORDER latency (see `crate::latency`): a fixed entry-leg delay in MILLISECONDS on every strategy order action (place / modify / cancel). The maker's quotes, re-prices and pulls only reach the matching engine `order_latency_ms` after it decides them, so it cannot react within one tick — the missing clock skew that otherwise lets a maker enter and exit in the same instant. `0` (the default) = zero latency, byte-identical. TICK MODE ONLY (only `run_ticks` arms the latency gate; the bar lane and vector kernel never consult it).",
+      "table": "engine",
+      "type": "i64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "fill_latency_ms",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.fill_latency_ms",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Opt-in FILL-notification latency (the response leg, see `crate::latency`): a fixed delay in MILLISECONDS before the strategy LEARNS of a fill. The fill books at the real time (equity/PnL are exact), but the strategy-visible shadow position (`vike_model::HftBroker::position`) does not advance until `fill_latency_ms` later — so a maker that polls its inventory cannot react (place its exit) inside that gap. Models the \"time to realise you're filled\" half of a real round-trip reaction. `0` (the default) = off, byte-identical. TICK MODE ONLY.",
+      "table": "engine",
+      "type": "i64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "fill_model",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.fill_model",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Opt-in tick-lane fill-model override: `\"l2book\"` (the ONE accepted value; case-insensitive, like `Self::queue_model`) selects the depth-capped `crate::engine::FillModelKind::L2Book` (a resting order fills only up to the DISPLAYED book depth; when the within-limit depth cannot cover its size it RESTS rather than filling size the market never showed), vs the default L1 spread-crossing `Tick` model (fills the full size at the quote). Absent ⇒ `Tick`, byte-identical. Any OTHER value is a fail-fast `HarnessError::Validation` at load (`EngineCfg::fill_model_kind`, the mirror of the `Self::queue_model` rule) — a typo like `\"l2_book\"` must not silently select the optimistic `Tick` model and undo the depth-cap realism knob. TICK MODE ONLY. Pair with `slippage = 0.0` (the book walk IS the slippage).",
+      "table": "engine",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "seed_bar_interval_ms",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.seed_bar_interval_ms",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": null,
+      "table": "engine",
+      "type": "Option<i64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "impact",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": "ImpactCfg",
+        "table": "engine.impact"
+      },
+      "nullable": true,
+      "path": "engine.impact",
+      "required": false,
+      "roster_id": null,
+      "shape": "table",
+      "short": "Opt-in market-impact slippage on top of the flat `slippage` (see `crate::impact`). Absent (the default) = the frozen flat-slippage cost, byte-identical.",
+      "table": "engine",
+      "type": "Option<ImpactCfg>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": "default_emulator_release_stops",
+        "kind": "named",
+        "value": "false"
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "emulator_release_stops",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.emulator_release_stops",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Stop-verb release timing (see `crate::EngineParams::emulator_release_stops`).",
+      "table": "engine",
+      "type": "bool"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "fee",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": "FeeCfg",
+        "table": "engine.fee"
+      },
+      "nullable": true,
+      "path": "engine.fee",
+      "required": false,
+      "roster_id": null,
+      "shape": "table",
+      "short": "Opt-in fee SCHEDULE (port backlog G7) — the shapes a flat `Self::fee_rate` cannot express. Absent (the default) = the flat `fee_rate` path, byte-identical. Setting BOTH is a validation error: two cost models would be configured and only one could win.",
+      "table": "engine",
+      "type": "Option<FeeCfg>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "resolution",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": "ResolutionCfg",
+        "table": "engine.resolution"
+      },
+      "nullable": true,
+      "path": "engine.resolution",
+      "required": false,
+      "roster_id": null,
+      "shape": "table",
+      "short": "Opt-in binary-resolution settlement (port backlog G6): builds the `crate::EngineParams::resolution` source + `resolution_end_ts` the engine has always consumed. Absent (the default) = no settlement source, byte-identical.",
+      "table": "engine",
+      "type": "Option<ResolutionCfg>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "queue_model",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.queue_model",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Opt-in QUEUE-POSITION fill model for the tick lane (see `crate::queue_model`): a resting limit — INCLUDING a tagged MAKER quote — no longer fills the instant price touches it, but only once a taker TRADE has consumed the size AHEAD of it in the FIFO queue (seeded from the replayed L2 book's size at that price, or the last L1 quote, or `Self::queue_seed_depth`). This is the realistic passive-maker fill: a quote earns the spread only when flow actually hits it, with partial fills on the trade's excess over the front. Absent (the default) = the frozen simple-crossing fill (`fill_tagged`), byte-identical. TICK MODE ONLY — the queue lane is consulted exclusively by `run_ticks`, so a bar-mode profile setting it is rejected by `BacktestProfile::validate` (the mirror of the `feed_latency` rule). Values (case-insensitive): `\"risk_adverse\"` (the conservative bound — front shrinks only on hard evidence), `\"prob_power\"` / `\"prob_power:N\"` (probabilistic, `f(x)=x^N`, default `N=1`), `\"prob_log\"`. For a real maker backtest feed the TRADE tape (and, for true size-ahead seeding, the BOOK).",
+      "table": "engine",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "queue_seed_depth",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.queue_seed_depth",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Fallback front-of-queue depth (in size units) seeded when neither the replayed L2 book nor an L1 quote gives a size at a resting order's price — see `crate::queue_model`. Only consulted when `Self::queue_model` is set. Absent ⇒ `0.0` (a quote with no observed size-ahead fills on the first at-price trade).",
+      "table": "engine",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "queue_min_hold_ms",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.queue_min_hold_ms",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Minimum-hold floor in MS for the queued lane (`crate::EngineParams::queue_min_hold_ms`): a position-reducing (closing) fill is deferred until this long after the position opened, so the backtest can't fabricate a sub-second maker round-trip. Only consulted when `Self::queue_model` is set. Absent ⇒ `0` (off). Calibrate from real MM flip times (Polymarket BTC-5m ≈ 2s p10).",
+      "table": "engine",
+      "type": "Option<i64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "equity_sample_every",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.equity_sample_every",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Equity-curve density for the tick lane (see `crate::EquitySampling`) — the SWEEP knob for a very long tape. The curve is two `Vec`s grown 16 bytes per priced tick, so a 100M-tick replay carries 1.6 GB of samples per run whether or not anything reads them.",
+      "table": "engine",
+      "type": "Option<usize>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "timeframes",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.timeframes",
+      "required": false,
+      "roster_id": null,
+      "shape": "array",
+      "short": "Higher timeframes synthesised from the base bar stream, look-ahead safe: a coarse bar becomes visible only once its window has fully elapsed. Each entry is an `vike_model::time::interval_ms` spelling (`\"4h\"`, `\"1d\"`). Absent (the default) registers nothing, which is byte-identical to before this key existed.",
+      "table": "engine",
+      "type": "Vec<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "cash_gate",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.cash_gate",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Admit a fill only when the shared cash pool can fund it. Default `false`, which is what every profile written before this key did.",
+      "table": "engine",
+      "type": "bool"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "decide",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.decide",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "WHEN a multi-symbol step is decided — `\"sequential\"` (absent = the default, byte-identical to every profile written before this key) or `\"simultaneous\"`. Resolved by `decide_mode`, which owns the unknown-spelling refusal; the ARGUMENT is in `crate::DecideMode`, and this doc deliberately does not restate it.",
+      "table": "engine",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "maint_margin",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.maint_margin",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Maintenance-margin RATE (a fraction of adverse notional), folded as `|size| · adverse · multiplier · maint_margin` by the liquidation watchdog.",
+      "table": "engine",
+      "type": "f64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": "default_liq_buffer",
+        "kind": "named",
+        "value": "0.10"
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "liq_buffer",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.liq_buffer",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Equity cushion held above the maintenance requirement before the watchdog liquidates. ⚠ Defaults to `0.10` to match `EngineParams::default()` — a bare `#serde(default)` would give `0.0` and silently change every profile that omits the key.",
+      "table": "engine",
+      "type": "f64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "venue_style_liquidation",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.venue_style_liquidation",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Opt-in stress knob. ⚠ `true` selects the retired TOTAL-WIPE liquidation model — once `eq_adv <= maint_margin * notional_adv` at the intrabar adverse marks, it force-closes the WHOLE account (bar mode, `StrategyEngine::check_liquidation`) / the triggering symbol in full (tick mode, `StrategyEngine::check_liquidation_tick`). `false` (the default) runs the shared LEAN law (`vike_model::cross_liquidation_plan`) instead: PARTIAL, losers-first liquidation with the `liq_buffer` grace line — the opposite of a total wipe. Despite its name, `true` is the CRUDER model, not the gentler one.",
+      "table": "engine",
+      "type": "bool"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "volume_limit",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.volume_limit",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Participation cap: the fraction of the EVENT's own volume any one fill may take. `None` (the default) means uncapped, which is what every profile did before this key — and which lets a backtest \"trade\" more than the market traded.",
+      "table": "engine",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "max_open_positions",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.max_open_positions",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Ceiling on concurrently open positions. ⚠ `0` is the engine's UNLIMITED, not \"none\" — it is the default, and it is what every profile written before this key did.",
+      "table": "engine",
+      "type": "usize"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "max_open_long",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.max_open_long",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Ceiling on concurrently open LONG positions. ⚠ `0` means unlimited, as above.",
+      "table": "engine",
+      "type": "usize"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "max_open_short",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.max_open_short",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Ceiling on concurrently open SHORT positions. ⚠ `0` means unlimited, as above.",
+      "table": "engine",
+      "type": "usize"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": "default_multiplier",
+        "kind": "named",
+        "value": "1.0"
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "multiplier",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.multiplier",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Contract multiplier applied to every symbol without its own row in `Self::multipliers`. ⚠ Defaults to `1.0`, matching `EngineParams::default()` — a bare `#serde(default)` would give `0.0` and zero every position's notional.",
+      "table": "engine",
+      "type": "f64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "multipliers",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.multipliers",
+      "required": false,
+      "roster_id": null,
+      "shape": "map",
+      "short": "Per-symbol contract multipliers, e.g. `ES = 50.0`. A `BTreeMap` rather than a `HashMap` because the engine takes an ordered `Vec` and a run must not depend on hash order.",
+      "table": "engine",
+      "type": "BTreeMap<String, f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "leverage",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.leverage",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "The run's own leverage. ⚠ Distinct from `risk max_leverage`, which reaches the same gate through `ProfileRisk::im_requirement` but is a CEILING — this is what the run uses, that is what it may not exceed.",
+      "table": "engine",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "clamp_to_leverage",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.clamp_to_leverage",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Clamp an order down to what `Self::leverage` allows instead of rejecting it.",
+      "table": "engine",
+      "type": "bool"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "settlement_period_ms",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.settlement_period_ms",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Variation-settlement cadence in milliseconds — how often open-position profit is realised into cash instead of accruing. `None` (the default) never settles, which is what every profile did before this key.",
+      "table": "engine",
+      "type": "Option<i64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "session_gate",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.session_gate",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Defer an order that falls outside its symbol's trading session instead of filling it. Deferrals are already counted and already reach the report as `BacktestResult::session_deferrals`.",
+      "table": "engine",
+      "type": "bool"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "key": "sizer",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": "SizerCfg",
+        "table": "engine.sizer"
+      },
+      "nullable": true,
+      "path": "engine.sizer",
+      "required": false,
+      "roster_id": null,
+      "shape": "table",
+      "short": "How a strategy's requested size becomes an order size (`vike_analytics::sizing::PositionSizer`, the WealthLab PosSizer port). `None` (the default) passes the request through unchanged (`crate::sizing::PassThroughSizer`) — what every profile did before this key existed (`StrategyEngine::new` installs it whenever `EngineParams::sizer` is `None`).",
+      "table": "engine",
+      "type": "Option<SizerCfg>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "StrategyCfg"
+      },
+      "key": "name",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "strategy.name",
+      "required": true,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": null,
+      "table": "strategy",
+      "type": "String"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": "default_params",
+        "kind": "named",
+        "value": "{}"
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "StrategyCfg"
+      },
+      "key": "params",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "strategy.params",
+      "required": false,
+      "roster_id": null,
+      "shape": "free_form_table",
+      "short": null,
+      "table": "strategy",
+      "type": "toml::Value"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-exec/src/risk_profile.rs",
+        "symbol": "ProfileRisk"
+      },
+      "key": "tick_size",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "risk.tick_size",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": null,
+      "table": "risk",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-exec/src/risk_profile.rs",
+        "symbol": "ProfileRisk"
+      },
+      "key": "lot_size",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "risk.lot_size",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": null,
+      "table": "risk",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-exec/src/risk_profile.rs",
+        "symbol": "ProfileRisk"
+      },
+      "key": "min_notional",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "risk.min_notional",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": null,
+      "table": "risk",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-exec/src/risk_profile.rs",
+        "symbol": "ProfileRisk"
+      },
+      "key": "min_qty",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "risk.min_qty",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "per-order minimum quantity floor (venue lot-size grid); checked on the lot-rounded qty.",
+      "table": "risk",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-exec/src/risk_profile.rs",
+        "symbol": "ProfileRisk"
+      },
+      "key": "max_notional_per_order",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "risk.max_notional_per_order",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`risk max_notional_per_order` — the per-order notional cap the pre-trade gate evaluates on **EVERY order this engine admits**, whatever its origin (strategy-emitted, control-socket-originated, reconcile-originated). It lands verbatim in `RiskLimits::max_notional_per_order` and is denied as `over-max-notional`.",
+      "table": "risk",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-exec/src/risk_profile.rs",
+        "symbol": "ProfileRisk"
+      },
+      "key": "max_total_exposure",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "risk.max_total_exposure",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`risk max_total_exposure` — cap on **ONE SYMBOL's** projected open notional at **ONE VENUE**, in the account's quote currency. Despite the name it is NOT an account-wide, cross-symbol or cross-venue total: it lands verbatim in `RiskLimits::max_total_exposure`, whose doc is the authority on the scope, on why the name is kept, and on the test that pins it. Size it for a SINGLE instrument — an operator who sizes it for a whole book of N symbols gets an N× weaker cap than they wrote.",
+      "table": "risk",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-exec/src/risk_profile.rs",
+        "symbol": "ProfileRisk"
+      },
+      "key": "max_orders_per_window",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "risk.max_orders_per_window",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": null,
+      "table": "risk",
+      "type": "Option<usize>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-exec/src/risk_profile.rs",
+        "symbol": "ProfileRisk"
+      },
+      "key": "window_ms",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "risk.window_ms",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "throttle window (ms); only active when `max_orders_per_window` is set",
+      "table": "risk",
+      "type": "i64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-exec/src/risk_profile.rs",
+        "symbol": "ProfileRisk"
+      },
+      "key": "max_leverage",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "risk.max_leverage",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "THE leverage knob (>= 1.0), e.g. `10.0` ⇒ 10x. Arms the pre-trade buying-power check by converting to `RiskLimits::im_requirement` (`1.0 / max_leverage`) — see `ProfileRisk::im_requirement` and the module doc's \"One leverage concept, one name\". Omitted ⇒ the buying-power lane stays off here (a live mount then applies its own conservative 1× rescue).",
+      "table": "risk",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-exec/src/risk_profile.rs",
+        "symbol": "ProfileRisk"
+      },
+      "key": "block_reduce_only_overshoot",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "risk.block_reduce_only_overshoot",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": null,
+      "table": "risk",
+      "type": "bool"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-exec/src/risk_profile.rs",
+        "symbol": "ProfileRisk"
+      },
+      "key": "required_free_bp_pct",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "risk.required_free_bp_pct",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "LEAN free-buying-power haircut on equity, `[0.0, 1.0)`",
+      "table": "risk",
+      "type": "f64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "WalkforwardCfg"
+      },
+      "key": "n_splits",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "walkforward.n_splits",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Number of out-of-sample windows — window form (a), the one that existed first.",
+      "table": "walkforward",
+      "type": "Option<usize>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "WalkforwardCfg"
+      },
+      "key": "train",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "walkforward.train",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Window form (b)/(c) — the TRAIN window's length, as a `vike_model::time::parse_span` duration (`\"12mo\"`, `\"90d\"`, `\"5000bars\"`). Mutually exclusive with `Self::n_splits`; requires `Self::test`.",
+      "table": "walkforward",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "WalkforwardCfg"
+      },
+      "key": "test",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "walkforward.test",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Window form (b)/(c) — the VALIDATION window's length. Required with `Self::train`.",
+      "table": "walkforward",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "WalkforwardCfg"
+      },
+      "key": "step",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "walkforward.step",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "How far each window advances. Absent ⇒ equal to `Self::test`, which tiles the validation windows edge to edge.",
+      "table": "walkforward",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "WalkforwardCfg"
+      },
+      "key": "purge",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "walkforward.purge",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Bars dropped BETWEEN train and test, so `test_start - train_end == purge` exactly.",
+      "table": "walkforward",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "WalkforwardCfg"
+      },
+      "key": "embargo",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "walkforward.embargo",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "The minimum gap AFTER a validation window before the next one may start. A window whose `test_start` falls inside the zone is DROPPED, not moved — moving it would make `Self::step` mean something other than what was written. Same duration-form-only rule as `Self::purge`, and the same ROUNDS-UP rule.",
+      "table": "walkforward",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "WalkforwardCfg"
+      },
+      "key": "search",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "walkforward.search",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Which search each window runs on its OWN training half — the knob that chooses between the two walk-forward protocols. Absent or `\"none\"` is the CONTROL (`WindowSearch::None`): every window trades the profile's own `strategy.params`, which is the fixed-parameter walk this section has always described. `\"sweep\"` — named for the table it expands — scores this profile's `sweep` grid on each window's train half and carries only the winner onto its validation half.",
+      "table": "walkforward",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "WalkforwardCfg"
+      },
+      "key": "mode",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "walkforward.mode",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "The TRAIN-window shape (`WalkMode`): absent or `\"anchored\"` is the expanding window every split trains from bar 0; `\"rolling\"` trains on the ONE chunk immediately preceding the window. Case-insensitive and trimmed (`Self::walk_mode`), unknown values refused at load.",
+      "table": "walkforward",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "WalkforwardCfg"
+      },
+      "key": "rank_by",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "walkforward.rank_by",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "How a window SCORES its candidates when `Self::search` runs one: any of the four `RankMetric` names the sweep's own `--rank-by` takes (`\"sharpe\"` | `\"return\"` | `\"max_dd\"` | `\"equity\"`, case-insensitive), defaulting to `RankMetric::default`. Consulted only when a search actually runs — the control scores nothing.",
+      "table": "walkforward",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/hist_replay.rs",
+        "symbol": "SeriesRef"
+      },
+      "key": "venue",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "data.series.venue",
+      "required": true,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": null,
+      "table": "data.series",
+      "type": "String"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/hist_replay.rs",
+        "symbol": "SeriesRef"
+      },
+      "key": "symbol",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "data.series.symbol",
+      "required": true,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": null,
+      "table": "data.series",
+      "type": "String"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/hist_replay.rs",
+        "symbol": "SeriesRef"
+      },
+      "key": "kind",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "data.series.kind",
+      "required": false,
+      "roster_id": "SeriesKind",
+      "shape": "scalar",
+      "short": null,
+      "table": "data.series",
+      "type": "SeriesKind"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "ImpactCfg"
+      },
+      "key": "model",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.impact.model",
+      "required": true,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "which model — currently only `\"almgren_chriss\"`",
+      "table": "engine.impact",
+      "type": "String"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": "default_exec_time",
+        "kind": "named",
+        "value": "1.0"
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "ImpactCfg"
+      },
+      "key": "exec_time",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.impact.exec_time",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Execution horizon, in whatever period this run's context is measured over — bar-periods in bar mode, TRADE PRINTS in tick mode (see `crate::impact::AlmgrenChriss::exec_time` and `crate::impact::TickWindow`). The default `1.0` means \"worked inside one period\".",
+      "table": "engine.impact",
+      "type": "f64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": "default_impact_window",
+        "kind": "named",
+        "value": "21"
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "ImpactCfg"
+      },
+      "key": "window",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.impact.window",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Rolling sigma/volume lookback — in BARS in bar mode, in TRADE PRINTS in tick mode. The default is one trading month of daily bars; on a liquid tape it is a fraction of a second, so a tick profile should set it rather than inherit it. Lengthening it averages away sampling noise; it does NOT change the UNIT the context is measured in.",
+      "table": "engine.impact",
+      "type": "usize"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": "default_ac_gamma",
+        "kind": "named",
+        "value": "0.314"
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "ImpactCfg"
+      },
+      "key": "gamma",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.impact.gamma",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Permanent-impact coefficient, defaulting to the published `crate::impact::AC_GAMMA`.",
+      "table": "engine.impact",
+      "type": "f64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": "default_ac_eta",
+        "kind": "named",
+        "value": "0.142"
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "ImpactCfg"
+      },
+      "key": "eta",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.impact.eta",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Temporary-impact coefficient, defaulting to the published `crate::impact::AC_ETA`. The twin of `Self::gamma` for the half a book walk already pays — so it moves the bar and L1-tick lanes and is inert on an L2 fill that walked a book. Same rationale, same fence around the exponents.",
+      "table": "engine.impact",
+      "type": "f64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "key": "kind",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.fee.kind",
+      "required": true,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Which `vike_model::FeeSchedule` shape this table describes: `\"probability_scaled\"` | `\"per_share_with_floor\"` | `\"percent_of_underlying\"` | `\"percent_maker_taker\"` | `\"venue\"` | `\"free\"`.",
+      "table": "engine.fee",
+      "type": "String"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "key": "taker_rate",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.fee.taker_rate",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`probability_scaled`: the TAKER fraction of the `p(1−p)`-scaled share count.",
+      "table": "engine.fee",
+      "type": "f64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "key": "maker_rate",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.fee.maker_rate",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`probability_scaled`: the MAKER fraction, before any rebate.",
+      "table": "engine.fee",
+      "type": "f64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "key": "maker_rebate_share",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.fee.maker_rebate_share",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`probability_scaled`: the maker's rebate as a share of the EQUIVALENT TAKER fee, so a zero `maker_rate` with a positive share is a NEGATIVE maker commission (a rebate — the sign convention on `vike_model::FeeSchedule`).",
+      "table": "engine.fee",
+      "type": "f64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "key": "per_share",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.fee.per_share",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`per_share_with_floor`: the per-SHARE fee. REQUIRED by that kind.",
+      "table": "engine.fee",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "key": "min",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.fee.min",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`per_share_with_floor`: the per-order MINIMUM. REQUIRED by that kind, and required deliberately — an absent floor defaults to no floor, which is the flat-rate behaviour the whole shape exists to escape. Write `min = 0.0` to assert there is genuinely none.",
+      "table": "engine.fee",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "key": "max_pct",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.fee.max_pct",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`per_share_with_floor`: the maximum fraction of trade value the fee may reach. Optional — absent is `0.0`, which `FeeSchedule::commission` treats as NO ceiling (it caps only on a positive notional bound), so omitting it charges the uncapped per-share-or-floor figure. That default is safe in the direction that matters: it can only over-charge.",
+      "table": "engine.fee",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "key": "bps",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.fee.bps",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`percent_of_underlying`: basis points of the UNDERLYING notional. REQUIRED by that kind.",
+      "table": "engine.fee",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "key": "premium_cap_pct",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.fee.premium_cap_pct",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`percent_of_underlying`: the cap, as a fraction of the PREMIUM notional (Deribit's real rule caps the underlying term at 12.5 % of the premium). REQUIRED, and a non-positive value is REFUSED rather than read as \"no cap\": `FeeSchedule::commission` on this shape is `min(bps × premium, cap × premium)`, so a zero cap makes the whole commission zero — the silent free backtest, wearing a configured fee model.",
+      "table": "engine.fee",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "key": "maker_bps",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.fee.maker_bps",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`percent_maker_taker`: maker basis points of quote-notional. At least one of this and `Self::taker_bps` is required; the other defaults to `0.0`.",
+      "table": "engine.fee",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "key": "taker_bps",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.fee.taker_bps",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`percent_maker_taker`: taker basis points of quote-notional. See `Self::maker_bps`.",
+      "table": "engine.fee",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "key": "venue",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.fee.venue",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`venue`: which venue's published schedule to cost the run at. REQUIRED by that kind, and it is not inferred from `data` — `EngineParams::fee_schedule` is ONE schedule for the whole run, so on a cross-venue `[data.series]` slice there is no single right answer to infer and naming it is the operator asserting which venue's book this run is priced at.",
+      "table": "engine.fee",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "key": "symbol",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.fee.symbol",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`venue`: which SYMBOL selects the venue's fee LANE. Absent (the normal case) resolves from the run's own series on `Self::venue`, which is what keeps the `.P` suffix from being typed twice — see `FeeCfg::build_for` for the two ways that resolution refuses.",
+      "table": "engine.fee",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "key": "pm_curve",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.fee.pm_curve",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`venue`, polymarket only: take the verified 2026 V2 fee regime (`vike_model::POLYMARKET_V2_FEE_CURVE`, via `vike_model::fee_schedule_for_with_pm_curve`) instead of the registry's `Free`.",
+      "table": "engine.fee",
+      "type": "Option<bool>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "ResolutionCfg"
+      },
+      "key": "kind",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.resolution.kind",
+      "required": true,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "currently only `\"binary_outcome\"`",
+      "table": "engine.resolution",
+      "type": "String"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": "default_window_secs",
+        "kind": "named",
+        "value": "300"
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "ResolutionCfg"
+      },
+      "key": "window_secs",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.resolution.window_secs",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Seconds from a window's open (`sts`) to its resolution. Defaults to `crate::cheap_np::WINDOW_SECS` (300). NOTE the symbol GRAMMAR is independent of this: `TokenId::parse` pins `sts` to a multiple of `WINDOW_SECS`, so a different `window_secs` moves the payout TIME without redefining the grid.",
+      "table": "engine.resolution",
+      "type": "i64"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "ResolutionCfg"
+      },
+      "key": "path",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.resolution.path",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Optional `slug,winning_index` CSV. Relative paths resolve against the profile file's own directory (`BacktestProfile::base_dir`), not the CWD.",
+      "table": "engine.resolution",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "ResolutionCfg"
+      },
+      "key": "winners",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.resolution.winners",
+      "required": false,
+      "roster_id": null,
+      "shape": "map",
+      "short": "Optional inline `slug = winning_index` table. Merged over `path`'s rows.",
+      "table": "engine.resolution",
+      "type": "BTreeMap<String, i64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "ResolutionCfg"
+      },
+      "key": "end_ts",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.resolution.end_ts",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "Explicit override for `crate::EngineParams::resolution_end_ts` (epoch-ms or `YYYY-MM-DDTHH`). Absent = the LATEST resolution among the run's own series (`max(sts) + window_secs`), which is what pins the end-of-run sweep to the window rather than to the `RESOLUTION_PROBE_SENTINEL`.",
+      "table": "engine.resolution",
+      "type": "Option<String>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "none",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "SizerCfg"
+      },
+      "key": "kind",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": false,
+      "path": "engine.sizer.kind",
+      "required": true,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "One of `\"pass_through\"` | `\"fixed_dollar\"` | `\"fixed_shares\"` | `\"pct_equity\"` | `\"pct_volatility\"` | `\"max_risk_pct\"` | `\"portfolio_heat\"` | `\"drawdown_throttle\"` — every concrete `vike_analytics::sizing::PositionSizer` this crate ships and nothing else (`Self::build`).",
+      "table": "engine.sizer",
+      "type": "String"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "SizerCfg"
+      },
+      "key": "amount",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.sizer.amount",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`crate::sizing::FixedDollarSizer::amount` — fixed cash notional per entry. Required for `\"fixed_dollar\"`.",
+      "table": "engine.sizer",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "SizerCfg"
+      },
+      "key": "shares",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.sizer.shares",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`crate::sizing::FixedSharesSizer::shares` — fixed share/contract count per entry. Required for `\"fixed_shares\"`.",
+      "table": "engine.sizer",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "SizerCfg"
+      },
+      "key": "pct",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.sizer.pct",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "The knob `\"pct_equity\"` / `\"pct_volatility\"` / `\"max_risk_pct\"` each read as their own fraction of equity (target notional, ATR-risk budget, and stop-risk budget respectively — see `vike_analytics::sizing`'s doc on each). Required for those three kinds.",
+      "table": "engine.sizer",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "SizerCfg"
+      },
+      "key": "max_heat",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.sizer.max_heat",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`crate::sizing::PortfolioHeatSizer::max_heat` — total open-risk cap as a fraction of equity. Required for `\"portfolio_heat\"`.",
+      "table": "engine.sizer",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "SizerCfg"
+      },
+      "key": "sensitivity",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.sizer.sensitivity",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`crate::sizing::DrawdownThrottleSizer::sensitivity`. Required for `\"drawdown_throttle\"`.",
+      "table": "engine.sizer",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "SizerCfg"
+      },
+      "key": "floor",
+      "nested": {
+        "foreign": false,
+        "recursive": false,
+        "struct": null,
+        "table": null
+      },
+      "nullable": true,
+      "path": "engine.sizer.floor",
+      "required": false,
+      "roster_id": null,
+      "shape": "scalar",
+      "short": "`crate::sizing::DrawdownThrottleSizer::floor`. Required for `\"drawdown_throttle\"`.",
+      "table": "engine.sizer",
+      "type": "Option<f64>"
+    },
+    {
+      "aliases": [],
+      "default": {
+        "fn": null,
+        "kind": "implicit",
+        "value": null
+      },
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "SizerCfg"
+      },
+      "key": "base",
+      "nested": {
+        "foreign": false,
+        "recursive": true,
+        "struct": "SizerCfg",
+        "table": "engine.sizer.base"
+      },
+      "nullable": true,
+      "path": "engine.sizer.base",
+      "required": false,
+      "roster_id": null,
+      "shape": "table",
+      "short": "The wrapped sizer for `\"portfolio_heat\"` / `\"drawdown_throttle\"` — required for those two kinds (`Self::build` refuses their absence), and REFUSED under every other kind, which reads it nowhere: a base under a scalar kind would run one sizer while the profile read as a chain. Boxed because `SizerCfg` nests itself — see `MAX_SIZER_DEPTH` for the bound on how far.",
+      "table": "engine.sizer",
+      "type": "Option<Box<SizerCfg>>"
+    }
+  ],
+  "plane": "backtest",
+  "refusals": [
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "window_form"
+      },
+      "message": "[walkforward] declares no window form — set n_splits = N, or a train/test pair (e.g. train = \"12mo\", test = \"3mo\")",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "[walkforward]",
+        "walkforward"
+      ],
+      "on_fn": "window_form",
+      "on_type": "WalkforwardCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "data.detail_interval and engine.cash_gate are mutually exclusive: cash_gate routes the whole bar step through the gated fill lane and UNCONDITIONALLY disables the granular sub-bar lane, so the detail tape would be loaded, scanned and then ignored while every order was reported as resolved against it. Set one.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.detail_interval",
+        "engine",
+        "engine.cash",
+        "engine.cash_gate"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "data.detail_interval and engine.decide = \"simultaneous\" are mutually exclusive: the simultaneous mode implies the shared-cash admission phase, which routes the whole bar step through fill_step_gated and disables the granular sub-bar lane — the detail tape would be loaded, paid for and ignored",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.detail_interval",
+        "engine",
+        "engine.decide"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "data.detail_interval is unavailable to a [walkforward] profile: the walk hands each window a sliced coarse series while nothing slices the detail tape, so every window's last step would fill against bars from AFTER the window ended. That is look-ahead, not merely waste. Run the profile without [walkforward], or without the detail tape.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "[walkforward]",
+        "data",
+        "data.detail_interval",
+        "walkforward"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "detail_interval_ms"
+      },
+      "message": "data.detail_interval {raw:?} ({ms}ms) must be strictly FINER than data.interval {:?} ({base}ms) — at this resolution each coarse step buckets at most one sub-bar, which resolves no stop-versus-target ambiguity while paying for a second whole store scan. This is the inverse of the engine.timeframes rule, where a synthesised series must be COARSER than the base",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.detail_interval",
+        "data.interval",
+        "engine",
+        "engine.timeframes"
+      ],
+      "on_fn": "detail_interval_ms",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "detail_interval_ms"
+      },
+      "message": "data.detail_interval {raw:?} is bar-mode only: the intrabar detail tape is bucketed into COARSE BAR steps and consulted by StrategyEngine::run's bar fill phase, and run_ticks never reads those buckets — a tick replay already resolves every order against the tape it is replaying",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.detail_interval"
+      ],
+      "on_fn": "detail_interval_ms",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "detail_interval_ms"
+      },
+      "message": "data.detail_interval {raw:?} is not a valid interval (want a count then one of s/m/h/d, e.g. \"1m\") — it is handed straight to the hist store as a series interval, so it must name a series the store can hold",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.detail_interval",
+        "name"
+      ],
+      "on_fn": "detail_interval_ms",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "detail_interval_ms"
+      },
+      "message": "data.detail_interval {raw:?} resolves to {ms}ms — a zero-length window makes every sub-bar boundary the same instant",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.detail_interval"
+      ],
+      "on_fn": "detail_interval_ms",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "data.from ({start}) must be <= data.to ({end})",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.from",
+        "data.to"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "detail_interval_ms"
+      },
+      "message": "data.interval {:?} is not a valid interval, so data.detail_interval {raw:?} cannot be checked as finer than it",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.detail_interval",
+        "data.interval"
+      ],
+      "on_fn": "detail_interval_ms",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "data.interval {:?} is not a valid interval, so engine.timeframes cannot be checked against it",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.interval",
+        "engine",
+        "engine.timeframes"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "warmup_steps"
+      },
+      "message": "data.interval {:?} is not a valid interval, so the duration data.warmup {raw:?} cannot be converted to a step count",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.interval",
+        "data.warmup"
+      ],
+      "on_fn": "warmup_steps",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "warmup_steps"
+      },
+      "message": "data.interval {:?} resolves to {base}ms, so the duration data.warmup {raw:?} names no number of steps",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.interval",
+        "data.warmup",
+        "name"
+      ],
+      "on_fn": "warmup_steps",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "data.max_gap is set without data.require_coverage = true, so the gate whose tolerance it names is not armed and this key is read by nothing. Arm the gate, or remove the tolerance",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.max_gap",
+        "data.require_coverage",
+        "name"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "max_gap_ms"
+      },
+      "message": "data.max_gap {raw:?} is a BAR COUNT, and a gap in this store is a wall-clock span in epoch-ms: converting {n} bars to a duration needs an interval, and a tick profile has none. Write the tolerance as fixed time — \"4h\", \"1d\"",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.max_gap"
+      ],
+      "on_fn": "max_gap_ms",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "max_gap_ms"
+      },
+      "message": "data.max_gap {raw:?} is a CALENDAR span, and a calendar month is not a fixed number of milliseconds (one month from 31 January is 28 days, from 31 March 30) — so the tolerance would depend on where data.from happens to sit, and two runs naming the same tolerance would accept different amounts. Write it in fixed time — \"30d\"",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.from",
+        "data.max_gap"
+      ],
+      "on_fn": "max_gap_ms",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "max_gap_ms"
+      },
+      "message": "data.max_gap {raw:?} resolves to {ms}ms — a non-positive tolerance is what an ABSENT data.max_gap already means (tolerate nothing), so this spelling can only mislead. Remove the key, or name a real duration",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.max_gap",
+        "name"
+      ],
+      "on_fn": "max_gap_ms",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "max_gap_ms"
+      },
+      "message": "data.max_gap: {e}",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.max_gap"
+      ],
+      "on_fn": "max_gap_ms",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "data.on_gap is set without data.require_coverage = true, so the gate it configures is not armed and this key is read by nothing — while it reads as though a run over an uncovered window would be stopped. Arm the gate, or remove the disposition",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.on_gap",
+        "data.require_coverage"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "on_gap"
+      },
+      "message": "data.on_gap {raw:?} is not one of {roster}. It says what data.require_coverage DOES about a window the store does not cover: `refuse` stops the run (the default, because a gate that only warns is invisible on every run nobody reads), `warn` logs the findings and runs unchanged, `run` leaves the gate inert while keeping the file's statement of what this run is supposed to require",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.on_gap",
+        "data.require_coverage"
+      ],
+      "on_fn": "on_gap",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_data_slice"
+      },
+      "message": "data.series[{:?}].kind = {:?} is tick-mode only: a bar series has no quote/trade/book lanes to filter",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.series"
+      ],
+      "on_fn": "validate_data_slice",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_data_slice"
+      },
+      "message": "data.symbols must not be empty",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.symbols"
+      ],
+      "on_fn": "validate_data_slice",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_data_slice"
+      },
+      "message": "data.symbols must not be empty (or use the cross-venue [[data.series]] form)",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "[data.series]",
+        "data",
+        "data.series",
+        "data.symbols"
+      ],
+      "on_fn": "validate_data_slice",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "universe_mode"
+      },
+      "message": "data.universe {raw:?} is not one of {roster}. It is the POINT-IN-TIME membership rule: `declared` takes the symbol list verbatim (the default), `covered` names every member whose tape does not span the window and runs anyway, `strict` refuses that run. None of the three ever drops a member — a universe a run narrowed silently would not be the one the profile names",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.universe",
+        "name"
+      ],
+      "on_fn": "universe_mode",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_data_slice"
+      },
+      "message": "data.venue is required alongside data.symbols",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.symbols",
+        "data.venue"
+      ],
+      "on_fn": "validate_data_slice",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_data_slice"
+      },
+      "message": "data.venue/data.symbols and [[data.series]] are two ways to name the SAME slice — set exactly one (the [[data.series]] form is the cross-venue one)",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "[data.series]",
+        "data",
+        "data.series",
+        "data.symbols",
+        "data.venue",
+        "name"
+      ],
+      "on_fn": "validate_data_slice",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "warmup_steps"
+      },
+      "message": "data.warmup {raw:?} is a CALENDAR span, and a calendar month is not a fixed number of steps (one month from 31 January is 28 days, from 31 March 30) — so its length would depend on where data.from happens to sit, which is the irreproducibility this key exists to remove. Write it in bars (\"200bars\") or in fixed time (\"90d\")",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.from",
+        "data.warmup"
+      ],
+      "on_fn": "warmup_steps",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "warmup_steps"
+      },
+      "message": "data.warmup {raw:?} is a DURATION, which is bar-mode only: a tick tape has no fixed cadence to divide it by, so no number of ticks corresponds to it. The engine gates run_ticks on an EVENT index, so write the requirement as a count — e.g. \"200bars\" means 200 ticks here",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.warmup",
+        "engine"
+      ],
+      "on_fn": "warmup_steps",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "warmup_steps"
+      },
+      "message": "data.warmup: {e}",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.warmup"
+      ],
+      "on_fn": "warmup_steps",
+      "on_type": "DataCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_data_slice"
+      },
+      "message": "duplicate symbol {:?} in the data slice — the engine routes ticks to a symbol slot BY NAME, so two series cannot share one symbol",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "engine"
+      ],
+      "on_fn": "validate_data_slice",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.attach_funding is bar-mode only: the per-interval funding accrual runs in the bar loop; the tick lane carries no funding fold to feed",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.attach_funding"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.cash must be > 0, got {}",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.cash"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.cash_gate is bar-mode only: the shared-cash admission phase is StrategyEngine::run's own bar step (fill_step_gated), and run_ticks never consults it — a tick profile setting it would change nothing",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.cash",
+        "engine.cash_gate"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.clamp_to_leverage is unavailable to a profile carrying [risk]: SimBroker::build_risk_gate returns None on clamp_to_leverage BEFORE it reads risk_limits, so the clamp disarms the pre-trade gate entirely and EVERY [risk] limit — not just max_leverage — is discarded. Drop clamp_to_leverage to keep [risk]'s gate, or remove [risk] and clamp against engine.leverage alone",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "[risk]",
+        "engine",
+        "engine.clamp_to_leverage",
+        "engine.leverage",
+        "risk"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.clamp_to_leverage needs engine.leverage: there is nothing to clamp to",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.clamp_to_leverage",
+        "engine.leverage"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.decide = \"simultaneous\" is bar-mode only: the cross-sectional allocator it orders is StrategyEngine::fill_step_gated, reached only from StrategyEngine::run — run_ticks consults neither it nor cash_gate, so a tick profile setting it would change nothing",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.decide"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.decide = \"simultaneous\" is not built for a run with a pre-trade risk gate: remove [risk] and engine.leverage, or keep engine.decide unset. With a gate armed, SimBroker::gate_order folds the pending set as it ACCUMULATES during the on_bar fan-out, so the symbol judged first faces the whole step budget and later ones face the remainder — the DECISION is still taken in symbol-list order and no fill-phase ranking can repair it. Closing it needs a step-boundary budget snapshot, which does not exist",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "[risk]",
+        "engine",
+        "engine.decide",
+        "engine.leverage",
+        "risk"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.equity_sample_every is tick-mode only: the bar lane records one equity sample per BAR (bounded by the bar count), so there is nothing to thin",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.equity_sample_every"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.fee and a non-zero engine.fee_rate ({}) are two different cost models — set exactly one",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.fee",
+        "engine.fee_rate"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_shape"
+      },
+      "message": "engine.fee.kind = \"per_share_with_floor\" needs BOTH per_share and min. The floor is the whole reason this shape exists — a per-share fee with no minimum is a flat rate wearing a different name, and it is the configuration that makes a small-size high-frequency run backtest as viable and then lose to the broker minimum live. Write min = 0.0 to assert there is genuinely no floor.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.fee",
+        "engine.fee.kind",
+        "name"
+      ],
+      "on_fn": "validate_shape",
+      "on_type": "FeeCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.fee.kind = \"per_share_with_floor\" needs engine.multiplier = 1.0 (the default) and no engine.multipliers row other than 1.0: the fee path scales the schedule's answer by the contract multiplier, so a per-ORDER minimum would be charged per CONTRACT. This shape models an equities book. Drop the multiplier, or price a multiplied contract with percent_maker_taker.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.fee",
+        "engine.fee.kind",
+        "engine.multiplier",
+        "engine.multipliers"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_shape"
+      },
+      "message": "engine.fee.kind = \"percent_maker_taker\" needs at least one of maker_bps / taker_bps — a table naming neither describes no cost, which is what kind = \"free\" says on purpose. A genuinely zero-fee side is written as the explicit 0.0, so the zero is an assertion rather than an omission.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.fee",
+        "engine.fee.kind"
+      ],
+      "on_fn": "validate_shape",
+      "on_type": "FeeCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_shape"
+      },
+      "message": "engine.fee.kind = \"percent_of_underlying\" needs BOTH bps and premium_cap_pct — the cap is half the rule it models (min(bps x underlying, cap x premium)), and it is the half that binds for a cheap deep-OTM option.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.fee",
+        "engine.fee.kind"
+      ],
+      "on_fn": "validate_shape",
+      "on_type": "FeeCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_shape"
+      },
+      "message": "engine.fee.kind = \"venue\" needs engine.fee.venue — it is not inferred from [data]. EngineParams::fee_schedule is ONE schedule for the whole run, so a cross-venue slice has no single answer to infer, and naming the venue is the operator asserting which venue's book this run is costed at.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "[data]",
+        "data",
+        "engine",
+        "engine.fee",
+        "engine.fee.kind",
+        "engine.fee.venue"
+      ],
+      "on_fn": "validate_shape",
+      "on_type": "FeeCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "fee_lane_for"
+      },
+      "message": "engine.fee.kind = \"venue\" resolves ONE schedule for the whole run, and this run's {venue:?} series straddle {} fee lanes ({}) — a venue prices its lanes completely differently (crates/vike-model/src/fees.rs's fee_schedule_for carries the measurement per lane), so one row would misprice the other lane. Split the run per lane, or set engine.fee.symbol to name the lane this run is costed at.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.fee",
+        "engine.fee.kind",
+        "engine.fee.symbol",
+        "name"
+      ],
+      "on_fn": "fee_lane_for",
+      "on_type": "FeeCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_shape"
+      },
+      "message": "engine.fee.pm_curve is polymarket-only, and this table names venue {:?} — vike_model::fee_schedule_for_with_pm_curve delegates to fee_schedule_for for every other venue, so the flag would configure nothing while the run was read as curve-priced. Drop it.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.fee",
+        "engine.fee.pm_curve",
+        "name"
+      ],
+      "on_fn": "validate_shape",
+      "on_type": "FeeCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_shape"
+      },
+      "message": "engine.fee.premium_cap_pct must be > 0, got {} — a zero cap is not \"no cap\". FeeSchedule::commission on this shape is min(bps x premium, cap x premium), so a zero cap zeroes the whole commission and the run pays no fee at all while the profile reads as fee-modelled. crates/vike-model/src/fees.rs's fee_schedule_for carries the real Deribit cap in its \"deribit\" arm.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.fee",
+        "engine.fee.premium_cap_pct"
+      ],
+      "on_fn": "validate_shape",
+      "on_type": "FeeCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "fee_lane_for"
+      },
+      "message": "engine.fee.venue = {venue:?} names a venue this run does not load, so there is no symbol to resolve its fee LANE from — and answering with the bare-venue row would charge a perp run at the venue's SPOT schedule, the mispricing the lane key exists to end. This run's series are on: {}. Name a venue the slice trades, or set engine.fee.symbol outright.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.fee",
+        "engine.fee.symbol",
+        "engine.fee.venue",
+        "name"
+      ],
+      "on_fn": "fee_lane_for",
+      "on_type": "FeeCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_shape"
+      },
+      "message": "engine.fee.{key} is a knob of kind {owner:?}, and this table declares kind {kind:?} — nothing would read it. A COST knob that configures nothing is worse than an absent one: the operator reads the profile as priced at what they wrote and the run prices at something else. Set the kind this knob belongs to, or drop the knob.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.fee"
+      ],
+      "on_fn": "validate_shape",
+      "on_type": "FeeCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_shape"
+      },
+      "message": "engine.fee.{name} must be finite and >= 0, got {v}",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.fee",
+        "name"
+      ],
+      "on_fn": "validate_shape",
+      "on_type": "FeeCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.feed_latency is tick-mode only: it re-orders recorded ticks by their machine receive stamp (local_ts), which a bar series does not carry",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.fee",
+        "engine.feed_latency"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "build"
+      },
+      "message": "engine.impact.exec_time must be > 0, got {}",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.impact",
+        "engine.impact.exec_time"
+      ],
+      "on_fn": "build",
+      "on_type": "ImpactCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "build"
+      },
+      "message": "engine.impact.window must be >= 3 (two returns), got {}",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.impact",
+        "engine.impact.window"
+      ],
+      "on_fn": "build",
+      "on_type": "ImpactCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "build"
+      },
+      "message": "engine.impact.{name} must be > 0 and finite, got {v}",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.impact",
+        "name"
+      ],
+      "on_fn": "build",
+      "on_type": "ImpactCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.leverage and [risk] are two different margin sources for the same gate — set exactly one. With clamp_to_leverage off (the default) there are three configurations and [risk] wins all of them: SimBroker::build_risk_gate's (Some(l), _) arm takes risk_limits unconditionally, so a [risk] that sets max_leverage answers with ITS number, a [risk] that does not sets no margin requirement at all, and either way engine.leverage's 1/L im_requirement is silently discarded. (With clamp_to_leverage on, neither reaches a gate — that combination is refused separately.) Set risk.max_leverage instead, or remove [risk] to use engine.leverage's 1/L margin mapping",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "[risk]",
+        "engine",
+        "engine.leverage",
+        "risk",
+        "risk.max_leverage"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.leverage must be > 0, got {l} — omit the key for unlevered",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.leverage"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.liq_buffer must be >= 0, got {}",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.liq_buffer"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.maint_margin must be >= 0, got {} — 0 means the liquidation watchdog is off, and a negative rate has no meaning",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.maint_margin"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.multiplier must be > 0, got {} — it scales every position's notional, so zero makes every trade worth nothing",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.multiplier"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.multipliers.{sym} must be > 0, got {m}",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.multiplier",
+        "engine.multipliers"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.multipliers.{sym} names a symbol this run does not load — the engine matches a multiplier row by EXACT symbol name and otherwise falls back to the global engine.multiplier, so this row would change nothing. The data slice is: {}",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "engine",
+        "engine.multiplier",
+        "engine.multipliers",
+        "name"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.queue_model is tick-mode only: the FIFO queue lane runs in the tick/book replay path, which a bar series does not drive",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.queue_model"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_shape"
+      },
+      "message": "engine.resolution.window_secs must be > 0, got {}",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.resolution",
+        "engine.resolution.window_secs"
+      ],
+      "on_fn": "validate_shape",
+      "on_type": "ResolutionCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_shape"
+      },
+      "message": "engine.resolution.winners[{slug:?}] = {wi} is not a binary outcome index (0 or 1). Non-binary and unresolved (-1) values are real on-chain facts and are never coerced to \"both sides lose\" — drop the window from the run instead.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.resolution",
+        "engine.resolution.winners"
+      ],
+      "on_fn": "validate_shape",
+      "on_type": "ResolutionCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "build"
+      },
+      "message": "engine.resolution: {} window slug(s) in data.series have no binary winning_index (first: {names:?}). A window with no payout would end the run marked at its last traded price — remove it from the slice or supply its resolution.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.series",
+        "engine",
+        "engine.resolution",
+        "name"
+      ],
+      "on_fn": "build",
+      "on_type": "ResolutionCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.settlement_period_ms must be > 0, got {ms} — omit the key to never settle",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.settlement_period_ms"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "build_at_depth"
+      },
+      "message": "engine.sizer nesting is {depth} levels deep ([engine.sizer{}]) — MAX_SIZER_DEPTH is {MAX_SIZER_DEPTH}; flatten the base chain (no composition of the two wrapping kinds needs to nest this deep)",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.sizer"
+      ],
+      "on_fn": "build_at_depth",
+      "on_type": "SizerCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "need"
+      },
+      "message": "engine.sizer.kind = \"drawdown_throttle\" wraps a base sizer — add an [engine.sizer.base] table naming it",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.sizer",
+        "engine.sizer.base",
+        "engine.sizer.kind"
+      ],
+      "on_fn": "need",
+      "on_type": "SizerCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "need"
+      },
+      "message": "engine.sizer.kind = \"portfolio_heat\" wraps a base sizer — add an [engine.sizer.base] table naming it",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.sizer",
+        "engine.sizer.base",
+        "engine.sizer.kind"
+      ],
+      "on_fn": "need",
+      "on_type": "SizerCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "need"
+      },
+      "message": "engine.sizer.kind = {kind:?} does not wrap a base sizer, but [engine.sizer{}.base] is set — only \"portfolio_heat\" and \"drawdown_throttle\" read it, so the chain would run {kind:?} alone. Remove the base table, or name a wrapping kind",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.sizer",
+        "engine.sizer.kind",
+        "name"
+      ],
+      "on_fn": "need",
+      "on_type": "SizerCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "need"
+      },
+      "message": "engine.sizer.{field} is required when engine.sizer.kind = {kind:?}",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.sizer",
+        "engine.sizer.kind"
+      ],
+      "on_fn": "need",
+      "on_type": "SizerCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_data_slice"
+      },
+      "message": "engine.snap_to_properties is single-venue only: the point-in-time instrument grid is looked up under one default_venue, so a cross-venue [[data.series]] slice would snap every series to the first series' venue",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "[data.series]",
+        "data",
+        "data.series",
+        "engine",
+        "engine.snap_to_properties"
+      ],
+      "on_fn": "validate_data_slice",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.timeframes is bar-mode only: the coarse series are resampled from the base BAR stream, and a tick profile has none",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.timeframes"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.timeframes {tf:?} ({ms}ms) must be coarser than data.interval {:?} ({base}ms) — a finer window cannot be synthesised from the base stream and would return the base bars re-labelled",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.interval",
+        "engine",
+        "engine.timeframes"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.timeframes {tf:?} is not a valid interval (want a count then one of s/m/h/d, e.g. \"4h\")",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.timeframes"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.timeframes {tf:?} resolves to {ms}ms — a zero-length window makes every boundary the same instant",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.timeframes"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "engine.volume_limit must be in (0, 1], got {v} — it is the fraction of the EVENT's own volume one fill may take (a bar's volume in bar mode, ONE PRINT's in tick mode), so 1.0 is all of it",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.volume_limit"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/euler.rs",
+        "symbol": "numeric_axes"
+      },
+      "message": "euler search supports at most {MAX_AXES} sweep axes, got {} — the 3^d refinement neighbourhood stops being cheaper than the grid past that; use the {} optimizer (--optimizer {})",
+      "module": "crates/vike-backtest/src/harness/euler.rs",
+      "names": [],
+      "on_fn": "numeric_axes",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/walkforward.rs",
+        "symbol": "walkforward_preflight"
+      },
+      "message": "profile has no [walkforward] table — a walk-forward needs a window form, e.g. `[walkforward]\nn_splits = 4` or `[walkforward]\ntrain = \"12mo\"\ntest = \"3mo\"`",
+      "module": "crates/vike-backtest/src/harness/walkforward.rs",
+      "names": [
+        "[walkforward]",
+        "walkforward"
+      ],
+      "on_fn": "walkforward_preflight",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "queue_model_kind"
+      },
+      "message": "queue_model \"prob_power:{tail}\": {tail:?} is not a number",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [],
+      "on_fn": "queue_model_kind",
+      "on_type": "EngineCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/registry.rs",
+        "symbol": "strategy_by_name"
+      },
+      "message": "rhai compile error: {e}",
+      "module": "crates/vike-backtest/src/harness/registry.rs",
+      "names": [],
+      "on_fn": "strategy_by_name",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/registry.rs",
+        "symbol": "strategy_by_name"
+      },
+      "message": "rhai strategy requires a `src` param (the inline Rhai script source)",
+      "module": "crates/vike-backtest/src/harness/registry.rs",
+      "names": [
+        "strategy"
+      ],
+      "on_fn": "strategy_by_name",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "risk.max_orders_per_window is a wall-clock order-rate throttle — meaningless in backtest sim time (a replayed month can execute in under a second, which would spuriously rate-limit every order; SimBroker::build_risk_gate always disarms this field for the identical reason on the live-parity gate it mounts). Remove it from `[risk]` — every other risk.* limit is honored",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "[risk]",
+        "risk",
+        "risk.max_orders_per_window"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/optimize.rs",
+        "symbol": "require_overridable_params"
+      },
+      "message": "strategy.params must be a table",
+      "module": "crates/vike-backtest/src/harness/optimize.rs",
+      "names": [
+        "strategy",
+        "strategy.params"
+      ],
+      "on_fn": "require_overridable_params",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/sweep.rs",
+        "symbol": "profile_with_overrides"
+      },
+      "message": "strategy.params must be a table",
+      "module": "crates/vike-backtest/src/harness/sweep.rs",
+      "names": [
+        "strategy",
+        "strategy.params"
+      ],
+      "on_fn": "profile_with_overrides",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/sweep.rs",
+        "symbol": "numeric_sweep_axes"
+      },
+      "message": "sweep.{key} mixes integer and float values; {search} search must render every coordinate as one TOML type, which would change what the strategy receives — make the axis all-integer or all-float, or use the {grid} optimizer (--optimizer {grid})",
+      "module": "crates/vike-backtest/src/harness/sweep.rs",
+      "names": [
+        "strategy"
+      ],
+      "on_fn": "numeric_sweep_axes",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/sweep.rs",
+        "symbol": "sweep_axis_array"
+      },
+      "message": "sweep.{key} must be a non-empty array",
+      "module": "crates/vike-backtest/src/harness/sweep.rs",
+      "names": [],
+      "on_fn": "sweep_axis_array",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/sweep.rs",
+        "symbol": "sweep_axis_array"
+      },
+      "message": "sweep.{key} must be an array of values to sweep over, got {value:?}",
+      "module": "crates/vike-backtest/src/harness/sweep.rs",
+      "names": [],
+      "on_fn": "sweep_axis_array",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/walkforward.rs",
+        "symbol": "walkforward_preflight"
+      },
+      "message": "the [walkforward] window form yields NO windows over the {} bar(s) of {symbol} in this range — a walk that evaluates nothing must not return a report that looks like one",
+      "module": "crates/vike-backtest/src/harness/walkforward.rs",
+      "names": [
+        "[walkforward]",
+        "walkforward"
+      ],
+      "on_fn": "walkforward_preflight",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "window_form"
+      },
+      "message": "the duration window form needs BOTH walkforward.train and walkforward.test (step defaults to test) — a half-declared window has no shape",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "walkforward",
+        "walkforward.test",
+        "walkforward.train"
+      ],
+      "on_fn": "window_form",
+      "on_type": "WalkforwardCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "decide_mode"
+      },
+      "message": "unknown engine.decide {other:?} (want sequential | simultaneous; absent = sequential, the per-symbol walk in the order data.symbols lists them)",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "data",
+        "data.symbols",
+        "engine",
+        "engine.decide"
+      ],
+      "on_fn": "decide_mode",
+      "on_type": "EngineCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_shape"
+      },
+      "message": "unknown engine.fee.kind {kind:?} (known: {}; a single flat fraction of notional may also stay on engine.fee_rate, which is the same shape as percent_maker_taker charged to both sides)",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.fee",
+        "engine.fee.kind",
+        "engine.fee_rate"
+      ],
+      "on_fn": "validate_shape",
+      "on_type": "FeeCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "build_for"
+      },
+      "message": "unknown engine.fee.kind {other:?} (known: {})",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.fee",
+        "engine.fee.kind"
+      ],
+      "on_fn": "build_for",
+      "on_type": "FeeCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "build"
+      },
+      "message": "unknown engine.impact.model {other:?} (known: \"almgren_chriss\")",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.impact",
+        "engine.impact.model"
+      ],
+      "on_fn": "build",
+      "on_type": "ImpactCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "validate_shape"
+      },
+      "message": "unknown engine.resolution.kind {:?} (known: \"binary_outcome\")",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.resolution",
+        "engine.resolution.kind"
+      ],
+      "on_fn": "validate_shape",
+      "on_type": "ResolutionCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "need"
+      },
+      "message": "unknown engine.sizer.kind {other:?} (want pass_through | fixed_dollar | fixed_shares | pct_equity | pct_volatility | max_risk_pct | portfolio_heat | drawdown_throttle)",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "engine",
+        "engine.sizer",
+        "engine.sizer.kind",
+        "risk"
+      ],
+      "on_fn": "need",
+      "on_type": "SizerCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "fill_model_kind"
+      },
+      "message": "unknown fill_model {other:?} (want l2book; absent = the default Tick model)",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [],
+      "on_fn": "fill_model_kind",
+      "on_type": "EngineCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "queue_model_kind"
+      },
+      "message": "unknown queue_model {other:?} (want risk_adverse | prob_power[:n] | prob_log)",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "risk"
+      ],
+      "on_fn": "queue_model_kind",
+      "on_type": "EngineCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/registry.rs",
+        "symbol": "strategy_by_name"
+      },
+      "message": "unknown strategy {n:?} (known: {}; user: {})",
+      "module": "crates/vike-backtest/src/harness/registry.rs",
+      "names": [
+        "strategy"
+      ],
+      "on_fn": "strategy_by_name",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "walk_mode"
+      },
+      "message": "unknown walkforward.mode {other:?} (want anchored | rolling; absent = anchored)",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "walkforward",
+        "walkforward.mode"
+      ],
+      "on_fn": "walk_mode",
+      "on_type": "WalkforwardCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "rank_metric"
+      },
+      "message": "unknown walkforward.rank_by {raw:?} (want sharpe | return | max_dd | equity; absent = sharpe)",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "walkforward",
+        "walkforward.rank_by"
+      ],
+      "on_fn": "rank_metric",
+      "on_type": "WalkforwardCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "window_search"
+      },
+      "message": "unknown walkforward.search {other:?} (want none | sweep; absent = none, the no-search control)",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "walkforward",
+        "walkforward.search"
+      ],
+      "on_fn": "window_search",
+      "on_type": "WalkforwardCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/walkforward.rs",
+        "symbol": "walkforward_preflight"
+      },
+      "message": "walk-forward is bar-mode only: the splitter divides ONE bar series by index, which a tick replay does not produce — set data.kind = \"bar\"",
+      "module": "crates/vike-backtest/src/harness/walkforward.rs",
+      "names": [
+        "data",
+        "data.kind"
+      ],
+      "on_fn": "walkforward_preflight",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/walkforward.rs",
+        "symbol": "run_walkforward_optimized_with"
+      },
+      "message": "walk-forward optimization needs a [sweep] table to search — this profile has none, so every window would 'select' the one parameter set it already has. Add the grid, or run the fixed-parameter walk instead.",
+      "module": "crates/vike-backtest/src/harness/walkforward.rs",
+      "names": [],
+      "on_fn": "run_walkforward_optimized_with",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/walkforward.rs",
+        "symbol": "walkforward_preflight"
+      },
+      "message": "walk-forward runs over ONE bar series — this profile resolves {}; name a single symbol",
+      "module": "crates/vike-backtest/src/harness/walkforward.rs",
+      "names": [
+        "name"
+      ],
+      "on_fn": "walkforward_preflight",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "window_form"
+      },
+      "message": "walkforward.n_splits and walkforward.train/test/step are two PROTOCOLS, not two spellings — a split count is defined BY the range and moves when the range moves, a duration does not. Set exactly one.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "walkforward",
+        "walkforward.n_splits",
+        "walkforward.train"
+      ],
+      "on_fn": "window_form",
+      "on_type": "WalkforwardCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "walkforward.n_splits must be >= 1, got 0",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "walkforward",
+        "walkforward.n_splits"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/windows.rs",
+        "symbol": "resolve_windows"
+      },
+      "message": "walkforward.n_splits must be >= 1, got 0",
+      "module": "crates/vike-backtest/src/harness/windows.rs",
+      "names": [
+        "walkforward",
+        "walkforward.n_splits"
+      ],
+      "on_fn": "resolve_windows",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "window_form"
+      },
+      "message": "walkforward.purge / walkforward.embargo need the DURATION window form (train/test) — the split-count walk stays gap-free (docs/decisions/0046-the-bar-mode-walk-forward-has-no-purge.md). Replace n_splits with a train/test pair, or drop the key.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "walkforward",
+        "walkforward.embargo",
+        "walkforward.purge"
+      ],
+      "on_fn": "window_form",
+      "on_type": "WalkforwardCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "window_search"
+      },
+      "message": "walkforward.search = \"grid\" was renamed to \"sweep\" — one name for one knob, and it is the table it expands ([sweep]). Write search = \"sweep\".",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "name",
+        "walkforward",
+        "walkforward.search"
+      ],
+      "on_fn": "window_search",
+      "on_type": "WalkforwardCfg"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "refusals"
+      },
+      "message": "walkforward.search = \"sweep\" needs a [sweep] table to search — this profile has none, so every window would 'select' the one parameter set it already has. Add the grid, or drop the key for the no-search control.",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "walkforward",
+        "walkforward.search"
+      ],
+      "on_fn": "refusals",
+      "on_type": "BacktestProfile"
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/windows.rs",
+        "symbol": "resolve_windows"
+      },
+      "message": "walkforward.step resolves to {step} bar(s) and walkforward.test to {test} — a step shorter than the validation window makes consecutive windows OVERLAP, and the stitched out-of-sample curve would compound the same bars more than once, reporting a return and a Sharpe roughly the overlap factor too high. Set step >= test: equal tiles the windows edge to edge (that is also what an absent step means), and larger leaves a gap between them.",
+      "module": "crates/vike-backtest/src/harness/windows.rs",
+      "names": [
+        "walkforward",
+        "walkforward.step",
+        "walkforward.test"
+      ],
+      "on_fn": "resolve_windows",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/windows.rs",
+        "symbol": "to_bars"
+      },
+      "message": "walkforward.{key} is a duration, so it needs a bar interval to convert against — data.interval {interval:?} is not one (want e.g. \"1m\", \"1h\", \"1d\"), or spell the window with the `bars` suffix",
+      "module": "crates/vike-backtest/src/harness/windows.rs",
+      "names": [
+        "data",
+        "data.interval",
+        "walkforward"
+      ],
+      "on_fn": "to_bars",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/windows.rs",
+        "symbol": "to_bars"
+      },
+      "message": "walkforward.{key} is shorter than one {interval} bar — it would resolve to zero bars and change nothing; widen it or use the `bars` suffix",
+      "module": "crates/vike-backtest/src/harness/windows.rs",
+      "names": [
+        "walkforward"
+      ],
+      "on_fn": "to_bars",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "span_field"
+      },
+      "message": "walkforward.{key}: {e}",
+      "module": "crates/vike-backtest/src/harness/profile.rs",
+      "names": [
+        "walkforward"
+      ],
+      "on_fn": "span_field",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/sweep.rs",
+        "symbol": "numeric_sweep_axes"
+      },
+      "message": "{search} search needs a [sweep] table (a single-point profile has nothing to search)",
+      "module": "crates/vike-backtest/src/harness/sweep.rs",
+      "names": [],
+      "on_fn": "numeric_sweep_axes",
+      "on_type": null
+    },
+    {
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/sweep.rs",
+        "symbol": "numeric_sweep_axes"
+      },
+      "message": "{search} search needs numeric sweep axes, but sweep.{key} contains {v:?} — use the {grid} optimizer (--optimizer {grid}) for non-numeric axes",
+      "module": "crates/vike-backtest/src/harness/sweep.rs",
+      "names": [],
+      "on_fn": "numeric_sweep_axes",
+      "on_type": null
+    }
+  ],
+  "root_struct": "BacktestProfile",
+  "rosters": [
+    {
+      "default": null,
+      "derived_from": "the `DataKind` enum's variants",
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataKind"
+      },
+      "id": "DataKind",
+      "keys": [
+        "data.kind"
+      ],
+      "members": [
+        "bar",
+        "tick"
+      ]
+    },
+    {
+      "default": "tick",
+      "derived_from": "the `SeriesKind` enum's variants",
+      "evidence": {
+        "file": "crates/vike-backtest/src/hist_replay.rs",
+        "symbol": "SeriesKind"
+      },
+      "id": "SeriesKind",
+      "keys": [
+        "data.series.kind"
+      ],
+      "members": [
+        "tick",
+        "quote",
+        "trade",
+        "book"
+      ]
+    },
+    {
+      "default": null,
+      "derived_from": "the arms of `build`'s `match kind.as_str()`",
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "SizerCfg"
+      },
+      "id": "SizerKindName",
+      "keys": [
+        "engine.sizer.kind"
+      ],
+      "members": [
+        "pass_through",
+        "fixed_dollar",
+        "fixed_shares",
+        "pct_equity",
+        "pct_volatility",
+        "max_risk_pct",
+        "portfolio_heat",
+        "drawdown_throttle"
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "sizer_kinds": [
+    {
+      "kind": "pass_through",
+      "requires": [],
+      "wraps_base": false
+    },
+    {
+      "kind": "fixed_dollar",
+      "requires": [
+        "amount"
+      ],
+      "wraps_base": false
+    },
+    {
+      "kind": "fixed_shares",
+      "requires": [
+        "shares"
+      ],
+      "wraps_base": false
+    },
+    {
+      "kind": "pct_equity",
+      "requires": [
+        "pct"
+      ],
+      "wraps_base": false
+    },
+    {
+      "kind": "pct_volatility",
+      "requires": [
+        "pct"
+      ],
+      "wraps_base": false
+    },
+    {
+      "kind": "max_risk_pct",
+      "requires": [
+        "pct"
+      ],
+      "wraps_base": false
+    },
+    {
+      "kind": "portfolio_heat",
+      "requires": [
+        "max_heat"
+      ],
+      "wraps_base": true
+    },
+    {
+      "kind": "drawdown_throttle",
+      "requires": [
+        "sensitivity",
+        "floor"
+      ],
+      "wraps_base": true
+    }
+  ],
+  "skipped_fields": [
+    {
+      "field": "base_dir",
+      "struct": "BacktestProfile",
+      "why": "Directory the profile FILE was read from — set by `BacktestProfile::from_path`, `None` for a profile parsed from a string. Relative paths inside the profile (today just `engine.resolution.path`) resolve against it, so a profile + its sidecar CSV move together instead of depending on the caller's CWD. Never a TOML key (`#serde(skip)`)."
+    }
+  ],
+  "sources": [
+    {
+      "owns": "the profile schema",
+      "path": "crates/vike-backtest/src/harness/profile.rs"
+    },
+    {
+      "owns": "[[data.series]]",
+      "path": "crates/vike-backtest/src/hist_replay.rs"
+    }
+  ],
+  "tables": [
+    {
+      "array_of_tables": false,
+      "closed": true,
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "BacktestProfile"
+      },
+      "required": true,
+      "struct": "BacktestProfile",
+      "table": ""
+    },
+    {
+      "array_of_tables": false,
+      "closed": true,
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "DataCfg"
+      },
+      "required": true,
+      "struct": "DataCfg",
+      "table": "data"
+    },
+    {
+      "array_of_tables": false,
+      "closed": true,
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "EngineCfg"
+      },
+      "required": true,
+      "struct": "EngineCfg",
+      "table": "engine"
+    },
+    {
+      "array_of_tables": false,
+      "closed": true,
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "StrategyCfg"
+      },
+      "required": true,
+      "struct": "StrategyCfg",
+      "table": "strategy"
+    },
+    {
+      "array_of_tables": false,
+      "closed": true,
+      "evidence": {
+        "file": "crates/vike-exec/src/risk_profile.rs",
+        "symbol": "ProfileRisk"
+      },
+      "required": false,
+      "struct": "ProfileRisk",
+      "table": "risk"
+    },
+    {
+      "array_of_tables": false,
+      "closed": true,
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "WalkforwardCfg"
+      },
+      "required": false,
+      "struct": "WalkforwardCfg",
+      "table": "walkforward"
+    },
+    {
+      "array_of_tables": true,
+      "closed": true,
+      "evidence": {
+        "file": "crates/vike-backtest/src/hist_replay.rs",
+        "symbol": "SeriesRef"
+      },
+      "required": false,
+      "struct": "SeriesRef",
+      "table": "data.series"
+    },
+    {
+      "array_of_tables": false,
+      "closed": true,
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "ImpactCfg"
+      },
+      "required": false,
+      "struct": "ImpactCfg",
+      "table": "engine.impact"
+    },
+    {
+      "array_of_tables": false,
+      "closed": true,
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "FeeCfg"
+      },
+      "required": false,
+      "struct": "FeeCfg",
+      "table": "engine.fee"
+    },
+    {
+      "array_of_tables": false,
+      "closed": true,
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "ResolutionCfg"
+      },
+      "required": false,
+      "struct": "ResolutionCfg",
+      "table": "engine.resolution"
+    },
+    {
+      "array_of_tables": false,
+      "closed": true,
+      "evidence": {
+        "file": "crates/vike-backtest/src/harness/profile.rs",
+        "symbol": "SizerCfg"
+      },
+      "required": false,
+      "struct": "SizerCfg",
+      "table": "engine.sizer"
+    }
+  ]
+}

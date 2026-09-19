@@ -1,0 +1,113 @@
+{
+  "_provenance": {
+    "captured_at_utc": "2026-07-22T08:53:42Z",
+    "frame_count": 4,
+    "kind": "ws_account_state",
+    "redacted_paths": [],
+    "sanitizer": "vike-bridge-core::capture v1",
+    "source": "binance spot DEMO (wss://demo-ws-api.binance.com/ws-api/v3) — binance_capture_smoke ladder: rest-LIMIT/cancel + market round-trip, real demo orders, account left flat",
+    "venue": "binance"
+  },
+  "frames": [
+    {
+      "event": {
+        "B": [
+          {
+            "a": "BTC",
+            "f": "0.00023667",
+            "l": "0.00000000"
+          },
+          {
+            "a": "BNB",
+            "f": "0.00000000",
+            "l": "0.00000000"
+          },
+          {
+            "a": "USDT",
+            "f": "4977.09102703",
+            "l": "7.71881760"
+          }
+        ],
+        "E": 1784710420254,
+        "e": "outboundAccountPosition",
+        "u": 1784710420254
+      },
+      "subscriptionId": 0
+    },
+    {
+      "event": {
+        "B": [
+          {
+            "a": "BTC",
+            "f": "0.00023667",
+            "l": "0.00000000"
+          },
+          {
+            "a": "BNB",
+            "f": "0.00000000",
+            "l": "0.00000000"
+          },
+          {
+            "a": "USDT",
+            "f": "4984.80984463",
+            "l": "0.00000000"
+          }
+        ],
+        "E": 1784710420505,
+        "e": "outboundAccountPosition",
+        "u": 1784710420504
+      },
+      "subscriptionId": 0
+    },
+    {
+      "event": {
+        "B": [
+          {
+            "a": "BTC",
+            "f": "0.00033657",
+            "l": "0.00000000"
+          },
+          {
+            "a": "BNB",
+            "f": "0.00000000",
+            "l": "0.00000000"
+          },
+          {
+            "a": "USDT",
+            "f": "4978.21256463",
+            "l": "0.00000000"
+          }
+        ],
+        "E": 1784710420756,
+        "e": "outboundAccountPosition",
+        "u": 1784710420755
+      },
+      "subscriptionId": 0
+    },
+    {
+      "event": {
+        "B": [
+          {
+            "a": "BTC",
+            "f": "0.00023657",
+            "l": "0.00000000"
+          },
+          {
+            "a": "BNB",
+            "f": "0.00000000",
+            "l": "0.00000000"
+          },
+          {
+            "a": "USDT",
+            "f": "4984.80324635",
+            "l": "0.00000000"
+          }
+        ],
+        "E": 1784710421171,
+        "e": "outboundAccountPosition",
+        "u": 1784710421171
+      },
+      "subscriptionId": 0
+    }
+  ]
+}

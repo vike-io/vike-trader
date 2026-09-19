@@ -1,0 +1,37 @@
+# EOL policy (2026-07 hardening): the index is LF; shell scripts and gradlew MUST stay LF or
+# they break with "bad interpreter" on the Linux CI/prod runners the moment a Windows
+# contributor without core.autocrlf=input commits them. Windows cmd scripts stay CRLF.
+* text=auto
+*.sh text eol=lf
+gradlew text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Tessellated-frame text goldens (crates/vike-chart/tests/tessellation_goldens.rs) — compared
+# line-by-line by a test. `* text=auto` already normalizes them to LF in the index, but a Windows
+# checkout with core.autocrlf=true would materialize CRLF and redden every golden at once, with a
+# diff in which no line looks different. Pinned explicitly so the working copy matches the index.
+# (The comparator ALSO trims trailing \r — belt and braces, since this rule cannot retroactively
+# fix a working copy checked out before it existed.)
+crates/vike-chart/tests/goldens/*.txt text eol=lf
+
+# The two SURFACE fixtures — the command surface and the run profile's schema, both rendered from
+# Rust tables and both VENDORED byte-identically by the documentation site. `* text=auto` already
+# normalizes them to LF in the index, and each one's own gate compares PARSED JSON rather than
+# bytes, so a CRLF working copy would not redden a test — it would silently make the vendored copy
+# differ from the published asset. Pinned for the same reason as the goldens above: the working
+# copy must match the index.
+crates/vike-cli/tests/fixtures/cli.json text eol=lf
+crates/vike-backtest/tests/fixtures/profile.json text eol=lf
+
+# Binaries — never EOL-normalized (git auto-detects, this makes it explicit for the committed
+# jar the CI drift gate byte-compares).
+*.jar binary
+*.png binary
+*.ico binary
+# The datahub wire's frozen protocol frames (crates/vike-datahub-client/tests/wire_tag_fixtures.rs)
+# — a big-endian u32 length prefix in front of each JSON body. Git's own heuristic already calls
+# them binary (the prefixes carry NUL bytes), but these bytes ARE the contract: an EOL rewrite would
+# change a body's length without changing its prefix and desync the stream, so it is stated rather
+# than left to detection.
+fixtures/datahub_wire/*.frames binary
