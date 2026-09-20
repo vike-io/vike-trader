@@ -1,0 +1,62 @@
+[package]
+name = "vike-poly-research"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+repository = "https://github.com/vike-io/vike-trader"
+description = "vike trading core — the Polymarket market-making RESEARCH sweep: runs the Group-B maker models (Avellaneda-Stoikov γ, LMSR b, LS-LMSR α, Glosten–Milgrom μ) over a universe of outcome tokens and aggregates the BacktestReports in-process. All-Rust: every backtest, the metric extraction and the group aggregation, with no external JSON or aggregation tooling."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `service-stacked` — a
+# service composed over another service crate, here vike-backtest (50).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+#
+# ⚠ **Why this is its own crate rather than a bin in either neighbour**, since both were available
+# and both are wrong:
+#
+# * NOT in `vike-backtest`. It is RESEARCH — a sweep over market-making MODELS, not a run of one
+#   strategy — and `docs/decisions/0031-the-study-runner-lives-above-run-persistence.md` refuses to
+#   put research inside the simulator for a reason that outlives this crate: it "puts the two things
+#   this design insists must stay distinguishable inside one crate, and drags the study host into
+#   every consumer of the simulator — which includes the live daemon".
+# * NOT in `vike-user-research` (35). That crate is deliberately LIGHT: today's studies score with
+#   `crates/vike-analytics/src/signal_backtest.rs`'s vectorised mini-backtest, whose own doc argues
+#   that reaching a ranking device "should not cost 32k lines of simulator". THIS sweep genuinely
+#   needs the event-driven engine — it fills resting quotes against the real taker tape through the
+#   `prob_power` queue model — so hosting it there would drag the simulator under every future
+#   lightweight study.
+# * NOT in `vike-backfill`, where it stood until 2026-09-20. That crate is a COLLECTOR (42): it
+#   drives the venue bridges and writes the store. Holding a research sweep there is what forced an
+#   optional `vike-backtest` edge onto a data crate and parked it above the engine.
+[package.metadata.vike]
+layer = 55
+
+[dependencies]
+# The event-driven simulator: `harness::run_backtest` + `BacktestProfile`. `datafusion-store`
+# because this sweep opens a CONCRETE store rather than taking one as a trait object.
+vike-backtest = { path = "../vike-backtest", features = ["datafusion-store"] }
+# The store and the SELECTOR (`backtest_store`) this sweep chooses with — `--archive PATH` read in
+# place, or an imported `--store DIR`. Both live here since the reader came down on 2026-09-20.
+vike-data = { path = "../vike-data", features = ["hist-datafusion"] }
+# Domain types on the sink verbs the in-process recording store implements.
+vike-model = { path = "../vike-model" }
+# ⚠ For `cli::{CliSpec, log_config}` ONLY — the usage/triage renderer and the log-config builder
+# every collector bin shares. A DEFAULT vike-backfill build declares no `[features].default` and
+# pulls no venue bridge at all, so this edge costs vike-model + vike-data + vike-log + ureq and
+# nothing venue-shaped. `arg`/`has_flag` come from `vike_analytics::binutil` instead: vike-backfill
+# carries its own pair, and a new caller should name the lower one. ⚠ Only `has_flag` is a true
+# duplicate there; its `arg` is NARROWER (no inline `--flag=value`) — a difference `CliSpec::triage`
+# makes unreachable, since it answers any unmatched `-`-prefixed token with `unknown argument`.
+# Unifying the two was measured and refused: `crates/vike-backfill/src/cli.rs`'s `arg` carries the
+# argument.
+vike-backfill = { path = "../vike-backfill" }
+# The argv helpers, at their lower home.
+vike-analytics = { path = "../vike-analytics" }
+# Logging init — a BINARY holds the guards, per the workspace rule that only binaries call it.
+vike-log = { path = "../vike-log" }
+# The per-market fan-out: every token's sweep is an independent run, so the universe parallelises
+# across cores with nothing shared but an `Arc` to the store.
+rayon = { workspace = true }
+
+[lints]
+workspace = true

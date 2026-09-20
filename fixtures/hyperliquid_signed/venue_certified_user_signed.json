@@ -1,0 +1,42 @@
+{
+  "_what": "VENUE-CERTIFIED signing vectors for Hyperliquid's two USER-SIGNED actions (usdClassTransfer, approveBuilderFee). Each case is a (key, nonce, action) -> signature triple that Hyperliquid itself confirmed, on TESTNET, on the date the case records, by naming back the address it recovered from that exact signature.",
+  "_property": "CORRECTNESS, not merely stability. Its sibling fixtures/hyperliquid_signed/signed_payloads.json answers `did the bytes change`; this file answers `were they ever right`, and it answers it with the venue's own word rather than with this implementation's output. Both exist; neither replaces the other.",
+  "_why_it_certifies": "A user-signed HL action carries no sender field: the signer's identity IS the ECDSA recovery result over the venue's OWN EIP-712 digest. So an unknown signer comes back named in the rejection text, and `the address the venue named == the address this key derives` can only hold if the venue's digest is byte-identical to ours — which certifies the HyperliquidTransaction:... type string character for character, every field name and type, the field order inside the type string, the HyperliquidSignTransaction domain and signatureChainId 0x66eee / chainId 421614, in one equality.",
+  "_authority": "⚠ AUTHORITATIVE, BUT NOT IN THE SAME WAY AS crates/bridges/hyperliquid/tests/signing_vectors.rs. Those values are authoritative because the venue PUBLISHED them, and anyone can re-read them from the SDK. These are authoritative because the venue CONFIRMED them in one specific, dated run, and the only record of that run is what is written down here. Both are real provenance; they are not the same thing, and this one is the perishable kind.",
+  "_regeneration": "⚠ THERE IS NO REGENERATOR AND THERE MUST NOT BE ONE. A value here may NOT be refreshed from this build's own output. Doing so silently converts a correctness gate back into a stability pin — it would freeze whatever this build now produces and call it certified — which is the exact hole this file was created to close. The ONLY way to re-certify a case is another TESTNET run of crates/bridges/hyperliquid/tests/hyperliquid_user_signed_smoke.rs's certify_a_fresh_vector_for_the_offline_gate, which posts to the venue, asserts the recovered address, and prints a replacement block; its nonce, its recovered address, its venue_response and its certified_on then move together. If a case goes red, the SOURCE moved: restore the source.",
+  "_nonce_note": "Each case's nonce is a wall-clock ms from the certification run, and cannot be re-posted: Hyperliquid refuses a nonce outside a window around now, before it ever recovers a signer. That is why a re-run mints a NEW triple instead of re-confirming an old one, and why these values can only ever be pasted from a run, never recomputed.",
+  "_fields": "`payload` is the exact UTF-8 /exchange request body that was POSTed and certified, compared byte-for-byte by the offline gate. `digest` is the EIP-712 message that payload's signature was produced over. `recovered_address` is the address HYPERLIQUID named back, and `venue_response` is its verbatim reply. `primary_type` is the hashed type string the case covers — a LABEL copied from crates/bridges/hyperliquid/src/signing/eip712.rs, not itself a certified value; it is safe because a changed type string moves the digest and the signature, which the byte comparison catches.",
+  "signer": {
+    "private_key": "e0b06bbd152dbd7af7e118be89406380188fa5fb9fdd4ce6090f308129ea4e7a",
+    "address": "0x29a7b3c94b57323db721113160d3603e90f97d56",
+    "_note": "A THROWAWAY secp256k1 key generated once for this file and used nowhere else. Its only property that matters is that it HOLDS NOTHING: a funds-less address makes the venue's `Must deposit before performing actions. User: 0x<RECOVERED>` branch deterministic, and that rejection IS the oracle — the venue names the signer it recovered and executes nothing. It is deliberately committed in the clear; there is nothing to protect, and a key nobody could read could not be re-certified by anybody. If this address is ever FUNDED by a third party the `Must deposit` branch stops being reachable; the smoke then fails loudly, and the cure is a fresh throwaway plus a fresh certification run of every case."
+  },
+  "cases": {
+    "usd_class_transfer_testnet_to_perp": {
+      "action": "usdClassTransfer",
+      "primary_type": "HyperliquidTransaction:UsdClassTransfer(string hyperliquidChain,string amount,bool toPerp,uint64 nonce)",
+      "network": "Testnet",
+      "amount": 1.0,
+      "to_perp": true,
+      "nonce": 1789351678747,
+      "digest": "0x10be83a9d7e8c84a934af9663e37e97a7447181b92bc82eb3659286a0824c16a",
+      "payload": "{\"action\":{\"type\":\"usdClassTransfer\",\"amount\":\"1\",\"toPerp\":true,\"nonce\":1789351678747,\"signatureChainId\":\"0x66eee\",\"hyperliquidChain\":\"Testnet\"},\"nonce\":1789351678747,\"signature\":{\"r\":\"0x00485f54177fe3cb6446d5a14fdd2cdb44e893e8f7e4758c3fc7ce1ab0cc444b\",\"s\":\"0x63ee9467202dbc58c17f00f4b5a776b2dfdd67f09958f156d5f80226a5c735cb\",\"v\":28}}",
+      "certified_on": "2026-09-14",
+      "recovered_address": "0x29a7b3c94b57323db721113160d3603e90f97d56",
+      "venue_response": "{\"status\":\"err\",\"response\":\"Must deposit before performing actions. User: 0x29a7b3c94b57323db721113160d3603e90f97d56\"}"
+    },
+    "approve_builder_fee_testnet": {
+      "action": "approveBuilderFee",
+      "primary_type": "HyperliquidTransaction:ApproveBuilderFee(string hyperliquidChain,string maxFeeRate,address builder,uint64 nonce)",
+      "network": "Testnet",
+      "builder": "0x0c8de5f0362f6e4e9f0a4e3c1e1d2f3a4b5c6d7e",
+      "max_fee_rate": "0.01%",
+      "nonce": 1789351679021,
+      "digest": "0x6fe014a85cb18ed681b00aa0e7ca9835dc3bfe1c3d9ff885e6e6a3a5396e71c8",
+      "payload": "{\"action\":{\"type\":\"approveBuilderFee\",\"hyperliquidChain\":\"Testnet\",\"signatureChainId\":\"0x66eee\",\"maxFeeRate\":\"0.01%\",\"builder\":\"0x0c8de5f0362f6e4e9f0a4e3c1e1d2f3a4b5c6d7e\",\"nonce\":1789351679021},\"nonce\":1789351679021,\"signature\":{\"r\":\"0x504e7493ee0b8f04ff70368a7f79902819da2af80ca04549e6cc4f7349b742b8\",\"s\":\"0x66d4946c06b6a0f4542561071635e89fe3737fb793d1937791a5215080a79a98\",\"v\":28}}",
+      "certified_on": "2026-09-14",
+      "recovered_address": "0x29a7b3c94b57323db721113160d3603e90f97d56",
+      "venue_response": "{\"status\":\"err\",\"response\":\"Must deposit before performing actions. User: 0x29a7b3c94b57323db721113160d3603e90f97d56\"}"
+    }
+  }
+}

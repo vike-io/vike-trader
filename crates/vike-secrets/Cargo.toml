@@ -1,0 +1,93 @@
+[package]
+name = "vike-secrets"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the credential store: ONE store in the project, `<project>/settings/secrets.env` until decision 0054 fills `<project>/settings/db/vike.db`, resolved at runtime by walking up for the project root. NO vike-* crate and exactly ONE external crate (rusqlite, the store's database home), so vike-bridge-core (which owns the transport stack) and vike-cli (DataFusion-free, transport-free, FAST CI lane) both link it without dragging the other in. ⚠ Until 2026-09-13 this line said \"ZERO dependencies at all — no vike-* crate and no external crate\"; the vike-* half is unchanged and is the half the fast lane rests on."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `leaf` — a pure leaf with no vike-* dependency of its own.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+# ⚠ THIS TABLE WAS EMPTY UNTIL 2026-09-13, and it said so: "Deliberately EMPTY. Reading a
+# `KEY=value` file and walking up for a project root need nothing but `std`, and the empty list is
+# the property this crate exists to hold: both consumers link it without pulling in anything, so
+# nothing here can widen the `cargo deny --all-features` surface."
+#
+# The last clause is the one that expired. `docs/decisions/0054-settings-move-into-one-database.md`
+# (accepted 2026-09-13) moves settings, credentials and node keys into one SQLite database, and the
+# owner ruled the credential half NOT severable — so the store this crate owns acquires a database
+# home, and its constraint 3 makes THIS edge the thing the whole credential half stands on. The
+# argument for the engine, the `default-features = false` measurement and the `cargo tree` delta are
+# in the root manifest beside the pin; the gate row is
+# `crates/vike-boot/tests/dependency_floor.rs`'s `FLOOR_EXCEPTIONS`.
+#
+# WHAT SURVIVES, and it is the half both consumers actually rest on: this crate still declares NO
+# `vike-*` dependency. `vike-bridge-core` (which owns the ureq/tungstenite/rustls transport stack)
+# and `vike-cli` (DataFusion-free, transport-free, FAST CI lane) still link the same store without
+# dragging each other in, and neither one gains a transport, a TLS stack or a query engine from this
+# line. What is genuinely gone is "this crate widens NOTHING": it now costs four packages on
+# `vike-cli`'s normal tree and the first C compilation in that graph.
+#
+# ⚠ THE MIGRATION HAS LANDED. This comment read "NO MIGRATION CODE YET, deliberately — no schema,
+# no reader, no writer, no call-site change" from 2026-09-13, when the dependency was bought ahead of
+# its first use so that a migration could not discover the gate refusal with the schema already
+# written. That is spent: `src/db.rs` now opens `<project>/settings/db/vike.db` (two tables,
+# `journal_mode = DELETE`, 0600 in a 0700 directory), `migrate` fills it from the two files WITHOUT
+# touching them, and `store.rs`'s `Backend` makes the read path prefer it — per RUN, never per KEY.
+# The proof is `tests/database_migration.rs`. What has NOT happened, and is not this crate's act to
+# perform: `secrets.env` is not deleted, moved or rewritten by any of it.
+# ⚠ THE `vike-*` HALF FELL TOO — `docs/decisions/0072-vike-secrets-takes-one-vike-edge-and-is-not-split.md`
+# is the verdict, and it also refuses the OTHER candidate (splitting this crate into a file plane
+# and a database plane) on a measurement worth reading before proposing it again. The paragraph
+# above is why the vike-* half could fall: its surviving argument is
+# about WEIGHT — "neither one gains a transport, a TLS stack or a query engine from this line" —
+# not about the absence of an edge. This edge gains none of the three, and it is the rarest kind of
+# dependency: one that costs NOTHING anywhere. `vike-model` is already a normal dependency of all
+# ten crates that declare this one, and it is already a member of
+# `crates/vike-boot/tests/dependency_floor.rs`'s `VIKE_CLOSURE`, so no graph acquires a package and
+# that gate's exact-set assertion is untouched. Layers 15 -> 10, down-only; `vike-model` names this
+# crate nowhere, so there is no cycle.
+#
+# WHAT IT BUYS: `src/dotenv.rs` stops RE-SPELLING `vike_model::state_path`'s project walk. The two
+# copies existed only because this table was empty, and the test that held them equal
+# (`crates/vike-bridge-core/tests/settings_dir_spellings.rs`) had to live in a THIRD crate because
+# neither owner could see the other — its own module doc says so, and says the pin both copies'
+# docs had promised DID NOT EXIST until somebody wrote it. One definition needs no pin.
+#
+# ⚠ The stated reason for the old rule was "vike-cli ... FAST CI lane", and
+# `docs/decisions/0004-crate-splits-do-not-shrink-ci.md` forbids exactly that as a justification.
+# The four properties worth keeping are measurable and all four survive: no transport, no TLS
+# stack, no query engine, and no new package in `vike-cli`'s graph.
+vike-model = { path = "../vike-model" }
+rusqlite = { workspace = true }
+
+[features]
+# TEST-ONLY, and it carries no dependency — it exposes `db::SCHEMA_1` and `db::plant_schema_1`, the
+# shape this crate no longer WRITES and still READS (`db::READABLE_SCHEMA_VERSIONS`). The reshape's
+# whole claim is about a database a current binary will never create, so a test has to be able to
+# plant a real one; a test that approximated the old DDL would be proving the reshape against a
+# table nobody ever shipped. Behind a feature rather than `pub` so nothing in a shipped binary can
+# reach a constructor for a superseded schema. Self-referenced as a dev-dependency below, the same
+# shape `vike-bridge-core`'s `test-support` uses.
+test-support = []
+
+[dev-dependencies]
+# The crate's own integration tests, with `test-support` on — see the feature's comment above.
+vike-secrets = { path = ".", features = ["test-support"] }
+
+# TEST-ONLY. The project-root walk must be exercised against a real directory tree; a pure-string
+# test would only re-assert `join`. Already in the lockfile (vike-config and others use it), so it
+# adds ZERO packages to the `cargo deny` surface — and being a dev dep it never reaches a shipped
+# binary, so the crate's RUNTIME graph is unchanged by it. (⚠ That last clause read "so the crate's
+# zero-dependency runtime graph is unchanged" until 2026-09-13; the runtime graph is no longer
+# zero-dependency — see the `[dependencies]` table above — but this dev edge still adds nothing to
+# it, which is the claim being made here.)
+tempfile = "3"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true
