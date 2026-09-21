@@ -1,0 +1,112 @@
+# vike-tradehub DAEMON PROFILE — the template. Copy it to `<project>/settings/tradehub.toml`:
+#
+#     cp settings/tradehub.example.toml settings/tradehub.toml      # from a checkout
+#     docker run --rm vike-tradehub:<version> --template \
+#       > /srv/vike-<unit>/settings/tradehub.toml                   # from the image, no checkout
+#
+# `<project>/settings/tradehub.toml` is the path every shipped launcher's `--config` points at —
+# `deploy/vike-tradehub.service`, `deploy/docker/Dockerfile`'s `CMD`, and
+# `scripts/vike_tradehub_windows.ps1`. **The daemon EXITS if it is absent**
+# (`crates/vike-tradehub/src/tradehub_cli.rs` prints `bad profile <path>: …` and returns failure), and until
+# this template existed nothing in the workspace produced one: the only copy-paste sources were the
+# nine per-venue LIVE runbooks under `docs/ops/`, i.e. inside a git checkout a container operator
+# does not have.
+#
+# ## ⚠ THIS IS NOT ONE OF THE FOUR `settings/*.example.toml` TEMPLATES, and the difference is real
+#
+# `policy` / `config` / `preferences` / `flags` are loaded by `crates/vike-config/src/load.rs`'s
+# `load`, every line of their templates is commented out, and adopting one verbatim configures
+# NOTHING — `crates/vike-cli/tests/settings_examples.rs`'s
+# `the_templates_as_shipped_configure_nothing` is that promise. **That contract cannot hold here.**
+# This file is parsed by `crates/vike-tradehub/src/config.rs`'s `DaemonProfile`, which is
+# `deny_unknown_fields` and requires a mount symbol, so an all-commented copy would not parse at
+# all — the daemon would refuse it exactly as it refuses an absent one.
+#
+# So the two keys below are LIVE and every other key is commented out.
+#
+# ⚠ `settings_examples.rs` does NOT gate this file, and nothing about its name makes it: that
+# gate's template list is DERIVED from `vike_config::provenance::setting_keys()`, which enumerates
+# the four loader files and knows nothing about a daemon profile.
+# `crates/vike-tradehub/tests/daemon/docs_profiles_parse.rs` is what gates this one, through the
+# daemon's own parser — as shipped, and again with every commented line uncommented.
+#
+# ## ⚠ AS SHIPPED THIS IS A PAPER MOUNT, and that is a property of the BOX, not of this file
+#
+# Nothing in a daemon profile arms a venue. `crates/vike-tradehub/src/tradehub_cli.rs` picks its live mount
+# from `flags.tradehub_live` (off by default), and each venue inside it goes live only if its
+# credentials resolve — **absent credentials ARE the live gate**. A fresh project folder has
+# neither, so copying this file verbatim gives you a daemon that runs, prints its snapshot
+# summaries, and places every order against the paper exchange.
+#
+# Going live needs FOUR things, none of them here. `docs/ops/tradehub-binance-live.toml` carries the
+# checklist in full, and its eight per-venue siblings beside it under `docs/ops/` carry the same
+# checklist together with that venue's MEASURED tick size, lot step and minimum notional. Those
+# runbooks stay where they are on purpose: they are nine mutually exclusive alternatives — a menu
+# you pick from — while this is the one file you copy.
+
+# ── THE TWO REQUIRED KEYS ────────────────────────────────────────────────────────────────────────
+#
+# ⚠ THE SYMBOL IS NOT A FREE CHOICE on a live mount. `vike_run::WIRED_MARKETS` pins each venue to
+# ONE symbol, `vike_mount::make_engine` wires no `extra_symbols`, and
+# `vike_exec::ExecutionEngine::accepts_symbol` is a plain equality test — so any other symbol has
+# every order AND every fill silently dropped. `crates/vike-tradehub/src/config.rs`'s
+# `validate_for_live` refuses the mismatch at load instead, naming both symbols.
+#
+# To start somewhere else, take the `venue`/`symbol` pair from that venue's runbook rather than
+# guessing: the pair is the routing table's to decide, not yours.
+venue  = "binance"
+symbol = "BTCUSDT"
+
+# ── THE OPTIONAL KEYS ────────────────────────────────────────────────────────────────────────────
+#
+# ⚠ **The values below are ILLUSTRATIVE, not defaults — do not read them as documentation of what
+# an omitted key does.** Every one of these fields is an `Option` whose absence means "the mount
+# picks", and what it picks is VENUE-DEPENDENT:
+# `crates/vike-tradehub/src/config.rs`'s `to_mount_config` builds
+# `vike_run::MakerMountConfig::crypto` for a `$`-scale venue and `::polymarket` for the `[0,1]`
+# outcome-token one, and the two disagree about every number here. (The field doc comments on
+# `DaemonProfile` state the polymarket-path values; on binance an omitted `tick_size` is not the
+# `0.01` written there.) So the only honest statements this file can make are: each line below
+# PARSES and is ACCEPTED, and setting a key means you get that value instead of the mount's.
+#
+# The values shown are binance BTCUSDT's, measured in `docs/ops/tradehub-binance-live.toml` — real
+# numbers rather than invented ones, so a copy of this file is a working starting point for the
+# venue it names. Use a different venue's runbook if you change the pair above.
+
+# The mounted bar series. Bars are a SAFETY dependency rather than decoration: the account-wide
+# margin-call watchdog and the 25% own-PnL drawdown latch sweep per CLOSED BAR and nowhere else, so
+# a shorter interval is a faster watchdog. The two must agree with each other.
+# interval    = "1m"
+# interval_ms = 60_000
+
+# The venue price grid the maker's L1 lane snaps onto. ⚠ On a LIVE mount this must be the venue's
+# REAL tick size — it sizes both the `L2Book` price grid handed to the market-data feed AND the
+# maker's own quoting grid. A non-positive value is refused at load; a WRONG POSITIVE one cannot be
+# detected by anything, which is why every runbook under `docs/ops/` carries a measured value.
+# tick_size = 0.01
+
+# Base quote size per side, in the instrument's own units.
+# qty = 0.0001
+
+# Fallback fixed half-spread seed. Unused while Avellaneda–Stoikov prices, which is the default
+# maker; `vike-tradehub` logs the resolved A-S parameter set at mount as `strategy_params`, and
+# that — not this line — is what a running daemon is actually quoting on.
+# half_spread = 0.02
+
+# The mount's CAPITAL BASE. ⚠ Load-bearing on a live mount and NOT just a paper-book seed: the 25%
+# own-PnL drawdown latch measures its fraction against `Σ seed_cash + own PnL` and never against the
+# venue wallet, which on a shared account is not this daemon's money. So set it to the capital this
+# mount is meant to risk. A zero, negative, NaN or infinite value is refused at load, because it
+# would leave that latch with no denominator.
+# seed_cash = 10_000.0
+
+# Daemon runtime settings. ⚠ `shutdown_deadline_ms` bounds the WHOLE teardown — the resting-order
+# cancel sweep, the strategy-state save, the terminal journal snapshot. Raising it means raising the
+# LAUNCHER's stop budget in the same breath (`TimeoutStopSec=` in the unit, `--stop-timeout` in the
+# container recipe), or the kill signal wins the race and the cancel sweep is interrupted part-way,
+# leaving some of the book resting at the venue. `crates/vike-tradehub/src/config.rs`'s
+# `DaemonSettings` is the authority for what an omitted table gives you; the two lines below are
+# illustrative like the rest of this block, and omitting them entirely is the ordinary case.
+# [daemon]
+# summary_ms           = 5_000
+# shutdown_deadline_ms = 5_000

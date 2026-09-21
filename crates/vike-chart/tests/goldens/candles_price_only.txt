@@ -1,0 +1,8 @@
+# vike frame record v1 (vike_ui_theme::frame_record)
+# scenario: candles_price_only
+ppp 1  primitives 4  vertices 2664  triangles 3014
+----
+   0  clip [0 0 960 620]  tex M0  v 4  t 2  solid [0 0 960 620]  glyph -  runs 2  #161b24ff*2 #0d1117ff*2  d 262bfec614c2df93
+   1  clip [0 0 960 620]  tex M0  v 420  t 210  solid -  glyph [892 6 935 582]  runs 1  #6b7480ff*420  d f177c55814899c3e
+   2  clip [0 0 888 588]  tex M0  v 2032  t 2660  solid [-1 10 889 579]  glyph -  runs 13  #0a0b0d48*72 #22272fff*4 #5bbe91ff*54 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*18 #f85249ff*220  d e42da00e3f9a4672
+   3  clip [0 0 960 620]  tex M0  v 208  t 142  solid [889 447 932 466]  glyph [8 13 925 460]  runs 10  #d95458ff*20 #0d1117ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*72  d 531d1f9a1447c9a1
