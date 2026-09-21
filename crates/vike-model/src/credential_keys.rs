@@ -1,0 +1,764 @@
+//! `credential_keys` — every credential/attribution key name this workspace can ever look up, as
+//! DATA rather than as a format string.
+//!
+//! # The blind spot this closes
+//!
+//! `vike_bridge_core::credentials::load_credentials_from` builds each key with a `format!` over a
+//! `{VENUE}_{TIER}` prefix and then asks a caller-supplied map for it; `attribution_code_from` does
+//! the same with `{VENUE}_BROKER_CODE` / `{VENUE}_BUILDER_CODE`. The settings registry's scanner
+//! (`crates/vike-ops/src/scan.rs`) resolves string LITERALS and `const`s, so a key that never
+//! appears as a literal anywhere had no `vike_ops::settings::SETTINGS` row **and no sighting** —
+//! undetectably. `OKX_LIVE_API_SECRET` was read on every credential probe and was in neither place,
+//! while its `OKX_DEMO_API_SECRET` sibling had a row only because a test fixture happened to spell
+//! it; `BYBIT_BROKER_CODE` and three siblings had no fixture and so had no row at all. That is not
+//! a gap `crates/vike-ops/tests/settings_registry.rs`'s `DYNAMIC_ALLOWLIST` can cover: it
+//! allowlists a call site the scanner FOUND and could not resolve, and a computed map `get` is
+//! never recognised as a candidate site to begin with.
+//!
+//! # The shape of the fix — the roster precedent
+//!
+//! One const table, plus completeness tests that iterate it. [`crate::venues::VENUES`] is the
+//! exemplar every per-venue capability table already follows, and this module is the same move for
+//! the key NAMES: [`CREDENTIAL_SUFFIXES`], [`ATTRIBUTION_SUFFIXES`], [`CREDENTIAL_TIERS`] and
+//! [`LEGACY_CREDENTIAL_TIERS`] are the only place those spellings exist, and [`credential_keys`] /
+//! [`attribution_keys`] fold them over the roster into the whole enumerable grid.
+//!
+//! Three gates hold the two sides together, each comparing evidence of a DIFFERENT provenance:
+//!
+//! - `crates/vike-bridge-core/src/credentials.rs`'s
+//!   `the_loader_reads_exactly_the_enumerated_credential_grid` folds the REAL loader's own
+//!   `names_for_prefix` over the roster and every [`crate::venues::VENUES`] tier, and asserts the
+//!   resulting name set IS [`credential_keys`] — so the enumeration cannot drift from the read.
+//! - its `the_attribution_grid_is_exactly_what_the_reader_looks_up` twin drives the real
+//!   `attribution_code_from` with a map holding one enumerated key at a time, and asserts BOTH
+//!   ways: a mechanised venue's keys are enumerated and read, an unmechanised venue's are neither.
+//! - `crates/vike-ops/tests/settings_registry.rs`'s `every_generated_key_is_declared` demands a
+//!   registry row for every key this module can produce.
+//!
+//! So adding a venue to [`crate::venues::VENUES`], a tier here, or a suffix here reddens the
+//! registry until the rows exist — which is exactly what the roster contract promises for every
+//! other per-venue table.
+//!
+//! # Key NAMES only
+//!
+//! Nothing here reads, holds, forwards or logs a credential VALUE: every function returns a
+//! `String` that is a variable NAME, built from the caller's venue id and this module's own
+//! constants. A credential never enters this file.
+//!
+//! # What the grid deliberately does NOT cover
+//!
+//! The BESPOKE per-venue shapes — `FXCM_{TIER}_USER`/`_PASSWORD`, `DUKASCOPY_DEMO1_LOGIN`,
+//! `OANDA_{TIER}_ACCOUNT_ID`, `IG_{TIER}_IDENTIFIER`, `ASTER_{TIER}_PRIVATE_KEY`,
+//! `HYPERLIQUID_{TIER}_PRIVATE_KEY`, the `POLY_*` L2 trio — are read by each bridge's own
+//! `config.rs` loader with LITERAL keys, so the scanner has always seen them and they have always
+//! had rows. This table is only for the family that is COMPUTED, which is the only family the
+//! scanner is structurally blind to.
+//!
+//! ⚠ **The grid is an OVER-approximation over the roster, on purpose.**
+//! `load_credentials_from` is generic over the venue string, and WHICH venues reach it is a `match`
+//! arm rather than data: `vike_connections::status`'s `venue_env_configured` routes the venues whose
+//! loaders read a bespoke key shape to those loaders, and everything else to the generic one. ⚠ That
+//! set is deliberately not counted here — it was written as "six venues" and was wrong within the
+//! month, when the four venues whose status had been read from a grid they never used grew arms of
+//! their own. The `match` in `venue_env_configured` is the authority. So a roster venue's keys are
+//! declared even where nothing asks for them today — the same rule the capability tables follow,
+//! where a roster venue's row is always NAMED even when its value equals the fallback. The
+//! alternative is a hand-kept "these venues use the generic loader" list, which is precisely the
+//! copy that rots.
+
+use crate::attribution::attribution_for;
+use crate::venues::VENUES;
+
+/// The API-key suffix appended to a `{VENUE}_{TIER}` prefix.
+pub const API_KEY_SUFFIX: &str = "_API_KEY";
+/// The API-secret suffix appended to a `{VENUE}_{TIER}` prefix.
+pub const API_SECRET_SUFFIX: &str = "_API_SECRET";
+/// The API-passphrase suffix appended to a `{VENUE}_{TIER}` prefix. Required only where
+/// `vike_bridge_core::venue_passphrase::venue_passphrase` says so, but LOOKED UP for every venue —
+/// which is what puts it in the grid.
+pub const API_PASSPHRASE_SUFFIX: &str = "_API_PASSPHRASE";
+
+/// The three suffixes one `{VENUE}_{TIER}` prefix yields, in the order
+/// `vike_bridge_core::credentials`' `names_for_prefix` returns them.
+pub const CREDENTIAL_SUFFIXES: [&str; 3] =
+    [API_KEY_SUFFIX, API_SECRET_SUFFIX, API_PASSPHRASE_SUFFIX];
+
+/// The broker-code attribution suffix — tried FIRST by `attribution_code_from`.
+pub const BROKER_CODE_SUFFIX: &str = "_BROKER_CODE";
+/// The builder-code attribution suffix — the fallback `attribution_code_from` tries second.
+pub const BUILDER_CODE_SUFFIX: &str = "_BUILDER_CODE";
+
+/// Both attribution suffixes, in the order `attribution_code_from` tries them.
+pub const ATTRIBUTION_SUFFIXES: [&str; 2] = [BROKER_CODE_SUFFIX, BUILDER_CODE_SUFFIX];
+
+/// The environment tiers, spelled exactly as `vike_bridge_core::credentials::Environment::as_str`
+/// spells them. Pinned equal to that enum by
+/// `crates/vike-bridge-core/src/credentials.rs`'s `the_environment_tiers_are_the_shared_table` —
+/// neither crate can be the sole authority here (this one cannot see the enum, and the enum's crate
+/// must not re-spell the grid), so the two are held equal by a gate.
+pub const CREDENTIAL_TIERS: [&str; 3] = ["SIM", "DEMO", "LIVE"];
+
+/// The LEGACY tier spellings still accepted as a fallback — pre-rename credential files wrote
+/// `MAINNET` where `LIVE` is written now, and `Environment::legacy_str` still tries it, so those
+/// keys are genuinely looked up and genuinely belong in the grid.
+pub const LEGACY_CREDENTIAL_TIERS: [&str; 1] = ["MAINNET"];
+
+/// **The PLATFORM keys — names this store holds that belong to no venue at all.**
+///
+/// The two `vike-tradehub` node keys: the observe (read) HMAC key and the control (write) one, in
+/// the order a reader wants them. They live in the same `<project>/settings/secrets.env` as every
+/// venue credential and are read from it by a completely different loader
+/// (`vike_tradehub_client::auth`'s `from_vars`, which the daemon calls through
+/// `start_observe_server`), so the grid above has never covered them and must not start.
+///
+/// # What this table is FOR, and the three unions it deliberately is not part of
+///
+/// It exists so a WRITER can validate the names it is about to write against a fixed enumeration —
+/// `crates/vike-cli/src/cmd/node/setup.rs` mints both keys and asks this table what to call them,
+/// which is the answer `crates/vike-ops/tests/credential_writer_gate.rs`'s third `GROWTH_GUIDANCE`
+/// question demands of every credential writer. It is a NAME table and nothing else: no value, no
+/// tier, no venue, and no read.
+///
+/// - **NOT unioned into [`credential_keys`].** That function is asserted by
+///   `crates/vike-bridge-core/src/credentials.rs`'s
+///   `the_loader_reads_exactly_the_enumerated_credential_grid` to BE what `load_credentials_from`
+///   reads, folded over the roster. These names are read by a different loader entirely, so
+///   unioning them would make that gate assert something false.
+/// - **NOT unioned into [`lookup_keys`], and therefore not into [`key_owner`].** `key_owner` is
+///   `vike-cli secrets set`'s membership test, and that verb still REFUSES both names — the measured
+///   pain was never "I could not type my key", it was "I had to invent one and nothing told me how".
+///   A verb that accepts a hand-typed 256-bit HMAC key preserves the invention step, preserves the
+///   copy-paste step, and adds a way to paste a truncated key that fails as an opaque auth denial.
+///   Generating is the fix; accepting is not. `credential_keys.rs`'s own
+///   `key_owner_classifies_exactly_the_lookup_grid` still lists the control key among its
+///   `outsiders`, and that assertion is deliberately unchanged.
+/// - **NOT unioned into [`starter_keys`].** That function is per-venue and exists to be shown to a
+///   human writing their first venue store; there is no venue to show these under, and a store
+///   template offering a key nobody should type by hand is the opposite of the point.
+///
+/// # ⚠ These spellings are a DUPLICATION, and the duplication is paid for
+///
+/// `vike_tradehub_client::auth`'s `OBSERVE_KEY_ENV` / `CONTROL_KEY_ENV` are the REFERENCE spelling —
+/// that crate's doc carries the table of every copy and warns that a copy without an equality
+/// assertion re-opens the gap it exists to close. This is such a copy, and its assertion is
+/// `crates/vike-cli/tests/node_cli.rs`'s `the_platform_key_table_is_the_servers_own_spelling`,
+/// which lives there because `vike-cli` is the lowest crate that can see BOTH this table (layer 10)
+/// and the tradehub client (layer 50) — this crate cannot see that one, and must not.
+///
+/// ⚠ **`concat!` rather than whole literals, and it is load-bearing.**
+/// `crates/vike-ops/tests/settings_registry.rs`'s literal harvest reads any string literal with
+/// env-var shape and a known prefix as evidence that the containing crate READS that variable, and
+/// then demands a `vike_ops::settings::SETTINGS` row for it. `vike-model` reads neither of these
+/// names — it only names them — so a whole spelling here would make the registry assert something
+/// false about this crate. Splitting the prefix off leaves two fragments neither of which is
+/// env-shaped (one has no known prefix, the other does not begin with an uppercase letter) while the
+/// compiled constant is byte-identical. It is the same move
+/// `key_owner_classifies_exactly_the_lookup_grid` already makes with `format!` for its fixture.
+/// ⚠ **FOUR names, not two, and the two that arrived late are the interesting half.** This table
+/// held the TRADEHUB pair alone until 2026-09-08, while `vike-datahub` had grown an identical pair
+/// of its own — same shape, same scopes, same HMAC handshake. Two consequences, both measured:
+/// `vike-cli secrets set VIKE_DATAHUB_OBSERVE_KEY` fell through to the generic "edit it in by hand"
+/// refusal instead of naming a command, and NOTHING in this tree could mint that pair, so the
+/// datahub deployed on 2026-09-08 had its keys generated with `openssl` at a shell.
+///
+/// ORDER IS LOAD-BEARING and the tradehub pair stays first:
+/// `crates/vike-cli/tests/node_cli.rs`'s `the_platform_key_table_is_the_servers_own_spelling`
+/// asserts `[0]`/`[1]` against `vike_tradehub_client::auth`'s constants BY INDEX. The datahub pair
+/// is APPENDED, and pays the same equality assertion in that file against
+/// `vike_datahub_client::node_auth`'s own spellings — the duplication rule below applies to it
+/// identically.
+/// ⚠ **FIVE now, and the fifth is NOT half of a pair.** `VIKE_TRADEHUB_ADMIN_KEY` joined on
+/// 2026-09-20, for `docs/decisions/0065-accounts-are-managed-and-the-barrier-is-declared.md`'s
+/// second barrier — the `Admin` scope, whose whole point is that *the key every desktop carries to
+/// place orders is NOT the key that writes key material*. It is APPENDED at `[4]`, after the
+/// datahub pair, because the index assertions above pin `[0..=3]`.
+///
+/// ⚠ **It is in THIS table and deliberately NOT in [`is_tradehub_node_key`]**, and that split is the
+/// reason this doc grew rather than the entry being a one-liner. This table answers *may a node-key
+/// writer write this name* — yes, that is how `vike-cli backend admin-key` mints it, and how
+/// `secrets set` knows to route an operator to that command rather than to a text editor. That
+/// predicate answers a DIFFERENT question — *does a file holding this name decide where the tradehub
+/// PAIR is read from* — and for a third key used on its own the answer must be no. Its own doc
+/// carries what happened the last time those two questions were answered by one table.
+pub const PLATFORM_KEYS: [&str; 5] = [
+    concat!("VIKE", "_TRADEHUB_OBSERVE_KEY"),
+    concat!("VIKE", "_TRADEHUB_CONTROL_KEY"),
+    concat!("VIKE", "_DATAHUB_OBSERVE_KEY"),
+    concat!("VIKE", "_DATAHUB_CONTROL_KEY"),
+    concat!("VIKE", "_TRADEHUB_ADMIN_KEY"),
+];
+
+/// Is `key` one of the [`PLATFORM_KEYS`]? The membership half of that table, so a caller asks a
+/// question rather than reaching into an array.
+///
+/// ⚠ **This is NOT a second [`key_owner`], and must never be folded into one.** `key_owner` answers
+/// *which venue and tier owns this name*, and its totality over [`lookup_keys`] — in BOTH directions
+/// — is what `vike-cli secrets set`'s refusal rests on. This answers a disjoint question about a
+/// disjoint name set, and the two tables' emptiness of intersection is asserted by
+/// `platform_keys_are_outside_the_venue_grid` below.
+#[must_use]
+pub fn is_platform_key(key: &str) -> bool {
+    PLATFORM_KEYS.contains(&key)
+}
+
+/// WHICH service's node keys `key` belongs to, as that service's binary name.
+///
+/// ⚠ **A caller that routes an operator somewhere needs this, and [`is_platform_key`] cannot give
+/// it.** `vike-cli secrets set`'s refusal names the COMMAND that owns the key it is refusing, and
+/// while there was one pair that command was a constant. With two services there are two commands,
+/// and a refusal that named the wrong one would be the failure class that arm was built to end —
+/// correct about the refusal, wrong about the route.
+///
+/// Returns the BINARY name rather than a bespoke enum on purpose: every caller is composing a
+/// sentence for a human or picking a verb prefix, both of which want the name the operator already
+/// knows, and an enum here would be a second vocabulary for a fact the string already carries.
+/// `None` for anything outside the table, so this is safe to call before [`is_platform_key`].
+#[must_use]
+pub fn platform_key_service(key: &str) -> Option<&'static str> {
+    match key {
+        // ⚠ `[4]` — the ADMIN key — is tradehub's too, and belongs here for the reason this function
+        // exists: a refusal has to name the COMMAND that owns the key it is refusing. It is
+        // deliberately absent from [`is_tradehub_node_key`], which asks a different question; see
+        // that predicate.
+        k if k == PLATFORM_KEYS[0] || k == PLATFORM_KEYS[1] || k == PLATFORM_KEYS[4] => {
+            Some(TRADEHUB_SERVICE)
+        }
+        k if k == PLATFORM_KEYS[2] || k == PLATFORM_KEYS[3] => Some(DATAHUB_SERVICE),
+        _ => None,
+    }
+}
+
+/// The two service names [`platform_key_service`] answers with, stated once so a caller asking
+/// *"is this MY pair"* compares against the same spelling the classifier produced rather than a
+/// fourth hand copy of a binary's name.
+pub const TRADEHUB_SERVICE: &str = "vike-tradehub";
+/// The datahub half of [`TRADEHUB_SERVICE`]'s pairing.
+pub const DATAHUB_SERVICE: &str = "vike-datahub";
+
+/// Is `key` the **tradehub** service's node-key pair — [`platform_key_service`] narrowed to one
+/// family, in the shape `vike_secrets::resolve_node_keys` takes as its predicate?
+///
+/// ⚠ **This exists because [`is_platform_key`] is the WRONG predicate for that call, and using it
+/// there was a live `bad mac` generator.** `resolve_node_keys` decides WHICH FILE answers by probing
+/// `node.env` with the predicate it is handed, and then the caller reads its own pair out of
+/// whatever that file returned. Handed the four-name table, a `node.env` carrying only the DATAHUB
+/// pair — exactly what `vike-cli datahub setup` writes — made that file "the answer" for the
+/// TRADEHUB pair as well, and a working tradehub pair sitting in `secrets.env` was dropped: the
+/// client then signed with an empty key and the node answered `bad mac`, with no notice, because
+/// the migration sentence fires only on the legacy source.
+///
+/// `docs/decisions/0051-node-keys-live-in-their-own-store.md`'s rule — *"whichever answers first
+/// answers wholly"* — is about the PAIR that is used together (it says so: *"a pair split across
+/// both is a half-migrated box"*), and a family predicate is that rule spelled exactly. The two
+/// families are disjoint, so narrowing can never merge a pair across the two files; it only stops
+/// one service's migration from deciding the other's.
+/// ⚠ **IT IS THE PAIR, NOT THE FAMILY — and since 2026-09-20 those differ.** This was
+/// `platform_key_service(key) == Some(TRADEHUB_SERVICE)` while tradehub owned exactly two names.
+/// `VIKE_TRADEHUB_ADMIN_KEY` is a third tradehub name, and folding it in here would hand this
+/// predicate the SAME defect the paragraphs above describe, in a new costume: a `node.env` carrying
+/// only the admin key would become *the answer* for the observe/control pair, and a working pair in
+/// the settings database would be dropped — client signs with an empty key, node answers `bad mac`,
+/// no notice.
+///
+/// The doc above already states the rule this obeys — decision 0051's *"whichever answers first
+/// answers wholly"* is **about the PAIR that is used together**. The admin key is by construction
+/// not used together with them: 0065 gives it a separate scope precisely so the key that trades is
+/// not the key that writes key material, so a box can legitimately hold one without the other and
+/// neither may decide where the other is read from.
+#[must_use]
+pub fn is_tradehub_node_key(key: &str) -> bool {
+    key == PLATFORM_KEYS[0] || key == PLATFORM_KEYS[1]
+}
+
+/// Is `key` the **datahub** service's node-key pair? [`is_tradehub_node_key`]'s twin, and its doc
+/// carries the argument for both — the hole is symmetric, and the datahub half of it is a `node.env`
+/// holding only the TRADEHUB pair while the datahub key is still in `secrets.env`.
+#[must_use]
+pub fn is_datahub_node_key(key: &str) -> bool {
+    platform_key_service(key) == Some(DATAHUB_SERVICE)
+}
+
+/// One credential key: `{VENUE}_{TIER}{SUFFIX}`, e.g. `BINANCE_DEMO_API_KEY`.
+///
+/// `venue` is a canonical lowercase roster id ([`crate::venues::VENUES`]); the uppercasing is the
+/// loader's own (`load_credentials_from` builds its prefix the same way), so this and the read can
+/// only agree.
+#[must_use]
+pub fn credential_key(venue: &str, tier: &str, suffix: &str) -> String {
+    format!("{}_{tier}{suffix}", venue.to_uppercase())
+}
+
+/// One attribution key: `{VENUE}{SUFFIX}`, e.g. `OKX_BROKER_CODE`.
+///
+/// ⚠ `attribution_code_from` used to uppercase with `to_ascii_uppercase` here while the credential
+/// loader used `to_uppercase`; both call this now. The difference is unreachable, not merely
+/// unlikely — that reader returns `None` for a venue with no [`crate::attribution`] mechanic
+/// BEFORE it builds a key, and every mechanic arm is matched on a lowercase ASCII roster id, so no
+/// string whose two uppercasings differ can reach this function through it. This file's
+/// `the_two_uppercasings_agree_on_every_roster_venue` pins that for the roster.
+#[must_use]
+pub fn attribution_key(venue: &str, suffix: &str) -> String {
+    format!("{}{suffix}", venue.to_uppercase())
+}
+
+/// **The attribution key a venue's MECHANIC implies** — `None` for a venue with no order-level
+/// mechanic, which is the same narrowing [`attribution_keys`] applies.
+///
+/// A `SignedBuilder` venue takes [`BUILDER_CODE_SUFFIX`] and every other mechanic takes
+/// [`BROKER_CODE_SUFFIX`], which is the split the root `CLAUDE.md`'s attribution paragraph states
+/// venue by venue. Derived from [`crate::attribution::attribution_for`] rather than listed, so a
+/// new mechanised venue is classified by adding no row here.
+///
+/// # Why a caller wants THIS rather than [`attribution_key`]
+///
+/// `attribution_code_from` accepts EITHER spelling — it tries the broker name and falls back to the
+/// builder one — so both names exist in the grid for every mechanised venue and neither is wrong to
+/// read. A WRITER has to pick one, and picking it per venue is a per-venue table; picking it from
+/// the mechanic is not. The Connections editor's credential form is the caller this exists for: it
+/// offers exactly one attribution field, because two fields over one tag is a control where filling
+/// the wrong one loses silently to the other.
+///
+/// ⚠ **It also exists so that caller does not have to CALL [`attribution_key`]**, and that is not a
+/// stylistic preference. `crates/vike-ops/tests/settings_registry.rs`'s `generated_key_sites` reads
+/// any file calling one of the grid builders as *this crate READS the whole grid* and then demands
+/// a `vike_ops::settings::SETTINGS` row for every one of its several hundred names. A form that
+/// composes ONE attribution name reads none of them, so the composition belongs here — the table's
+/// own module, which that gate excludes by construction — exactly as [`starter_keys`] and
+/// [`key_owner`] do for the same reason.
+#[must_use]
+pub fn attribution_var_for(venue: &str) -> Option<String> {
+    let mech = attribution_for(venue);
+    if mech.is_none() {
+        return None;
+    }
+    let suffix = match mech {
+        crate::attribution::AttributionMechanic::SignedBuilder { .. } => BUILDER_CODE_SUFFIX,
+        _ => BROKER_CODE_SUFFIX,
+    };
+    Some(attribution_key(venue, suffix))
+}
+
+/// The WHOLE credential grid: every roster venue × every tier (current AND legacy) × every
+/// suffix, sorted and deduplicated.
+///
+/// Allocates, and is meant to: the callers are the registry gate and the loader's own equivalence
+/// test, never a hot path. `load_credentials_from` builds the two or three names it needs and does
+/// not walk this.
+#[must_use]
+pub fn credential_keys() -> Vec<String> {
+    let mut out: Vec<String> = VENUES
+        .iter()
+        .flat_map(|venue| {
+            CREDENTIAL_TIERS.iter().chain(LEGACY_CREDENTIAL_TIERS.iter()).flat_map(move |tier| {
+                CREDENTIAL_SUFFIXES.iter().map(move |sfx| credential_key(venue, tier, sfx))
+            })
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Every attribution key that can be looked up, sorted and deduplicated.
+///
+/// Only venues with an order-level [`crate::attribution::AttributionMechanic`] appear: a venue
+/// classified `None` makes `attribution_code_from` return before any key is built, so declaring one
+/// would claim a read that provably cannot happen. That is the one place this module is NARROWER
+/// than the roster, and it is derived from the capability table rather than hand-listed.
+#[must_use]
+pub fn attribution_keys() -> Vec<String> {
+    let mut out: Vec<String> = VENUES
+        .iter()
+        .filter(|venue| !attribution_for(venue).is_none())
+        .flat_map(|venue| ATTRIBUTION_SUFFIXES.iter().map(move |sfx| attribution_key(venue, sfx)))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// [`credential_keys`] ∪ [`attribution_keys`] — the whole set of names a computed map `get` in this
+/// workspace can ask for, sorted and deduplicated. The registry gate's input.
+#[must_use]
+pub fn lookup_keys() -> Vec<String> {
+    let mut out = credential_keys();
+    out.extend(attribution_keys());
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// **Which venue and tier a [`lookup_keys`] name belongs to** — the classification a WRITER needs
+/// and a reader never did.
+///
+/// `Some((venue, Some(tier)))` for a credential key, `Some((venue, None))` for an attribution key
+/// (a broker/builder code is per-venue and has no tier), and `None` for any name outside
+/// [`lookup_keys`] — so this is also the membership test, answered once instead of by building the
+/// whole grid and searching it.
+///
+/// ⚠ **It lives HERE for the reason [`starter_keys`] gives**, and the reason is a gate rather than
+/// taste: `crates/vike-ops/tests/settings_registry.rs`'s `generated_key_sites` reads a call to
+/// [`credential_key`] as *this crate READS these variables* and would then demand the whole grid's
+/// worth of `SETTINGS` rows for whichever crate composed the names. `vike-cli secrets set`
+/// validates a key name and reads none of them, so the composition belongs in the table's own
+/// module and the caller just asks.
+///
+/// The LEGACY `MAINNET` tier answers with itself rather than with `LIVE`, unlike
+/// [`crate::account_keys::AccountRef`]'s normalization: this function's job is to say what the name
+/// IS, and a caller writing that key is writing the legacy spelling whatever it means downstream.
+#[must_use]
+pub fn key_owner(key: &str) -> Option<(&'static str, Option<&'static str>)> {
+    for venue in VENUES {
+        for tier in CREDENTIAL_TIERS.iter().chain(LEGACY_CREDENTIAL_TIERS.iter()) {
+            for sfx in CREDENTIAL_SUFFIXES {
+                if credential_key(venue, tier, sfx) == key {
+                    return Some((venue, Some(tier)));
+                }
+            }
+        }
+        // Same narrowing `attribution_keys` applies: a venue with no order-level mechanic produces
+        // no attribution key, so one spelled for it belongs to nobody.
+        if !attribution_for(venue).is_none() {
+            for sfx in ATTRIBUTION_SUFFIXES {
+                if attribution_key(venue, sfx) == key {
+                    return Some((venue, None));
+                }
+            }
+        }
+    }
+    None
+}
+/// The keys a FIRST store should carry for ONE venue, in the order a human wants to read them:
+/// every current tier × every credential suffix, then the attribution keys this venue's mechanic
+/// can actually produce.
+///
+/// ⚠ **Current tiers ONLY — the legacy `MAINNET` spelling is deliberately excluded**, unlike
+/// [`credential_keys`]. That grid exists so the registry gate can prove every key a computed lookup
+/// might ASK for is declared, and the loader genuinely still reads `MAINNET`; this one exists to be
+/// shown to a person writing their first store, and teaching them a spelling we are trying to
+/// retire would be a different kind of wrong. The two are allowed to disagree for that reason and
+/// no other.
+///
+/// ⚠ **This lives HERE rather than in the CLI that prints it, and that placement is load-bearing.**
+/// `crates/vike-ops/tests/settings_registry.rs`'s `generated_key_sites` treats any file CALLING
+/// [`credential_key`] as a site whose crate must then declare the whole grid in `SETTINGS` — the
+/// gate's meaning is *this crate READS these variables*. A command that merely prints key NAMES
+/// reads none of them, so composing them at the call site would have made the registry assert
+/// something false about `vike-cli`. This module is the table's own definition and is excluded from
+/// that set by construction, so the composition belongs here and the caller just renders.
+#[must_use]
+pub fn starter_keys(venue: &str) -> Vec<String> {
+    let mut out: Vec<String> = CREDENTIAL_TIERS
+        .iter()
+        .flat_map(|tier| {
+            CREDENTIAL_SUFFIXES.iter().map(move |sfx| credential_key(venue, tier, sfx))
+        })
+        .collect();
+    // Only venues with an order-level mechanic produce attribution keys; reuse that classification
+    // rather than restating it, exactly as `attribution_keys` does.
+    if !attribution_for(venue).is_none() {
+        out.extend(ATTRIBUTION_SUFFIXES.iter().map(|sfx| attribution_key(venue, sfx)));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Every mechanised venue's attribution VAR is one of the two declared spellings, and it is
+    /// the one its mechanic implies** — the property `attribution_var_for` exists to hold, stated
+    /// where the classification lives rather than at the one caller that would otherwise have to
+    /// re-derive it.
+    ///
+    /// ⚠ Both directions: an unmechanised venue must answer `None`, or a form would offer an
+    /// affiliate field for a venue whose `attribution_code_from` returns before it builds a key.
+    #[test]
+    fn the_attribution_var_follows_the_mechanic_for_every_roster_venue() {
+        let mut mechanised = 0usize;
+        for venue in VENUES {
+            let mech = attribution_for(venue);
+            match attribution_var_for(venue) {
+                None => assert!(mech.is_none(), "{venue} has a mechanic and no var"),
+                Some(var) => {
+                    assert!(!mech.is_none(), "{venue} has no mechanic and a var: {var}");
+                    mechanised += 1;
+                    assert!(var.starts_with(&venue.to_uppercase()), "{var} must be {venue}'s");
+                    let want = if matches!(
+                        mech,
+                        crate::attribution::AttributionMechanic::SignedBuilder { .. }
+                    ) {
+                        BUILDER_CODE_SUFFIX
+                    } else {
+                        BROKER_CODE_SUFFIX
+                    };
+                    assert!(var.ends_with(want), "{var} must end with {want}");
+                    // ...and it is a name the reader would really look up.
+                    assert!(attribution_keys().contains(&var), "{var} is outside the grid");
+                }
+            }
+        }
+        assert!(mechanised >= 6, "only {mechanised} venue(s) classified — the fold has gone quiet");
+    }
+
+    /// **`key_owner` is TOTAL over the grid and answers for nothing else** — both directions, so the
+    /// membership half of `vike-cli secrets set`'s validation cannot go quietly wrong in either
+    /// one. A key the workspace can read that this classifier rejects is a key an operator would be
+    /// refused by name; a name outside the grid that it accepts is a key nothing will ever read,
+    /// written into the store with a success message.
+    #[test]
+    fn key_owner_classifies_exactly_the_lookup_grid() {
+        for key in lookup_keys() {
+            let (venue, tier) = key_owner(&key)
+                .unwrap_or_else(|| panic!("{key} is in lookup_keys() and must be classified"));
+            assert!(VENUES.contains(&venue), "{key}: {venue} is not a roster venue");
+            assert!(key.starts_with(&venue.to_uppercase()), "{key} must be {venue}'s");
+            match tier {
+                // A credential key names a tier, and the name really carries that spelling —
+                // including the legacy one, which is NOT normalized here (see the doc).
+                Some(t) => assert!(
+                    CREDENTIAL_TIERS.contains(&t) || LEGACY_CREDENTIAL_TIERS.contains(&t),
+                    "{key}: {t} is no tier"
+                ),
+                // …and the tier-less answer is exactly the attribution family.
+                None => assert!(
+                    key.ends_with(BROKER_CODE_SUFFIX) || key.ends_with(BUILDER_CODE_SUFFIX),
+                    "{key} answered with no tier but is not an attribution key"
+                ),
+            }
+        }
+        // The other direction: near-misses, a bespoke key the grid deliberately excludes, and an
+        // unmechanised venue's attribution code all answer `None`.
+        //
+        // ⚠ **The near-misses are COMPOSED, never spelled**, and that is not style.
+        // `crates/vike-ops/tests/settings_registry.rs`'s literal harvest reads ANY string literal
+        // with env-var shape and a known prefix as evidence that this crate READS that variable,
+        // and then demands a `vike_ops::settings::SETTINGS` row for it — so spelling
+        // `{VENUE}_{TIER}_API_KEYS` here as test data would demand a registry row for a key nothing
+        // reads, which is precisely what that registry exists to refuse. Composing them keeps the
+        // fixtures out of the harvest while leaving them exactly as near a miss.
+        let real = credential_key(VENUES[0], CREDENTIAL_TIERS[0], API_KEY_SUFFIX);
+        let outsiders = [
+            format!("{real}_"),
+            format!("_{real}"),
+            format!("{real}S"),
+            real.replace(CREDENTIAL_TIERS[0], "PROD"),
+            format!("NOTAVENUE_{}", &real[real.find('_').unwrap() + 1..]),
+            // Two BESPOKE shapes, likewise composed: real keys their own bridge's `config.rs`
+            // reads with a literal, and which this grid deliberately does not cover.
+            format!("FXCM_{}", "DEMO_USER"),
+            format!("VIKE_{}", "TRADEHUB_CONTROL_KEY"),
+            String::new(),
+        ];
+        for outsider in &outsiders {
+            assert!(key_owner(outsider).is_none(), "{outsider} must not be classified");
+        }
+        // …and an attribution code for a venue with NO order-level mechanic is nobody's key, the
+        // same narrowing `attribution_keys` applies.
+        let unmechanised = VENUES
+            .iter()
+            .find(|v| attribution_for(v).is_none())
+            .expect("some roster venue has no attribution mechanic");
+        assert!(key_owner(&attribution_key(unmechanised, BROKER_CODE_SUFFIX)).is_none());
+    }
+    /// The grid is exactly the product it claims to be — DERIVED from the roster's length, never a
+    /// pinned count. A count checked against itself is the failure
+    /// `crate::venues`' `roster_matches_the_bridge_crates` was rewritten to stop shipping.
+    #[test]
+    fn the_credential_grid_is_the_roster_times_the_tiers_times_the_suffixes() {
+        let tiers = CREDENTIAL_TIERS.len() + LEGACY_CREDENTIAL_TIERS.len();
+        assert_eq!(credential_keys().len(), VENUES.len() * tiers * CREDENTIAL_SUFFIXES.len());
+    }
+
+    /// …and the attribution half is the MECHANIC venues times the suffixes, with the roster's
+    /// unmechanised venues genuinely absent (not merely unlisted).
+    #[test]
+    fn the_attribution_grid_covers_exactly_the_mechanised_venues() {
+        let mechanised = VENUES.iter().filter(|v| !attribution_for(v).is_none()).count();
+        assert_eq!(attribution_keys().len(), mechanised * ATTRIBUTION_SUFFIXES.len());
+        assert!(mechanised > 0 && mechanised < VENUES.len(), "both arms must be non-empty");
+        let keys = attribution_keys();
+        for venue in VENUES.iter().filter(|v| attribution_for(v).is_none()) {
+            for sfx in ATTRIBUTION_SUFFIXES {
+                let key = attribution_key(venue, sfx);
+                assert!(!keys.contains(&key), "{key} is never looked up — it must not be declared");
+            }
+        }
+    }
+
+    /// The SPELLING, pinned against a name written out in full. Everything else in this file
+    /// composes the same constants the code under test composes, which would keep agreeing after a
+    /// change to either; this one assertion is the anchor that says WHICH strings those are.
+    ///
+    /// The literal is a declared grid key, so it is safe for
+    /// `crates/vike-ops/tests/settings_registry.rs`'s literal sweep to observe. Do not spell a name
+    /// here that the grid does not contain — an env-shaped literal with no registry row fails that
+    /// gate's direction 1, wherever in the tree it sits.
+    #[test]
+    fn a_credential_key_is_venue_then_tier_then_suffix() {
+        assert_eq!(credential_key("binance", "DEMO", API_KEY_SUFFIX), "BINANCE_DEMO_API_KEY");
+        assert_eq!(attribution_key("okx", BROKER_CODE_SUFFIX), "OKX_BROKER_CODE");
+    }
+
+    /// Every key is uppercase/underscore/digit shaped and carries one of the declared suffixes —
+    /// the property the registry's own name predicate (`vike_ops::scan`'s `is_env_name`) demands
+    /// before it will even consider a string an environment variable.
+    #[test]
+    fn every_key_is_env_shaped_and_carries_a_declared_suffix() {
+        for key in lookup_keys() {
+            assert!(
+                key.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'),
+                "{key} is not env-var shaped"
+            );
+            assert!(
+                CREDENTIAL_SUFFIXES
+                    .iter()
+                    .chain(ATTRIBUTION_SUFFIXES.iter())
+                    .any(|s| key.ends_with(s)),
+                "{key} ends in no declared suffix"
+            );
+        }
+    }
+
+    /// Sorted and deduplicated, so a gate diffing this against a committed table prints one line
+    /// per change rather than a reordering.
+    #[test]
+    fn the_grid_is_sorted_and_unique() {
+        for grid in [credential_keys(), attribution_keys(), lookup_keys()] {
+            let mut sorted = grid.clone();
+            sorted.sort();
+            sorted.dedup();
+            assert_eq!(grid, sorted);
+        }
+    }
+
+    /// **The platform table and the venue grid do not intersect, in either direction** — the
+    /// property every one of [`PLATFORM_KEYS`]' three "NOT unioned into" clauses rests on.
+    ///
+    /// A platform key that `key_owner` classified would become settable through
+    /// `vike-cli secrets set` the moment somebody widened one function, silently reversing the
+    /// "generating is the fix; accepting is not" verdict; a grid key that answered `true` here
+    /// would let a node-key writer overwrite a venue's live signing credential.
+    #[test]
+    fn platform_keys_are_outside_the_venue_grid() {
+        for key in PLATFORM_KEYS {
+            assert!(
+                key_owner(key).is_none(),
+                "{key} is a PLATFORM key and must belong to no venue — `secrets set` refuses it"
+            );
+            assert!(!lookup_keys().contains(&key.to_string()), "{key} must not be in the grid");
+        }
+        for key in lookup_keys() {
+            assert!(!is_platform_key(&key), "{key} is a venue key and is not a platform key");
+        }
+    }
+
+    /// The table is two DISTINCT, env-shaped names, and the membership test answers for them and
+    /// for nothing near them.
+    ///
+    /// ⚠ The near-misses are COMPOSED for the reason [`PLATFORM_KEYS`]' own doc gives and
+    /// `key_owner_classifies_exactly_the_lookup_grid` gives above: a whole env-shaped literal in
+    /// this file is read by the settings registry's harvest as a READ, and demands a row for a
+    /// variable this crate does not read.
+    #[test]
+    fn the_platform_table_is_two_distinct_env_shaped_names() {
+        assert_ne!(
+            PLATFORM_KEYS[0], PLATFORM_KEYS[1],
+            "the two node keys are separate credentials"
+        );
+        for key in PLATFORM_KEYS {
+            assert!(
+                key.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'),
+                "{key} is not env-var shaped"
+            );
+            assert!(is_platform_key(key), "{key} must answer its own membership test");
+        }
+        for outsider in
+            [format!("{}_", PLATFORM_KEYS[0]), PLATFORM_KEYS[0].to_lowercase(), String::new()]
+        {
+            assert!(!is_platform_key(&outsider), "{outsider:?} must not be a platform key");
+        }
+    }
+
+    /// **The two SERVICES partition [`PLATFORM_KEYS`]** — every name belongs to exactly one of
+    /// them, neither claims a name outside the table, and neither is empty.
+    ///
+    /// ⚠ **This asserted it of the two PAIR PREDICATES until 2026-09-20, and that was only ever
+    /// true while every platform key was half of a pair.** `VIKE_TRADEHUB_ADMIN_KEY` is a tradehub
+    /// name that is NOT half of the tradehub pair, so the two are now different questions and the
+    /// partition belongs to [`platform_key_service`], which is the one that answers *whose key is
+    /// this*. Asserting it of the predicates instead would force the admin key into
+    /// [`is_tradehub_node_key`] — and that predicate's own doc records what widening it costs: it is
+    /// handed to `vike_secrets::resolve_node_keys` to decide WHICH FILE answers for the pair, and a
+    /// `node.env` holding only the admin key would become that answer while a working pair sat in
+    /// the settings database. Client signs with an empty key, node says `bad mac`, nothing warns.
+    ///
+    /// The safety argument the partition carries is UNCHANGED and still lands on the predicates —
+    /// it is just stated over the right set now. Disjointness is what makes it impossible to stitch
+    /// a pair across the two credential files; `the_pair_predicates_are_the_pairs_and_nothing_else`
+    /// below is where exhaustiveness-over-the-pairs is asserted, since the pairs no longer exhaust
+    /// the table.
+    #[test]
+    fn the_two_service_families_partition_the_platform_table() {
+        let mut tradehub = 0;
+        let mut datahub = 0;
+        for key in PLATFORM_KEYS {
+            let t = platform_key_service(key) == Some(TRADEHUB_SERVICE);
+            let d = platform_key_service(key) == Some(DATAHUB_SERVICE);
+            assert!(t ^ d, "{key} belongs to both services or to neither");
+            tradehub += usize::from(t);
+            datahub += usize::from(d);
+        }
+        assert_eq!(tradehub + datahub, PLATFORM_KEYS.len(), "a platform key belongs to no service");
+        assert!(tradehub > 0 && datahub > 0, "a service that owns nothing is not one");
+        for key in lookup_keys() {
+            assert!(!is_tradehub_node_key(&key), "{key} is a venue key");
+            assert!(!is_datahub_node_key(&key), "{key} is a venue key");
+        }
+        // …and the service names are the ones the classifier answers with, not a fourth copy.
+        assert_eq!(platform_key_service(PLATFORM_KEYS[0]), Some(TRADEHUB_SERVICE));
+        assert_eq!(platform_key_service(PLATFORM_KEYS[2]), Some(DATAHUB_SERVICE));
+    }
+
+    /// **The PAIR predicates match the two PAIRS and nothing else** — the half that used to ride on
+    /// the partition test above and cannot any more, now that a platform key exists which belongs to
+    /// a service without belonging to its pair.
+    ///
+    /// ⚠ **The load-bearing assertion is the NEGATIVE one.** `is_tradehub_node_key` is what
+    /// `vike_secrets::resolve_node_keys` probes a file with to decide where the observe/control pair
+    /// is read from, so every name it matches is a name that can make a file *the answer*. The admin
+    /// key must never be one: a `node.env` holding it alone would win the probe and a working pair
+    /// in the settings database would be dropped — the measured `bad mac` shape that predicate's own
+    /// doc describes, reproduced by a third name instead of by a second service.
+    #[test]
+    fn the_pair_predicates_are_the_pairs_and_nothing_else() {
+        assert!(is_tradehub_node_key(PLATFORM_KEYS[0]) && is_tradehub_node_key(PLATFORM_KEYS[1]));
+        assert!(is_datahub_node_key(PLATFORM_KEYS[2]) && is_datahub_node_key(PLATFORM_KEYS[3]));
+
+        let admin = PLATFORM_KEYS[4];
+        assert!(
+            !is_tradehub_node_key(admin),
+            "{admin} must not decide where the tradehub PAIR is read from"
+        );
+        assert!(!is_datahub_node_key(admin), "{admin} is not the datahub's at all");
+        // …while still being a platform name a writer may write, and still routing an operator to
+        // the command that owns it. Three predicates, three questions.
+        assert!(is_platform_key(admin));
+        assert_eq!(platform_key_service(admin), Some(TRADEHUB_SERVICE));
+
+        // The pairs are exactly two each, so a name added to either predicate fails here rather than
+        // silently widening a file probe.
+        let pair_matches = PLATFORM_KEYS.iter().filter(|k| is_tradehub_node_key(k)).count();
+        assert_eq!(pair_matches, 2, "the tradehub PAIR is two names");
+        assert_eq!(PLATFORM_KEYS.iter().filter(|k| is_datahub_node_key(k)).count(), 2);
+    }
+
+    /// The two uppercasings the workspace used before this table existed agree on every roster id,
+    /// which is what makes [`attribution_key`]'s switch from `to_ascii_uppercase` a no-op.
+    #[test]
+    fn the_two_uppercasings_agree_on_every_roster_venue() {
+        for venue in VENUES {
+            assert_eq!(venue.to_uppercase(), venue.to_ascii_uppercase(), "{venue}");
+        }
+    }
+}

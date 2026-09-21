@@ -1,0 +1,10 @@
+[
+  {
+    "venue": "binance",
+    "symbol": "BTCUSDT",
+    "position_side": "BOTH",
+    "qty": 1.0,
+    "avg_px": 30000.0,
+    "ts": 2000
+  }
+]
