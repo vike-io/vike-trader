@@ -1,0 +1,13 @@
+# Match the codebase's existing hand-written style: single-line expressions stay single-line
+# whenever they fit in max_width, instead of rustfmt's default sub-width heuristics (which wrap
+# method chains at 60 cols and similar). "Max" minimizes reformat churn against the pre-gate code.
+use_small_heuristics = "Max"
+# Byte-identical output across dev-Windows and CI-Linux (the fmt gate runs on Linux).
+newline_style = "Unix"
+# NOTE: the committed, pre-generated protobuf bindings at
+# crates/bridges/ctrader/src/generated/openapi.rs need NO rustfmt exclusion here. rustfmt only
+# walks the `mod` tree, and that file is pulled in via `include!("generated/openapi.rs")` — an
+# include! target, not a `mod` — so rustfmt never visits it (exactly as it never touched the old
+# $OUT_DIR/_.rs). Its prettyplease bytes stay verbatim for the drift gate's byte-compare. (A
+# rustfmt `ignore` list would be the wrong tool anyway: it is an unstable/nightly-only key that
+# no-ops with a warning under the pinned stable toolchain.)

@@ -1,0 +1,11 @@
+# vike frame record v1 (vike_ui_theme::frame_record)
+# scenario: narrow_viewport_with_volume
+ppp 1  primitives 7  vertices 2464  triangles 3036
+----
+   0  clip [0 0 480 360]  tex M0  v 4  t 2  solid [0 0 480 360]  glyph -  runs 2  #161b24ff*2 #0d1117ff*2  d 2388dd5716a94a5f
+   1  clip [0 0 480 360]  tex M0  v 24  t 12  solid -  glyph [413 121 455 130]  runs 1  #6b7480ff*24  d d3a5a4ee9b9e1155
+   2  clip [0 0 408 252]  tex M0  v 1800  t 2370  solid [-1 4 409 249]  glyph -  runs 13  #05050623*72 #22272fff*4 #5bbe91ff*54 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*18 #f85249ff*104  d 3783623136b87245
+   3  clip [0 0 480 360]  tex M0  v 216  t 152  solid [-1 186 481 256]  glyph [8 13 445 199]  runs 11  #d95458ff*20 #0d1117ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*72 #242931ff*4  d 688fc4d28e7eb91a
+   4  clip [0 0 480 360]  tex M0  v 12  t 6  solid -  glyph [412 282 426 332]  runs 1  #6b7480ff*12  d b181c69ded02170a
+   5  clip [0 257 408 328]  tex M0  v 336  t 420  solid [-1 262 409 330]  glyph -  runs 12  #0b0d1056*4 #22272fff*4 #2d8238b3*12 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*4  d 0f091b66b10c84b5
+   6  clip [0 0 480 360]  tex M0  v 72  t 74  solid [409 262 434 279]  glyph [6 262 427 274]  runs 3  #9aa4b1ff*24 #f85249ff*20 #e7ecf4ff*8  d 84d3fb8b2c71449d
