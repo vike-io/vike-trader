@@ -1,0 +1,90 @@
+[package]
+name = "vike-strategy-plugin"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io
+description = "The quarantined FFI surface for runtime-loaded user Rust strategies: the C-ABI types, both sides' wrappers, and the dlopen loader. The ONLY crate in the tree that may contain `unsafe` besides crates/bridges/fxcm and crates/vike-core."
+
+[package.metadata.vike]
+layer = 41
+
+# NO [lints] table. See the description: this crate IS the quarantined FFI surface,
+# exactly as crates/bridges/fxcm is, and the workspace `unsafe_code = "forbid"` is a
+# level a local `#[allow(unsafe_code)]` cannot lift.
+
+[dependencies]
+# Exactly what a plugin (and the loader/host wrappers around one) genuinely needs — `abi.rs`,
+# `guest.rs` and `host.rs` all name `Bar`/`Broker`/`HftBroker`/`Strategy`. The builder service's
+# own tree (`vike-datahub-client`, `sha2`, `tracing`, `toml`) moved out with it to the sibling
+# `vike-strategy-builder` crate — see `src/lib.rs`'s module doc.
+# `cargo tree -p vike-strategy-plugin -e normal` is the proof that split did what it was for.
+vike-model = { path = "../vike-model" }
+vike-marketdata = { path = "../vike-marketdata" }
+# ⚠ ADDED at `ABI_VERSION` 3 (the hook widening), and it costs a compiled plugin NOTHING — this
+# comment used to name serde_json among the crates that had LEFT, which was true of the edge and
+# never true of the link. `vike-model` has carried a normal `serde_json` dependency since
+# `Strategy::save_state` existed, and every plugin depends on `vike-model` directly, so this line
+# adds a dependency EDGE rather than a crate: `cargo tree -p vike-strategy-plugin -e normal`
+# already listed it transitively.
+#
+# WHAT IT IS FOR: `Strategy::on_params_updated` carries a `&StrategyParams`, and no Rust type may
+# cross this ABI by value — so the bag crosses as TEXT. It cannot be TOML, the idiom
+# `vike_plugin_create` uses: `StrategyParams` reaches `TripleBarrier`'s four `Option` fields,
+# `SpreadMakerParams::avellaneda_stoikov` and `XemmParams::refresh_tolerance`, none of which
+# carries `skip_serializing_if`, and `toml`'s serializer REFUSES a `None` outright. The argument
+# in full, including the flat-mirror alternative and why it was rejected, is on
+# `guest::strategy_params_from_json`.
+#
+# The cdylib TEMPLATE's own manifest was UNCHANGED by this: the decode helper lives in `guest.rs`,
+# so the hook widening added no line to it. ⚠ That was the whole claim and it is still true — but
+# the sentence used to END "so a user strategy file still sees exactly `vike-model` +
+# `vike-strategy-plugin` + `toml`, which is the surface the design's open question 3 is about",
+# and THAT is false since 2026-09-22: question 3 is closed, the template also declares
+# `vike-strategy` and `vike-indicators`, and `crates/vike-ops/tests/user_strategy_surface_gate.rs`
+# holds it equal to `crates/vike-user-strategies/Cargo.toml`. A reader trusting the old spelling
+# would size the plugin surface two crates short.
+serde_json = { workspace = true }
+
+# ⚠ EVERY entry below is a DEV-dependency and exists for ONE test binary,
+# `tests/equivalence.rs` — the design's "mechanism equivalence" test. None of them reaches a
+# compiled plugin: `cargo tree -p vike-strategy-plugin -e normal` is unchanged by this table, which
+# is the property the `[dependencies]` comment above is about.
+#
+# ⚠ They point UP the stack on purpose, which `[dependencies]` may never do and a dev-dependency
+# may: `crates/vike-ops/tests/layer_gate.rs` exempts this section explicitly (its own header argues
+# why, and `dev_dependencies_genuinely_point_upward` asserts the exemption is still needed). The
+# test cannot be written any other way — proving that TWO MECHANISMS agree requires reaching both,
+# and both live above layer 41.
+[dev-dependencies]
+# The real backtest engine the comparison is driven through: `StrategyEngine`/`SimBroker` (the
+# concrete `B` the shipped backtest path instantiates `PluginStrategy` with) plus the
+# `vike_analytics` metric catalog re-exported as `vike_backtest::metrics`. Default features only —
+# nothing DataFusion-shaped is enabled here.
+vike-backtest = { path = "../vike-backtest" }
+# The real builder: `build_plugin` renders the cdylib template around the fixture's bytes and runs
+# cargo. Using it rather than a hand-rolled cargo invocation is what makes the plugin half of the
+# comparison the PRODUCTION pipeline instead of an imitation of it. This edge closes a
+# dev-dependency CYCLE (builder -> plugin is a normal dependency) — a shape cargo supports
+# outright, because a dev-dependency is not part of the library's own build graph.
+vike-strategy-builder = { path = "../vike-strategy-builder" }
+# The build-time tier's own scan/render, so the compiled-in half of the comparison can be asserted
+# against the REAL generated registry shape rather than against this file's memory of it.
+vike-user-strategies = { path = "../vike-user-strategies" }
+# The `params: &toml::Value` table the fixture's `build` constructor reads — the same
+# workspace-pinned crate the build-time tier and the cdylib template both use.
+toml = { workspace = true }
+# The other two crates `crates/vike-user-strategies/Cargo.toml` declares as the user-facing API
+# surface, and that the cdylib template now declares too. They are here for the COMPILED-IN half
+# of `tests/equivalence.rs`: that half is the fixture reached as a `#[path]` module of THIS test
+# binary, so a fixture naming `vike_strategy` or `vike_indicators` resolves them against this
+# table. The plugin half resolves the same two against the rendered template.
+#
+# ⚠ They point DOWN (41 -> 30 and below), unlike every other entry in this section, so they are
+# not what `crates/vike-ops/tests/layer_gate.rs`'s `dev_dependencies_genuinely_point_upward`
+# exists for — that assertion needs only that SOME upward dev edge remains, and `vike-backtest`
+# above is one. Neither reaches a compiled plugin's link through this manifest:
+# `cargo tree -p vike-strategy-plugin -e normal` is unchanged, exactly as the `[dependencies]`
+# comment above claims for the whole section. What puts them in a PLUGIN is the template.
+vike-strategy = { path = "../vike-strategy" }
+vike-indicators = { path = "../vike-indicators" }

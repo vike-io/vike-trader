@@ -1,0 +1,83 @@
+[package]
+name = "vike-strategy-builder"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io
+description = "The service that compiles an authenticated caller's Rust strategy source into a vike-strategy-plugin-shaped cdylib: the cdylib template renderer, the content-addressed build/cache, the authenticated wire protocol, the retention pruner, and the vike-strategy-builder binary. Split out of vike-strategy-plugin so a compiled user plugin never inherits this service's dependency tree."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `daemon` — a headless
+# top-of-graph binary. The SAME tier `vike-datahub`/`vike-tradehub` declare, for the same shape: a
+# standalone systemd service speaking its own authenticated loopback wire protocol.
+#
+# ⚠ This comment said "only the layer-68 multicall dispatcher may depend on it, and nothing does",
+# and the runtime-plugin JOIN made both halves false. `src/client.rs` — the CLIENT half of this
+# service's protocol — lives here deliberately (its module doc argues why: a client written
+# elsewhere would be a second statement of the handshake, the domain separator, the protocol
+# version and the scope ceiling, kept in step by nothing), so `vike-studio` (80) and
+# `vike-desktop` (90) both take this crate. Those edges go DOWN, which is the rule the gate
+# actually enforces; what the rank still buys is that nothing BELOW 65 may name this tree.
+#
+# ⚠ ABOVE `vike-strategy-plugin`'s 41, and this crate DOES carry a normal Cargo dependency edge on
+# it now (`src/render.rs` reads `vike_strategy_plugin::{TEMPLATE_CARGO_TOML, TEMPLATE_LIB_RS}` —
+# see that crate's `src/lib.rs` doc for why those are `pub const`s reached over a dependency edge
+# rather than a bare `include_str!` file path). That edge is DOWN the stack (65 depends on 41),
+# the permitted direction; only the reverse would be wrong, and it is not what this is — a plugin
+# still links only `vike-strategy-plugin` itself, because a `pub const` string is not a dependency
+# edge of its own. 65 is also where every other sibling authenticated-wire-protocol daemon in this
+# tree (`vike-datahub`, `vike-tradehub`) already sits, for the identical shape.
+[package.metadata.vike]
+layer = 65
+
+# Ordinary workspace lints — unlike `vike-strategy-plugin`, this crate is NOT part of the
+# quarantined FFI surface and carries no `unsafe`. See crates/vike-ops/tests/unsafe_and_toolchain_gate.rs;
+# no new row is needed there for this crate (`UNSAFE_EXEMPT` names crates that do NOT inherit the
+# workspace forbid, and this one does).
+[lints]
+workspace = true
+
+[dependencies]
+# The cdylib template's OWN two files (`TEMPLATE_CARGO_TOML`/`TEMPLATE_LIB_RS`, both `pub const`),
+# and the quarantined FFI surface a rendered plugin links against — this crate never touches that
+# surface itself (it only writes the CONSTANT text into a scratch crate and shells out to cargo),
+# so the edge exists purely to reach the two constants. Down-only: `vike-strategy-plugin` is layer
+# 41, strictly below this crate's 65 (see the layer comment above for why the edge is legal and
+# does not widen a plugin's own dependency tree).
+vike-strategy-plugin = { path = "../vike-strategy-plugin" }
+# The content-addressed cache key for a rendered plugin crate (`src/render.rs`'s `sha256_hex`) — the
+# EXACT crate `crates/vike-bridge-core/src/signer.rs` already links (deny.toml bans a second crypto
+# stack), so this adds no new package to the workspace audit surface.
+sha2 = { workspace = true }
+# The builder service's wire protocol (`src/builder.rs`) and its `Build`/`Response` frames — the
+# same pair every other node-auth-speaking crate in this tree already uses for its own protocol.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The SHARED node-auth primitive this service's OWN domain signs under (`vike-datahub-client` is
+# layer 30, strictly below this crate's 65 — a down-only edge). See `src/builder.rs`'s module doc
+# for why the builder does NOT reuse `vike-tradehub-client::auth` or the datahub's own domain.
+vike-datahub-client = { path = "../vike-datahub-client" }
+# This binary's OWN provenance (`vike_buildinfo::GIT_SHA`) — `src/render.rs`'s
+# `verify_source_version` compares it against the version stamp
+# `.github/workflows/release.yml` writes into the extracted `workspace_root`, refusing to build a
+# plugin when the two disagree (or when either cannot be confirmed) rather than silently linking
+# `vike-model`/`vike-strategy`/`vike-indicators` LOGIC the running binary's own build-time tier may
+# disagree with. Leaf crate, layer 15 — strictly below this crate's 65, a down-only edge that adds
+# no package: every binary in this tree already links it.
+vike-buildinfo = { path = "../vike-buildinfo" }
+# ⚠ **`tracing` was here for "connection-boundary logging" and is DELETED, because it logged
+# nothing.** `tracing` is a facade: an event reaches a destination only through an installed
+# subscriber, and `src/bin/vike-strategy-builder.rs` installs none (it calls no `vike_log::init`,
+# and deliberately no `vike_boot::boot` either). So the two `tracing::warn!` sites in
+# `src/builder.rs` — an accept failure and a failed retention prune — produced no output at all,
+# and this comment promised an operator something the binary could not deliver. Both are
+# `eprintln!` now, which systemd captures, and which is what every other operator-facing line in
+# this crate's binary already uses. `src/builder.rs`'s module header carries the argument for why
+# installing a subscriber was refused rather than chosen. The day this service boots through
+# `vike-boot`, this dependency comes back WITH one.
+
+[dev-dependencies]
+# Scratch directories for `render.rs`'s tests and `builder.rs`'s retention tests. NOT a
+# `[workspace.dependencies]` entry — matches the vike-model/vike-data/vike-backtest convention of a
+# per-crate `tempfile = "3"` pin in `[dev-dependencies]` (production code builds its own scratch
+# path from the content hash instead; see `render.rs`'s module doc).
+tempfile = "3"

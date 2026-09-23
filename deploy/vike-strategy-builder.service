@@ -1,0 +1,391 @@
+# systemd unit for `vike-strategy-builder` — the ONLY process in this workspace that runs `cargo`
+# against source an authenticated caller supplies. See
+# `crates/vike-strategy-builder/src/builder.rs` (the wire protocol, the auth domain, the scope
+# argument — split out of `vike-strategy-plugin` by a controller ruling so a compiled plugin never
+# inherits this service's dependency tree; that module's doc carries the full argument) and
+# `docs/superpowers/specs/2026-09-21-runtime-loaded-rust-strategies-design.md`
+# ("The builder service") for what this daemon does and why it is a SEPARATE service from
+# `vike-backend backtest`, which only `dlopen`s this daemon's finished `.so` files off a shared
+# filesystem — the two never talk to each other over a socket (see that design's "The builder
+# gets its own authenticated loopback port" section).
+#
+# ⚠ EVERY PATH BELOW IS THE PLACEHOLDER PROJECT ROOT /srv/vike-<unit>. It is an example,
+# not a requirement — substitute your own root everywhere, the same recipe every other unit in
+# this directory documents:
+#
+#   R=/your/project/root
+#   sed "s,/srv/vike-<unit>,$R,g" deploy/vike-strategy-builder.service > /tmp/vike-strategy-builder.service
+#   grep -n /srv/vike-<unit> /tmp/vike-strategy-builder.service    # must print NOTHING
+#   install -Dm644 /tmp/vike-strategy-builder.service ~/.config/systemd/user/vike-strategy-builder.service
+#   systemctl --user daemon-reload && systemctl --user enable --now vike-strategy-builder
+#
+# (For a system-wide install use /etc/systemd/system/, add `User=`, and drop the --user flags.
+# Read the hardening block at the bottom first — under a --user manager the sandbox directives are
+# applied as NO-OPS on a stock Ubuntu box, exactly as `deploy/vike-backtest.service`'s own header
+# warns.)
+#
+# ⚠ A SECOND, INDEPENDENT placeholder below — /checkout/vike-trader-rust — is NOT a sub-path of
+# the project root above, and deliberately shares NO PREFIX with it: /srv/vike-<unit> is
+# a prefix of a careless "/srv/vike-<unit>"-style placeholder, so the substitution
+# above would rewrite this one to `$R-checkout` instead of leaving it a separate, independent
+# substitution target. This placeholder is a tree holding crates/vike-model, crates/vike-strategy,
+# crates/vike-indicators and crates/vike-strategy-plugin (plus the root Cargo.toml, for their
+# `field.workspace = true` inheritance) — the vike-strategy-plugin cdylib template's own dependency
+# closure — which a rendered plugin's Cargo.toml needs to resolve its `path` dependencies against.
+#
+# ⚠ **This does NOT have to be a second git checkout an operator maintains by hand, and until
+# 2026-09-22 the only documented way to fill it was exactly that.** The workspace source ships as
+# its own release asset now (`vike-strategy-source.tar.gz` — see
+# `.github/workflows/release.yml`'s "Package the strategy builder's workspace source" step for the
+# derived-closure argument and the size measurement behind shipping a subtree rather than the whole
+# checkout), so the version this points at is pinned to the SAME release as the `bin/vike-backend`
+# beside it, by construction rather than by an operator remembering to re-sync a checkout on every
+# deploy. `scripts/fetch_release_tools.sh strategy-source [--project <root>]` downloads, verifies
+# against `SHA256SUMS` and extracts it to `<project>/vendor/vike-strategy-source` — which is exactly
+# the leaf this variable should then name. A real, hand-maintained checkout still works (cargo does
+# not care how the tree arrived, only that `crates/vike-model` etc. are really there) and is a
+# reasonable choice on a box that already keeps one for other reasons; the release asset is the
+# path that keeps the two in step with no reason to remember.
+#
+# Include it in the SAME substitution pass, with its own `$CHECKOUT` — order does not matter now
+# that the two placeholders share no prefix:
+#
+#   CHECKOUT=/path/to/your/vike-trader-rust     # or: <project root>/vendor/vike-strategy-source
+#   sed "s,/checkout/vike-trader-rust,$CHECKOUT,g" ... (chain onto the sed above)
+#   grep -n /checkout/vike-trader-rust /tmp/vike-strategy-builder.service    # must print NOTHING
+#
+# ⚠ A THIRD placeholder — /toolchain/rust — is the Rust TOOLCHAIN this daemon compiles with, and it
+# too deliberately shares no prefix with either of the two above. It names the directory holding a
+# REAL `cargo` and a REAL `rustc`, not the rustup shims in `~/.cargo/bin`; that distinction is the
+# whole fix for a defect measured on the CI box and is argued at the `CARGO=`/`RUSTC=` block below.
+# Read the value off whichever toolchain you want this service to build plugins with:
+#
+#   TOOLBIN=$(dirname "$(rustup which cargo)")   # e.g. ~/.rustup/toolchains/stable-…-gnu/bin
+#   sed "s,/toolchain/rust/bin,$TOOLBIN,g" ... (chain onto the sed above)
+#   grep -n /toolchain/rust /tmp/vike-strategy-builder.service    # must print NOTHING
+#
+# ⚠ THIS DAEMON SHIPS INSIDE THE MULTICALL NOW, NOT AS ITS OWN BINARY. `crates/vike/Cargo.toml`'s
+# `vike-strategy-builder` feature (forwarded by `full`) carries this service as a `vike-backend
+# strategy-builder` verb — the same join `trade`/`datahub`/`backtest` already went through, and for
+# the identical reason: `.github/workflows/release.yml` builds `-p vike-backend --bin vike-backend
+# --features full` and NOTHING ELSE, so a unit naming a separate `vike-strategy-builder` binary
+# would ExecStart a file no release produces. The crate's OWN binary
+# (`crates/vike-strategy-builder/src/bin/vike-strategy-builder.rs`) still exists and still builds —
+# see `crates/vike-strategy-builder/src/builder.rs`'s `run`, which both composition roots call, for
+# why folding this into the multicall does not touch `34b8d6756`'s split: that commit kept
+# `tracing`/`vike-datahub-client` out of a COMPILED PLUGIN's link
+# (`crates/vike-strategy-plugin`'s own tree), and this join is the DISPATCHER taking on this
+# crate, which a plugin never sees either way.
+#
+# Building it yourself is the same one command every other daemon in this directory uses, under
+# the multicall's own package — and the `--bin` follows the PACKAGE name, because
+# crates/vike/Cargo.toml declares no `[[bin]]`:
+#   cargo build --release -p vike-backend --bin vike-backend --features full
+#   install -d -m755 /srv/vike-<unit>/bin
+#   install -m755 target/release/vike-backend /srv/vike-<unit>/bin/vike-backend
+#
+# ⚠ It ALSO needs the workspace SOURCE TREE `VIKE_STRATEGY_BUILDER_WORKSPACE_ROOT` names below —
+# see that variable's own note further down for where that comes from on a real deploy (a release
+# asset, extracted beside the binaries — never a second git checkout an operator maintains by
+# hand).
+#
+# ⚠ **INSTALLING THIS UNIT IS NOT THE SAME AS THIS DAEMON JOINING THE AUTOMATED DEPLOY PIPELINE —
+# a SECOND, SEPARATE act is required, and it is easy to do the first and believe the second
+# happened too.** `deploy/sbin/vike-trader-ci-deploy`'s `DEPLOY_UNITS` names this unit and carries
+# a real `unit_shape` probe for it, so a green tag's automated `deploy` WILL pre-flight and restart
+# it going forward — but ONLY once that script's INSTALLED copy at `/usr/local/sbin/` is refreshed.
+# That script is installed OUT OF BAND, by hand (`docs/ops/upgrading.md`'s install step has the
+# exact command), and nothing on this box does that for you. Until you run it, a green automated
+# deploy keeps installing a fresh `bin/vike-backend` while never pre-flighting or restarting THIS
+# unit — silently, because the installed helper's OLD `DEPLOY_UNITS` simply does not name it, and
+# nothing on the box reports that as a problem (`verify-tools`/`helper_identity` catch a stale copy
+# missing a TOOL or a VERB, not a stale `DEPLOY_UNITS` roster). Same shape as the incident that
+# motivated `verify-tools` in the first place, applied to a roster instead of a tool table.
+#
+# ⚠ THE KEY IS DELIBERATELY ABSENT FROM THIS FILE. A tracked unit is the worst place to put a real
+# secret, and `VIKE_STRATEGY_BUILDER_KEY` is the ONE credential this service refuses to start
+# without (`crates/vike-strategy-builder/src/builder.rs`'s `run`, called by both this crate's own
+# binary and the multicall's `strategy-builder` verb). This binary does not yet route through
+# this workspace's credential store (`<project>/settings/secrets.env`) the way every other daemon
+# in this directory does — see that module's own doc for the scope note — so until that
+# wiring lands, an operator supplies the key with a systemd drop-in:
+#   systemctl edit vike-strategy-builder
+#   # [Service]
+#   # Environment=VIKE_STRATEGY_BUILDER_KEY=<a real key>
+# NEVER via `EnvironmentFile=<root>/.env` below: that file is operator TUNABLES, never a
+# credential source, and `crates/vike-ops/tests/deploy_layout_gate.rs`'s
+# `no_unit_makes_the_credential_store_an_environment_source` holds every unit in this directory to
+# that rule already.
+#
+# ⚠ `VIKE_STRATEGY_BUILDER_WORKSPACE_ROOT` is NOT a secret (it names a directory, not a
+# credential), so it DOES ship below as an ordinary `Environment=` line — unlike the key, an
+# operator who forgets to substitute the checkout placeholder gets an immediate, loud refusal to
+# start (`builder.rs`'s `run`) rather than a silently-wrong build tree. See
+# `crates/vike-strategy-builder/src/render.rs`'s module doc for why there is no compile-time
+# fallback here at all: a binary built in one checkout and deployed into another would otherwise
+# silently point `cargo` at a tree that does not exist on this box.
+
+[Unit]
+Description=vike-strategy-builder — compiles an authenticated caller's Rust strategy into a cdylib
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# WorkingDirectory IS the project root, the same convention every unit in this directory follows.
+WorkingDirectory=/srv/vike-<unit>
+# ⚠ The multicall verb, NOT the standalone binary — see the header note above. `strategy-builder`
+# is `crates/vike/src/main.rs`'s `TOOLS` row name; it takes no argv (every knob below is an
+# `Environment=` line), so there is nothing to append after it.
+ExecStart=/srv/vike-<unit>/bin/vike-backend strategy-builder
+
+# --- the listen address ---------------------------------------------------------------------
+# ⚠ Loopback is not a configuration this binary can be talked OUT of — `builder::bind_addr` fixes
+# the IP half in code, so unlike its sibling daemons there is no public-bind escape hatch to guard
+# against here. Only the PORT is a real knob (avoiding a collision with vike-tradehub's 7879 or
+# vike-backtest's 7880 on a box that runs more than one of these).
+Environment=VIKE_STRATEGY_BUILDER_PORT=7881
+
+# --- where finished artifacts land, and how many this daemon keeps per strategy --------------
+# ⚠⚠ **THIS DIRECTORY IS THE ENTIRE HAND-OFF, AND THE OTHER HALF OF IT IS IN
+# `deploy/vike-backtest.service`.** The two daemons never talk over a socket; the compute daemon
+# `dlopen`s the `.so` this one writes, and it finds that file by resolving
+# `<its own WorkingDirectory>/user_data/plugins` — `crates/vike-studio-core/src/run.rs`'s
+# `plugins_dir`, over `crates/vike-model/src/state_path.rs`'s `user_plugins_dir`. It reads NO
+# variable for it. So the leaf below is not a preference: it is the half of a contract whose other
+# half is a code path, and a Build that returns a green sha followed by a Run that answers
+# `plugin artifact not found` is what a disagreement looks like.
+#
+# ⚠ **SUBSTITUTE THE SAME $R INTO THIS UNIT AND INTO `deploy/vike-backtest.service`.** The two
+# templates carry DIFFERENT placeholder roots (`/srv/vike-<unit>` here,
+# `/srv/vike-<unit>` there) and that is not a second location — it is exactly the arrangement
+# `deploy/vike-datahub.service` and `deploy/vike-backtest.service` already use for the hist store,
+# and its own block there spells the rule: the pair runs on ONE box out of ONE project root, the
+# `sed` at the top of each file substitutes the same `$R`, and it is the shared LEAF that makes
+# the two resolve to one directory afterwards. Install this unit under a root of its OWN and the
+# join is broken on that box, silently, until the first Run.
+#
+# `crates/vike-ops/tests/deploy_layout_gate.rs`'s `every_shipped_plugin_artifact_dir_is_one_spelling`
+# holds the leaf equal on both sides — it reads THIS variable here and derives the reader's answer
+# from that unit's `WorkingDirectory` there, which is the only comparison a text gate can make and
+# is the one that was missing when the join first landed.
+#
+# ⚠ **A SPLIT ROOT IS NOT AVAILABLE IN A TRACKED UNIT, and this is where that bites.** Pointing
+# this variable into another daemon's tree would need a `ReadWritePaths=` naming a path outside
+# this unit's project folder, which `every_daemon_unit_is_one_project_folder` refuses — and under
+# `ProtectSystem=strict` an ungranted write is `EROFS`, so the refusal is describing a physical
+# fact rather than inventing a rule. One root, or an operator-owned departure this file cannot
+# make for them.
+#
+# ⚠ **THE OWNERSHIP HAZARD, because the gate cannot see it.** `UMask=0077` at the bottom of this
+# file means an artifact this daemon writes is readable by its own user and nobody else. Under a
+# `--user` manager both daemons are that same user and it never bites. Under a SYSTEM install with
+# a `User=` line, the two units MUST name the same account, or the compute daemon's `dlopen` fails
+# with a permission error on a file that exists — which reads like a corrupt artifact and is not
+# one.
+Environment=VIKE_STRATEGY_BUILDER_OUT_DIR=/srv/vike-<unit>/user_data/plugins
+Environment=VIKE_STRATEGY_BUILDER_RETAIN=5
+
+# --- the source tree a rendered plugin's Cargo.toml resolves vike-model/vike-strategy/
+# vike-indicators/vike-strategy-plugin against — REQUIRED, see the header note. NOT a sub-path of
+# the project root above (a placeholder of its own, on purpose). Typically
+# `<project root>/vendor/vike-strategy-source` — `scripts/fetch_release_tools.sh strategy-source`'s
+# extraction target — once the project root above is substituted; a hand-maintained checkout works
+# too, see the header note.
+Environment=VIKE_STRATEGY_BUILDER_WORKSPACE_ROOT=/checkout/vike-trader-rust
+
+# --- cargo's own home, RELOCATED INTO THE WRITE GRANT ----------------------------------------
+# ⚠ **Without this line no build on this unit can succeed — not "a build that needs to fetch a
+# crate", EVERY build.** `ProtectHome=read-only` below makes the operator's `~/.cargo` readable
+# and not writable, and cargo takes an EXCLUSIVE file lock on `$CARGO_HOME/.package-cache` before
+# essentially any dependency resolution. `render::build_plugin` renders a scratch crate that has
+# no `Cargo.lock` at all (it is content-addressed per source sha, created fresh) and passes
+# neither `--offline` nor `--locked`, so every new sha resolves `toml` plus the whole `path`
+# dependency closure and therefore takes that lock. Opening a lock file for writing on a
+# read-only mount is `EROFS`, and cargo fails the build. The unit's comment below used to say a
+# write was needed only when "fetching a crate version this box's registry cache does not already
+# hold"; that understated it by the difference between a cache miss and every single build.
+#
+# ⚠ **`--offline`/`--locked` were considered instead and do NOT fix it.** `--locked` requires a
+# `Cargo.lock` the scratch crate does not have, so it turns every build into an error. `--offline`
+# only stops cargo reaching the NETWORK — it still takes the package-cache lock, so a read-only
+# `$CARGO_HOME` fails exactly the same way. A writable `$CARGO_HOME` is the fix; `--offline` is at
+# most a later hardening on top of one, not a substitute.
+#
+# It lives under `settings/state`, which the ReadWritePaths= line below already grants, so the
+# project stays one self-contained folder. The registry cache inside it is this daemon's own — an
+# operator who wants the first build warm rather than cold seeds it once with
+# `cp -a ~/.cargo/. <root>/settings/state/cargo-home/` before enabling the unit.
+#
+# ⚠ **`RUSTUP_HOME` was "reasoned, not measured" here, and the reasoning was WRONG.** It used to say
+# that running an installed toolchain only READS that directory, so `ProtectHome=read-only` was
+# enough. MEASURED on the CI box 2026-09-22 (systemd 255, `systemd-run --wait --pipe --collect` through
+# the SYSTEM manager carrying this `[Service]` section's exact options as `-p` flags): this unit
+# declares no `User=`, so a system install runs it as ROOT, `$HOME` is `/root`, and the rustup SHIM
+# refuses before cargo starts at all —
+#
+#   error: could not create home directory: '/root/.rustup': Read-only file system (os error 30)
+#
+# — on EVERY build, not on the first only, and no amount of cache warming reaches it because the
+# refusal happens in the shim's own startup. Two fixes were measured and BOTH build: point
+# `RUSTUP_HOME` at a rustup home the unit may read, or stop going through rustup at all. This unit
+# takes the second; the block immediately below argues why.
+Environment=CARGO_HOME=/srv/vike-<unit>/settings/state/cargo-home
+
+# --- the toolchain, NAMED OUTRIGHT rather than found through rustup ---------------------------
+# ⚠ **These two lines are why the `RUSTUP_HOME` problem above does not exist for this unit.** The
+# other measured fix — `Environment=RUSTUP_HOME=<the operator's ~/.rustup>` plus a `PATH=` putting
+# `~/.cargo/bin` first — also built cleanly (same box, same harness, same day) and is rejected for
+# three reasons, none of them taste:
+#   1. It makes the unit override PATH wholesale, and PATH is also how cargo finds the LINKER. A
+#      unit that sets PATH to reach a compiler and quietly drops `cc` fails at the link step, which
+#      surfaces as somebody else's error message.
+#   2. It keeps a WRITE question alive. rustup's shim wants a home DIRECTORY; that pointing it at a
+#      read-only one works is a property of rustup's current behaviour, not a guarantee — and the
+#      previous version of this file already lost one bet of exactly that shape.
+#   3. `~/.cargo/bin` is the directory `CARGO_HOME=` above deliberately relocates AWAY from, so the
+#      unit would be naming the operator's cargo home for the shims and its own for the cache.
+# Naming the toolchain's own `cargo` and `rustc` needs no `RUSTUP_HOME`, no PATH override, and no
+# rustup on the box at all — and it PINS the compiler a plugin is built with, which is not nothing
+# when `deploy/vike-backtest.service` `dlopen`s the result into a running process.
+# `crates/vike-strategy-builder/src/bin/vike-strategy-builder.rs`'s `main` reads `CARGO` out of the
+# one environment sweep it owns (falling back to `"cargo"` off PATH — which, under a systemd unit's
+# default PATH, is nothing at all); `RUSTC` is read by cargo itself.
+# ⚠ The toolchain must be READABLE by whatever account this unit runs as, and `ProtectHome=read-only`
+# below is what makes one living under a home directory reachable — see that directive's own note.
+Environment=CARGO=/toolchain/rust/bin/cargo
+Environment=RUSTC=/toolchain/rust/bin/rustc
+
+# ⚠ Set for structural consistency with every other unit in this directory
+# (`crates/vike-ops/tests/deploy_layout_gate.rs`'s `every_daemon_unit_is_one_project_folder`
+# requires every daemon to declare this), even though `vike-strategy-builder` does not yet read
+# it — see this unit's header note on the credential-store gap. Harmless unread today; load-
+# bearing the day this binary's settings/credential loading is wired up.
+Environment=VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings
+
+# Operator tunables (NOT credentials — see the header note above) from a plain env file at the
+# PROJECT ROOT; harmless if absent.
+EnvironmentFile=-/srv/vike-<unit>/.env
+
+Restart=on-failure
+RestartSec=5
+
+# --- the write grant -------------------------------------------------------------------------
+# TWO targets on ONE line: the settings state directory (future-proofing, alongside the
+# VIKE_SETTINGS_DIR note above) and the artifact directory this daemon exists to fill. Neither
+# reaches `bin/` (the binary this unit runs) or `settings/` itself (the future credential store).
+ReadWritePaths=/srv/vike-<unit>/settings/state /srv/vike-<unit>/user_data/plugins
+
+# --- syscall / capability hardening: the SAME measured set every other daemon unit here carries -
+NoNewPrivileges=true
+ProtectSystem=strict
+# ⚠ **THE ONE DELIBERATE DEPARTURE from every sibling unit in this directory, and the whole
+# reason this service exists as a SEPARATE process rather than a feature of `vike-backtest`.**
+# `ProtectHome=yes` (every other unit here) makes `/home`, `/root` and `/run/user` INACCESSIBLE —
+# which is exactly what puts the Rust toolchain (`~/.rustup`, `~/.cargo`, or `$RUSTUP_HOME`/
+# `$CARGO_HOME` if relocated) outside `vike-backtest.service`'s own mount namespace and is WHY
+# that daemon cannot run `cargo` at all (see the design doc's "sandbox constraint" section — this
+# is the same fact stated from the other daemon's side). This unit's entire job is running
+# `cargo`/`rustc`, so it cannot make that same choice.
+#
+# `read-only` rather than dropping the directive entirely: this service can READ the operator's
+# whole home directory — the toolchain, any other dotfiles living there — which
+# `vike-backtest.service` and `vike-datahub.service` cannot. That is the PRICE of this process
+# holding a compiler, paid once, on the one unit whose job requires it, rather than spread across
+# every daemon that might otherwise have been tempted to link one in.
+#
+# ⚠ The SAME read grant is what makes `VIKE_STRATEGY_BUILDER_WORKSPACE_ROOT` reachable in the
+# ordinary case: `ProtectSystem=strict` makes the rest of the filesystem READ-ONLY, not
+# inaccessible, so the vike-trader-rust checkout stays readable from anywhere outside
+# `/home`/`/root`/`/run/user` with no extra directive needed. If that checkout genuinely lives
+# under the operator's home directory, `ProtectHome=read-only` above already covers it too.
+#
+# ⚠ **MEASURED on the CI box 2026-09-22. This said "Not measured on a real box" and named a standing
+# unknown; the unknown is closed, and it was a REAL DEFECT — this unit could not complete a single
+# build.** Method: a cdylib crate compiled by `systemd-run --wait --pipe --collect` through the
+# SYSTEM manager with every option of this `[Service]` section passed as `-p` flags, a
+# `ReadWritePaths=` over the scratch directory, and BOTH the target directory and the `$CARGO_HOME`
+# wiped before every row; systemd 255. Two crates were used and they agree: a dependency-free
+# cdylib, and a 17-crate closure (serde+toml) whose build makes rustc DLOPEN a proc-macro `.so` —
+# the code path `MemoryDenyWriteExecute=` actually governs.
+#
+# **The verdict: `SystemCallFilter=~@privileged` killed every build, and it is ONE syscall —
+# `fchown`.** With no `User=` this unit runs as root, and cargo `fchown`s the files it creates while
+# populating a COLD `$CARGO_HOME`. Denied, that is `SIGSYS`: `code=dumped/status=SYS`, ~150ms, no
+# diagnostic of any kind, zero crates compiled. The `SystemCallFilter=fchown` line below re-allows
+# exactly that one syscall and nothing else.
+#
+#   deny list                               MDWE   result (cold $CARGO_HOME, root)
+#   --------------------------------------  -----  ------------------------------------
+#   (no deny list)                          yes    BUILT
+#   ~@privileged alone                      yes    killed: code=dumped/status=SYS
+#   ~@chown alone                           yes    killed: code=dumped/status=SYS
+#   ~fchown alone                           yes    killed: code=dumped/status=SYS
+#   ~chown / ~fchownat / ~lchown alone      yes    BUILT   (so it is `fchown` ALONE)
+#   the full list below, WITHOUT the fix    yes    killed: code=dumped/status=SYS, 0 crates
+#   the full list below, WITH the fix       yes    BUILT, 17 crates, 3/3 repeats
+#
+# ⚠ **TWO CONDITIONS HIDE THIS, which is how it survived review and how a re-measurement can
+# "disprove" it.** (1) A WARM `$CARGO_HOME` passes: cargo only chowns while CREATING that cache, so
+# the second build on a box that ever got one build through is green, and so is any probe that
+# forgets to wipe it. (2) A NON-ROOT service passes: with `-p User=the operator` the as-shipped filter
+# BUILT, because cargo does not chown when it is not uid 0. So the defect bites exactly the shape
+# this file ships — a system unit with no `User=` — on its FIRST build, which is the only build that
+# decides whether the daemon works at all.
+#
+# ⚠ **A handed-down bisection attributed this to `MemoryDenyWriteExecute=yes` and a denied
+# `@resources` being fatal TOGETHER. That did not reproduce here, in either crate, cold or warm.**
+# Both were varied against both crates: with `fchown` allowed, `MemoryDenyWriteExecute=yes` WITH
+# `@resources` denied BUILT all 17 crates, and dropping either one changed no row. So NEITHER is
+# given up — `@resources` still denies `setrlimit`/`sched_setaffinity`/`ioprio_set` and friends,
+# `MemoryDenyWriteExecute=` still denies W+X mappings, and the price of this fix is one syscall
+# rather than a whole group or a whole exploit mitigation. If a future run does reproduce that pair,
+# the variable to control FIRST is the one that moved every result here: whether `$CARGO_HOME` was
+# cold, which is the state a fresh deployment is always in.
+#
+# ⚠ **The CARGO WRITE was part of that unknown and is no longer** — it is now known to be
+# required on every build, and it is granted by the `CARGO_HOME` line above rather than left to
+# be discovered. This comment used to say a write into `~/.cargo` was needed only when "fetching
+# a crate version this box's registry cache does not already hold", i.e. on a cache MISS. That
+# was wrong in the direction that matters: cargo locks `$CARGO_HOME/.package-cache` exclusively
+# on essentially every resolve, and the scratch crate has no `Cargo.lock` to short-circuit one,
+# so under a read-only `$CARGO_HOME` EVERY build failed — a daemon that could never do its one
+# job, reported as `BuildError::Toolchain`/`BuildError::Io` to whoever asked for a plugin. The
+# `~/.cargo` this directive keeps read-only is now only a SEED an operator may copy from.
+ProtectHome=read-only
+PrivateTmp=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @module @reboot @swap @raw-io @debug @clock @cpu-emulation
+# ⚠ …and `fchown` BACK — THE ONE DEPARTURE from the sibling units' syscall set, measured in the
+# block above. `@privileged` contains `@chown` contains `fchown`, and `fchown` is the single call a
+# cold cargo build makes as root. A later `SystemCallFilter=` line with no `~` re-adds to the
+# allow-list, so this is a one-syscall hole in the deny above rather than a relaxation of it:
+# `chown`, `lchown` and `fchownat` stay denied, and each was measured individually as NOT needed.
+# ⚠ **Do NOT delete this line to "align the hardening with the other units in this directory."** No
+# other unit here runs a compiler, so no other unit needs it — and that is precisely the edit that
+# would put this daemon back to zero successful builds with nothing in the journal but `status=SYS`.
+# `crates/vike-ops/tests/deploy_layout_gate.rs`'s `the_builder_unit_can_actually_run_cargo` exists
+# to make that edit fail in CI instead of on a box.
+SystemCallFilter=fchown
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0077
+
+[Install]
+WantedBy=default.target

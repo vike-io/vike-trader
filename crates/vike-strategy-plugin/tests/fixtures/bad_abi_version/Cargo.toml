@@ -1,0 +1,19 @@
+# A hand-built fixture "plugin" for crates/vike-strategy-plugin/tests/load_refusals.rs, proving
+# loader::load() refuses an ABI_VERSION mismatch. Deliberately the SIMPLEST possible fixture: it
+# exports only the one handshake symbol the loader checks BEFORE any other, so it never needs the
+# fingerprint or lifecycle/dispatch exports at all.
+#
+# Own [workspace] table + excluded from the outer workspace (root Cargo.toml's [workspace]
+# exclude) — the same posture crates/bridges/ctrader/protogen uses, for the same reason: this is a
+# standalone recipe crates/vike-strategy-plugin/build.rs compiles with its own `cargo build
+# --manifest-path`, not a workspace member.
+[package]
+name = "bad_abi_version"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]
