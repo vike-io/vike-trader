@@ -1,0 +1,82 @@
+[package]
+name = "vike-strategy"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike strategy-authoring layer: the PositionExecutor triple-barrier state machine, the Controller/ControllerHarness/MomentumController framework, and the portable reference strategies (Grid/DcaAccumulate, PairsZScore, TrailingScalper, FundingCapture) — each a generic `impl<B: Broker> Strategy<B>` that runs UNCHANGED on the backtest and live engines. Its NORMAL dependencies are vike-model, vike-indicators, vike-mm and libm — every one of them down-only, so nothing in this LIBRARY reaches up into the simulator and a consumer that just wants the strategies does not compile vike-backtest to get them. ⚠ That last property SURVIVES the upward dev edge on vike-backtest declared below, and survives it by construction: a dev-dependency does not propagate to a consumer. The PARAM types these consume (TripleBarrier, ControllerParams) stay in vike-model because they ride the StrategyParams payload the exec lane carries."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain` — a
+# single-purpose pure core over the vocabulary and the leaf band.
+# ⚠ WAS `engine` (30) until 2026-09-23. It names no runtime, no transport and no simulator: its
+# ceiling is `vike-indicators` (15) once `vike-mm` moved there with it, so `engine` overstated it
+# by two tiers. The move is not cosmetic — at 30 this crate shared a rank with `vike-core`, which
+# forced `vike-user-strategies` (which names this one) up to 40 and therefore ABOVE the live core,
+# where a user-authored strategy could name it. See that crate's manifest for the fence this
+# closes. docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+# Behavior (the executor state machine + controller framework) references ONLY vike-model domain
+# types + its own siblings — so this crate depends on vike-model alone, keeping down-only layering
+# intact (nothing here reaches up into vike-exec/vike-core).
+vike-model = { path = "../vike-model" }
+serde = { workspace = true }
+# `MomentumController::from_params` / `FundingCarryController::from_params` read a harness/registry
+# TOML params table (the `BuyHold`/`Grid` reader convention) so the backtest strategy registry can
+# resolve + tune the controllers by name. `toml` is ALREADY a workspace-pinned dependency (pure-Rust,
+# in the tree via vike-backtest) — reusing it adds NO new crate to the supply chain / audit surface.
+toml = { workspace = true }
+# `pairs::PairsZScore`'s opt-in mean-reversion regime gate (`half_life_ok`) drives the REAL
+# `vike_indicators::pairs::HalfLife` pair indicator rather than re-deriving an OU half-life here —
+# ONE oracle for the statistic, shared with the chart/studio surfaces that plot it. Down-only, no
+# cycle: vike-indicators depends on vike-model ALONE and carries no external dependency at all, so
+# this edge adds ZERO crates to the supply-chain / audit surface.
+vike-indicators = { path = "../vike-indicators" }
+# `registry`'s two MAKER arms (`spread_maker`/`gueant_maker` -> `vike_mm::SpreadMaker`). The registry
+# is the name -> strategy lookup BOTH the simulator and the live daemon resolve through, so it must
+# be able to name every strategy either one may mount — and the A-S maker is the one the daemon has
+# mounted since it existed. Down-only (vike-mm is layer 20, this crate 30) and CHEAP: vike-mm depends
+# on vike-model ALONE and carries no external dependency, so this edge adds ZERO crates to the
+# supply-chain / audit surface of anything that links this crate.
+vike-mm = { path = "../vike-mm" }
+# `fair_value::trailing_sigma` calls `libm::log` DIRECTLY — the one transcendental in this crate,
+# routed through the crate rather than the platform. Not a preference:
+# `docs/decisions/0032-transcendentals-come-from-the-libm-crate-not-the-platform.md` is the verdict,
+# and that site carries the measurement (all six pinned `sigma_bits` values are bit-identical under
+# `libm::log`, which is what let the conversion land). IEEE 754 requires nothing of `ln`, so
+# `f64::ln` resolves to the PLATFORM libm and the Windows dev box and the Linux CI boxes disagree on
+# its last bit. Already workspace-pinned and already in the tree (vike-model / -indicators / -mm all
+# take it), so this adds NO crate to the supply-chain / audit surface.
+libm = { workspace = true }
+
+[dev-dependencies]
+# The moved executor/controller tests do serde round-trips on the param/outcome types.
+serde_json = { workspace = true }
+# The executor/controller machine tests drive vike-model's shared `MockBroker` (the `Broker` test
+# double) — enabled here as a test-only feature so it never reaches the normal (production) dep.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# ⚠ AN UPWARD DEV EDGE (layer 30 -> 50), and it is licensed rather than tolerated.
+# The engine-driven gates for THIS crate's strategies fold them through the REAL
+# `StrategyEngine`/`SimBroker`, which live one layer up. They used to sit in vike-backtest's own
+# `tests/` for exactly that reason — and that is an antipattern that ACCUMULATES: every strategy
+# that moves down here leaves its gate behind, so the simulator collects gates for strategies it
+# does not own.
+#
+# `crates/vike-ops/tests/layer_gate.rs` walks NORMAL edges only, so this is legal by construction,
+# and the shape is well established here rather than novel: `vike-bridge-core` (30) dev-depends on
+# ten venue bridges at layer 40 that normal-depend on IT.
+#
+# ⚠ It MUST stay in `[dev-dependencies]`. A normal edge would be 30 -> 50 (layer_gate refuses it)
+# AND would put `vike-script` into `vike-user-strategies`' transitive normal closure, which
+# `crates/vike-ops/tests/named_run_closure_gate.rs` refuses — that gate counts an OPTIONAL edge as
+# an edge, and vike-backtest's `vike-script` is optional.
+#
+# DEFAULT features suffice: every item the gates name is an UNGATED re-export.
+vike-backtest = { path = "../vike-backtest" }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

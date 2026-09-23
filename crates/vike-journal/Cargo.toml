@@ -1,0 +1,75 @@
+[package]
+name = "vike-journal"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The durable command JOURNAL: the write-ahead log a live or paper core appends every ingest to, its segment/frame/checkpoint machinery, and the single-writer directory lock. Extracted from vike-core so that reading a journal does not mean linking the live trading core."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain-stacked` — one
+# hop over the domain band, a crate composed of layer-20 pieces. That is this crate exactly, and the
+# floor is set by ONE symbol: `vike_exec::Ingest`, the ingest-lane enum a journal RECORD wraps. A
+# journal of ingest events cannot not know what an ingest event is, so the edge is intrinsic rather
+# than incidental — it cannot be pushed into the test build and it cannot be dropped.
+#
+# ⚠ 20 is therefore NOT available, and the reason is worth stating because it is the obvious next
+# question. Reaching it would mean relocating `Ingest` below `vike-exec` — and `Ingest` wraps `Event`
+# and `Command`, the execution plane's own event vocabulary, whose state machine lives in
+# `vike-exec`. That is a far larger claim than this extraction, and it is not made here.
+[package.metadata.vike]
+layer = 25
+
+[dependencies]
+# `Ingest` — the ingest-lane enum a journal record wraps. The crate's ONLY normal vike-* edge, and
+# the thing that sets its rank; see the layer block above.
+vike-exec = { path = "../vike-exec" }
+# The DOMAIN types a record carries inside its `Ingest`: `OrderRequest` (15 sites), the
+# `events::Event`/`FillEvent`/`AccountState` family a replay reconstructs from, and `TriggerBy`.
+# ⚠ MISSED on the first pass, and the miss is instructive: the dependency survey grepped for
+# `use vike_…` LINES, and this crate reaches `vike_model` through FULLY-QUALIFIED paths at 21 code
+# sites without importing it once. Grep the SYMBOL, not the import.
+vike-model = { path = "../vike-model" }
+# The record schema derives, and the framing writes/reads JSON bodies behind a length prefix.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Segment reads are mmap'd: a replay walks a segment without copying it into the heap first.
+memmap2 = { workspace = true }
+# `posix_fallocate` in `segment.rs`'s `reserve_blocks` — a segment is reserved on disk BEFORE it is
+# written into, so a full filesystem fails at reservation rather than mid-append.
+libc = { workspace = true }
+# Fault transitions and the writer's watchdog lines. NEVER per-record: the append path is inside the
+# fold that `crates/vike-core/tests/runtime_latency.rs` gates, and per-message logging there is what
+# that gate exists to refuse.
+tracing = { workspace = true }
+
+[dev-dependencies]
+# ⚠ `vike-core = { path = "../vike-core" }` stood here as a deliberate UPWARD dev edge, for exactly
+# ONE thing: `crates/vike-core/src/scratch.rs`'s `Scratch`. **It never compiled.** That module is
+# declared `#[cfg(test)] mod scratch;` and its type is `pub(crate)`, so it is unreachable across a
+# crate boundary on ANY edge — the dev edge bought nothing a normal one would not also have been
+# refused. MEASURED 2026-09-23: `Scratch` was the only `vike_core::` path left in this crate after
+# the move, so the edge goes rather than gets repaired, and with it the dev CYCLE against
+# vike-core's normal edge onto this crate. `src/testutil.rs`'s `Scratch` carries why this crate
+# owns a second guard and why `journal_scratch_gate` permits it.
+#
+# The self-deleting scratch guard that replaced it. `= "3"` rather than a workspace entry because
+# that is this tree's spelling — vike-core and some twenty other crates already say exactly this.
+tempfile = "3"
+# `#[traced_test]` + `logs_contain`. `src/frame.rs` asserts that a halted read NAMES its cause, its
+# offset and its segment rather than merely halting; those assertions came with the code from
+# vike-core, whose manifest carries this same line, and nothing here compiled until it followed.
+tracing-test = { workspace = true }
+# The `RecordingClient` double and the engine pieces `testutil.rs` assembles a snapshot payload from.
+vike-exec = { path = "../vike-exec" }
+
+# ⚠ `deny`, NOT the workspace `forbid`, and the posture is inherited from `vike-core` along with
+# the code. TWO sites here are audited unsafe: `segment.rs`'s `libc::posix_fallocate` (a segment is
+# reserved on disk BEFORE it is written into, so a full filesystem fails at reservation rather than
+# mid-append) and `writer.rs`'s `MmapMut::map_mut` (the mapped write path).
+#
+# The levels are not interchangeable: `deny` is the level a local `#[allow(unsafe_code)]` LIFTS,
+# `forbid` is the level it cannot. Taking `workspace = true` here would refuse this crate outright
+# rather than merely warn. `crates/vike-ops/tests/unsafe_and_toolchain_gate.rs` pins both this
+# posture and the per-file counts, so neither can drift silently.
+[lints.rust]
+unsafe_code = "deny"

@@ -1,0 +1,38 @@
+[package]
+name = "vike-options"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the venue-free options pure core: Black–Scholes price/greeks/implied-vol, the normalized OptionChain model, and the pure column model. Faithful f64 port of vike-trader-app data/options/{greeks,model,columns}.py. No I/O, no egui, no internal-crate deps."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `leaf` — names at most the
+# floor: the market-data vocabulary at 5 and the domain vocabulary at 10.
+# ⚠ WAS `domain` (20) until 2026-09-23. This crate has NO vike-* dependency at all, so `domain` overstated it by a whole tier and the
+# rank was pure slack: the highest thing it could have named was nothing. The band's rule is machine-checked by
+# `every_tier_15_crate_names_nothing_above_the_vocabulary`; the verdict is
+# docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+libm = { workspace = true }   # erf for Black–Scholes (see the root-manifest rationale)
+chrono = { workspace = true } # UTC calendar math for expiry DTE / 08:00-UTC settle epoch
+
+# ⚠ This crate's `description` above says "no internal-crate deps", and that stays TRUE: the edge
+# below is a DEV edge. It is invisible to any consumer, absent from `cargo package`'s tarball, and
+# discounted by `crates/vike-ops/tests/layer_gate.rs`, which walks NORMAL edges only — so the
+# property the description claims is about `[dependencies]`, which is still empty of vike crates.
+#
+# The shared libm walk (decision 0074): `vike_model::libm_walk` holds the text parser this crate's
+# `tests/libm_platform_probe.rs` used to keep a private copy of. The feature must be named here
+# because `test-support` is gated `#[cfg(any(test, feature = "test-support"))]`; a NORMAL edge
+# would compile that code into shipped builds, which is exactly what the gate is for.
+[dev-dependencies]
+vike-model = { path = "../vike-model", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

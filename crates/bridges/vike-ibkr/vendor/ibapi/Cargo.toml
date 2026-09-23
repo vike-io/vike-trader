@@ -1,0 +1,73 @@
+# VENDORED COPY — see VENDORED.md. github.com/wboayue/rust-ibapi @ v3.2.1.
+# Trimmed from upstream for standalone, sync-only, in-tree consumption:
+#   - removed the `[workspace]` table (its integration/* + tools/* members were not copied;
+#     this crate is workspace-excluded by the vike root manifest instead).
+#   - removed every `[[example]]` target (examples/ was not copied).
+#   - removed `[dev-dependencies]` (only used by the dropped examples/tests/benches).
+# NOTHING else changed IN THIS FILE: package version, feature graph, and dependency versions are
+# verbatim upstream, and scripts/ibapi_vendor_drift.sh gates that by applying those three trims to
+# upstream's manifest and byte-comparing the result against this one.
+# ⚠ The SOURCE tree is a different story and this banner used to imply otherwise: src/ was
+# reformatted under this repo's rustfmt.toml and three test-only modules were dropped, so it is NOT
+# byte-faithful to v3.2.1. VENDORED.md's "What was copied" and "src/ edits" sections are the record.
+
+[package]
+name = "ibapi"
+version = "3.2.1"
+edition = "2021"
+authors = ["Wil Boayue <wil@wsbsolutions.com>"]
+description = "A Rust implementation of the Interactive Brokers TWS API, providing a reliable and user friendly interface for TWS and IB Gateway. Designed with a focus on simplicity and performance."
+readme = "README.md"
+homepage = "https://github.com/wboayue/rust-ibapi/"
+repository = "https://github.com/wboayue/rust-ibapi/"
+documentation = "https://docs.rs/ibapi/latest/ibapi/"
+license = "MIT"
+keywords = ["algo-trading", "interactive-brokers", "tws"]
+categories = ["finance", "api-bindings"]
+exclude = [
+    "justfile",
+]
+
+[package.metadata.docs.rs]
+all-features = true
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[features]
+## Default features: enables the async client.
+##
+## Disable defaults (`default-features = false`) and opt into `sync` for a
+## blocking-only build, or combine `sync` + `async` to get both clients.
+default = ["async"]
+
+## Async (tokio-based) client. When enabled alone, the async API is exposed as
+## `client::Client`. When combined with `sync`, the async client remains at
+## `client::Client` and the blocking client moves to `client::blocking::Client`.
+async = ["dep:tokio", "dep:tokio-stream", "dep:futures", "dep:async-trait"]
+
+## Synchronous, blocking client backed by `crossbeam` channels. When enabled
+## alone, the blocking API is exposed as `client::Client`; when combined with
+## `async`, it lives at `client::blocking::Client`.
+sync = ["dep:crossbeam"]
+
+## Derive `utoipa::ToSchema` on public data types to participate in OpenAPI
+## schema generation for downstream HTTP services.
+utoipa = ["dep:utoipa"]
+
+[dependencies]
+byteorder = "1.5.0"
+crossbeam = { version = "0.8.4", optional = true }
+log = "0.4.22"
+thiserror = "2.0"
+time = {version = "0.3.36", features = ["formatting", "macros", "local-offset", "parsing", "serde"]}
+time-tz = "2.0.0"
+serde = {version = "1.0.214" , features = ["derive"]}
+serde_json = "1.0"
+prost = "0.14"
+utoipa = { version = "5", optional = true, features = ["time"] }
+
+# Async dependencies
+tokio = { version = "1.41", features = ["net", "rt-multi-thread", "sync", "time", "macros", "io-util"], optional = true }
+tokio-stream = { version = "0.1", default-features = false, features = ["sync"], optional = true }
+futures = { version = "0.3.31", optional = true }
+async-trait = { version = "0.1.83", optional = true }

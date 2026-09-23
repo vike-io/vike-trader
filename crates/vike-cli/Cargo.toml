@@ -1,0 +1,541 @@
+[package]
+name = "vike-cli"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+# The PUBLIC source mirror, never the private origin — this is a field with CONSUMERS, not a label.
+# `cargo binstall` derives its `{ repo }` template variable from it ("`repo` is the repository
+# linked in `Cargo.toml`" — cargo-binstall's SUPPORT.md; the section at the bottom of this file
+# carries the whole argument), so a private URL here would send every installer to a 404 behind a
+# login. ⚠ SUBSTRING TRAP: `vike-io/vike-trader` is a PREFIX of the private repository's slug, so
+# `crates/vike-ops/tests/packaging_gate.rs`'s `the_repository_is_the_public_mirror_exactly` holds
+# this value EQUAL to the mirror URL — a boundary — rather than asking whether it CONTAINS one.
+repository = "https://github.com/vike-io/vike-trader"
+# ⚠ **The blurb below ended on two clauses that the tree has since contradicted, and both are
+# corrected rather than dropped.** It read "sweep/walkforward/trade/repl are future siblings. Links
+# only vike-datahub-client, so it rides the FAST CI lane." `trade` and its REPL SHIP — they are rows
+# of `crates/vike-cli/src/lib.rs`'s `COMMANDS` — and sweep/walkforward are not future siblings but
+# RETIRED verbs: that file's `RETIRED_COMMANDS` carries both, each with the migration onto
+# `backtest run` over a profile's own `[paramscan]`/`[walkforward]` table, because a search and a
+# walk-forward are how a run is RANKED and VALIDATED rather than different kinds of run. And the
+# `[dependencies]` table below is long now, every row argued where it is declared. What SURVIVES is
+# the reason the last clause existed at all, so it is the half the blurb keeps: the fast lane is
+# bought by every row in that table being light, DataFusion-free and transport-free — the property
+# `scripts/ci_feature_suite.sh`'s `light-consumers` arm checks with a `cargo tree` grep — and not by
+# the table being short.
+description = "vike trading core — the unified, DataFusion-free command-line surface over the LIGHT client crates (git-style subcommands). First subcommand `backtest` = the compute-to-data offload: ship a profile's TOML to a remote COMPUTE daemon (`vike-backend backtest --addr`, over an SSH tunnel) and print the report, with NO DataFusion in this side's build graph. Every client crate it links is light, DataFusion-free and transport-free, which is what keeps it on the FAST CI lane."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `daemon` — a headless top-of-graph binary: nothing may depend on it.
+# ⚠ WAS `daemon` (65) until 2026-09-23, and the move corrects BOTH halves of that row. Tier 65 is
+# *a headless top-of-graph binary* — the rank `vike-tradehub` and `vike-datahub` hold, and they are
+# daemons. This is a CLI: it runs, answers and exits, and the only crate that names it is `vike`
+# (68), the multicall dispatcher.
+#
+# MEASURED: this crate's ceiling is 50 — `vike-ops` and `vike-tradehub-client` both sit there — so
+# its arithmetic floor is 55, and 55 is `service-stacked`, *a service composed over another service
+# crate*, which is what a CLI over `vike-ops` is. That tier fell vacant the same day when `vike-ai`
+# moved to its own floor, so this occupies a described rank rather than an empty one.
+#
+# ⚠ It was NOT blocked by anything and I said otherwise once: the claim that this waited on
+# `vike-tradehub-client` leaving 50 is wrong, because `vike-ops` sits at 50 independently and pins
+# the floor at 55 either way. Nothing below 65 wants to name this crate, so the ten rungs cost
+# nothing; what they cost was a tier table that called a CLI a daemon.
+# docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 55
+
+[dependencies]
+# The SHARED node-protocol substrate: the HMAC-SHA256 nonce-challenge handshake generalized over
+# its domain separator (`auth`) and the length-prefixed frame codec (`frame`). ⚠ Both were
+# `vike-datahub-client`'s until 2026-09-23 and moved to the crate BELOW both node protocols, so the
+# two clients could stop being a ladder; that crate's own doc carries the measurement. It names no
+# vike-* crate at all, so this edge adds no package to any graph that did not already carry
+# hmac/sha2/rand transitively.
+vike-node-proto = { path = "../vike-node-proto" }
+# The LIGHT client half of the data-service: `DatahubClient` (the blocking RPC client) over the wire
+# proto. DataFusion-FREE by construction (it depends on vike-data DEFAULT features = the HistStore
+# TRAIT only), which is the whole point — this CLI links it and inherits none of the Arrow/DataFusion
+# weight. No concrete backend, no vike-backtest, no engine crates.
+vike-datahub-client = { path = "../vike-datahub-client" }
+# The typed settings model + layered loader (settings unification, Phase 5). The dispatcher refuses
+# a REMOVED environment variable before any subcommand runs, and resolves the POLICY ceiling
+# `max_notional_per_order` from `<project>/settings/policy.toml` for the two order-write surfaces'
+# preview guardrail. Pure-Rust leaf (vike-model + serde + toml) — the CLI stays DataFusion-free and
+# on the fast lane.
+vike-config = { path = "../vike-config" }
+# The STARTUP SEQUENCE's one owner: refuse a removed variable, resolve `<project>/settings` ONCE,
+# load the settings — the same order `vike-app`, `vike-tradehub` and `vike-recorder` run, which this
+# dispatcher used to carry its own copy of.
+#
+# ⚠ It links NO logging, NO transport and NO DataFusion, and that is the whole reason this edge is
+# safe here: it takes the environment as a parameter (so it adds no `Layer::Library` row) and it
+# takes the CREDENTIAL LOADER as a function (so it never reaches for `vike_bridge_core`, which owns
+# the ureq/tungstenite/rustls stack). Its closure is vike-config + vike-secrets + vike-model +
+# vike-buildinfo, every one of which this crate ALREADY links — so this edge adds no package at all,
+# the same test every other dependency in this manifest is held to. A `vike-log` edge inside it
+# would have added 43. `crates/vike-boot/tests/dependency_floor.rs` is the gate.
+vike-boot = { path = "../vike-boot" }
+serde_json = { workspace = true }   # pretty-print the report JSON the server returns (backtest cmd)
+# `backtest --script <s.rhai>`: parse the profile TOML and inject the script's source into
+# `[strategy.params].src`, so an AUTHORED Rhai strategy ships self-contained to the (possibly
+# remote) datahub server. Pure-Rust, DataFusion-free — keeps this CLI on the fast lane.
+toml = { workspace = true }
+# `backtest --list-params --script <s.rhai>` + the `mcp discover_params` tool: discover a Rhai
+# script's tunable `param(name, default)` knobs OFFLINE (no server round-trip). vike-script is
+# pure-Rust (rhai + vike-model + vike-indicators), so the CLI stays native-dep-free + DataFusion-free.
+vike-script = { path = "../vike-script" }
+# The `indicators` subcommand and the `mcp list_indicators` tool: the indicator METADATA (label,
+# category, parameters with defaults, output lines) joined onto the host-bound name set
+# `vike_script::RHAI_INDICATORS`. It supplies the METADATA, never the roster — a listing built from
+# `registry()` alone would advertise names the Rhai host does not bind, and a script calling one of
+# those compiles and then fails on every bar. Pure-Rust (vike-model only) — DataFusion-free /
+# fast-lane.
+vike-indicators = { path = "../vike-indicators" }
+# The `mcp` LIVE-CONTROL trade tools: RemoteControlHandle (write WireCommands) + RemoteCoreHandle
+# (read WireSnapshot) to a running vike-tradehub node. The LIGHT wire crate — std + hmac/sha2 + the
+# framing, NO async / bridge / transport stack — so the CLI stays DataFusion-free / fast-lane.
+vike-tradehub-client = { path = "../vike-tradehub-client" }
+# The `trade` interactive REPL: a pure-Rust line editor (history + in-line editing) for a human at a
+# terminal driving a running vike-tradehub node. Not a transport/crypto crate — stays fast-lane.
+rustyline = { workspace = true }
+
+# `config show`: the `settings::SETTINGS` registry — the workspace-wide catalog of every environment
+# variable that is read, which this command resolves against the process env and the workspace
+# `.env` to answer "where did this value come from?" (settings-unification Phase 0).
+#
+# ⚠ `default-features = false` is LOAD-BEARING, not tidiness. vike-ops' default `full` feature
+# carries vike-core -> vike-exec, vike-data, and vike-alerting's `workspace-env` edge onto
+# vike-bridge-core — i.e. ureq+rustls and tungstenite, the whole venue transport stack — into a CLI
+# whose entire identity is being light and DataFusion-free. Without it, vike-ops is `settings` +
+# `scan` + `shutdown`: std-only, plus vike-model, which this crate ALREADY links through
+# vike-script/vike-indicators. So this edge adds no new external crate at all. The split's full
+# argument lives in vike-ops' own manifest.
+vike-ops = { path = "../vike-ops", default-features = false }
+# `config show`: the workspace's ONE `.env` authority — `workspace_dotenv_path` +
+# `load_workspace_dotenv`. A provenance tool MUST read that store through the same loader the rest of
+# the workspace uses; a SECOND `.env` parser would drift from the first and nothing would catch it,
+# which is the exact failure the settings-unification program exists to remove.
+#
+# ⚠ `default-features = false` is LOAD-BEARING, exactly as on vike-ops above. The default `full`
+# feature carries the transport/signing half — ureq+rustls, tungstenite, hmac/sha2/hex/base64,
+# rust_decimal and vike-exec. Without it this crate is `credentials` and its pure siblings: std +
+# vike-model + serde_json + tracing, ALL of which vike-cli already links transitively. So this edge,
+# too, adds NO new external crate. See vike-bridge-core's own manifest for the split's argument.
+vike-bridge-core = { path = "../vike-bridge-core", default-features = false }
+
+# The `secrets` subcommand and the settings-directory walk: the credential store
+# `<project>/settings/secrets.env` and the reader for it. Deliberately linked HERE rather than
+# reaching for `vike-bridge-core` (the reader's historical home): `vike-secrets` carries no
+# transport stack, so this DataFusion-free fast-lane CLI stays free of ureq/tungstenite/rustls.
+#
+# ⚠ This read "`vike-secrets` has ZERO dependencies … and the edge adds no package at all" until
+# 2026-09-13. The second clause expired that day: decision 0054 moves the credential store into a
+# SQLite database and `vike-secrets` now declares `rusqlite` (bundled), which MEASURED on a the CI box
+# lane takes `cargo tree -p vike-cli -e normal` from 101 to 105 packages and brings the first C
+# compilation into this crate's build graph. The clause that did NOT expire is the one this edge was
+# chosen for: rusqlite is not a transport, a TLS stack or a query engine, so the bridge-core route
+# is still the expensive one and this is still the cheap one. The floor gate's written argument is
+# `crates/vike-boot/tests/dependency_floor.rs`'s `FLOOR_EXCEPTIONS`.
+#
+# The dispatcher ALSO reads it for the two vike-tradehub NODE KEYS: the daemon takes them from this
+# store, so a client that only ever looked at `std::env::var` reported "nothing to do" on a box
+# where `vike-cli secrets list` showed both keys present.
+vike-secrets = { path = "../vike-secrets" }
+
+# The BUILD IDENTITY `--version` prints: the git commit this binary came from, whether that tree was
+# dirty, when it was built and with which toolchain. ⚠ Read "Same argument as `vike-secrets`
+# directly above — ZERO dependencies" until 2026-09-13. vike-secrets now carries one external crate
+# (rusqlite, decision 0054); THIS crate still carries none, so the argument holds here on its own
+# terms: a DataFusion-free fast-lane CLI pays nothing for it, while `vergen` or
+# `built` would each drag a build-graph tree in to answer the same question.
+vike-buildinfo = { path = "../vike-buildinfo" }
+
+# ⚠ `vike-catalog` was declared here, for ONE reason: the ASSET-CLASS VOCABULARY the profile
+# schema's `mount` CHECK is rendered from. That vocabulary moved down to
+# `vike_model::AssetClass::SQL_WORDS`, and vike-model was already in this graph, so the edge bought
+# nothing and is GONE. The rule it existed to honour is unchanged:
+# `vike_secrets::profile_store::profile_ddl` takes the word list as a PARAMETER because that crate
+# is a zero-`vike-*` leaf and cannot name the enum, and
+# `docs/decisions/0061-an-instrument-names-its-kind.md` refuses a second hand-written list outright
+# — so a CLI that writes a profile row still takes the words from their single declaration rather
+# than copying them. It just names a different crate to reach it.
+
+# The CSPRNG `vike-cli backend setup` mints the two node keys with — 32 bytes each, hex-encoded. It is
+# the SAME generator the node's own handshake nonce comes from
+# (`crates/vike-tradehub/src/server.rs`'s `fresh_nonce`), which is the property that matters: a key
+# this command mints and a nonce that key is later challenged with draw from one OS-seeded source,
+# and there is no second entropy story in the tree to reason about.
+#
+# ⚠ A hand-rolled fill was the alternative and is REFUSED. `vike_model::client_order_id`'s
+# `getrandom_fill` hashes ASLR'd addresses through a `RandomState` and says in its own doc that it
+# is NOT crypto-grade — correct for a coid prefix that only has to differ across restarts, and the
+# wrong bar entirely for a 256-bit HMAC signing key. `std` offers no OS-entropy API and this
+# workspace forbids `unsafe`, so the choice is this crate or a defect.
+#
+# It adds NO PACKAGE, the bar every edge in this manifest is held to: `rand` 0.10 is already a
+# workspace dependency (the root manifest carries its rationale) and its whole tree —
+# `rand_core` 0.10 and `getrandom` 0.4 — is already in this crate's graph through
+# vike-datahub-client -> hmac -> digest -> crypto-common, which depends on both.
+rand = { workspace = true }
+
+# The coid MINT for the two order-write surfaces (`trade`, `mcp`): `ClientOrderIdGenerator` —
+# `<8-hex-session><seq>`, the SAME generator and the SAME wire form the live core mints with. A
+# vike-tradehub node REFUSES a remote submit with an empty `client_order_id` (`lower_command`'s
+# idempotency policy), so a client of that protocol must PRE-MINT one; before this the `trade` REPL
+# could not place an order at all.
+#
+# ⚠ vike-model, NOT vike-exec (the generator's historical home — it moved down for exactly this
+# reason). vike-exec would have added tokio `rt-multi-thread` + core_affinity + ustr + indexmap to a
+# CLI whose entire identity is being light, DataFusion-free and on the FAST lane. vike-model is
+# already in this crate's graph through vike-script / vike-indicators / vike-config / vike-ops /
+# vike-bridge-core / vike-datahub-client, so naming it directly adds NO package at all — the same
+# test every other edge in this manifest is held to.
+vike-model = { path = "../vike-model" }
+
+# `backtest params --strategy NAME`: the per-name `[strategy.params]` key declaration —
+# `vike_strategy::PARAM_KEYS`, with a `ParamType` per key read off each reader's own source by
+# `crates/vike-strategy/tests/param_keys_gate.rs`. The only typed param declaration in the tree, and
+# the only way this CLI can answer "what may --param name" for a BUILT-IN strategy rather than only
+# for a Rhai script. `vike_strategy::SIMULATOR_ONLY` is the other half: the seven roster names that
+# have no `PARAM_KEYS` row, each with the reason printing "no tunable params" for it would be a lie.
+#
+# ⚠ It adds NO external crate, the bar every edge in this manifest is held to. vike-strategy is
+# vike-model + serde + toml + vike-indicators + vike-mm, and vike-mm is vike-model + libm + serde +
+# serde_json + tracing + indexmap + toml — every one of which is already in this crate's graph
+# (vike-model and vike-indicators directly; `tracing` through vike-bridge-core's default-features-off
+# build; indexmap/libm through vike-model).
+#
+# ⚠ NOT through vike-ops' `docs-data` feature, which also reaches `PARAM_KEYS`: that feature carries
+# `dep:vike-exec`, which is the crate the vike-model rationale above refuses BY NAME.
+vike-strategy = { path = "../vike-strategy" }
+
+# What CALLS into this crate, both production sites, and neither of them is a flag: `max_drawdown`
+# (`crates/vike-analytics/src/metrics.rs`), folded over the stored equity curve by
+# `crates/vike-cli/src/cmd/report_stored.rs`'s `derived_of` — that fold WAS a hand transcription in
+# this crate and the copy is deleted because this edge exists, which is why that function's doc
+# delegates its justification to this row — and `MetricSelection::Compact`
+# (`crates/vike-analytics/src/metric_catalog.rs`), which supplies the eight metric keys of
+# `crates/vike-cli/src/cmd/runs/show.rs`'s `report_key_order` in place of the eleven-entry hand copy
+# that used to be spelled there. A third use rides the same edge and is what makes that derivation
+# legitimate rather than merely shorter: that file's
+# `every_metric_key_in_the_order_is_a_top_level_report_field` asserts the catalog's ids against a
+# REAL `report::BacktestReport` serialization.
+#
+# `crates/vike-model/src/runs.rs`'s `read_series`/`read_trades` already hand this crate the equity
+# curve and the trade ledger, so what was missing was never the DATA — it was the code that turns it
+# into a number, which lived behind a dependency edge the client did not have.
+#
+# ⚠ **This block argued the edge from surfaces that do not exist, and correcting that is the point
+# of this note.** It opened "`backtest show --metrics-set` and the post-hoc `validate` checks: the
+# metric CATALOGUE (`metric_catalog::{parse_metric_selection, metric_list_text}`) and the statistics
+# that need only a stored run's own documents — PSR, the Newey-West t-stat, the block-bootstrap
+# Sharpe interval, the Monte-Carlo trade resample and `parameter_stability`". MEASURED against the
+# tree on 2026-09-16, the day the row landed: `metrics-set` names no `FLAGS` row, no parser arm and
+# no test anywhere — every occurrence of the spelling in this repository is prose about its own
+# absence — `crates/vike-cli/src/surface.rs`'s `SUB_VERBS` carries no `validate` verb,
+# `parse_metric_selection` and `metric_list_text` have no caller anywhere outside their own crate,
+# and none of those five statistics is named anywhere in this one. The INTENT was real and is kept
+# below; what it could not be is the evidence a reader auditing the chrono cost needs, which is what
+# it was being used as.
+#
+# The intent, declared as the future it is rather than as this row's evidence: a metric SELECTION on
+# `show`, the post-hoc `validate` checks and the statistics that need only a stored run's own
+# documents are what this edge was taken FOR, and NONE of them is wired. `--metrics-set` is not the
+# spelling that would wire the first of them either — `crates/vike-cli/src/surface.rs`'s `FLAGS`
+# already carries a `--metrics` row and its refusal is "--metrics takes no value", so the door is
+# that flag widened to take one, and `crates/vike-analytics/src/metric_catalog.rs`'s
+# `parse_metric_selection` is where the rest of that debt is written down beside the refusals nothing
+# can reach yet. Each surface lands as a consumer above, or not at all; until then the edge stands on
+# the two calls and the test.
+#
+# ⚠ **This edge DOES add `chrono`, and it is the first edge in this manifest that adds an external
+# crate at all.** Measured, not assumed, and the first measurement was WRONG in the reassuring
+# direction: a `cargo metadata` walk that followed dev-dependencies reported chrono as already
+# present, because vike-analytics is reachable from here through the vike-backtest DEV-dep.
+#
+# ⚠ It is not ONE package, which this block also claimed ("It is one crate, not a tree").
+# `Cargo.lock`'s chrono entry names `iana-time-zone`, `num-traits` and `windows-link`, and nothing
+# else in the lockfile depends on `iana-time-zone` — so that one arrives with it. `num-traits` is
+# already here through vike-script -> rhai, which declares it non-optionally, and `windows-link` is
+# already reachable through `windows-sys` on the one target that resolves it. The clause that
+# survives is the one doing the work: it is not a TREE, and vike-analytics' other four third-party
+# deps (serde, indexmap, rand, libm) are already in this graph.
+#
+# ⚠ **...and the package COUNT is MEASURED now, where this block declared it unverifiable.** It
+# read: *"`cargo tree -p vike-cli -e normal` … says the normal tree is 104 packages"*, called that
+# number UNVERIFIED, noted that it did not sit beside the vike-secrets row above (which measured
+# the same command from 101 to 105 packages three days earlier), and asked for a lane measurement
+# before either was quoted. That measurement:
+#
+#     cargo tree -p vike-cli -e normal --prefix none   ->  222 lines, 106 UNIQUE package names
+#
+# taken on the Linux build box, target x86_64-unknown-linux-gnu. **106 is the number to quote, and
+# UNIQUE is the load-bearing word**: that command prints a package once per EDGE, so a `wc -l` of
+# it answers 222 and is not a count of anything a reader means by "the tree". Neither 104 nor the
+# 101-to-105 pair is reproducible today — the lockfile churned between them (an rkyv/bitvec tree
+# left it) — so they are left as the record of what was measured when, not reconciled into a
+# sequence they never formed.
+#
+# Two things that measurement also settled, both about the paragraph above it. `iana-time-zone` and
+# `num-traits` ARE in the resolved normal tree, so chrono is three packages here rather than one.
+# `windows-link` is NOT — it is behind a target predicate, so the Linux resolution never reaches it
+# and the claim that it "is already reachable through `windows-sys`" is a statement about a Windows
+# target rather than about this tree. And the light-consumer property holds where it matters: no
+# `datafusion`, `arrow`, `ureq`, `tokio` or `rayon` appears at all, which is the set the
+# `light-consumers` lane refuses BY NAME.
+#
+# What IS re-derivable and unchanged: chrono's ONLY path into this crate's normal tree is this
+# row — every other in-tree declaration of it sits in a crate this manifest reaches through a DEV
+# edge or not at all, and every non-vike lockfile consumer of chrono is in the Arrow/DataFusion
+# tree the `light-consumers` lane already refuses here BY NAME.
+#
+# Accepted deliberately, and now on measurements rather than on what was left of them. It is
+# already a WORKSPACE dependency, so `cargo deny --all-features` has always audited it and the
+# supply-chain surface does not grow.
+# And it is pure Rust with no native build — unlike the vike-secrets edge above, which brought this
+# graph its first C compilation.
+#
+# ⚠ **What is NOT true is that chrono is load-bearing, and that clause is why this row needed a
+# rewrite.** It read: "it is load-bearing rather than incidental: `periods.rs` is its only consumer,
+# that module owns `periods_per_year`, and every annualised metric this row exists to expose is
+# computed against it." MEASURED: `crates/vike-analytics/src/periods.rs` contains no
+# `periods_per_year` token at all. What it owns is CALENDAR BUCKETING — `period_key`,
+# `periodic_returns`, `monthly_return_matrix`, `drawdown_table` — and it IS chrono's only consumer
+# inside that crate, but nothing in vike-cli reaches it (its caller is
+# `crates/vike-report/src/html.rs`, one layer over). The annualisation authority is
+# `crates/vike-analytics/src/report.rs`'s `periods_per_year_for_interval` with
+# `DAILY_PERIODS_PER_YEAR`/`DEFAULT_PERIODS_PER_YEAR`, and that module's whole import list is serde,
+# std, `crate::metrics` and `crate::result`: no chrono anywhere in it.
+#
+# So the honest argument for paying it is SEVERABILITY, not load-bearing-ness: chrono is
+# unconditional in `crates/vike-analytics/Cargo.toml` — no feature guards it — so ANY edge to that
+# crate buys it whether or not the consumer calls the module that uses it. The two ways not to pay
+# are a feature gate in vike-analytics that nobody has asked for, and not having the edge. That is
+# the trade being accepted here, and it is the one a future audit of the cost should weigh — the
+# measurements above are about how big it is, not about who needs it.
+#
+# Layer 20 against this crate's 65, so `crates/vike-ops/tests/layer_gate.rs` is satisfied by
+# construction.
+#
+# ⚠ NOT vike-backtest, which is the crate that actually owns the engine: `--features hist-replay`
+# would bring `rayon` and `vike-log`'s subscriber tree, and the `light-consumers` lane now REFUSES
+# that by name. The statistics that need the search's per-trial matrix stay on the engine side for
+# exactly that reason.
+vike-analytics = { path = "../vike-analytics" }
+# THE HTML TEARSHEET RENDERER, for `backtest show --html`: `vike_report::render_html` plus the
+# `LiveTearsheet::from_report` conversion, which that function's own doc names
+# `crates/vike-cli/src/cmd/runs/show.rs` by path as the caller it was built for. Until this line
+# existed that flag was refused with a sentence blaming a missing renderer — and the renderer was
+# never missing. This edge is the whole of what was.
+#
+# ⚠ `default-features = false` is LOAD-BEARING and is not the forward-compatible spelling this
+# manifest has been bitten by elsewhere. vike-report declares `default = ["journal"]`, and that
+# feature is the journal/store reader: it enables vike-core, vike-exec, vike-data and tracing —
+# exactly the closure `scripts/ci_feature_suite.sh`'s `light-consumers` lane exists to keep out of
+# this crate. With it OFF the crate is vike-model + vike-analytics + serde, all three already
+# here, and `render_html` is exported under no feature at all so nothing this line needs sits
+# behind the one it declines. `report-journal-off` is the arm that compiles that configuration on
+# every PR reaching the crate, and it was created because NOTHING built it — the first build found
+# two defects.
+#
+# COST, MEASURED on the build box rather than reasoned about, in two independent ways that agree:
+#   * the Cargo.lock delta for this line is ONE line, `+ "vike-report"`;
+#   * `cargo tree -p vike-cli -e normal --prefix none` counts 106 unique packages without it and
+#     107 with — the path crate itself and nothing else. No `datafusion`, `arrow`, `tokio`,
+#     `rayon`, `core_affinity` or `ureq` appears in either, which is the set that lane refuses BY
+#     NAME.
+# So this edge meets the bar every normal dependency in this file is held to — it adds NO external
+# crate — and unlike the vike-analytics row above it does not even need the exception that row
+# argues for. Layers: vike-report 55 against this crate's 65, so `layer_gate` passes by
+# construction.
+vike-report = { path = "../vike-report", default-features = false }
+
+
+[dev-dependencies]
+# End-to-end loopback tests: drive the REAL DATA server over a `MemHistStore` on an
+# ephemeral port and run the SHIPPED `vike-cli` bin against it (CARGO_BIN_EXE_vike-cli). DEV-deps
+# only — the CLI library graph never depends on the server, so it stays light and DataFusion-free.
+# ⚠ vike-datahub'''s own edge is DataFusion-free, so even the test build pulls no Arrow tree.
+vike-datahub = { path = "../vike-datahub" }
+# ...and the COMPUTE server, for the `backtest`/`sweep`/`walkforward` tests, which drive the daemon
+# ruling 7 moved those verbs to (`vike-backend backtest --addr`). `hist-replay`, NOT
+# `datafusion-store`: that feature compiles `vike_backtest::compute_server` against the `HistStore`
+# TRAIT, so the loopback server runs over the same `MemHistStore` double and this crate's test build
+# stays DataFusion-free — the property the `light-consumers` lane exists to hold.
+vike-backtest = { path = "../vike-backtest", features = ["hist-replay"] }
+# The DataFusion-free in-memory `HistStore` double the loopback server runs over (vike-data's
+# `test-support` feature).
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# `tests/trade_node_e2e.rs`: the SAME loopback pattern one layer up — a REAL paper vike-tradehub
+# node (`vike_run::build_paper_maker_core` + `vike_tradehub::{server, publish}`, exactly the harness
+# `crates/vike-tradehub/tests/control_roundtrip.rs` uses) on an ephemeral port, with the SHIPPED
+# `vike-cli trade` bin driven against it over a pipe. No creds, no venue, no external network — the
+# paper mount has no feed, so the only orders in the book are the ones the REPL places. It has to be
+# THIS crate's test: `CARGO_BIN_EXE_vike-cli` exists only here.
+#
+# DEV-deps, so the CLI's own graph stays light and DataFusion-free; both crates are already in the
+# CI roster, so the marginal cost is linking one more test binary.
+vike-tradehub = { path = "../vike-tradehub" }
+vike-run = { path = "../vike-run" }
+# The throwaway `<project>/settings/` the e2e test points VIKE_SETTINGS_DIR at — a store holding
+# obviously-fake DUMMY-* node keys, so the test proves the store path without ever touching a real
+# credential file. `tests/init_cli.rs` uses it one level over, for a throwaway `user_data/` to
+# scaffold into.
+tempfile = "3"
+# `tests/init_cli.rs` mounts every Rhai strategy `vike-cli init` ships through the REAL
+# `vike_script::RhaiStrategy` over vike-model's shared `MockBroker`, drives bars through it and
+# asserts an order reaches the broker.
+#
+# ⚠ This is the gate behind "the shipped examples actually run", and a COMPILE check is not that
+# gate: Rhai resolves function names at CALL time, so a script naming a misspelled indicator — or
+# any name outside `vike_script::RHAI_INDICATORS`, the set the host registers — compiles perfectly
+# and then errors on every single bar, self-disabling after the consecutive-error cap. The strategy
+# would look mounted and silently never trade, which is exactly the failure a shipped example must
+# not teach.
+#
+# A dev-dep FEATURE on a crate this package ALREADY links, so it adds no package to the graph, and
+# the shipped binary never compiles the mock (`test-support` is `#[cfg]`-gated).
+vike-model = { path = "../vike-model", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true
+
+# ─── `cargo binstall` — install the RELEASED binary instead of compiling the workspace ───────────
+#
+# Read from cargo-binstall's own documentation on 2026-09-05 (github.com/cargo-bins/cargo-binstall:
+# README.md, SUPPORT.md, SIGNING.md and `crates/bin/src/args.rs`), never from memory — every quoted
+# claim below is theirs — and gated against what `.github/workflows/release.yml` ACTUALLY ships by
+# `crates/vike-ops/tests/packaging_gate.rs`, which renders this template itself and looks for the
+# result on a `sha256sum … > SHA256SUMS.part-*` line. The install line:
+#
+#     cargo binstall --git https://github.com/vike-io/vike-trader vike-cli
+#
+# * `--git <URL>` is args.rs's "Override how to fetch Cargo.toml package manifest. This skips
+#   searching crates.io and instead clones the repository specified and runs as if
+#   `--manifest-path $cloned_repo` is passed to binstall." It shipped in cargo-binstall v1.0.0
+#   (that release's notes: "Support install directly from git repository using `--git`") behind the
+#   `git` cargo feature, which is in the published binary's DEFAULT feature set; a WORKSPACE root as
+#   the manifest path works since v1.2.0 ("We now support passing a workspace to `--manifest-path`").
+#   Both are load-bearing here: this crate is `publish = false`, so crates.io has never heard of it,
+#   and the clone is the mirror — a one-commit snapshot — so it is cheap.
+# * The template variables (SUPPORT.md): `{ repo }` is "the repository linked in `Cargo.toml`", i.e.
+#   the `repository` field above; `{ name }` the crate; `{ bin }` "the name of a specific binary";
+#   `{ target }` "the rust target name"; `{ archive-suffix }` "the filename extension of the package
+#   archive format that includes the prefix `.`, e.g. `.tgz` for tgz or `.exe`/`""` for bin";
+#   `{ binary-ext }` "the string `.exe` if the `target` is for Windows, or the empty string
+#   otherwise"; `{ version }` "the crate version (per `--version` and the crate manifest)".
+# * binstall's DEFAULT templates (SUPPORT.md's "Defaults") multiply ten archive-shaped filenames —
+#   `{ name }-{ target }-v{ version }{ archive-suffix }` and its siblings — against
+#   `{ repo }/releases/download/[v]{ version }/`. Nothing this release ships is named that way:
+#   `release.yml`'s host job checksums the BARE binaries (its `ASSETS=(vike-cli vike-tradehub …)`
+#   line, `sha256sum "${ASSETS[@]}" > SHA256SUMS.part-host`) with no platform suffix and no
+#   archive, so the template is spelled out below and `pkg-fmt = "bin"` (args.rs: "The available
+#   package formats are: tar, tbz2, tgz, txz, tzstd, zip, bin") tells binstall the download IS the
+#   executable.
+#
+# ⚠ `releases/download/v{ version }/` since 2026-09-08 — THE DAY THIS BLOCK NAMED. It read
+# `releases/latest/download/` and ended with "the day the release recipe bumps this manifest's
+# version to the tag, switch this to `{ repo }/releases/download/v{ version }/…`; the gate will
+# follow." The root `[workspace.package]` now carries the one `version`, every member takes
+# `version.workspace = true`, and `just release X` rewrites and commits that line before it tags —
+# so `{ version }` renders the tag and this URL names a release outright.
+#
+# What that was working around, kept because the failure it cost is instructive: every crate here
+# was `0.1.0` and the release recipe bumped no manifest, so `{ version }` rendered ONE string for
+# every tag ever cut. Two costs followed, both user-facing and both now gone — binstall could
+# install the NEWEST release and no other, and it records an install under the manifest version, so
+# a re-run reported "up to date" whatever the tag (`cargo binstall --force` was the way round it).
+#
+# ⚠ `latest` is still held by RULE, and it is no longer this URL's guard rail. GitHub's `latest` is
+# a PROPERTY any release on the mirror can take (the newest non-draft, non-prerelease one by its
+# tag's commit date) — the `starter-data` dataset `scripts/publish_starter_data.sh` deletes and
+# recreates at HEAD on every refresh once took it, this URL answered 404, and binstall fell through
+# to compiling the workspace silently. Naming the tag makes that class unreachable HERE, but the
+# rule stays for every human and script that says "the latest release": every version release
+# `publish_mirror.sh` creates passes `--latest`, every other passes `--latest=false`, and
+# `crates/vike-ops/tests/packaging_gate.rs` reads both scripts for it.
+#
+# `vike-cli --version` still prints the git commit beside the version
+# (`vike_buildinfo::version_line`) — between releases the manifest reports the LAST released tag, so
+# the commit remains the identity that moves.
+#
+# ⚠ TWO platforms, LINUX and WINDOWS, and macOS is still absent for its own reason:
+# * `x86_64-pc-windows-gnu` and `x86_64-pc-windows-msvc` BOTH render `vike-cli.exe`, and the pair is
+#   not a typo. `release.yml`'s windows job cross-builds the CLI (`cargo build --release --locked
+#   --target x86_64-pc-windows-gnu -p vike-cli --bin vike-cli`) and checksums the result onto
+#   `sha256sum vike-app.exe vike-app-thin.exe vike-cli.exe > SHA256SUMS.part-windows`, so the asset
+#   exists under the GNU triple while rustup's default host on Windows is msvc.
+#   ⚠ THE MSVC ROW IS NOT WHAT MAKES THE INSTALL POSSIBLE, and a comment here claimed it was until
+#   a reviewer read the source on 2026-09-05. binstall does not resolve ONE host triple: it resolves
+#   every triple `detect_targets()` returns, and in cargo-binstall's detect-targets crate
+#   (src/detect/windows.rs) `detect_alternative_targets` gives an msvc host the GNU triples outright
+#   — `(abi == "msvc").then(|| [format!("{prefix}-gnu"), format!("{prefix}-gnullvm")])`. binstalk's
+#   own resolve step then merges `overrides.get_matching(target, &cfgs)` PER CANDIDATE and tries the
+#   fetchers in order, first success wins — so a gnu-only table WOULD have resolved, one candidate
+#   later. What the msvc row buys is that the FIRST candidate is the right one: without it an msvc
+#   host probes binstall's ten DEFAULT `{ name }-{ target }-v{ version }{ archive-suffix }`
+#   templates against the release (all 404 — this release ships bare binaries) before it reaches the
+#   gnu candidate. Two tables cost nothing and depend on no fallback list that is upstream's to
+#   change.
+#   ⚠ Mapping msvc onto a gnu-built asset is safe HERE and would not be in general: the asset name
+#   embeds no triple (`{ name }{ archive-suffix }` renders `vike-cli.exe` on either), so nothing is
+#   being renamed, and the two triples differ in how a binary is LINKED, not in how it RUNS — a
+#   MinGW-linked PE is an ordinary Windows executable, and this one is a leaf binary a user runs
+#   rather than a library anything links against. (`vike-cli` links no C toolchain-specific runtime:
+#   its whole identity is the DataFusion-free, transport-free graph the `light-consumers` lane
+#   checks.) ⚠ NOT MEASURED: no Windows box in this workspace has ever executed that binary — no
+#   test runs on Windows anywhere here — so this is an argument from how the triples differ, not a
+#   measurement. The day an asset name DOES embed a triple, these two tables stop being copies and
+#   the msvc one has to name the gnu asset explicitly.
+# * macOS — every release job runs on a Linux self-hosted runner; there is no macOS build anywhere,
+#   so a Homebrew formula would serve Linuxbrew only, which misleads. It waits for a macOS runner
+#   that does not exist. `docs/decisions/0037-no-package-registry-the-install-is-the-release-assets.md`
+#   carries that deferral.
+# On a target with no override binstall falls through to its `compile` strategy — `cargo install`
+# from the clone — which is the honest answer for a platform the release does not build.
+#
+# ⚠ THERE IS NO THIRD WINDOWS ROUTE ANY MORE. A scoop bucket lived here from 2026-09-05 to
+# 2026-09-09 — a rendered manifest, a renderer, a template, a second publish script and a second
+# push target — and every one of them pointed at THIS asset, `vike-cli.exe`, from the same release
+# these overrides resolve. It was a third spelling of one install (binstall's, a plain download's,
+# scoop's), kept because it had become possible rather than because anyone asked for it, and it
+# carried a defect neither of the others has: the mirror is one ORPHAN commit per publish and scoop
+# refreshes a bucket with a plain `git pull`, which refuses unrelated histories, so `scoop update`
+# could not advance it at all and the install documents had to teach a remove-and-re-add procedure
+# instead. The escape was a bucket repository of its own — code that shipped and a repository nobody
+# had created. `docs/decisions/0037-no-package-registry-the-install-is-the-release-assets.md`'s
+# scoop section carries the removal and the ONE condition that would bring a bucket back.
+# What a Windows user does instead is two lines, both already documented in `README.md` and in the
+# mirror's own README: `cargo binstall` through these overrides, or download `vike-cli.exe` from
+# the release and check it against `SHA256SUMS`.
+# ⚠ `cargo binstall --force` is still needed to REPLACE an install: it records the install under the
+# manifest version, so a plain re-run reports itself up to date even once that version has moved
+# (the `latest` note above says why).
+#
+# ⚠ `SHA256SUMS` is a release asset and is NOT wired here, because binstall has no checksum-file
+# support to wire: its only integrity hook is SIGNING.md's `[package.metadata.binstall.signing]`
+# (minisign — `algorithm` + `pubkey`, a `.sig` beside each package), and this release holds no such
+# key. A user verifying by hand reads the same `SHA256SUMS` that `scripts/fetch_release_tools.sh`
+# verifies every runtime tool against.
+#
+# `quick-install` is disabled: it is a third-party prebuilt host that has never heard of an
+# unpublished crate, and asking it sends telemetry (the crate, version and target) for nothing.
+# `compile` stays, for the platforms above.
+[package.metadata.binstall]
+pkg-fmt = "bin"
+bin-dir = "{ bin }{ binary-ext }"
+disabled-strategies = ["quick-install"]
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }{ archive-suffix }"
+
+# The Windows pair. Same `pkg-url`, and `{ archive-suffix }` renders `.exe` on both — see the
+# comment above for why the msvc host triple resolves the gnu-built asset.
+[package.metadata.binstall.overrides.x86_64-pc-windows-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }{ archive-suffix }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }{ archive-suffix }"

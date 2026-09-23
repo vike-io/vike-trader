@@ -1,0 +1,37 @@
+{
+  "_provenance": {
+    "what": "The three async order-event envelopes the C++ shim enqueues for `fc_poll_event`.",
+    "source": "crates/bridges/fxcm/src/shim/fcshim.cpp — EventListener::onTablesUpdates",
+    "how": "TRANSCRIBED from that listener's three snprintf format literals, with the %s/%d/%.6f slots filled by plausible demo values. NOT a wire capture: this venue speaks a C++ SDK, not a websocket, so there is no frame for `vike_bridge_core::capture` to sanitize and no capture smoke to write one. crates/bridges/fxcm/tests/fxcm_shim_envelope_grammar.rs is what keeps the transcription honest — it re-reads those literals and fails when this file's key set stops matching them.",
+    "faithfulness": [
+      "`ts` is 0 in every envelope because the shim HARD-CODES 0 — it does not stamp the venue's time. Do not 'improve' it to a plausible epoch: the grammar gate's ablation check records this key as unobservable precisely because the real emitter never varies it.",
+      "`amount` is an INTEGER (%d) and is in BASE UNITS — 10000 units, not 10000 lots. That asymmetry with the submitted lot count is the crate's first Local trap.",
+      "`rate`/`commission` are %.6f, so six decimals is the real wire precision.",
+      "the `canceled` envelope carries NO `reason` key. The shim emits none; the mapper defaults it to empty. An added `reason` here would be a fiction."
+    ]
+  },
+  "envelopes": {
+    "fill": {
+      "kind": "fill",
+      "order_id": "812345678",
+      "trade_id": "T90210",
+      "instrument": "EUR/USD",
+      "side": "S",
+      "amount": 10000,
+      "rate": 1.091200,
+      "commission": -0.080000,
+      "ts": 0
+    },
+    "canceled": {
+      "kind": "canceled",
+      "order_id": "812345678",
+      "ts": 0
+    },
+    "rejected": {
+      "kind": "rejected",
+      "order_id": "812345679",
+      "reason": "rejected",
+      "ts": 0
+    }
+  }
+}

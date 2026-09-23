@@ -1,0 +1,33 @@
+# ForexConnect SDK — Linux x86_64 runtime-library provenance (companion to FCSDK.SHA256SUMS).
+# vendor/fcsdk/linux is GITIGNORED (proprietary — never committed); this pins the .so set the
+# Linux build/run path depends on, so a silently swapped SDK is detectable — the same guarantee the
+# Windows FCSDK.SHA256SUMS gives the dll/lib/h layout. Kept as its own file (not folded into the
+# sorted Windows manifest) so each stays self-consistent with its own regen command.
+# SDK: ForexConnect 1.6.5 (built 2022-12-08). Versioned twins are byte-identical copies (same hash).
+# Verified by crates/bridges/fxcm/scripts/provision-fcsdk.sh. Regenerate + re-verify on the dev box:
+#   ( cd vendor/fcsdk/linux/lib && sha256sum *.so* ) | sort -k2 \
+#     | sed 's#  #  fcsdk/linux/lib/#'
+# A mismatch on refresh means the SDK changed — record WHY (new version, new download source).
+63c33f4110cc61e3420e2955cf222ff8bf2ae893f3831f35371d8542b918f1ea  fcsdk/linux/lib/libForexConnect.so
+63c33f4110cc61e3420e2955cf222ff8bf2ae893f3831f35371d8542b918f1ea  fcsdk/linux/lib/libForexConnect.so.1.6.5
+95cf4cc50fdc925426d633282a6296baee0fa3a66ee506a1f5230fa838ca4fb5  fcsdk/linux/lib/libfxmsg.so
+95cf4cc50fdc925426d633282a6296baee0fa3a66ee506a1f5230fa838ca4fb5  fcsdk/linux/lib/libfxmsg.so.1.6.5
+56ba87df358dc74c51e3c842210797a1ff05d3ab2eade01b7cf133d1eda9109c  fcsdk/linux/lib/libfxtp.so
+56ba87df358dc74c51e3c842210797a1ff05d3ab2eade01b7cf133d1eda9109c  fcsdk/linux/lib/libfxtp.so.1.6.5
+3f353ff2a234f234aab36813e2a35fe654a89a22701f8a1c347408ec46ff798c  fcsdk/linux/lib/libgsexpat.so
+3f353ff2a234f234aab36813e2a35fe654a89a22701f8a1c347408ec46ff798c  fcsdk/linux/lib/libgsexpat.so.1.6.5
+2fa99cce3747fbae9f6bebbd890bf34e164e2d63efd0b330a4061686c9323f90  fcsdk/linux/lib/libgstool3.so
+2fa99cce3747fbae9f6bebbd890bf34e164e2d63efd0b330a4061686c9323f90  fcsdk/linux/lib/libgstool3.so.1.6.5
+92ac7c946fbf1e3d0139f2fca74637b7776ffc296b43196355ec41952cac04af  fcsdk/linux/lib/libhttplib.so
+92ac7c946fbf1e3d0139f2fca74637b7776ffc296b43196355ec41952cac04af  fcsdk/linux/lib/libhttplib.so.1.6.5
+4ddcd46274f79e1a581262aaca2aa12ddabce5c9a6543daf40a233c6175f5e15  fcsdk/linux/lib/liblog4cplus.so
+4ddcd46274f79e1a581262aaca2aa12ddabce5c9a6543daf40a233c6175f5e15  fcsdk/linux/lib/liblog4cplus.so.1.0
+4ddcd46274f79e1a581262aaca2aa12ddabce5c9a6543daf40a233c6175f5e15  fcsdk/linux/lib/liblog4cplus.so.4
+ed676454ffd604e06a86e8742d57aaa18987f072195281fefc0c221ca302c1cc  fcsdk/linux/lib/liblogger.so
+5f515ad530d26e9c800ead7b2c6c996a7a69508260bfe28f34611e4f0f20502d  fcsdk/linux/lib/libpdas.so
+5f515ad530d26e9c800ead7b2c6c996a7a69508260bfe28f34611e4f0f20502d  fcsdk/linux/lib/libpdas.so.1.6.5
+a46d43ae928bfda142b4e0aed7c9c6ed8c43163b92dea558585a0b256182cb2d  fcsdk/linux/lib/libpricehistorymgr.so
+a46d43ae928bfda142b4e0aed7c9c6ed8c43163b92dea558585a0b256182cb2d  fcsdk/linux/lib/libpricehistorymgr.so.2.8.0
+399240558420c997580318824964968f7f691d19e617924a0b65bfd07122d492  fcsdk/linux/lib/libquotesmgr2.so
+399240558420c997580318824964968f7f691d19e617924a0b65bfd07122d492  fcsdk/linux/lib/libquotesmgr2.so.2.8
+6aa8d5e99725b83933cabfdb6d6402387b7dba2b4bbe9eee3d2fb9dd9deda109  fcsdk/linux/lib/libsqlite3.8.so
