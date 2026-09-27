@@ -1,0 +1,132 @@
+[package]
+name = "vike-ops"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The HEADLESS-usable off-fold operations layer, extracted from vike-app-core so a server-side daemon can reach it without the egui widget stack: the settings registry + its scanner, the bounded shutdown orchestrator, the graceful-stop primitive and the one-live-process-per-account lock. Depends on NO egui crate and on no vike crate above the vocabulary floor, so every daemon and the light CLI can link it."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `leaf` — a crate that
+# names at most the floor: the market-data and domain vocabularies at 5 and 10.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer, and
+# tier 15 adds its own rule on top (`every_tier_15_crate_names_nothing_above_the_vocabulary`).
+#
+# ⚠ WAS `service` (50) until 2026-09-26, and the drop is 35 rungs in one move because the thing
+# holding it up LEFT rather than moved down. MEASURED on the day: the docs-data exporter
+# (`vike_ops::docs_data`, its bin and its gate) was the only code in this crate naming anything
+# above rank 10 — `vike-bridge-core` (30) for the TIF table, plus `vike-strategy`, `vike-exec`,
+# `vike-data`, `vike-catalog` and `vike-indicators`. It is its own crate now, `crates/vike-docs`,
+# and what is left here is std plus `vike-model` plus the per-platform stop-signal pair.
+#
+# 15 is safe by measurement, not by hope: every consumer — vike-cli, vike-datahub, vike-tradehub,
+# vike-app-core, vike-desktop — declares 55 or higher.
+[package.metadata.vike]
+layer = 15
+
+# WHY THIS CRATE EXISTS (the dependency argument, not a taste argument):
+# `vike-tradehub` is the headless daemon that runs on the production trading box. It used exactly
+# three modules out of `vike-app-core` (journal_mat / reconcile_config / shutdown) — and that ONE
+# edge dragged the entire egui widget stack (egui, egui_plot, epaint, epaint_default_fonts,
+# vike-chart, vike-panels, vike-cockpit, vike-ui-theme, vike-connections, vike-data-manager) into
+# the daemon's build graph. The cost is not CI minutes: it is daemon build time, binary size, and
+# the `cargo deny --all-features` supply-chain audit surface on the box that SIGNS REAL ORDERS.
+# Everything here is off-fold (never in the vike-core hot path) and egui-free by construction; a
+# module that needs egui belongs in vike-app-core, not here.
+
+# ⚠ NO `[features]` table, and three stood here until 2026-09-26: `default = ["full",
+# "docs-data"]`, `full` and `docs-data`. `full` had gated NOTHING since `journal_mat` left on
+# 2026-09-25 — it was kept only because `vike-cli`'s and `vike-datahub`'s `default-features = false`
+# argued about it — and `docs-data` gated the exporter that is now `crates/vike-docs`. With both gone
+# there is one configuration of this crate, so those two consumers take it plainly, and the
+# `light-consumers` lane's `cargo check -p vike-ops --no-default-features` went with them: it
+# checked a configuration that no longer differs from the roster lane's.
+
+[dependencies]
+# The ONE vike-* edge, and it is the vocabulary floor — which is what tier `leaf` permits.
+# ⚠ MEASURED 2026-09-26: no `src/` file here names a vike-model item today (`feed_status` was the
+# last, and its re-export went on 2026-09-25); two gates under `tests/` do
+# (`collector_dispatch_gate.rs` reads `VENUES`, `deploy_tool_root_gate.rs` the project-bin
+# resolver). It stays a normal edge here rather than moving to `[dev-dependencies]`; that would be
+# its own change, and it costs nothing — every consumer of this crate already links vike-model.
+vike-model = { path = "../vike-model" }
+# ⚠ TOMBSTONES for the edges that left with `docs-data` on 2026-09-26 — `vike-bridge-core`
+# (`default-features = false`, the TIF table), `serde_json`, `vike-indicators`, `vike-strategy`,
+# `vike-exec`, `vike-data` and `vike-catalog`. All seven were OPTIONAL and reached only through that
+# feature; they are `crates/vike-docs/Cargo.toml`'s plain dependencies now, with their reasons.
+# `vike-core`, `vike-journal`, `vike-alerting`, `indexmap` and `tracing` went earlier (2026-09-23 to
+# 2026-09-25), each measured to zero code sites the day it left; git history carries those notes.
+
+# The ONE signal surface in the workspace, carried for `stop::install_handlers` — the graceful
+# SIGTERM/SIGINT stop both headless daemons now install. `docs/ops/graceful-stop.md` is the decision
+# record; the root manifest's `[workspace.dependencies]` entry carries the one-package measurement.
+#
+# NOT optional, on purpose. Behind a feature, a daemon could build with the graceful stop silently
+# absent and look identical from the outside, which is the exact failure mode this whole change
+# exists to remove. (It used to say "NOT behind `full`", and argued that `vike-recorder` reaches it
+# with `default-features = false`; there is no feature left for it to sit behind.)
+#
+# `cfg(unix)`: there is no POSIX signal on Windows, so the dependency is absent from a Windows build
+# entirely and `install_handlers` is a documented no-op there (`just windows-check` is a real gate).
+[target.'cfg(unix)'.dependencies]
+signal-hook = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+# The Windows console-ctrl → stop-flag bridge (split-plane B10) — see the workspace manifest's
+# rationale beside signal-hook, its unix twin.
+ctrlc = { workspace = true }
+
+# ⚠ The `docs_data` `[[bin]]` stood here, `required-features = ["docs-data"]`, until 2026-09-26. It
+# is `crates/vike-docs/Cargo.toml`'s now, under the same name.
+
+[dev-dependencies]
+tempfile = "3" # `live_lock`'s tempdir tests (it outlived `journal_mat`, which named this first)
+# `crates/vike-ops/tests/build_config_gate.rs` — the AUTHORITY for what a committed TOML build
+# setting resolves to. That gate hand-rolled its own line scanner for three rounds and leaked in all
+# three: a line scanner reads `key = value` and can only ever judge the KEY side, so an inline table
+# (`dev = { debug = 0 }`) puts the setting where no key matcher reaches it. That is an axis, not a
+# pattern, and a parser is what closes an axis.
+#
+# Free, and VERIFIED rather than asserted — twice over. `cargo tree -p vike-ops -e normal` is
+# byte-identical with and without this line (a dev-dependency is not in any production closure), and
+# `cargo tree -p vike-ops -e normal -i toml` shows why the question was easy: `toml` is ALREADY in
+# this crate's normal closure, through `vike-core`'s TOML run-profile loader. So the line adds no
+# package to `Cargo.lock` and no compile unit to any build — the whole lockfile delta is one
+# `"toml",` added to vike-ops' own dependency list. ⚠ It DOES mean this gate no longer compiles standalone on std alone:
+# running it the way the dev box does (`rustc --test`, where a workspace build is denied) now needs
+# `--extern toml=…`. See `walk_tests`' `scratch`, which states the cost at the one place that pays it.
+# ⚠ The normal-closure half of that measurement EXPIRED with the `vike-core` edge (gone 2026-09-25)
+# and this crate's normal closure no longer carries `toml` at all. The lockfile half still holds —
+# the workspace resolves `toml` for other crates (vike-core and vike-strategy among them) — so the
+# edge still adds no package; what it now adds is one compile unit to THIS crate's test build.
+toml = { workspace = true }
+# `crates/vike-ops/tests/shipped_box_name_gate.rs` — the Rust tokenizer that gate runs over every
+# `crates/**/src` file. The same SHAPE of argument as the `toml` edge above and for the same reason:
+# a line scanner can only ever judge the line it is looking at, an inline table put a build setting
+# where no key matcher reached it, and here a backslash continuation put a box name on a line with
+# no quote character on it at all. A parser is what closes an axis. ⚠ The COST argument does NOT
+# transfer — `toml` was already in this crate's normal closure through `vike-core` and this is not;
+# the workspace entry carries that measurement and the reason `span-locations` is mandatory.
+proc-macro2 = { workspace = true }
+# ⚠ A `serde_json` DEV edge stood here from 2026-09-05 to 2026-09-09 and is GONE with the scoop
+# bucket that was its only reason. It existed for `packaging_gate.rs`'s scoop half — the bucket
+# manifest is JSON, both as a committed template and as the file the renderer wrote at publish time,
+# and a line scanner over either is the axis the `toml` edge above was added to close — and that
+# half was removed with the bucket. The last JSON reader in `tests/`, `docs_data_gate.rs`, left
+# with `crates/vike-docs` on 2026-09-26, so nothing here reads JSON at all now.
+# ⚠ A `vike-data` DEV edge (`features = ["test-support"]`) stood here for the `MemHistStore` double
+# the `journal_mat` tests used, and is GONE: that module left on 2026-09-25 and MEASURED on
+# 2026-09-26 no file under `src/` or `tests/` here names `vike_data` in code.
+# `crates/vike-ops/tests/ci_plan_gate.rs` — the CI derivation's own gate. A DEV edge, and it points
+# sideways at a build tool rather than upward at a product crate, so `crates/vike-ops/tests/layer_gate.rs`
+# does not see it at all (that gate only classifies `vike-*` keys).
+#
+# It exists so the gate can call the derivation IN-PROCESS. The alternative is spawning
+# `cargo run -p xtask` from inside a test — a nested cargo build, on a runner whose target directory
+# the outer test run is already using — to compare two strings. This edge is also what makes CI
+# COMPILE the tool that derives the merge gate on the same PRs that can break it: an xtask change
+# selects `xtask` (its own crate) and, one dev hop later, `vike-ops`.
+xtask = { path = "../../xtask" }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

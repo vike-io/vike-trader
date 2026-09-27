@@ -1,0 +1,52 @@
+[package]
+name = "vike-analytics"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the pure performance-analytics cluster extracted out of vike-backtest: the metrics catalog, BacktestResult/BacktestReport, benchmark/excursions/periods/montecarlo/stability/overfit/validation analytics, the position-sizing registry and the zero-trade diagnoser. Depends on vike-model ONLY — no engine, no execution, no data layer — so a consumer that just needs the numbers (vike-report's live tearsheet) does not compile the simulator to get them."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# ⚠ WAS `domain` (20) until 2026-09-23. Tier `leaf` — *a crate that names AT MOST THE FLOOR* —
+# describes it structurally and exactly: its ONE vike-* edge is `vike-model` (10), and there is no
+# other. `crates/vike-ops/tests/layer_gate.rs`'s
+# `every_tier_15_crate_names_nothing_above_the_vocabulary` holds that wording to the band, so the
+# claim is machine-checked rather than asserted here.
+#
+# ⚠ 15 and 20 genuinely OVERLAP — `domain` reads *one hop over the vocabulary: a single-purpose
+# pure core*, which a crate naming only the vocabulary also satisfies. What breaks the tie is the
+# ROLE qualifier in 20: this crate is a metrics LIBRARY (the catalog, the folds, the periods
+# bucketing), not a core anything executes against. `vike-exec` and `vike-fills` sit the other side
+# of that line and stay at 20 for it. The slack cost nothing while it lasted — the lowest consumer
+# is `vike-user-research` at 35 — so this is 0085's correction rather than an unblocking.
+# docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+# The ONLY vike dependency, by design (see the crate doc): Trade / Bar / py_sum / time / sizing.
+# Adding vike-exec, vike-core or vike-data here would defeat the reason this crate exists.
+vike-model = { path = "../vike-model" }
+serde = { workspace = true }    # BacktestReport + ZeroTradeReport derive Serialize
+chrono = { workspace = true }   # periods.rs calendar bucketing (daily/weekly/monthly/quarterly/yearly)
+indexmap = { workspace = true } # periods.rs periodic_returns — Python dict insertion order
+rand = { workspace = true }     # montecarlo.rs seeded resampling (statistical, not bit, parity — see montecarlo.rs)
+libm = { workspace = true }     # overfit.rs normal_cdf (erfc) + Acklam normal_inv_cdf (vike-options precedent)
+
+[dev-dependencies]
+# The shared libm walk (decision 0074): `vike_model::libm_walk` holds the text parser this crate's
+# `libm_platform_probe` used to keep a private copy of. A DEV edge with the feature, never a normal
+# one — `test-support` is gated `#[cfg(any(test, feature = "test-support"))]` and a normal edge
+# would compile it into shipped builds. `cargo package` strips a dev-dependency carrying no
+# version, so a published closure is untouched.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# report.rs / zero_trade.rs unit tests assert the `--json` wire contract of the serialized report.
+serde_json = { workspace = true }
+# tests/sizing_props.rs — the `Sizer::size` property suite (testing-arch plan Phase 6, target P1),
+# moved here with the `sizing` module it exercises. Root-pinned; dev-dep only.
+proptest = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

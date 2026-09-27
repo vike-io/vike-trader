@@ -1,0 +1,80 @@
+[package]
+name = "vike-sim"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike's backtest SIMULATOR: StrategyEngine/SimBroker, the vectorized kernel, the impact, latency and queue models, schedule/timeframe helpers and the reference strategies. One run, no harness: opens no store, reads no environment, names no venue."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `engine` — a runtime /
+# simulation / transport core over the domain crates.
+# Its arithmetic floor is 21 (the normal-dependency ceiling is `vike-exec` and `vike-fills`, both at
+# 20; the nearest tier is 25). The extra rung is HELD under
+# docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md's first reopener: it is
+# LOAD-BEARING — at 25 the live core (`vike-core`) and the three light clients at 30 could name the
+# simulator, and `crates/vike-core/src/run_profile.rs`'s module doc states that the two sit
+# ALONGSIDE each other, which equal rank is the only value to enforce — and it is FREE, since the
+# lowest normal consumer is `vike-backtest` at 35. docs/decisions/0087-the-simulator-leaves-the-harness.md
+# carries the argument.
+# ⚠ The rung's cost: the rank-25 crates are legal NORMAL edges from here, and `vike-paper` is the one
+# with history. It is kept a DEV edge on purpose — `tests/r7_gate.rs` compares the simulator against
+# the paper exchange, and one delegating to the other would make that comparison vacuous (0087's
+# second reopener).
+# ⚠ The venue tiers (40-42) may name this crate, and that is deliberate rather than an oversight:
+# `crates/vike-ops/tests/layer_gate.rs`'s `FENCED_HARNESS_CRATES` fences the HARNESS by name and
+# leaves this crate out, because its normal closure carries no heavy tree (0087, objection 5(a)).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 30
+
+[dependencies]
+vike-model = { path = "../vike-model" }
+# RiskGate/RiskLimits/TradingState (the SAME pre-trade gate the live core runs, so a limit proven in
+# a backtest carries unchanged into paper and live) and `is_protective_exit_sibling`.
+vike-exec = { path = "../vike-exec" }
+# The ONE definition of a fill — the cost scalars, the bar/tick/L2 fill tiers, intrabar resolution
+# and the stale-price wait — shared with the R7 paper exchange. Named `vike_fills::…` at every call
+# site: nothing here re-exports it (docs/decisions/0087).
+vike-fills = { path = "../vike-fills" }
+# `BacktestResult` (what a run returns), the position sizers, `metrics::mean_variance` (the impact
+# model's volatility) and `periods::period_key` (`DateRule::PeriodStart`). Named `vike_analytics::…`
+# at every call site, never re-exported from here.
+vike-analytics = { path = "../vike-analytics" }
+indexmap = { workspace = true } # engine/queue_model — Python dict insertion order (bit-parity)
+# `src/impact.rs`'s `AlmgrenChriss::impact_frac` and `src/queue_model.rs`'s `ProbFunc::f` — a runtime
+# base AND runtime exponent, so `libm::pow`/`libm::log` rather than the PLATFORM libm, whose last bit
+# differs between the Windows dev box and the Linux runners.
+# docs/decisions/0032-transcendentals-come-from-the-libm-crate-not-the-platform.md is the verdict;
+# `tests/libm_platform_probe.rs` is the walk that keeps both files on it.
+libm = { workspace = true }
+
+[dev-dependencies]
+# The shared libm walk (decision 0074) for `tests/libm_platform_probe.rs`. A DEV edge with the
+# feature, never a normal one: `test-support` is gated `#[cfg(any(test, feature = "test-support"))]`.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# The R7 paper exchange — DEV only, deliberately (see the layer comment above): `tests/r7_gate.rs`,
+# `tests/controller_harness.rs` and `tests/laws/tif_expiry_oms.rs`.
+vike-paper = { path = "../vike-paper" }
+# A real live core, for the tests that prove backtest == paper == live: `tests/r7_gate.rs`,
+# `tests/controller_harness.rs`, `tests/multi_symbol_read_parity.rs`, `tests/schedule_time_rule.rs`.
+# Equal rank, so it is legal here ONLY as a dev edge — and that is the point: neither LIBRARY may
+# name the other (see the layer comment above).
+vike-core = { path = "../vike-core" }
+# `tests/controller_harness.rs` mounts the `ControllerHarness`. vike-strategy's own tests reach this
+# crate through a dev edge too — a dev-only cycle, which cargo permits.
+vike-strategy = { path = "../vike-strategy" }
+# `tests/maker_backtest.rs` mounts the `SpreadMaker` to exercise `SimBroker`'s `HftBroker` impl.
+vike-mm = { path = "../vike-mm" }
+# `tests/parity/rhai_parity.rs`: a `RhaiStrategy` beside a Rust twin driving the SAME streaming
+# `vike_indicators` SMA the Rhai bridge uses.
+vike-script = { path = "../vike-script" }
+vike-indicators = { path = "../vike-indicators" }
+# `tests/laws/session_law.rs`: `session_calendar_for(venue, asset_class)`, keyed end-to-end.
+vike-catalog = { path = "../vike-catalog" }
+serde_json = { workspace = true } # tests/parity/{r1,r3,r4}_parity.rs read the frozen fixtures
+# `tests/riskgate_simbroker_parity.rs`'s proptest arms (random order/position/limits/margin over the
+# shared RiskGate <-> SimBroker reconciliation). Root-pinned.
+proptest = { workspace = true }
+
+[lints]
+workspace = true

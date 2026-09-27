@@ -1,0 +1,27 @@
+[package]
+name = "vike-orderflow"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "Pure trade-aggregation core (chart Phase 5 SP1): classify + tick/volume bars + CVD + volume-profile + footprint from vike_marketdata::TradeTick. Streaming+batch, bit-parity gated. Depends on vike-marketdata only — the market-data vocabulary, NOT the domain one: this crate names a tick and a book and never an order."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `leaf` — names at most the
+# floor: the market-data vocabulary at 5 and the domain vocabulary at 10.
+# ⚠ WAS `domain` (20) until 2026-09-23. Its one edge is the market-data vocabulary at 5, the same shape as `vike-indicators` beside it. The band's rule is machine-checked by
+# `every_tier_15_crate_names_nothing_above_the_vocabulary`; the verdict is
+# docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+vike-marketdata = { path = "../vike-marketdata" }
+# Standard-normal CDF (erf) for VPIN's Bulk Volume Classification, mirroring vike-options'
+# norm_cdf — pure-Rust FDLIBM erf, deterministic across platforms. Already a workspace-pinned,
+# in-lockfile dep (see the root manifest rationale); no new supply-chain entry.
+libm = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

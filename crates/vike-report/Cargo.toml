@@ -1,0 +1,158 @@
+[package]
+name = "vike-report"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the tearsheet RENDERER (text + self-contained HTML) plus the LIVE tearsheet reader. The renderer half needs vike-model + vike-analytics + serde; the journal/store readers sit behind the default-on `journal` feature, so a light consumer takes this crate with `default-features = false` and links no core, no exec and no data layer. Reconstructs Trade round-trips through the SAME pure cost-basis primitive the backtest uses (vike_model::compute_fill) and keys every number on vike_analytics::metric_catalog. Reimplements no metric."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `engine-stacked` — one
+# hop over the engine band: a crate composed over an engine crate (30).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+# ⚠ An OPTIONAL dependency is still a normal one for that gate: gating vike-journal/vike-exec/
+# vike-data behind `journal`, or vike-datahub-client behind `hist`, changes what a build LINKS,
+# never what the layering permits.
+#
+# 35 is the ARITHMETIC FLOOR, and MEASURED 2026-09-26 it is set by ONE edge: `vike-datahub-client`
+# (30), the wire arm of the `hist` path. Every other crate this one names sits at 25 or lower —
+# `vike-journal` 25, `vike-exec`/`vike-data` 20, `vike-analytics` 15, `vike-model` 10. Every consumer
+# (vike-cli 55, vike-tradehub 65, vike-backend 68, vike-app-core 80) sits well above it.
+#
+# ⚠ WAS `research` (45) from 2026-09-23 to 2026-09-26, and `service-stacked` (55) before that. The
+# 45 was argued as "the lowest rank whose NAME describes this crate": its floor was already 35, but
+# 35 was then called `user-host` (a build.rs host for user code), and a correctly-named crate does
+# not move into a wrongly-named tier. That argument ended on 2026-09-26, when 35 was renamed
+# `engine-stacked` — a general name, and one that describes this crate exactly. (The 45 note said the
+# ceiling was `vike-core` via one `use` line in `journal_read.rs`; that edge had already become
+# `vike-journal`, at 25, and the `hist` edge onto the client is what reaches 30 today.)
+# docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+[package.metadata.vike]
+layer = 35
+
+[dependencies]
+# The parity seam: `compute_fill` (the ONE cost-basis primitive) + `Trade` + `FillEvent`/`Event`.
+vike-model = { path = "../vike-model" }
+# The metrics/report catalog reused verbatim (metric_catalog::METRICS — the ROSTER `LiveTearsheet`
+# is keyed on — plus metrics::*, excursions::mae_mfe, periods::*, BacktestResult, BacktestReport,
+# and binutil's argv glue for the `tearsheet` bin). NO metric is reimplemented here — every number
+# is a vike-analytics call.
+#
+# This line USED to read `vike-backtest`, which owned the same modules. The catalog is ~3.9k lines;
+# that crate is 32,259, so this single edge compiled the simulator (engine/sim_broker), the paper
+# exchange and the whole gated harness/ tree just to reach it — 89% of what this crate built it
+# could not call. vike-analytics holds the identical code and depends on vike-model ALONE. Nothing
+# else was needed: after the swap this crate names no `vike_backtest` type anywhere.
+vike-analytics = { path = "../vike-analytics" }
+# --- the `journal` half: the three crates a JOURNAL or STORE read needs, and nothing else does ---
+# The command journal (CommandJournal::read_all / JournalRecord) the fill stream is read from.
+# ⚠ `vike-core = { path = "../vike-core", optional = true }` stood here until 2026-09-23, and its
+# removal is the whole point of that day's extraction. This crate named the LIVE TRADING CORE for
+# exactly one import — `use vike_core::journal::{CommandJournal, JournalRecord}` — i.e. to read a
+# log file. The journal is its own crate now and this edge is gone; `vike-report` links no runtime,
+# no venue mount and no order path at all.
+vike-journal = { path = "../vike-journal", optional = true }
+# The ingest lane types the journal records wrap (Ingest / Event) + Account for the parity anchor
+# test. vike-core already pulls this transitively; naming it directly keeps the reuse explicit.
+vike-exec = { path = "../vike-exec", optional = true }
+# The optional equity-curve / bar / exec-fill source: HistStore + EquitySample + ExecFillRow.
+# Default features (NO hist-datafusion) — this crate only names the venue-agnostic HistStore trait.
+vike-data = { path = "../vike-data", optional = true }
+# HIST-PATH ONLY (`hist`). The wire arm of the store-backed path, and the one spelling of the
+# route decision `docs/decisions/0084-only-the-datahub-touches-the-store.md` leaves every reader
+# with — `vike_datahub_client::route`, which this crate could not have reached before 2026-09-23
+# because it lived in `vike-backtest` and that crate then declared the same layer rank as this one.
+# It is layer 30 to this crate's 35 — the ONE edge that sets this crate's floor — so it is down-only.
+vike-datahub-client = { path = "../vike-datahub-client", optional = true }
+# the facade only (library crate — never `vike_log::init`): `journal_read` warns per SKIPPED stored
+# exec-fill row whose `trade_id` is empty, so a legacy row degrades visibly instead of silently.
+# Optional because that warn is the crate's ONLY `tracing::` site, so a renderer-only build has
+# nothing to log.
+tracing = { workspace = true, optional = true }
+serde = { workspace = true } # LiveTearsheet derives Serialize + Deserialize
+serde_json = { workspace = true } # `tearsheet` bin's --json output (also used by tests)
+
+[features]
+# ⚠ DEFAULT-ON, so every existing consumer is byte-identical to before this feature existed.
+default = ["journal"]
+
+# **The JOURNAL/STORE READER half.** Everything that reads a vike-core command journal or a
+# `HistStore` series: the `journal_read` and `excursions` modules, the `tearsheet` CLI (and its
+# bin), `LiveTearsheet::from_journal`, `equity::equity_curve_from_store` and
+# `mtm::mtm_curve_from_store`.
+#
+# # Why it exists, and why it is ONE feature rather than three
+#
+# `crates/vike-cli/src/cmd/runs/show.rs`'s `refuse_an_unbuilt_renderer` told operators that
+# `--html` "needs a tearsheet renderer, which nothing in this tree has built" — while
+# `crate::html`'s `render_html` IS that renderer. The refusal was measurably false, and the reason
+# nobody wired it is a DEPENDENCY one stated in two places:
+# `crates/vike-tradehub-client/src/proto.rs`'s `Response::Tearsheet` ("the typed shape lives in
+# `vike-report`, which links `vike-core`/`vike-exec`/`vike-data` … naming the type here would
+# charge every client of this protocol for the renderer") and `crates/vike-cli/src/cmd/report.rs`'s
+# own module doc. Both name the SAME three crates, and `scripts/ci_feature_suite.sh`'s
+# `light-consumers` lane exists to keep vike-cli's graph free of exactly that closure. So the three
+# arrive together and leave together: `journal_read` itself names all three in one module, and
+# splitting them into three knobs would publish three configurations nobody has a use for.
+# `vike-ops`' old `full` feature was the precedent for the shape — one feature, that same
+# closure, which vike-cli took `default-features = false` until the feature was deleted (09-26).
+#
+# With this OFF the crate is vike-model + vike-analytics + serde(+serde_json): the renderer, the
+# `LiveTearsheet` document and the pure folds. A `default-features = false` edge from vike-cli adds
+# no external crate at all.
+journal = ["dep:vike-journal", "dep:vike-exec", "dep:vike-data", "dep:tracing"]
+
+# The `tearsheet` bin's HISTORY path: `--datahub` reads the account's equity series and OHLC bars
+# from the data daemon for the two enrichments (mark-to-market equity, per-trade `mae`/`mfe`). The
+# LIBRARY functions (`backfill_excursions`, `equity_curve_from_store`) name only the venue-agnostic
+# `HistStore` trait and need no feature at all — this gate exists so the BIN can reach a store.
+# ⚠ It IMPLIES `journal`: the bin it exists for reads a journal.
+#
+# ⚠ **It no longer forwards `vike-data/hist-datafusion`, and that reverses what this block argued
+# for months.** It was the "opt-in DataFusion backend for the `tearsheet` bin's `--store` path", and
+# once `--datahub` arrived (2026-09-23) it kept the forward on the ground that `open_routed_history`
+# was ONE function naming BOTH concrete stores, the local one a `DataFusionHist`. On 2026-09-25 the
+# owner closed the local READ door: `--store DIR` is refused, and the route has one arm. MEASURED
+# the same day, every `DataFusionHist` mention under this crate's `src/` is prose, so nothing here
+# opens a concrete store and a tearsheet build stops dragging the Arrow/DataFusion tree in. (The
+# shipped multicall still links it, through `vike-backtest/datafusion-store`, whose `data` verbs
+# WRITE — the ruling was about readers.)
+#
+# What survives from this block's history and is worth keeping: everything behind this gate has
+# always been type-checked with its tests RUN — `.github/workflows/ci.yml`'s hist job and the
+# justfile's `hist` recipe both run `cargo test -p vike-report --features hist` plus the clippy
+# twin. `crates/vike/Cargo.toml`'s `tearsheet` forwards `vike-report/hist`, so the shipped binary
+# has it ON. The `crates/vike-tradehub/Cargo.toml` edge stays default-features-off: that daemon's
+# binary is DataFusion-free by design, and this feature is not for it.
+hist = [
+    "journal",
+    "dep:vike-datahub-client",
+    "vike-datahub-client/hist-route",
+]
+
+# ⚠ SPELLED OUT rather than auto-discovered, for the `required-features` line alone: without it a
+# `--no-default-features` build tries to compile a bin whose whole body is `tearsheet_cli::run`,
+# which that build does not have.
+[[bin]]
+name = "tearsheet"
+path = "src/bin/tearsheet.rs"
+required-features = ["journal"]
+
+[dev-dependencies]
+# ⚠ The LIVE CORE, and a TEST-ONLY edge since 2026-09-23. This crate's normal dependency on it is
+# gone — the journal became its own crate and that was the only thing this crate wanted from the
+# core — but two round-trip tests still spawn a REAL core to produce the journal they then read
+# back, which is the whole point of them: they prove the reader against what the writer actually
+# writes, not against a fixture. A dev-dependency may point upward, so nothing about the layer
+# gate changes; what changed is that a SHIPPED `vike-report` no longer links a runtime.
+vike-core = { path = "../vike-core" }
+# End-to-end journal round-trip: spawn_core (vike-core) + TestExecutionClient (vike-exec::testing).
+tempfile = "3"
+# the DataFusion-free MemHistStore double for the Tier-2 fills_from_store equivalence test.
+# ⚠ A REQUIRED dev-dependency on a package that is an OPTIONAL normal one: dev targets always see
+# `vike_data`, the library links it only under `journal`. That asymmetry is deliberate — the
+# doubles are test-only, and a test that needs a gated library item is itself `#![cfg]`-gated.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

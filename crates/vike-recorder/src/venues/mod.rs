@@ -1,0 +1,215 @@
+//! `venues` — the ONLY venue-aware code in this crate, one module per recordable venue, each behind
+//! its own Cargo feature.
+//!
+//! Everything else here ([`config`](crate::config), [`membership`](crate::membership),
+//! [`session`](crate::session), [`runtime`](crate::runtime)) is venue-free and tested with no
+//! network. A venue module's job is to implement [`VenueFeed`](crate::runtime::VenueFeed) by
+//! ASSEMBLING what the bridge crate already owns — resolving a family to live symbols and handing
+//! over the bridge's own `DataClient` — never by reimplementing venue logic here.
+//!
+//! Features rather than plain deps because a bridge is heavy: enabling `polymarket` pulls
+//! k256/keccak/tungstenite into the recorder binary, and a build recording only static-symbol venues
+//! should not link an EIP-712 signer. [`build_feed`] is what a feature-absent build answers with —
+//! a startup ERROR naming the missing feature, never a silent no-record.
+
+use std::sync::Arc;
+
+use vike_data::live::LiveDataSink;
+
+use crate::config::Subscription;
+use crate::runtime::VenueFeed;
+
+#[cfg(feature = "binance")]
+pub mod binance;
+#[cfg(feature = "polymarket")]
+pub mod polymarket;
+
+/// Build the [`VenueFeed`] one profile subscription names.
+///
+/// `Err` when this build has no support for that venue — the message names the Cargo feature to
+/// rebuild with. A recorder that silently skipped an unsupported venue would look healthy while
+/// recording nothing, which is the failure this crate's config validation already exists to prevent
+/// at the profile level; the same rule applies to the build.
+// `sink` is consumed by whichever venue arm this build compiled; a build with NO venue feature has
+// no such arm, and the signature stays the same either way.
+#[cfg_attr(not(any(feature = "polymarket", feature = "binance")), allow(unused_variables))]
+pub fn build_feed(
+    sub: &Subscription,
+    sink: Arc<dyn LiveDataSink>,
+) -> Result<Box<dyn VenueFeed>, String> {
+    match sub.venue.as_str() {
+        #[cfg(feature = "polymarket")]
+        polymarket::VENUE => {
+            let feed = match &sub.family {
+                Some(family) => polymarket::PolymarketFeed::family(family, sink)?,
+                None => polymarket::PolymarketFeed::symbols(&sub.symbols, sink),
+            };
+            Ok(Box::new(feed))
+        }
+        #[cfg(not(feature = "polymarket"))]
+        "polymarket" => Err(missing_feature("polymarket", "polymarket")),
+        #[cfg(feature = "binance")]
+        binance::VENUE => {
+            let feed = match &sub.family {
+                Some(family) => binance::BinanceFeed::family(family, sink),
+                None => binance::BinanceFeed::symbols(&sub.symbols, sink),
+            };
+            Ok(Box::new(feed))
+        }
+        #[cfg(not(feature = "binance"))]
+        "binance" => Err(missing_feature("binance", "binance")),
+        other => Err(format!(
+            "recorder: venue `{other}` has no feed in this build. Supported: [{}]",
+            supported().join(", ")
+        )),
+    }
+}
+
+/// The venues this build can actually record — and, since the `rec_venue=` advertisement, the
+/// handshake's source of truth, so a client learns at CONNECT which venues it may name in a
+/// recorder subscription.
+///
+/// `crates/vike-datahub/src/server.rs`'s `served_features` turns each slug into a
+/// `vike_datahub_client::proto::rec_venue_feature` entry. That is the same arrangement
+/// `crates/vike-datahub/src/md/venues.rs`'s own `supported` has with `md_venue=` — and the two are
+/// deliberately SEPARATE advertisements, because the sets differ: the shipped image serves six
+/// venues live and records two.
+pub fn supported() -> Vec<&'static str> {
+    vec![
+        #[cfg(feature = "binance")]
+        binance::VENUE,
+        #[cfg(feature = "polymarket")]
+        polymarket::VENUE,
+    ]
+}
+
+#[cfg(not(all(feature = "polymarket", feature = "binance")))]
+fn missing_feature(venue: &str, feature: &str) -> String {
+    format!(
+        "recorder: venue `{venue}` is not compiled into this build — rebuild with \
+         `--features {feature}`. (It is a Cargo feature because the bridge is heavy: it pulls the \
+         venue's signing and transport tree into this binary.)"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Backfill;
+    use vike_data::NoopSink;
+
+    /// `build_feed` returns a `Box<dyn VenueFeed>`, which has no `Debug`, so `unwrap_err` cannot be
+    /// used on it.
+    fn err_of(r: Result<Box<dyn VenueFeed>, String>) -> String {
+        match r {
+            Ok(_) => panic!("expected an error"),
+            Err(e) => e,
+        }
+    }
+
+    fn sub(venue: &str) -> Subscription {
+        Subscription {
+            venue: venue.into(),
+            family: Some("btc-updown-5m".into()),
+            symbols: Vec::new(),
+            backfill: Backfill::Off,
+        }
+    }
+
+    /// An unknown venue must FAIL at startup, not be skipped. A recorder that skipped it would
+    /// report itself healthy while recording nothing for that venue — the exact silent-nothing
+    /// failure `RecorderProfile::from_toml`'s validation exists to prevent one layer up.
+    #[test]
+    fn an_unsupported_venue_is_a_startup_error_naming_what_is_supported() {
+        let err = err_of(build_feed(&sub("kalshi"), Arc::new(NoopSink)));
+        assert!(err.contains("kalshi"), "{err}");
+        assert!(err.contains("Supported"), "{err}");
+    }
+
+    /// A venue that EXISTS but was compiled out gets a different, actionable message: the feature to
+    /// rebuild with, rather than "unknown venue", which would send someone hunting for a typo.
+    #[cfg(not(feature = "polymarket"))]
+    #[test]
+    fn a_compiled_out_venue_names_the_feature() {
+        let err = err_of(build_feed(&sub("polymarket"), Arc::new(NoopSink)));
+        assert!(err.contains("--features polymarket"), "{err}");
+    }
+
+    #[cfg(feature = "polymarket")]
+    #[test]
+    fn a_supported_venue_builds_its_feed() {
+        let feed = build_feed(&sub("polymarket"), Arc::new(NoopSink)).unwrap();
+        assert_eq!(feed.venue(), "polymarket");
+        assert_eq!(feed.family(), Some("btc-updown-5m"));
+        // CONTAINS, not equals: `supported()` grows with each venue feature, and this build may have
+        // several on. An equality assertion here made adding the second venue fail a test about the
+        // first one.
+        assert!(supported().contains(&"polymarket"), "{:?}", supported());
+    }
+
+    /// The binance arm — the STATIC-family venue, built through the same dispatch.
+    ///
+    /// ⚠ **The `family()` assertion INVERTED on 2026-09-19 and that is the point of the test now.**
+    /// It read `Some("*USDT.P")` — the operator's glob, verbatim, straight out to the store as a
+    /// `group=*USDT.P` directory. `*` may not be in a directory name on Windows, so that series
+    /// could be written on Linux and never opened. The glob stays where the MATCHING happens
+    /// (`Target::Family`'s `pattern`, which this test cannot reach and
+    /// `a_family_glob_still_matches_on_the_raw_pattern` covers); what `family()` answers is the
+    /// GROUP NAME, and a group name has to be a directory.
+    #[cfg(feature = "binance")]
+    #[test]
+    fn the_binance_arm_builds_a_static_family_feed() {
+        let mut s = sub("binance");
+        s.family = Some("*USDT.P".into());
+        let feed = build_feed(&s, Arc::new(NoopSink)).unwrap();
+        assert_eq!(feed.venue(), "binance");
+        assert_eq!(
+            feed.family(),
+            Some("USDT.P"),
+            "the group NAME is rendered path-safe; the glob is kept on the match pattern"
+        );
+        assert!(supported().contains(&"binance"), "{:?}", supported());
+    }
+
+    /// Every venue this build claims it can RECORD must be a real `vike_model::VENUES` slug —
+    /// otherwise the `rec_venue=` advertisement names something no operator could ever write into a
+    /// subscription row, and a CLI refusing an unadvertised venue would refuse the correct spelling
+    /// while accepting nothing.
+    ///
+    /// The exact twin of `crates/vike-datahub/src/md/venues.rs`'s
+    /// `every_supported_venue_is_a_roster_slug`, which holds the same property for the LIVE plane's
+    /// `md_venue=` entries. Two advertisements, two rosters, one rule — and the rule has to be
+    /// stated on each side, because neither `supported()` can see the other.
+    ///
+    /// ⚠ It is VACUOUS on a build with no venue feature, exactly as the md twin is. That is not a
+    /// hole this test can close: a default build genuinely records nothing, and
+    /// `a_supported_venue_builds_its_feed` / `the_binance_arm_builds_a_static_family_feed` above
+    /// are what make the feature builds non-vacuous. The roster lane compiles this crate with no
+    /// venue feature; the `-p vike-recorder --features polymarket,binance` lane is where this
+    /// assertion has something to assert.
+    #[test]
+    fn every_supported_venue_is_a_roster_slug() {
+        for v in supported() {
+            assert!(
+                vike_model::VENUES.contains(&v),
+                "`{v}` is not in vike_model::VENUES, so the `rec_venue={v}` this build advertises \
+                 names a venue no subscription row could legally carry"
+            );
+        }
+    }
+
+    /// A profile naming BOTH venues is the real multi-venue case, and the one whose `#[cfg]` shape
+    /// differs from either single-venue build.
+    #[cfg(all(feature = "binance", feature = "polymarket"))]
+    #[test]
+    fn both_venues_dispatch_in_one_build() {
+        assert_eq!(supported(), vec!["binance", "polymarket"]);
+        assert_eq!(
+            build_feed(&sub("polymarket"), Arc::new(NoopSink)).unwrap().venue(),
+            "polymarket"
+        );
+        let mut b = sub("binance");
+        b.family = Some("*USDT".into());
+        assert_eq!(build_feed(&b, Arc::new(NoopSink)).unwrap().venue(), "binance");
+    }
+}

@@ -1,0 +1,8 @@
+# vike frame record v1 (vike_ui_theme::frame_record)
+# scenario: crosshair_price_only
+ppp 1  primitives 4  vertices 5236  triangles 6232
+----
+   0  clip [0 0 960 620]  tex M0  v 4  t 2  solid [0 0 960 620]  glyph -  runs 2  #161b24ff*2 #0d1117ff*2  d 262bfec614c2df93
+   1  clip [0 0 960 620]  tex M0  v 420  t 210  solid -  glyph [892 6 935 582]  runs 1  #6b7480ff*420  d f177c55814899c3e
+   2  clip [0 0 888 588]  tex M0  v 4000  t 5120  solid [-1 -1 889 587]  glyph -  runs 14  #0a0b0d48*72 #22272fff*4 #5bbe91ff*54 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*72 #5bbe91ff*90 #d95458ff*18 #f85249ff*220 #9aa4b1ff*984  d 1f2218ec982d3872
+   3  clip [0 0 960 620]  tex M0  v 812  t 900  solid [332 166 938 606]  glyph [8 13 931 601]  runs 34  #d95458ff*20 #0d1117ff*20 #e7ecf4ff*4 #40ba50ff*20 #e7ecf4ff*4 #40ba50ff*20 #e7ecf4ff*4 #40ba50ff*20 #e7ecf4ff*4 #40ba50ff*72 #2f343cff*20 #e7ecf4ff*24 #3c3c3cff*20 #b4b4b4ff*4 #3c3c3cff*20 #b4b4b4ff*4  +..  d 47dbc0440f2a50b4

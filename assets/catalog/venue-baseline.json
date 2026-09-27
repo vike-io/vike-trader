@@ -1,0 +1,4 @@
+{
+  "note": "THE SHIPPED BASELINE INSTRUMENT LIST. docs/decisions/0066, decisions 5-8. These bytes ARE the source: producing them needs an authenticated venue fetch, no CI runner may hold those credentials, and nothing can re-derive them. A row is added by an owner who holds that venue's keys, fetching OUT OF BAND, before a tag. Eligible venues are the ones a datahub refuses BY CONSTRUCTION (0062 decision 3): alpaca, with its ENVIRONMENT declared, and oanda, with its regulatory DIVISION declared. ctrader may never ship one -- vike_catalog::BaselineCatalog::parse refuses it, and the reason is on that refusal. Every row MUST carry `fetched` as YYYY-MM-DD; an undated list looks authoritative and the whole artifact is refused rather than rendered without its age. crates/vike-catalog/tests/baseline_artifact.rs validates these bytes on every PR, which is what lets .github/workflows/release.yml attach them unchanged.",
+  "venues": []
+}
