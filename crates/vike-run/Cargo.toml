@@ -1,0 +1,118 @@
+[package]
+name = "vike-run"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike run/composition crate — MOUNT a strategy on the PRODUCTION live core (spawn_core + StrategyMount), over the paper exchange (vike-paper) or over every venue's engine (build_node, through vike-mount). Names no venue bridge of its own; the daemon (vike-tradehub) wires the live feeds."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `mount-stacked` — a composition root over vike-mount.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 62
+
+[dependencies]
+# The durable command JOURNAL and its single-writer directory lock. ⚠ Both were this crate's own
+# `journal`/`journal_lock` modules until 2026-09-23; `crates/vike-journal/src/lib.rs` carries why
+# they left. Layer 25 to this crate's 62, so the edge is down-only.
+vike-journal = { path = "../vike-journal" }
+vike-model = { path = "../vike-model" }
+# `fee_lane`: the `.P` spot-vs-perp split applied to the FEE table's key. Both fee sites here take a
+# `(venue, symbol)` PAIR — the maker mount's paper book and the xEMM legs' break-even offset — and on
+# binance/aster the SYMBOL picks the order API, so the lane must be resolved before reading
+# `fee_schedule_for`. No external package: vike-catalog depends on vike-model alone.
+vike-catalog = { path = "../vike-catalog" }
+vike-exec = { path = "../vike-exec" }
+# the single-writer live core (spawn_core / StrategyMount / LiveBroker) — the PRODUCTION runtime the
+# mount validates the maker on.
+vike-core = { path = "../vike-core" }
+# the A-S SpreadMaker (impl<B: HftBroker> Strategy<B>) mounted here.
+vike-mm = { path = "../vike-mm" }
+# the venue → ExecutionClient/ReconClient composition root (make_engine + the per-venue fallback
+# grids): `build_node` (PR-8, src/node.rs) drives the whole twelve-venue mount THROUGH this crate, so
+# vike-run names NO bridge crate directly for it. vike-mount is trait-only over vike-data now (the
+# DataFusion-edge cut): the PIT-properties recorder a NodeConfig may carry is CONSTRUCTED by the
+# binary that owns the store backend, so this edge no longer pulls the Arrow/DataFusion tree. (Those
+# binaries were vike-app fat / vike-tradehub record-feeds|materialize; all three builds are deleted,
+# 2026-09-09 and 2026-09-22, and the daemon passes `None`.)
+vike-mount = { path = "../vike-mount" }
+# the paper exchange behind the ExecutionClient seam (R7) — fills the maker's resting book with the
+# backtest fill semantics, so a paper mount is real-fill-faithful with no venue creds.
+# THIS LINE USED TO READ `vike-backtest`, which owned the same module. All 4 call sites in this
+# crate named `vike_backtest::paper::…` and NOTHING else from it, so the whole simulator was
+# compiled to obtain one `ExecutionClient`. The fill semantics are unchanged: vike-paper fills with
+# the SAME vike-fills core the engine uses, which is what keeps "backtest == paper" true.
+vike-paper = { path = "../vike-paper" }
+# the live-data seam: MakerSink implements vike_data::LiveDataSink, and NodeConfig.properties_rec
+# names the ungated PropertiesRecorder type. DEFAULT features (trait surface only): since vike-mount
+# dropped its hist-datafusion enable, a default vike-run build is DataFusion-FREE.
+vike-data = { path = "../vike-data" }
+vike-log = { path = "../vike-log" } # tracing-native logging init (the bin holds the guards)
+tracing = { workspace = true }      # bin diagnostics (subscriber lives in vike-log)
+# `incident` subcommand (src/incident.rs + src/bin/incident.rs): serde derives the bundle manifest,
+# serde_json writes/reads it, flate2 gzips each frozen evidence file (the raw_tap.rs GzEncoder
+# pattern — per-file gz in a timestamped directory; deliberately NO `tar` dep). All three are
+# already-pinned workspace deps, so this adds no new lockfile entry.
+serde = { workspace = true }
+serde_json = { workspace = true }
+flate2 = { workspace = true }
+# ⚠ NO venue bridge is named here, and two were until 2026-09-28: optional `vike-polymarket` and
+# `vike-ibkr` edges, for the `polymarket_maker_paper` and `ibkr_mount` bins (and the Gamma picker and
+# toxicity producer only the first used). All four were DELETED, measured unused on every box
+# (`src/lib.rs`'s module doc). The mount arms this crate compiles reach their bridges through
+# `vike-mount`, whose own `polymarket`/`ibkr` features enable the bridge features — so the three
+# features below are pure forwards and resolve the same bridge features they always did. It stays
+# that way under the venue mount contract: the registry that names the bridges is `vike-tradehub`'s,
+# handed to `build_node` as `NodeConfig::registry` (docs/decisions/0096, amended 2026-09-29), and
+# this crate takes no bridge edge, normal or dev.
+
+[dev-dependencies]
+vike-log = { path = "../vike-log" } # test_init() for the offline mount test
+# Self-deleting, uniquely-named scratch directories for the tests that need one on disk: the
+# `venue_mounted` journal state dir, and the HALT sentinel each scripted-mount binary pins. Replaces
+# the `env::temp_dir().join(format!("..-{pid}"))` idiom, which leaked one directory per run forever
+# and collided across the two users that run tests on the the CI box box. Per-crate rather than a
+# workspace dep, matching the convention noted in `crates/bridges/polymarket/Cargo.toml`.
+tempfile = "3"
+
+[features]
+# A PURE FORWARD to `vike-mount/polymarket`, so `build_node`'s feature-gated `("polymarket", …)`
+# make_engine arm (src/node.rs) compiles, reached through the chain vike-tradehub/polymarket → here.
+# OFF by default so the offline mount tests compile + run with no native deps, no creds, no geo access.
+polymarket = ["vike-mount/polymarket"]
+# A PURE FORWARD to `vike-mount/ibkr`, for `build_node`'s `("ibkr", …)` arm — same chain, same reason.
+ibkr = ["vike-mount/ibkr"]
+# A PURE FORWARD to `vike-mount/fxcm`, like the two above — this crate calls nothing in
+# `vike-fxcm`. It exists so a binary at the top of the graph can reach
+# the mount's fxcm arm through the ordinary feature chain (vike-tradehub/fxcm → here →
+# vike-mount/fxcm → vike-fxcm/fxcm), which is what lets the shipped `vike-backend` carry the fxcm
+# arm (its `full` forwards `vike-tradehub/fxcm`) — and what let `.github/workflows/release.yml`
+# build a separate fxcm-LINKED `vike-tradehub` asset with a bare `--features fxcm` until #1720
+# (2026-09-09) made the SDK a runtime fact. Cargo rejects the
+# `--features vike-mount/fxcm` CLI spelling unless vike-mount is itself a `-p` of the invocation,
+# and `--bin` wants one package, so the chain has to be declared rather than passed at the prompt.
+#
+# ⚠ This USED to link the SDK and wire nothing: `build_node` had no fxcm `make_engine` call and
+# `WIRED_MARKETS` no fxcm row, so an operator installing the `vike-tradehub-fxcm` release asset
+# reasonably believed FXCM was live when it was not, with no error anywhere. Both exist now
+# (`src/node.rs`'s `FXCM_MARKET` row + its `#[cfg(feature = "fxcm")]` arm), so this feature mounts a
+# real FXCM execution engine and — under `VIKE_RECONCILE=1` — its reconcile client.
+#
+# ⚠ What it still does NOT do is make fxcm a DAEMON PROFILE venue. `vike-tradehub`'s
+# `LIVE_WIRED_VENUES` is the market-FEED arm list and this bridge has no market-data seam at all
+# (`LiveDataCaps::NONE`), so `validate_for_live` refuses `venue = "fxcm"`. The engine is reachable
+# by ROUTING — a `vike_core::MountLeg::at` from a mount on a venue that does have prices. That
+# const's own doc carries the argument.
+fxcm = ["vike-mount/fxcm"]
+
+[[bin]]
+# `incident --since <dur>` — freeze perishable run evidence (journal segments + trace logs
+# overlapping the window, the resolved RunProfile + hash, the latest EngineSnapshot + state_hash,
+# git/build info, a REDACTED env dump) into a timestamped directory of per-file gzips + a manifest.
+# No required-features: feature-free (no venue/native deps), so it builds in the default/CI lane.
+name = "incident"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

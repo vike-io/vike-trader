@@ -1,0 +1,1560 @@
+{
+ "manifest": {
+  "exporter": "scripts/export_r6_fixtures.py",
+  "oracle": "vike-trader-app origin/main worktree",
+  "source_sha": "023d6e87ced0b495d8575fd247914e14522ccd2d",
+  "generated": "2026-07-03T22:58:51Z",
+  "float_encoding": "ieee754-f64-hex-bits (inputs plain JSON numbers)"
+ },
+ "api_key": "test-key-XXXX",
+ "api_secret": "test-secret-1234567890",
+ "passphrase": "Pass-Phrase-42",
+ "now_ms": 1751600000123,
+ "rest_signer": [
+  {
+   "method": "GET",
+   "path": "/api/v5/account/positions",
+   "params": [
+    [
+     "instType",
+     "SWAP"
+    ],
+    [
+     "instId",
+     "BTC-USDT-SWAP"
+    ]
+   ],
+   "query": "instType=SWAP&instId=BTC-USDT-SWAP",
+   "body": null,
+   "headers": {
+    "OK-ACCESS-KEY": "test-key-XXXX",
+    "OK-ACCESS-SIGN": "zfldYZr/JbbPbg45LKNm8SgebQFo64HpPZsg3K3WTH8=",
+    "OK-ACCESS-TIMESTAMP": "2025-07-04T03:33:20.068Z",
+    "OK-ACCESS-PASSPHRASE": "Pass-Phrase-42"
+   }
+  },
+  {
+   "method": "GET",
+   "path": "/api/v5/account/balance",
+   "params": [],
+   "query": "",
+   "body": null,
+   "headers": {
+    "OK-ACCESS-KEY": "test-key-XXXX",
+    "OK-ACCESS-SIGN": "pkpFr7wSUaTbd2BgYiKu7yuJSo63XY3wG15jN4sf9bs=",
+    "OK-ACCESS-TIMESTAMP": "2025-07-04T03:33:20.068Z",
+    "OK-ACCESS-PASSPHRASE": "Pass-Phrase-42"
+   }
+  },
+  {
+   "method": "POST",
+   "path": "/api/v5/trade/order",
+   "params": [
+    [
+     "instId",
+     "BTC-USDT-SWAP"
+    ],
+    [
+     "tdMode",
+     "cross"
+    ],
+    [
+     "side",
+     "buy"
+    ],
+    [
+     "ordType",
+     "market"
+    ],
+    [
+     "sz",
+     "0.20"
+    ],
+    [
+     "clOrdId",
+     "vtr6okx1"
+    ],
+    [
+     "posSide",
+     "net"
+    ],
+    [
+     "reduceOnly",
+     false
+    ]
+   ],
+   "query": "",
+   "body": "{\"instId\":\"BTC-USDT-SWAP\",\"tdMode\":\"cross\",\"side\":\"buy\",\"ordType\":\"market\",\"sz\":\"0.20\",\"clOrdId\":\"vtr6okx1\",\"posSide\":\"net\",\"reduceOnly\":false}",
+   "headers": {
+    "OK-ACCESS-KEY": "test-key-XXXX",
+    "OK-ACCESS-SIGN": "ERh3lT5JIYsHHCOy2htG73ZQ0ls+7Kk/oZiPaogOUn8=",
+    "OK-ACCESS-TIMESTAMP": "2025-07-04T03:33:20.068Z",
+    "OK-ACCESS-PASSPHRASE": "Pass-Phrase-42"
+   }
+  },
+  {
+   "method": "POST",
+   "path": "/api/v5/account/set-leverage",
+   "params": [
+    [
+     "instId",
+     "BTC-USDT-SWAP"
+    ],
+    [
+     "lever",
+     "2"
+    ],
+    [
+     "mgnMode",
+     "cross"
+    ]
+   ],
+   "query": "",
+   "body": "{\"instId\":\"BTC-USDT-SWAP\",\"lever\":\"2\",\"mgnMode\":\"cross\"}",
+   "headers": {
+    "OK-ACCESS-KEY": "test-key-XXXX",
+    "OK-ACCESS-SIGN": "by9F5pslWWdoy6uqs1K5tjDLqw5Fo/2mcgsOnN2tbe0=",
+    "OK-ACCESS-TIMESTAMP": "2025-07-04T03:33:20.068Z",
+    "OK-ACCESS-PASSPHRASE": "Pass-Phrase-42"
+   }
+  }
+ ],
+ "ws_auth": {
+  "sign": [
+   {
+    "ts": "1751600000",
+    "signature": "Ve+70TNaBAe/vSLCv10uUdQpe5EjsDTQBDfid18Qpds="
+   }
+  ],
+  "login_frame": {
+   "op": "login",
+   "args": [
+    {
+     "apiKey": "test-key-XXXX",
+     "passphrase": "Pass-Phrase-42",
+     "timestamp": "1751600000",
+     "sign": "Ve+70TNaBAe/vSLCv10uUdQpe5EjsDTQBDfid18Qpds="
+    }
+   ]
+  },
+  "subscribe_frame": {
+   "op": "subscribe",
+   "args": [
+    {
+     "channel": "orders",
+     "instType": "SWAP"
+    }
+   ]
+  }
+ },
+ "spot_mapper": [
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "state": "live"
+     }
+    ]
+   },
+   "events": [
+    {
+     "client_order_id": "vtr6okx1",
+     "venue_order_id": "112233",
+     "ts": 1751600000456,
+     "type": "OrderAccepted"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "state": "canceled",
+      "cancelSource": "1"
+     }
+    ]
+   },
+   "events": [
+    {
+     "client_order_id": "vtr6okx1",
+     "reason": "1",
+     "ts": 1751600000456,
+     "type": "OrderCanceled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "state": "mmp_canceled",
+      "cancelSource": "2"
+     }
+    ]
+   },
+   "events": [
+    {
+     "client_order_id": "vtr6okx1",
+     "reason": "2",
+     "ts": 1751600000456,
+     "type": "OrderCanceled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "fillSz": "0.20",
+      "fillPx": "62584.5",
+      "tradeId": "t-900",
+      "fillFee": "-0.0313",
+      "execType": "T",
+      "fillTime": "1751600000500",
+      "state": "partially_filled",
+      "accFillSz": "0.20",
+      "sz": "0.40",
+      "fillMarkPx": "62590.1"
+     }
+    ]
+   },
+   "events": [
+    {
+     "trade_id": "t-900",
+     "client_order_id": "vtr6okx1",
+     "venue": "okx",
+     "symbol": "BTC-USDT-SWAP",
+     "side": 1,
+     "last_qty": 0.2,
+     "last_px": 62584.5,
+     "commission": 0.0313,
+     "liquidity_side": "taker",
+     "ts": 1751600000500,
+     "mark_price": null,
+     "position_side": "BOTH",
+     "type": "FillEvent"
+    },
+    {
+     "client_order_id": "vtr6okx1",
+     "fill": {
+      "trade_id": "t-900",
+      "client_order_id": "vtr6okx1",
+      "venue": "okx",
+      "symbol": "BTC-USDT-SWAP",
+      "side": 1,
+      "last_qty": 0.2,
+      "last_px": 62584.5,
+      "commission": 0.0313,
+      "liquidity_side": "taker",
+      "ts": 1751600000500,
+      "mark_price": null,
+      "position_side": "BOTH"
+     },
+     "ts": 1751600000500,
+     "type": "OrderPartiallyFilled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "fillSz": "0.20",
+      "fillPx": "62584.5",
+      "tradeId": "t-901",
+      "fillFee": "-0.0313",
+      "execType": "T",
+      "fillTime": "1751600000500",
+      "state": "filled",
+      "accFillSz": "0.40",
+      "sz": "0.40",
+      "fillMarkPx": "62590.1"
+     }
+    ]
+   },
+   "events": [
+    {
+     "trade_id": "t-901",
+     "client_order_id": "vtr6okx1",
+     "venue": "okx",
+     "symbol": "BTC-USDT-SWAP",
+     "side": 1,
+     "last_qty": 0.2,
+     "last_px": 62584.5,
+     "commission": 0.0313,
+     "liquidity_side": "taker",
+     "ts": 1751600000500,
+     "mark_price": null,
+     "position_side": "BOTH",
+     "type": "FillEvent"
+    },
+    {
+     "client_order_id": "vtr6okx1",
+     "fill": {
+      "trade_id": "t-901",
+      "client_order_id": "vtr6okx1",
+      "venue": "okx",
+      "symbol": "BTC-USDT-SWAP",
+      "side": 1,
+      "last_qty": 0.2,
+      "last_px": 62584.5,
+      "commission": 0.0313,
+      "liquidity_side": "taker",
+      "ts": 1751600000500,
+      "mark_price": null,
+      "position_side": "BOTH"
+     },
+     "ts": 1751600000500,
+     "type": "OrderFilled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "fillSz": "0.20",
+      "fillPx": "62584.5",
+      "tradeId": "t-902",
+      "fillFee": "0.001",
+      "execType": "M",
+      "fillTime": "1751600000500",
+      "state": "partially_filled",
+      "accFillSz": "0.20",
+      "sz": "0.40",
+      "fillMarkPx": "62590.1"
+     }
+    ]
+   },
+   "events": [
+    {
+     "trade_id": "t-902",
+     "client_order_id": "vtr6okx1",
+     "venue": "okx",
+     "symbol": "BTC-USDT-SWAP",
+     "side": 1,
+     "last_qty": 0.2,
+     "last_px": 62584.5,
+     "commission": -0.001,
+     "liquidity_side": "maker",
+     "ts": 1751600000500,
+     "mark_price": null,
+     "position_side": "BOTH",
+     "type": "FillEvent"
+    },
+    {
+     "client_order_id": "vtr6okx1",
+     "fill": {
+      "trade_id": "t-902",
+      "client_order_id": "vtr6okx1",
+      "venue": "okx",
+      "symbol": "BTC-USDT-SWAP",
+      "side": 1,
+      "last_qty": 0.2,
+      "last_px": 62584.5,
+      "commission": -0.001,
+      "liquidity_side": "maker",
+      "ts": 1751600000500,
+      "mark_price": null,
+      "position_side": "BOTH"
+     },
+     "ts": 1751600000500,
+     "type": "OrderPartiallyFilled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "state": "filled",
+      "fillSz": "",
+      "tradeId": ""
+     }
+    ]
+   },
+   "events": []
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "code": "51121",
+      "msg": "Order count exceeds"
+     }
+    ]
+   },
+   "events": [
+    {
+     "client_order_id": "vtr6okx1",
+     "reason": "Order count exceeds",
+     "ts": 1751600000456,
+     "type": "OrderRejected"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "short",
+      "uTime": "1751600000456",
+      "fillSz": "0.20",
+      "fillPx": "62584.5",
+      "tradeId": "t-903",
+      "fillFee": "-0.0313",
+      "execType": "T",
+      "fillTime": "1751600000500",
+      "state": "partially_filled",
+      "accFillSz": "0.20",
+      "sz": "0.40",
+      "fillMarkPx": "62590.1",
+      "category": "partial_liquidation"
+     }
+    ]
+   },
+   "events": [
+    {
+     "trade_id": "t-903",
+     "client_order_id": "vtr6okx1",
+     "venue": "okx",
+     "symbol": "BTC-USDT-SWAP",
+     "side": 1,
+     "last_qty": 0.2,
+     "last_px": 62584.5,
+     "commission": 0.0313,
+     "liquidity_side": "taker",
+     "ts": 1751600000500,
+     "mark_price": null,
+     "position_side": "BOTH",
+     "type": "FillEvent"
+    },
+    {
+     "client_order_id": "vtr6okx1",
+     "fill": {
+      "trade_id": "t-903",
+      "client_order_id": "vtr6okx1",
+      "venue": "okx",
+      "symbol": "BTC-USDT-SWAP",
+      "side": 1,
+      "last_qty": 0.2,
+      "last_px": 62584.5,
+      "commission": 0.0313,
+      "liquidity_side": "taker",
+      "ts": 1751600000500,
+      "mark_price": null,
+      "position_side": "BOTH"
+     },
+     "ts": 1751600000500,
+     "type": "OrderPartiallyFilled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "state": "canceled",
+      "category": "full_liquidation",
+      "fillSz": "",
+      "tradeId": ""
+     }
+    ]
+   },
+   "events": [
+    {
+     "client_order_id": "vtr6okx1",
+     "reason": "",
+     "ts": 1751600000456,
+     "type": "OrderCanceled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "account"
+    },
+    "data": [
+     {
+      "uTime": "1751600002000",
+      "details": [
+       {
+        "ccy": "USDT",
+        "cashBal": "8898.5"
+       },
+       {
+        "ccy": "BTC",
+        "cashBal": "0.4"
+       },
+       {
+        "ccy": "",
+        "cashBal": "1"
+       }
+      ]
+     }
+    ]
+   },
+   "events": [
+    {
+     "venue": "okx",
+     "balances": [
+      [
+       "USDT",
+       8898.5
+      ],
+      [
+       "BTC",
+       0.4
+      ]
+     ],
+     "ts": 1751600002000,
+     "type": "AccountState"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "event": "subscribe",
+    "arg": {
+     "channel": "orders"
+    }
+   },
+   "events": []
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "positions"
+    },
+    "data": [
+     {
+      "x": 1
+     }
+    ]
+   },
+   "events": []
+  }
+ ],
+ "perp_mapper": [
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "state": "live"
+     }
+    ]
+   },
+   "events": [
+    {
+     "client_order_id": "vtr6okx1",
+     "venue_order_id": "112233",
+     "ts": 1751600000456,
+     "type": "OrderAccepted"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "state": "canceled",
+      "cancelSource": "1"
+     }
+    ]
+   },
+   "events": [
+    {
+     "client_order_id": "vtr6okx1",
+     "reason": "1",
+     "ts": 1751600000456,
+     "type": "OrderCanceled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "state": "mmp_canceled",
+      "cancelSource": "2"
+     }
+    ]
+   },
+   "events": [
+    {
+     "client_order_id": "vtr6okx1",
+     "reason": "2",
+     "ts": 1751600000456,
+     "type": "OrderCanceled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "fillSz": "0.20",
+      "fillPx": "62584.5",
+      "tradeId": "t-900",
+      "fillFee": "-0.0313",
+      "execType": "T",
+      "fillTime": "1751600000500",
+      "state": "partially_filled",
+      "accFillSz": "0.20",
+      "sz": "0.40",
+      "fillMarkPx": "62590.1"
+     }
+    ]
+   },
+   "events": [
+    {
+     "trade_id": "t-900",
+     "client_order_id": "vtr6okx1",
+     "venue": "okx",
+     "symbol": "BTC-USDT-SWAP",
+     "side": 1,
+     "last_qty": 0.002,
+     "last_px": 62584.5,
+     "commission": 0.0313,
+     "liquidity_side": "taker",
+     "ts": 1751600000500,
+     "mark_price": 62590.1,
+     "position_side": "BOTH",
+     "type": "FillEvent"
+    },
+    {
+     "client_order_id": "vtr6okx1",
+     "fill": {
+      "trade_id": "t-900",
+      "client_order_id": "vtr6okx1",
+      "venue": "okx",
+      "symbol": "BTC-USDT-SWAP",
+      "side": 1,
+      "last_qty": 0.002,
+      "last_px": 62584.5,
+      "commission": 0.0313,
+      "liquidity_side": "taker",
+      "ts": 1751600000500,
+      "mark_price": 62590.1,
+      "position_side": "BOTH"
+     },
+     "ts": 1751600000500,
+     "type": "OrderPartiallyFilled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "fillSz": "0.20",
+      "fillPx": "62584.5",
+      "tradeId": "t-901",
+      "fillFee": "-0.0313",
+      "execType": "T",
+      "fillTime": "1751600000500",
+      "state": "filled",
+      "accFillSz": "0.40",
+      "sz": "0.40",
+      "fillMarkPx": "62590.1"
+     }
+    ]
+   },
+   "events": [
+    {
+     "trade_id": "t-901",
+     "client_order_id": "vtr6okx1",
+     "venue": "okx",
+     "symbol": "BTC-USDT-SWAP",
+     "side": 1,
+     "last_qty": 0.002,
+     "last_px": 62584.5,
+     "commission": 0.0313,
+     "liquidity_side": "taker",
+     "ts": 1751600000500,
+     "mark_price": 62590.1,
+     "position_side": "BOTH",
+     "type": "FillEvent"
+    },
+    {
+     "client_order_id": "vtr6okx1",
+     "fill": {
+      "trade_id": "t-901",
+      "client_order_id": "vtr6okx1",
+      "venue": "okx",
+      "symbol": "BTC-USDT-SWAP",
+      "side": 1,
+      "last_qty": 0.002,
+      "last_px": 62584.5,
+      "commission": 0.0313,
+      "liquidity_side": "taker",
+      "ts": 1751600000500,
+      "mark_price": 62590.1,
+      "position_side": "BOTH"
+     },
+     "ts": 1751600000500,
+     "type": "OrderFilled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "fillSz": "0.20",
+      "fillPx": "62584.5",
+      "tradeId": "t-902",
+      "fillFee": "0.001",
+      "execType": "M",
+      "fillTime": "1751600000500",
+      "state": "partially_filled",
+      "accFillSz": "0.20",
+      "sz": "0.40",
+      "fillMarkPx": "62590.1"
+     }
+    ]
+   },
+   "events": [
+    {
+     "trade_id": "t-902",
+     "client_order_id": "vtr6okx1",
+     "venue": "okx",
+     "symbol": "BTC-USDT-SWAP",
+     "side": 1,
+     "last_qty": 0.002,
+     "last_px": 62584.5,
+     "commission": -0.001,
+     "liquidity_side": "maker",
+     "ts": 1751600000500,
+     "mark_price": 62590.1,
+     "position_side": "BOTH",
+     "type": "FillEvent"
+    },
+    {
+     "client_order_id": "vtr6okx1",
+     "fill": {
+      "trade_id": "t-902",
+      "client_order_id": "vtr6okx1",
+      "venue": "okx",
+      "symbol": "BTC-USDT-SWAP",
+      "side": 1,
+      "last_qty": 0.002,
+      "last_px": 62584.5,
+      "commission": -0.001,
+      "liquidity_side": "maker",
+      "ts": 1751600000500,
+      "mark_price": 62590.1,
+      "position_side": "BOTH"
+     },
+     "ts": 1751600000500,
+     "type": "OrderPartiallyFilled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "state": "filled",
+      "fillSz": "",
+      "tradeId": ""
+     }
+    ]
+   },
+   "events": []
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "code": "51121",
+      "msg": "Order count exceeds"
+     }
+    ]
+   },
+   "events": [
+    {
+     "client_order_id": "vtr6okx1",
+     "reason": "Order count exceeds",
+     "ts": 1751600000456,
+     "type": "OrderRejected"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "short",
+      "uTime": "1751600000456",
+      "fillSz": "0.20",
+      "fillPx": "62584.5",
+      "tradeId": "t-903",
+      "fillFee": "-0.0313",
+      "execType": "T",
+      "fillTime": "1751600000500",
+      "state": "partially_filled",
+      "accFillSz": "0.20",
+      "sz": "0.40",
+      "fillMarkPx": "62590.1",
+      "category": "partial_liquidation"
+     }
+    ]
+   },
+   "events": [
+    {
+     "venue": "okx",
+     "symbol": "BTC-USDT-SWAP",
+     "position_side": "SHORT",
+     "qty": 0.002,
+     "liq_price": 62584.5,
+     "fee": 0.0313,
+     "ts": 1751600000500,
+     "trade_id": "t-903",
+     "type": "PositionLiquidated"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "orders",
+     "instType": "SWAP",
+     "uid": "x"
+    },
+    "data": [
+     {
+      "instId": "BTC-USDT-SWAP",
+      "clOrdId": "vtr6okx1",
+      "ordId": 112233,
+      "side": "buy",
+      "posSide": "net",
+      "uTime": "1751600000456",
+      "state": "canceled",
+      "category": "full_liquidation",
+      "fillSz": "",
+      "tradeId": ""
+     }
+    ]
+   },
+   "events": [
+    {
+     "client_order_id": "vtr6okx1",
+     "reason": "",
+     "ts": 1751600000456,
+     "type": "OrderCanceled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "account"
+    },
+    "data": [
+     {
+      "uTime": "1751600002000",
+      "details": [
+       {
+        "ccy": "USDT",
+        "cashBal": "8898.5"
+       },
+       {
+        "ccy": "BTC",
+        "cashBal": "0.4"
+       },
+       {
+        "ccy": "",
+        "cashBal": "1"
+       }
+      ]
+     }
+    ]
+   },
+   "events": [
+    {
+     "venue": "okx",
+     "balances": [
+      [
+       "USDT",
+       8898.5
+      ],
+      [
+       "BTC",
+       0.4
+      ]
+     ],
+     "ts": 1751600002000,
+     "type": "AccountState"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "event": "subscribe",
+    "arg": {
+     "channel": "orders"
+    }
+   },
+   "events": []
+  },
+  {
+   "frame": {
+    "arg": {
+     "channel": "positions"
+    },
+    "data": [
+     {
+      "x": 1
+     }
+    ]
+   },
+   "events": []
+  }
+ ],
+ "funding_bills": [
+  {
+   "type": "8",
+   "instId": "BTC-USDT-SWAP",
+   "pnl": "-0.42",
+   "balChg": "-0.42",
+   "ts": "1751600005000",
+   "billId": "b1"
+  },
+  {
+   "type": "8",
+   "instId": "BTC-USDT-SWAP",
+   "pnl": "",
+   "balChg": "0.9",
+   "ts": "1751600005001",
+   "billId": "b2"
+  },
+  {
+   "type": "8",
+   "instId": "BTC-USDT-SWAP",
+   "pnl": "0",
+   "balChg": "0",
+   "ts": "1751600005002",
+   "billId": "b3"
+  },
+  {
+   "type": "2",
+   "instId": "BTC-USDT-SWAP",
+   "pnl": "5",
+   "ts": "1751600005003",
+   "billId": "b4"
+  }
+ ],
+ "funding_events": [
+  {
+   "venue": "okx",
+   "symbol": "BTC-USDT-SWAP",
+   "position_side": "BOTH",
+   "funding_rate": 0.0,
+   "amount": -0.42,
+   "mark_price": null,
+   "ts": 1751600005000,
+   "type": "FundingEvent"
+  },
+  {
+   "venue": "okx",
+   "symbol": "BTC-USDT-SWAP",
+   "position_side": "BOTH",
+   "funding_rate": 0.0,
+   "amount": 0.9,
+   "mark_price": null,
+   "ts": 1751600005001,
+   "type": "FundingEvent"
+  }
+ ],
+ "instruments_payload": {
+  "data": [
+   {
+    "instId": "BTC-USDT-SWAP",
+    "ctVal": "0.01",
+    "ctMult": "1",
+    "ctValCcy": "BTC",
+    "lotSz": "0.01",
+    "tickSz": "0.1",
+    "minSz": "0.01",
+    "maxMktSz": "12000"
+   },
+   {
+    "instId": "ETH-USDT-SWAP",
+    "ctVal": "0.1",
+    "ctMult": "1",
+    "ctValCcy": "ETH",
+    "lotSz": "1",
+    "tickSz": "0.01",
+    "minSz": "1",
+    "maxMktSz": "30000"
+   }
+  ]
+ },
+ "instruments": {
+  "BTC-USDT-SWAP": {
+   "tick_size": "3fb999999999999a",
+   "step_size": "3f847ae147ae147b",
+   "min_qty": "3f847ae147ae147b",
+   "max_qty": "40c7700000000000",
+   "min_notional": "0000000000000000",
+   "ct_val": "3f847ae147ae147b",
+   "ct_mult": "3ff0000000000000",
+   "base_asset": "BTC"
+  },
+  "ETH-USDT-SWAP": {
+   "tick_size": "3f847ae147ae147b",
+   "step_size": "3ff0000000000000",
+   "min_qty": "3ff0000000000000",
+   "max_qty": "40dd4c0000000000",
+   "min_notional": "0000000000000000",
+   "ct_val": "3fb999999999999a",
+   "ct_mult": "3ff0000000000000",
+   "base_asset": "ETH"
+  }
+ },
+ "balance_resp": {
+  "code": "0",
+  "msg": "",
+  "data": [
+   {
+    "details": [
+     {
+      "ccy": "BTC",
+      "cashBal": "0.4",
+      "availBal": "0.4"
+     },
+     {
+      "ccy": "USDT",
+      "cashBal": "8899.771",
+      "availBal": "8000.5"
+     }
+    ]
+   }
+  ]
+ },
+ "to_contracts": [
+  {
+   "base_qty": 0.002,
+   "contracts": "3fc999999999999a"
+  },
+  {
+   "base_qty": 0.0001,
+   "contracts": "3f847ae147ae147b"
+  },
+  {
+   "base_qty": 0.30000000000000004,
+   "contracts": "403e000000000000"
+  },
+  {
+   "base_qty": 0.0155,
+   "contracts": "3ff8cccccccccccd"
+  },
+  {
+   "base_qty": 1.0,
+   "contracts": "4059000000000000"
+  },
+  {
+   "base_qty": 0.01,
+   "contracts": "3ff0000000000000"
+  },
+  {
+   "base_qty": 0.009999,
+   "contracts": "3fefae147ae147ae"
+  },
+  {
+   "base_qty": 0.019999999,
+   "contracts": "3fffd70a3d70a3d7"
+  },
+  {
+   "base_qty": 5e-05,
+   "contracts": "0000000000000000"
+  },
+  {
+   "base_qty": 0.25,
+   "contracts": "4039000000000000"
+  }
+ ],
+ "order_params": {
+  "limit": [
+   [
+    "instId",
+    "BTC-USDT-SWAP"
+   ],
+   [
+    "tdMode",
+    "cross"
+   ],
+   [
+    "side",
+    "sell"
+   ],
+   [
+    "ordType",
+    "limit"
+   ],
+   [
+    "sz",
+    "1.55"
+   ],
+   [
+    "clOrdId",
+    "vtr6okxL"
+   ],
+   [
+    "posSide",
+    "net"
+   ],
+   [
+    "reduceOnly",
+    false
+   ],
+   [
+    "px",
+    "62584.5"
+   ]
+  ],
+  "market": [
+   [
+    "instId",
+    "BTC-USDT-SWAP"
+   ],
+   [
+    "tdMode",
+    "cross"
+   ],
+   [
+    "side",
+    "buy"
+   ],
+   [
+    "ordType",
+    "market"
+   ],
+   [
+    "sz",
+    "0.20"
+   ],
+   [
+    "clOrdId",
+    "vtr6okxM"
+   ],
+   [
+    "posSide",
+    "net"
+   ],
+   [
+    "reduceOnly",
+    true
+   ]
+  ]
+ },
+ "reconcile": [
+  {
+   "name": "net_long",
+   "position_rows": [
+    {
+     "posSide": "net",
+     "pos": "0.4",
+     "avgPx": "62584.5",
+     "markPx": "62600.1"
+    }
+   ],
+   "balance_fails": false,
+   "snapshot": {
+    "positions": [
+     [
+      "BTC-USDT-SWAP",
+      "3f70624dd2f1a9fc"
+     ]
+    ],
+    "position_avg_px": [
+     [
+      "BTC-USDT-SWAP",
+      "40ee8f1000000000"
+     ]
+    ],
+    "position_mark_px": [
+     [
+      "BTC-USDT-SWAP",
+      "40ee910333333333"
+     ]
+    ],
+    "position_sides": [],
+    "balance": "40c161e2b020c49c"
+   }
+  },
+  {
+   "name": "net_short",
+   "position_rows": [
+    {
+     "posSide": "net",
+     "pos": "-0.6",
+     "avgPx": "62590.0",
+     "markPx": "62550.5"
+    }
+   ],
+   "balance_fails": false,
+   "snapshot": {
+    "positions": [
+     [
+      "BTC-USDT-SWAP",
+      "bf789374bc6a7efa"
+     ]
+    ],
+    "position_avg_px": [
+     [
+      "BTC-USDT-SWAP",
+      "40ee8fc000000000"
+     ]
+    ],
+    "position_mark_px": [
+     [
+      "BTC-USDT-SWAP",
+      "40ee8ad000000000"
+     ]
+    ],
+    "position_sides": [],
+    "balance": "40c161e2b020c49c"
+   }
+  },
+  {
+   "name": "hedge_both_legs",
+   "position_rows": [
+    {
+     "posSide": "long",
+     "pos": "1.0",
+     "avgPx": "62000.0",
+     "markPx": "62600.0"
+    },
+    {
+     "posSide": "short",
+     "pos": "-0.3",
+     "avgPx": "63000.0",
+     "markPx": "62600.0"
+    },
+    {
+     "posSide": "net",
+     "pos": "0"
+    }
+   ],
+   "balance_fails": false,
+   "snapshot": {
+    "positions": [
+     [
+      "BTC-USDT-SWAP",
+      "3f847ae147ae147b"
+     ],
+     [
+      "BTC-USDT-SWAP",
+      "bf689374bc6a7efa"
+     ]
+    ],
+    "position_avg_px": [
+     [
+      "BTC-USDT-SWAP",
+      "40ee460000000000"
+     ],
+     [
+      "BTC-USDT-SWAP",
+      "40eec30000000000"
+     ]
+    ],
+    "position_mark_px": [
+     [
+      "BTC-USDT-SWAP",
+      "40ee910000000000"
+     ],
+     [
+      "BTC-USDT-SWAP",
+      "40ee910000000000"
+     ]
+    ],
+    "position_sides": [
+     [
+      "BTC-USDT-SWAP",
+      "LONG"
+     ],
+     [
+      "BTC-USDT-SWAP",
+      "SHORT"
+     ]
+    ],
+    "balance": "40c161e2b020c49c"
+   }
+  },
+  {
+   "name": "flat",
+   "position_rows": [
+    {
+     "posSide": "net",
+     "pos": "0",
+     "avgPx": ""
+    }
+   ],
+   "balance_fails": false,
+   "snapshot": {
+    "positions": [
+     [
+      "BTC-USDT-SWAP",
+      "0000000000000000"
+     ]
+    ],
+    "position_avg_px": [
+     [
+      "BTC-USDT-SWAP",
+      "0000000000000000"
+     ]
+    ],
+    "position_mark_px": [
+     [
+      "BTC-USDT-SWAP",
+      "0000000000000000"
+     ]
+    ],
+    "position_sides": [],
+    "balance": "40c161e2b020c49c"
+   }
+  },
+  {
+   "name": "balance_fetch_fails",
+   "position_rows": [
+    {
+     "posSide": "net",
+     "pos": "-0.1",
+     "avgPx": "62500.0",
+     "markPx": "62450.0"
+    }
+   ],
+   "balance_fails": true,
+   "snapshot": {
+    "positions": [
+     [
+      "BTC-USDT-SWAP",
+      "bf50624dd2f1a9fc"
+     ]
+    ],
+    "position_avg_px": [
+     [
+      "BTC-USDT-SWAP",
+      "40ee848000000000"
+     ]
+    ],
+    "position_mark_px": [
+     [
+      "BTC-USDT-SWAP",
+      "40ee7e4000000000"
+     ]
+    ],
+    "position_sides": [],
+    "balance": "0000000000000000"
+   }
+  }
+ ]
+}

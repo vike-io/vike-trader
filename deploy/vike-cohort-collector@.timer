@@ -1,0 +1,48 @@
+# vike-cohort-collector@.timer — the cadence for vike-cohort-collector@.service. `%i` is the ASSET.
+# Install beside the service (same root substitution — this file names no path), then enable ONE
+# instance per asset you want collected:
+#
+#   sudo systemctl enable --now vike-cohort-collector@BTC.timer
+#   sudo systemctl enable --now vike-cohort-collector@ETH.timer
+#   systemctl list-timers 'vike-cohort-collector@*'
+#
+# ⚠ THE CADENCE CANNOT BREAK CORRECTNESS, ONLY FRESHNESS — and that is the whole reason this file is
+# boring. The collector's windows are whole COMPLETE UTC days off a fixed grid
+# (crates/vike-backfill/src/vikedata/schedule.rs's `scheduled_windows`), so every firing inside one
+# UTC day asks for the IDENTICAL windows and the store's batch idempotency makes each firing after
+# the first a no-op. Fire this hourly, daily, twice by accident or by hand during an incident: none
+# of it can double a row, and two different days are ADJACENT rather than overlapping, so none of it
+# can leave a gap either. What the cadence decides is only how soon a finished day is collected and
+# how many METERED requests are spent finding out it already was.
+#
+# ⚠ IT DOES DECIDE ONE THING THAT IS NOT COSMETIC: how much settling time an upstream rollup gets.
+# `pnl/unrealized` is a non-default grading, so a window whose newest hour falls short of the day's
+# last hour is REFUSED rather than stored short
+# (crates/vike-backfill/src/vikedata/ingest.rs's `guard_window_reaches_the_anchor`). A firing at
+# 00:05 UTC would fail on any day that rollup lands late; 03:17 gives it three hours, and
+# `--catch-up 3` in the service re-attempts the day for two more firings if it needs longer. That
+# refusal is wanted — a short day filed under a key naming the whole day spends that key forever.
+
+[Unit]
+Description=daily data.vike.io cohort collection for %i
+
+[Timer]
+# UTC explicitly, because the WINDOW grid is UTC days: on a box in another zone a local-time trigger
+# would drift across the boundary the settling-time argument above is measured from. (Correctness is
+# unaffected — see the note above.) A timezone suffix needs systemd >= 240; the latency box/the CI box run 255.
+#
+# 03:17 rather than a round hour, and off 04:00 in particular: the latency box's scheduled Cronicle window
+# lands there (scripts/latency_contention.sh carries the measurements), and a round hour is where
+# every other periodic job on a box already is.
+OnCalendar=*-*-* 03:17:00 UTC
+RandomizedDelaySec=900
+# Run a firing that was missed while the box was down — the ordinary reason a day goes uncollected.
+# It re-runs ONCE on the next boot rather than once per missed day, which is exactly why the service
+# passes `--catch-up 3`: the look-back, not this flag, is what fills more than one missed day.
+Persistent=true
+# The default for a template timer is the same-named template service; spelled out because a timer
+# whose Unit= silently pointed at a non-existent instance would sit enabled and never run anything.
+Unit=vike-cohort-collector@%i.service
+
+[Install]
+WantedBy=timers.target

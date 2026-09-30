@@ -1,0 +1,10 @@
+# A RECIPE — one named configuration of `fixture_bars`, committed beside the entry file to prove
+# that a study folder holding one still loads: `RhaiStudy::load` reads `<name>.rhai` and nothing
+# else, and a recipe is the CALLER's to load and hand in as `params`. That split is the compiled
+# tier's too (`crates/vike-user-research/src/codegen.rs`: "recipes: named configurations, loaded by the
+# CALLER, not by this scan").
+venue = "binance"
+symbol = "BTCUSDT"
+interval = "1m"
+# The upper bound of the narrower window the fixture asks for through the explicit-range arity.
+narrow_end = 120000
