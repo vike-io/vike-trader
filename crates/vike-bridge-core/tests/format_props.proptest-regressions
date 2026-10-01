@@ -1,0 +1,319 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+#
+# ⚠ NOTE THE PATH. `CLAUDE.md` said to commit "any generated `proptest-regressions/` seed", and for
+# an INTEGRATION test proptest never generates that directory: `FileFailurePersistence`'s default
+# `SourceParallel("proptest-regressions")` walks UP from the source file for a directory holding
+# `lib.rs`/`main.rs`, finds none above `tests/`, and falls back to `WithSource` — the source path
+# with its extension replaced. So the file proptest reads and writes for
+# `crates/vike-bridge-core/tests/format_props.rs` is THIS one, beside it. A
+# `proptest-regressions/format_props.txt` at the crate root is read by nothing. (Derived from
+# proptest 1.11.0's `resolve`, then CONFIRMED by running: recorded here, the seed below turned the
+# test red under the law as it was then written.) `CLAUDE.md`'s convention now names this spelling.
+#
+# ⚠ proptest SAYS SO ITSELF, on stdout, every run — and nobody had read it. A the CI box run of this
+# suite prints:
+#
+#     proptest: FileFailurePersistence::SourceParallel set, but failed to find lib.rs or main.rs
+#
+# That line IS the fallback to `WithSource` being taken. It is not a warning about anything broken;
+# it is the mechanism announcing itself, and it has been printing for as long as this tree has had
+# property suites. It is the line to look for when a committed seed does not reproduce.
+#
+# ⚠ Nothing in this workspace had such a file at all, so every counterexample proptest had ever
+# found here died with its process. The seed below was reported by a CI batch run on 2026-09-14
+# (223 successes before failure) and is recorded FIRST, before any analysis.
+#
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# ⚠ THE OWNER RULED ON 2026-09-14: THE WIRE OWES THE GRID MULTIPLE. THE SEED NO LONGER FAILS, AND
+# THAT IS WHY IT IS KEPT.
+#
+# The question this seed forced: when `crates/vike-bridge-core/src/format.rs`'s `format_to_step`
+# must emit a decimal for a value that is bit-exactly `n × step` but whose f64 image sits just
+# BELOW the grid point, does the wire owe the value's own shortest-round-trip decimal image, or the
+# grid multiple the caller asked for? The owner ruled for THE GRID MULTIPLE. The behaviour shipped
+# since #1562 is correct and stays; law (4) of `crates/vike-bridge-core/tests/format_props.rs`'s
+# `wire_laws` — amended in #1804 to describe that behaviour while the verdict was pending — is now
+# the settled statement of it, and `OVERSHOOT_ULP_BUDGET` there carries the ruling and its
+# derivation.
+#
+# The trade, in the two numbers that decided it: emitting the value's own image lets
+# `quantize_to_step`'s `trunc()` drop A WHOLE STEP (measured mean 8.45 bps, worst 51.8 bps over
+# binance spot), while emitting the grid multiple overshoots that image by at most 1.314 ULP —
+# roughly one part in 10^16, below anything any venue can represent. On this seed specifically the
+# grid multiple sits 1.0e-10 from the intended number and the strict answer 9.99e-8, 999x further.
+#
+# So the seed did not find a defect; it found the seam between a shipped cure and a law written
+# before it. It is kept so the amended law is checked against the known counterexample on EVERY
+# run rather than only when proptest happens to regenerate one — a seed that reproduces the RULING
+# rather than a failure. DO NOT DELETE IT to tidy up, and do not weaken law (4) without reopening
+# the ruling above. `crates/vike-bridge-core/tests/grid_multiple_survives_the_wire.rs` is the
+# compositional law on the other side of the trade, and it is green on its own terms.
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+#
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+# ⚠ THIS RECORD WAS RE-MEASURED ON 2026-09-14 BEFORE BEING FILED, AND SIX OF ITS CLAIMS MOVED.
+# Everything below carries the measurement that produced it. Where a corrected claim replaced an
+# earlier one, the earlier one is kept beside it — a wrong claim that is merely deleted gets
+# rediscovered and re-argued, which is how one of these survived from #1562 into three files.
+#
+# ⚠ Five were raised by an adversarial review; ONE of those five (item 2) turned out to be wrong
+# ITSELF, and the sixth was found only by re-measuring a paragraph that review had left standing.
+# Both facts are worth more than the corrections: a re-measurement is not evidence because it is a
+# re-measurement, and the parts of a record nobody challenges are exactly the parts nobody checks.
+# Every number below was re-derived from the tree, from the venue, or from exact integer
+# arithmetic — never from the sentence it replaced. A seventh moved during the correction itself:
+# a first pass at item (3) trusted an exact-arithmetic MODEL of the chain over the chain, and the
+# the CI box run refused four of its rungs. That is recorded in place rather than quietly fixed.
+# ══════════════════════════════════════════════════════════════════════════════════════════════
+#
+# (1) THE EXPOSED SET IS NOT ONE RUNG. This comment first said "602/2000 at step 1e-6, 578/2000 at
+# 1e-7, 269/2000 at 1e-12, and 0 at every other rung". The last clause is FALSE and it was never
+# swept — the ladder it was read off stops at 1e-8. MEASURED over rungs 1e-0 … 1e-22, 2000
+# production-shaped grid multiples each, driven through `round_to_step` and then truncated against
+# the value's own shortest-round-trip decimal image in exact big-integer arithmetic:
+#
+#     rung    fl(step) vs its decimal   lost/2000    first n
+#     1e-0    exact                         0          -
+#     1e-1 … 1e-5   ABOVE                   0          -
+#     1e-6    BELOW                       602 (30.10%)  5
+#     1e-7    BELOW                       578 (28.90%) 13
+#     1e-8    ABOVE                         0          -
+#     1e-9    ABOVE                         0          -
+#     1e-10   ABOVE                         0          -
+#     1e-11   BELOW                       767 (38.35%)  5   <- THE WORST RUNG IN THE TREE
+#     1e-12   BELOW                       269 (13.45%) 11
+#     1e-13   ABOVE                         0          -
+#     1e-14   BELOW                        16 ( 0.80%) 173
+#     1e-15   ABOVE                         0          -
+#     1e-16   BELOW                       271 (13.55%)  7   <- exact arithmetic ONLY, see below
+#     1e-17   ABOVE                         0          -
+#     1e-18   ABOVE                         0          -
+#     1e-19   BELOW                       347 (17.35%)  7   <- exact arithmetic ONLY, see below
+#     1e-20   BELOW                       701 (35.05%)  3   <- exact arithmetic ONLY, see below
+#     1e-21   BELOW                      1195 (59.75%)  3   <- exact arithmetic ONLY, see below
+#     1e-22   ABOVE                         0          -
+#
+# ⚠ THE LAST FOUR MARKED ROWS ARE NOT THINGS THE SHIPPED CODE DOES. Down to 1e-14 the table was
+# confirmed row-for-row by driving the real `format_to_step` chain on the CI box. Past that the two part
+# company: a drifted value at 1e-16 and below has a shortest-round-trip decimal image of ~31 digits,
+# past `rust_decimal`'s 28-digit scale cap, so the shipped quantizer cannot parse its own input and
+# the loss the arithmetic predicts never gets the chance to happen in that form. Those rows are the
+# exact-arithmetic answer and are kept because they are what a future Decimal with more scale would
+# meet — they are NOT a measurement of this tree. Everything from 1e-0 to 1e-15 is both.
+#
+# 1e-11 loses nearly two rungs' worth more than 1e-6, and nothing in the tree measured it: both
+# `crates/vike-bridge-core/tests/grid_multiple_survives_the_wire.rs`'s `LADDER` and
+# `crates/vike-bridge-core/tests/wire_quantizer_probe.rs`'s `STEPS` stopped at 1e-8, while okx
+# serves a 1e-12 tick on NINE live order-placing markets. `LADDER` has been extended to 1e-12; what
+# happened to `STEPS`, and why it did NOT move, is the residual at the end of this record. The okx
+# count was re-measured rather than repeated: the public `/api/v5/public/instruments` grids on
+# 2026-09-14 carry `tickSz` `0.000000000001` on 8 SPOT markets (BABYDOGE-{EUR,USD,USDT,USDC},
+# SATS-{EUR,USD,USDT,USDC}) plus SATS-USDT-SWAP. The MARGIN row `SATS-USDT` is the same spot pair,
+# not a tenth market.
+#
+# (2) THE MECHANISM IS NOT BACKWARDS — AND THE RE-MEASUREMENT THAT SAID IT WAS HAD AN INVERTED
+# SIGN TEST. #1562's prose, carried verbatim into three files, reads "for a step whose f64 image
+# sits BELOW its decimal". An adversarial re-measurement reported that `fl(1e-6)` and `fl(1e-12)`
+# sit ABOVE their decimals and `fl(1e-7)`/`fl(1e-9)` below, and concluded the rule "gets three of
+# four rungs backwards". MEASURED, by exact integer comparison — a `f64` is `m·2^e`, so
+# `m·2^e < 10^-k` is the integer question `m·10^k < 2^-e`, computed in big integers with no
+# rounding anywhere:
+#
+#     BELOW : 1e-6, 1e-7, 1e-11, 1e-12, 1e-14, 1e-16, 1e-19, 1e-20, 1e-21
+#     ABOVE : 1e-1 … 1e-5, 1e-8, 1e-9, 1e-10, 1e-13, 1e-15, 1e-17, 1e-18, 1e-22
+#
+# That is the ORIGINAL rule's set, and it matches the `lost > 0` column of the table above on all
+# 23 rungs with NO exception — confirmed against the SHIPPED chain on the sixteen rungs it can
+# represent (1e-0..=1e-15, where the real `format_to_step` reproduces the loss counts exactly) and
+# against exact arithmetic on the rest. It is the re-measurement that was inverted, on exactly the
+# three rungs it named (1e-6, 1e-9, 1e-12); had this record been "corrected" to its reading it
+# would have introduced the error it claimed to remove. The lesson worth keeping is not the
+# arithmetic, it is that both sides stated a sign and only one of them stated how it was computed.
+#
+# What IS worth fixing in the original wording is its STRENGTH, which is what invited the dispute:
+#
+#   * `fl(step) < step` is NECESSARY, and that half is a THEOREM rather than a measurement. If
+#     `fl(step) >= step` then `n·fl(step) >= n·step` in real arithmetic, and round-to-nearest is
+#     monotone, so `fl(n·fl(step)) >= fl(n·step)` — the product can never land below the grid
+#     point's own float and the truncation has nothing to eat. An ABOVE rung is provably clean.
+#   * It is NOT SUFFICIENT, and no closed form says WHICH multiples of a BELOW rung drift or how
+#     many. That depends on where each rounded product falls relative to the grid decimal's own
+#     image. So the exposed SET is predicted; the COUNTS are measured, per rung, by the table
+#     above and by `grid_multiple_survives_the_wire.rs`, which re-measures them every run.
+#
+# (3) THE HYPERLIQUID DORMANCY ARGUMENT COVERED TWO RUNGS OUT OF FIVE. `crates/bridges/
+# hyperliquid/src/px.rs`'s `grid_multiple_image` said "`szDecimals` 6 lost 602 and 7 lost 578;
+# every other rung in `0..=8` lost none", and argued dormancy from "no hyperliquid market declares
+# `szDecimals` 6 or 7". The sweep stopped at 8 and the witness does not: `MAX_GRID_WITNESS_DECIMALS`
+# admits `szDecimals` up to 22, and `pow10_neg(d)` is `fl(10^-d)` exactly over that whole domain.
+# MEASURED by driving the REAL `round_size` over 2000 lot multiples at every `d` in `0..=22`: the
+# unwitnessed floor loses a whole lot at 6 (602), 7 (578), 11 (767), 12 (269) and 14 (16) — FIVE
+# rungs, not two.
+#
+# ⚠ It is not NINE, and the draft of this very correction said nine. Exact arithmetic says 16, 19,
+# 20 and 21 are BELOW rungs too, and a first pass carried them straight into the record. Driving the
+# real function refused them: past `d = 14` a drifted size's shortest-round-trip image runs to ~31
+# decimal digits, beyond `rust_decimal`'s 28-digit scale, so it cannot be parsed and the comparison
+# never happens. Those rungs read ZERO because nothing was measured there, not because they are
+# clean — and the unwitnessed answer at that depth is `"0"`, which is worse than a lost lot rather
+# than better. A model of the chain and the chain are not the same thing, and this is where they
+# parted: the model is right about the ARITHMETIC and silent about the 28-digit ceiling the shipped
+# code runs into first.
+#
+# THE DORMANCY STILL HOLDS, and it is now stated against the LIVE CEILING instead of against two
+# rungs. MEASURED from the public `/info` endpoint on 2026-09-14: core perps top out at
+# `szDecimals` 5 (134 markets at 0, 66 at 1, 24 at 2, 6 at 3, 2 at 4, 2 at 5); every one of the ten
+# HIP-3 builder dexs tops out at 5 as well (285 markets, none above); spot tokens reach 8, on a
+# single token, and 8 is an ABOVE rung — provably clean by the theorem in (2). The live set is
+# therefore {0,1,2,3,4,5,8} and its intersection with the exposed set is EMPTY. What the venue may
+# declare tomorrow is unchanged, which is still the whole argument for a fence that costs nothing.
+#
+# (4) THE PROPOSED ALTERNATIVE FENCE IS NOT DIRECTION-SAFE. A residual described it as "provably
+# direction-safe (it can only ever make an output smaller)". MEASURED FALSE. Spelled as "return the
+# multiple the value's own image already names" — derive `n` by ROUNDING the exact-Decimal ratio of
+# the value's shortest-round-trip image instead of truncating it, and accept when `n·step` sits
+# within one f64 ULP of the value — it moves a value sitting one ULP BELOW a grid point a FULL STEP
+# UP. At step 1e-9 that is every one of `n = 1..=12`: `9.999999999999999e-10` truncates to `0` and
+# the fence returns `1`; `4.999999999999999e-9` truncates to `4` and the fence returns `5`. 1e-9 is
+# an ABOVE rung, so nothing there is a grid-point rescue — these are genuine mid-step values being
+# overshot. The ruling above settles WHICH invariant the wire owes; it does not license that fence,
+# which overshoots values naming no grid point at all.
+#
+# The claim is not merely unproven, it is inverted. MEASURED across the whole ladder, counting every
+# grid multiple where the fence and the truncation disagree: it moves the output UP 602 times at
+# 1e-6, 573 at 1e-7, 666 at 1e-11, 269 at 1e-12 and 16 at 1e-14 — and DOWN **zero** times, at every
+# rung. There is no configuration in the sweep where this fence makes an output smaller. The
+# direction claim did not overstate a tendency; it named the wrong direction.
+#
+# One more thing the sweep shows and the residual did not: the fence DECLINES more often than the
+# shipped witness does. At 1e-7 it answers 573 of the 578 exposed multiples and at 1e-11 only 666 of
+# 767 — its one-ULP acceptance band turns some rescues away. So it is not a strict superset of
+# today's behaviour either, and "it can only ever" was wrong about that as well.
+#
+# The band is also not "exactly one decade wide". MEASURED: it opens at 2^52 = 4503599627370496
+# (≈4.5e15), the magnitude at which one f64 ULP first reaches a whole unit, and is cut off by
+# `format.rs`'s `MAX_EXACT_INT` = 2^53 = 9007199254740992. That is log10(2) = 0.3010 of a decade —
+# about a third.
+#
+# (5) TWO COUNTS CAME FROM PROSE RATHER THAN FROM THE TREE. The commit message that filed this
+# seed says "all four of this tree's property suites", a number read off `CLAUDE.md`'s hand list
+# rather than measured. `git grep -l 'proptest!' -- 'crates/**/tests/*.rs'` prints EIGHT, and that
+# list was additionally stale (it named `vike-backtest/tests/sizing_props.rs`, which now lives at
+# `crates/vike-analytics/tests/sizing_props.rs`). Every one of the eight is under a `tests/`
+# directory and therefore an INTEGRATION test, so the conclusion about the persistence path
+# SURVIVES the correction intact — only the roster was wrong. `CLAUDE.md` no longer carries a list.
+#
+# The market census is the other: "641 live order-placing markets across binance spot/perp, bybit
+# linear and okx" was stated as a TOTAL when it is the sum over the four venue grids that happened
+# to be FETCHED. RE-MEASURED on 2026-09-14 from each venue's public instruments endpoint, counting
+# markets whose tick sits on an exposed rung:
+#
+#     binance spot      69 at 1e-6 +  27 at 1e-7               =  96
+#     binance perp     104 at 1e-6 +  20 at 1e-7               = 124
+#     bybit linear     105 at 1e-6 +  19 at 1e-7               = 124
+#     okx spot         194 at 1e-6 +  47 at 1e-7 + 8 at 1e-12  = 249
+#     okx swap          39 at 1e-6 +   8 at 1e-7 + 1 at 1e-12  =  48
+#                                                                ---
+#                                                                641
+#
+# The 641 reproduces EXACTLY, which is what identifies the four grids the original figure came
+# from — and it identifies what it left out, twice over:
+#
+#   * ASTER, which the sentence did not claim to cover: 83 at 1e-6 and 10 at 1e-7 = 93. That is the
+#     adversary's "~93", and it is now measured rather than repeated.
+#   * OKX DATED FUTURES: 12 at 1e-6 and 1 at 1e-7 = 13 more order-placing markets on the SAME venue
+#     the total names. Nobody raised this one; it fell out of re-fetching the grid. Its lesson is
+#     the item-5 lesson again — "okx" in a census sentence is not a venue, it is whichever
+#     `instType` the fetch asked for.
+#
+# So: 641 across the four grids fetched, 93 on aster, 13 on okx's dated futures. State the
+# breakdown, never the bare total. Note also what is ABSENT from every grid above — no venue quotes
+# 1e-11 or 1e-14, the two deepest exposed rungs, so the wire ladder's 1e-11 rung is a guard against
+# a grid nobody serves yet rather than a live exposure.
+#
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# ⚠ HOW THE NUMBERS IN THIS RECORD WERE OBTAINED, because "MEASURED on the CI box" stood here over a
+# measurement that had not been run on the CI box. Every rung count, every ULP figure and every
+# fl-vs-decimal verdict above comes from an INDEPENDENT reimplementation of the chain in exact
+# big-integer arithmetic — not from re-running the Rust — deliberately, so that a bug in the
+# quantizer could not also be the thing measuring it. It reproduces #1562's own two recorded
+# numbers (602 at 1e-6 first at n=5, 578 at 1e-7 first at n=13) exactly, which is what licenses
+# the rest. The venue figures are live public metadata (okx `instruments`, hyperliquid `/info`)
+# fetched on 2026-09-14. What a the CI box lane adds, and what the deep-ladder rows above depend on, is
+# whether `rust_decimal`'s 28-digit scale cap changes any of this inside the real
+# `format_to_step`; that is a confirmation of the SHIPPED path, not the source of these counts.
+#
+# MEASURED through the real `round_to_step` -> `format_to_step_f` chain:
+#
+#   * #1562's OWN worked examples are the ruling in miniature. `5 · fl(1e-6)` is
+#     `0.0000049999999999999996` and the witness emits `"0.000005"`; `13 · fl(1e-7)` is
+#     `0.0000012999999999999998` and it emits `"0.0000013"`. Both would fail `|out| <= |value|` —
+#     the invariant the owner did NOT choose — and both are the multiple the caller asked for.
+#   * Where the witness CHANGES the answer, FIRES == OVERSHOOTS == RESCUES-A-FULL-STEP, exactly —
+#     the counts are the `lost/2000` column of (1). There is no firing that is not an overshoot,
+#     and no overshoot that does not buy back a whole step. That three-way equivalence is what
+#     made the trade a clean one to rule on.
+#   * (6) THE OVERSHOOT BOUND AND THE SEED'S OWN NUMBERS WERE WRONG TOO — a sixth correction,
+#     found by re-measuring the block the first five had left standing. This read: "bounded at
+#     1.18 ULP of the value at worst across every rung and magnitude measured. For this seed it is
+#     0.859 ULP — the witness's answer sits 1.16e-10 from the value while the law-abiding
+#     truncation sits 9.99e-8 from it, 858x further away." Three of those four numbers do not
+#     survive. `1.16e-10` is the ULP ITSELF at that magnitude, not the witness's distance; `858` is
+#     the truncation's distance COUNTED IN ULPs, reported as though it were the ratio between the
+#     two distances. MEASURED exactly, in big integers, for this seed (ULP = 1.16415e-10):
+#
+#         witness decimal - the f64's EXACT value  : 9.0836e-11  = 0.780 ULP
+#         witness decimal - the value's IMAGE      : 1.0e-10     = 0.859 ULP   <- law (4)'s basis
+#         the image - the law-abiding truncation   : 9.99e-8     = 858.1 ULP
+#         ratio, image basis                       : 999x        (NOT 858x)
+#         ratio, exact basis                       : 1100x
+#
+#     Both bases are given because the record never said which it meant, and that ambiguity is
+#     what produced the error: law (4) compares the output to the value's DECIMAL IMAGE, so 0.859
+#     is the figure that belongs beside the law, while 0.780 is the honest answer to "how far is
+#     this string from the number we actually held".
+#
+#     The BOUND does not reproduce at 1.18 either, on any scoping. MEASURED, max overshoot over
+#     2000 multiples at every exposed rung: 0.897 ULP at 1e-6, 0.879 at 1e-7, 1.039 at 1e-11 and
+#     0.675 at 1e-12 — the rungs the shipped chain reaches — then 0.507 at 1e-14, and, in exact
+#     arithmetic only (see the ceiling note under the table in (1)), 0.678 at 1e-16, 0.680 at 1e-19,
+#     0.987 at 1e-20 and 1.314 at 1e-21. So the honest bound is **1.04 ULP over the rungs a venue
+#     serves**, 1.04 over everything the shipped quantizer can represent, and 1.31 over the
+#     arithmetic. The FLOOR is the more interesting half and it is uniform: the minimum is 0.500 on
+#     every rung, never below. A witness firing always moves the output by more than half an ULP
+#     and by less than one and a third — which is the quantitative form of "not a tolerance", and
+#     the 1.314 is the figure the owner weighed against a whole step.
+#
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+# ⚠ RESIDUAL, DECLARED RATHER THAN LEFT IMPLICIT: `wire_quantizer_probe.rs`'s `STEPS` STILL STOPS
+# AT 1e-8.
+#
+# `LADDER` in `grid_multiple_survives_the_wire.rs` was extended to 1e-12 and re-measures the four
+# deep rungs on every run, so the DEFECT is watched. The probe's step table was NOT extended, and
+# the reason is mechanical rather than a judgement about coverage: every row of that file's
+# `PINNED` indexes `STEPS` with `i % STEPS.len()`, so adding four rungs reassigns every sample's
+# step and moves every hash. A legitimate re-record needs the test RUN ON WINDOWS AND ON LINUX with
+# the two agreeing — that file's whole claim is ONE table for EVERY platform — and the session that
+# landed this record could run only Linux. Pasting one box's hashes is precisely what that file's
+# panic message forbids, so the table stays where it is and the work is named here instead.
+#
+# The Linux side was measured on the CI box on 2026-09-14 WITH the four deep rungs present, so whoever
+# does this only has to run Windows and compare. Eleven of the fifteen rows did not move at all;
+# the four that did are exactly the rows that index `STEPS`, plus the one cliff row that does:
+#
+#     format::format_to_step (string steps)        0f86c0b64f0f5f25
+#     format::format_to_step_f (f64 steps)         52c165c439734efc
+#     format::format_scaled_to_step_f (rationals)  186c97bd49e60263
+#     px::float_to_wire (grid points)              fed6c16f39c9868e
+#     CLIFF format_to_step_f (-1 ULP)              d16d4e33e50db335
+#
+# ⚠ Those are a REFERENCE, not a pin, and they are worthless without the Windows run. `px::round_size`
+# does NOT move: that quantizer takes its step from `szDecimals`, not from `STEPS`, so extending the
+# step table cannot reach it.
+# ──────────────────────────────────────────────────────────────────────────────────────────────
+cc e1201db73d877148e2e53212e62e0787f87159bdc1ef8b5375acafde5d53ec4a # shrinks to value = -937132.7679980999, step = "0.0000001"

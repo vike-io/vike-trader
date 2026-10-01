@@ -1,0 +1,14 @@
+# vike frame record v1 (vike_ui_theme::frame_record)
+# scenario: crosshair_three_panes
+ppp 1  primitives 10  vertices 7956  triangles 9674
+----
+   0  clip [0 0 960 620]  tex M0  v 4  t 2  solid [0 0 960 620]  glyph -  runs 2  #161b24ff*2 #0d1117ff*2  d 262bfec614c2df93
+   1  clip [0 0 960 620]  tex M0  v 420  t 210  solid -  glyph [892 2 928 371]  runs 3  #090a0a12*180 #858991ff*24 #090a0a12*216  d 4d7614823a5d8dfa
+   2  clip [0 0 888 374]  tex M0  v 4448  t 5740  solid [-1 -1 889 376]  glyph -  runs 17  #07080934*72 #21252cff*8 #40ba50ff*54 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*274  +..  d 24b4b27b88601beb
+   3  clip [0 0 960 620]  tex M0  v 688  t 818  solid [-1 165 961 378]  glyph [9 13 931 361]  runs 178  #f85249ff*20 #000000ff*20 #e7ecf4ff*4 #40ba50ff*24 #e7ecf4ff*4 #40ba50ff*24 #e7ecf4ff*4 #40ba50ff*24 #e7ecf4ff*4 #40ba50ff*76 #2f343cff*20 #e7ecf4ff*24 #b4b4b4ff*28 #2f343cff*2 #161b22ff*1 #2f343cff*2  +..  d 7d4bd37fe635f914
+   4  clip [0 0 960 620]  tex M0  v 12  t 6  solid -  glyph [892 417 904 483]  runs 1  #858991ff*12  d f401092783bbcc9e
+   5  clip [0 379 888 479]  tex M0  v 504  t 630  solid [-1 379 889 481]  glyph -  runs 16  #0e0f1269*4 #21252cff*8 #2d8238b3*12 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*12  d afdacfe7ded77cda
+   6  clip [0 0 960 620]  tex M0  v 80  t 84  solid [-1 396 961 483]  glyph [6 386 907 408]  runs 4  #9aa4b1ff*24 #f85249ff*20 #000000ff*8 #2f343cff*4  d ec74320a26eba096
+   7  clip [0 0 960 620]  tex M0  v 100  t 50  solid -  glyph [684 485 916 598]  runs 2  #858991ff*20 #383a3d6c*80  d af8aeb6cf84da5be
+   8  clip [0 484 888 588]  tex M0  v 1552  t 1984  solid [-1 484 889 589]  glyph -  runs 4  #07080a37*20 #21252cff*4 #505050ff*660 #57a5ffff*92  d 1d7f67c9ca32cf3f
+   9  clip [0 0 960 620]  tex M0  v 148  t 150  solid [399 564 926 607]  glyph [6 491 919 601]  runs 5  #9aa4b1ff*12 #57a5ffff*20 #000000ff*16 #2f343cff*20 #e7ecf4ff*40  d 7ba91313d50b786a

@@ -1,0 +1,45 @@
+[package]
+name = "vike-marketdata"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+# ⚠ PUBLISHABLE, and one of exactly two crates in this workspace that are. Every other member says
+# `publish = false`; this one says otherwise because its publish CLOSURE is itself and nothing —
+# no `vike-*` dependency at all — which is the admission test in
+# `docs/decisions/0071-the-leaf-libraries-publish-the-product-does-not.md`. Flipping this on a crate
+# whose closure is larger is not a manifest edit, it is that record's reopen condition.
+# ⚠ Two consequences that do not announce themselves. This crate LEAVES `deny.toml`'s
+# `[licenses] private = { ignore = true }` exemption, which keys on `publish = false` — the
+# `FSL-1.1-ALv2` entry in that file's `allow` list is what keeps the merge gate green for it. And
+# `cargo package` takes `git ls-files` under this directory with NO redaction step
+# (`scripts/publish_mirror.sh` runs on the mirror, never on a `.crate` tarball), so every tracked
+# file here must survive `scripts/forbidden_tokens.ere` BEFORE a publish — crates.io is immutable
+# and `cargo yank` does not remove bytes.
+publish = true
+license.workspace = true
+repository = "https://github.com/vike-io/vike-trader"
+description = "vike trading core — the MARKET-DATA VOCABULARY, below the domain vocabulary that names it: `Bar` plus the two tick value types (`QuoteTick`/`TradeTick`), the `L2Book` reducer and its `BookUpdate` wire payload, and the `BarConsolidator` that turns the ticks into the bars. Extracted out of vike-model so a crate that only reads what a FEED PRODUCES does not link the crate that also holds orders, positions, fees, venues and the Broker seam. One normal dependency — `serde` — and no vike-* dependency at all, by design: it is the bottom of this workspace's own graph."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `market-data` — the
+# types a feed produces, below the vocabulary that names them.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+# There is none, and there can be none: 5 is the lowest declared rank in the workspace.
+[package.metadata.vike]
+layer = 5
+
+[dependencies]
+# The ONLY dependency, and the property worth protecting. `L2Book`'s `BTreeMap<i64, f64>` rides the
+# command journal inside `BookUpdate`, so the derives are load-bearing rather than a convenience —
+# `crates/vike-marketdata/src/orderbook.rs`'s own module doc argues the round-trip. Adding anything
+# else here (ustr, compact_str, indexmap, libm — all of which vike-model carries) would defeat the
+# reason this crate exists: a consumer of the feed vocabulary links 882 lines and one dependency
+# instead of 28 600 lines and six.
+serde = { workspace = true }
+
+[dev-dependencies]
+# Test-only: `orderbook.rs`'s additive-serde contract test round-trips a `BookUpdate` through JSON.
+serde_json = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

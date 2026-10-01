@@ -1,0 +1,2308 @@
+{
+ "manifest": {
+  "exporter": "scripts/export_r5_fixtures.py",
+  "oracle": "vike-trader-app origin/main worktree",
+  "source_sha": "023d6e87ced0b495d8575fd247914e14522ccd2d",
+  "seed": 20260703,
+  "generated": "2026-07-03T18:53:01Z",
+  "float_encoding": "ieee754-f64-hex-bits"
+ },
+ "scenarios": [
+  {
+   "name": "lifecycle_full",
+   "venue": "sim",
+   "symbol": "BTCUSDT",
+   "multiplier": 5.0,
+   "client": "recording",
+   "sim_mark": 100.0,
+   "seed_cash": 10000.0,
+   "limits": null,
+   "actions": [
+    {
+     "do": "submit",
+     "now_ms": 10,
+     "request": {
+      "client_order_id": "a1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 1,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "ts": 1,
+      "type": "OrderSubmitted"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "venue_order_id": "v100",
+      "ts": 1,
+      "type": "OrderAccepted"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "trade_id": "t1",
+      "client_order_id": "a1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "last_qty": 0.4,
+      "last_px": 100.0,
+      "commission": 0.04,
+      "liquidity_side": "taker",
+      "ts": 2,
+      "mark_price": 100.2,
+      "position_side": "BOTH",
+      "type": "FillEvent"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "fill": {
+       "trade_id": "t1",
+       "client_order_id": "a1",
+       "venue": "sim",
+       "symbol": "BTCUSDT",
+       "side": 1,
+       "last_qty": 0.4,
+       "last_px": 100.0,
+       "commission": 0.04,
+       "liquidity_side": "taker",
+       "ts": 2,
+       "mark_price": 100.2,
+       "position_side": "BOTH"
+      },
+      "ts": 2,
+      "type": "OrderPartiallyFilled"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "trade_id": "t2",
+      "client_order_id": "a1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "last_qty": 0.6,
+      "last_px": 101.0,
+      "commission": 0.06,
+      "liquidity_side": "taker",
+      "ts": 3,
+      "mark_price": 100.9,
+      "position_side": "BOTH",
+      "type": "FillEvent"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "fill": {
+       "trade_id": "t2",
+       "client_order_id": "a1",
+       "venue": "sim",
+       "symbol": "BTCUSDT",
+       "side": 1,
+       "last_qty": 0.6,
+       "last_px": 101.0,
+       "commission": 0.06,
+       "liquidity_side": "taker",
+       "ts": 3,
+       "mark_price": 100.9,
+       "position_side": "BOTH"
+      },
+      "ts": 3,
+      "type": "OrderFilled"
+     }
+    }
+   ],
+   "expect": {
+    "balance": "bfb999999999999a",
+    "realized_pnl": "0000000000000000",
+    "fees_paid": "3fb999999999999a",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "equity_all": "40c388b333333333",
+    "positions": [
+     [
+      "sim",
+      "BTCUSDT",
+      "BOTH",
+      "3ff0000000000000",
+      "4059266666666666"
+     ]
+    ],
+    "marks": [
+     [
+      "sim",
+      "BTCUSDT",
+      "405939999999999a"
+     ]
+    ],
+    "registry": [
+     [
+      "a1",
+      "FILLED",
+      "3ff0000000000000",
+      "4059266666666666",
+      "v100"
+     ]
+    ],
+    "denied": [],
+    "delivered": [
+     "OrderSubmitted",
+     "OrderAccepted",
+     "FillEvent",
+     "OrderPartiallyFilled",
+     "FillEvent",
+     "OrderFilled"
+    ],
+    "submissions": [
+     [
+      "a1",
+      "4059000000000000",
+      "3ff0000000000000"
+     ]
+    ],
+    "cancels": [],
+    "detached": false,
+    "position_size": "3ff0000000000000",
+    "total_exposure": "405939999999999a"
+   }
+  },
+  {
+   "name": "replay_dedup",
+   "venue": "sim",
+   "symbol": "BTCUSDT",
+   "multiplier": 1.0,
+   "client": "recording",
+   "sim_mark": 100.0,
+   "seed_cash": 10000.0,
+   "limits": null,
+   "actions": [
+    {
+     "do": "submit",
+     "now_ms": 10,
+     "request": {
+      "client_order_id": "a1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 1,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "ts": 1,
+      "type": "OrderSubmitted"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "venue_order_id": "v100",
+      "ts": 1,
+      "type": "OrderAccepted"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "trade_id": "t1",
+      "client_order_id": "a1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "last_qty": 0.4,
+      "last_px": 100.0,
+      "commission": 0.04,
+      "liquidity_side": "taker",
+      "ts": 2,
+      "mark_price": 100.2,
+      "position_side": "BOTH",
+      "type": "FillEvent"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "fill": {
+       "trade_id": "t1",
+       "client_order_id": "a1",
+       "venue": "sim",
+       "symbol": "BTCUSDT",
+       "side": 1,
+       "last_qty": 0.4,
+       "last_px": 100.0,
+       "commission": 0.04,
+       "liquidity_side": "taker",
+       "ts": 2,
+       "mark_price": 100.2,
+       "position_side": "BOTH"
+      },
+      "ts": 2,
+      "type": "OrderPartiallyFilled"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "trade_id": "t1",
+      "client_order_id": "a1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "last_qty": 0.4,
+      "last_px": 100.0,
+      "commission": 0.04,
+      "liquidity_side": "taker",
+      "ts": 2,
+      "mark_price": 100.2,
+      "position_side": "BOTH",
+      "type": "FillEvent"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "fill": {
+       "trade_id": "t1",
+       "client_order_id": "a1",
+       "venue": "sim",
+       "symbol": "BTCUSDT",
+       "side": 1,
+       "last_qty": 0.4,
+       "last_px": 100.0,
+       "commission": 0.04,
+       "liquidity_side": "taker",
+       "ts": 2,
+       "mark_price": 100.2,
+       "position_side": "BOTH"
+      },
+      "ts": 2,
+      "type": "OrderPartiallyFilled"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "trade_id": "t2",
+      "client_order_id": "a1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "last_qty": 0.6,
+      "last_px": 101.0,
+      "commission": 0.06,
+      "liquidity_side": "taker",
+      "ts": 3,
+      "mark_price": 100.9,
+      "position_side": "BOTH",
+      "type": "FillEvent"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "fill": {
+       "trade_id": "t2",
+       "client_order_id": "a1",
+       "venue": "sim",
+       "symbol": "BTCUSDT",
+       "side": 1,
+       "last_qty": 0.6,
+       "last_px": 101.0,
+       "commission": 0.06,
+       "liquidity_side": "taker",
+       "ts": 3,
+       "mark_price": 100.9,
+       "position_side": "BOTH"
+      },
+      "ts": 3,
+      "type": "OrderFilled"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "fill": {
+       "trade_id": "t2",
+       "client_order_id": "a1",
+       "venue": "sim",
+       "symbol": "BTCUSDT",
+       "side": 1,
+       "last_qty": 0.6,
+       "last_px": 101.0,
+       "commission": 0.06,
+       "liquidity_side": "taker",
+       "ts": 3,
+       "mark_price": 100.9,
+       "position_side": "BOTH"
+      },
+      "ts": 3,
+      "type": "OrderFilled"
+     }
+    }
+   ],
+   "expect": {
+    "balance": "bfb999999999999a",
+    "realized_pnl": "0000000000000000",
+    "fees_paid": "3fb999999999999a",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "equity_all": "40c3881999999999",
+    "positions": [
+     [
+      "sim",
+      "BTCUSDT",
+      "BOTH",
+      "3ff0000000000000",
+      "4059266666666666"
+     ]
+    ],
+    "marks": [
+     [
+      "sim",
+      "BTCUSDT",
+      "405939999999999a"
+     ]
+    ],
+    "registry": [
+     [
+      "a1",
+      "FILLED",
+      "3ff0000000000000",
+      "4059266666666666",
+      "v100"
+     ]
+    ],
+    "denied": [],
+    "delivered": [
+     "OrderSubmitted",
+     "OrderAccepted",
+     "FillEvent",
+     "OrderPartiallyFilled",
+     "FillEvent",
+     "OrderPartiallyFilled",
+     "FillEvent",
+     "OrderFilled",
+     "OrderFilled"
+    ],
+    "submissions": [
+     [
+      "a1",
+      "4059000000000000",
+      "3ff0000000000000"
+     ]
+    ],
+    "cancels": [],
+    "detached": false,
+    "position_size": "3ff0000000000000",
+    "total_exposure": "405939999999999a"
+   }
+  },
+  {
+   "name": "out_of_order",
+   "venue": "sim",
+   "symbol": "BTCUSDT",
+   "multiplier": 1.0,
+   "client": "recording",
+   "sim_mark": 100.0,
+   "seed_cash": 10000.0,
+   "limits": null,
+   "actions": [
+    {
+     "do": "submit",
+     "now_ms": 10,
+     "request": {
+      "client_order_id": "a1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 1,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "trade_id": "t1",
+      "client_order_id": "a1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "last_qty": 0.4,
+      "last_px": 100.0,
+      "commission": 0.04,
+      "liquidity_side": "taker",
+      "ts": 2,
+      "mark_price": 100.2,
+      "position_side": "BOTH",
+      "type": "FillEvent"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "fill": {
+       "trade_id": "t1",
+       "client_order_id": "a1",
+       "venue": "sim",
+       "symbol": "BTCUSDT",
+       "side": 1,
+       "last_qty": 0.4,
+       "last_px": 100.0,
+       "commission": 0.04,
+       "liquidity_side": "taker",
+       "ts": 2,
+       "mark_price": 100.2,
+       "position_side": "BOTH"
+      },
+      "ts": 2,
+      "type": "OrderFilled"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "ts": 1,
+      "type": "OrderSubmitted"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "venue_order_id": "v7",
+      "ts": 1,
+      "type": "OrderAccepted"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "fill": {
+       "trade_id": "t1",
+       "client_order_id": "a1",
+       "venue": "sim",
+       "symbol": "BTCUSDT",
+       "side": 1,
+       "last_qty": 0.4,
+       "last_px": 100.0,
+       "commission": 0.04,
+       "liquidity_side": "taker",
+       "ts": 2,
+       "mark_price": 100.2,
+       "position_side": "BOTH"
+      },
+      "ts": 2,
+      "type": "OrderFilled"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "a1",
+      "fill": {
+       "trade_id": "t1",
+       "client_order_id": "a1",
+       "venue": "sim",
+       "symbol": "BTCUSDT",
+       "side": 1,
+       "last_qty": 0.4,
+       "last_px": 100.0,
+       "commission": 0.04,
+       "liquidity_side": "taker",
+       "ts": 2,
+       "mark_price": 100.2,
+       "position_side": "BOTH"
+      },
+      "ts": 2,
+      "type": "OrderFilled"
+     }
+    }
+   ],
+   "expect": {
+    "balance": "bfa47ae147ae147b",
+    "realized_pnl": "0000000000000000",
+    "fees_paid": "3fa47ae147ae147b",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "equity_all": "40c388051eb851eb",
+    "positions": [
+     [
+      "sim",
+      "BTCUSDT",
+      "BOTH",
+      "3fd999999999999a",
+      "4059000000000000"
+     ]
+    ],
+    "marks": [
+     [
+      "sim",
+      "BTCUSDT",
+      "40590ccccccccccd"
+     ]
+    ],
+    "registry": [
+     [
+      "a1",
+      "FILLED",
+      "3fd999999999999a",
+      "4059000000000000",
+      "v7"
+     ]
+    ],
+    "denied": [],
+    "delivered": [
+     "FillEvent",
+     "OrderFilled",
+     "OrderSubmitted",
+     "OrderAccepted",
+     "OrderFilled",
+     "OrderFilled"
+    ],
+    "submissions": [
+     [
+      "a1",
+      "4059000000000000",
+      "3ff0000000000000"
+     ]
+    ],
+    "cancels": [],
+    "detached": false,
+    "position_size": "3fd999999999999a",
+    "total_exposure": "40440a3d70a3d70b"
+   }
+  },
+  {
+   "name": "unknown_coid",
+   "venue": "sim",
+   "symbol": "BTCUSDT",
+   "multiplier": 1.0,
+   "client": "recording",
+   "sim_mark": 100.0,
+   "seed_cash": 10000.0,
+   "limits": null,
+   "actions": [
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "ghost",
+      "ts": 4,
+      "type": "OrderSubmitted"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "trade_id": "tx",
+      "client_order_id": "ghost",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "last_qty": 2.0,
+      "last_px": 99.0,
+      "commission": 0.0,
+      "liquidity_side": "taker",
+      "ts": 5,
+      "mark_price": 99.5,
+      "position_side": "BOTH",
+      "type": "FillEvent"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "ghost",
+      "fill": {
+       "trade_id": "tx",
+       "client_order_id": "ghost",
+       "venue": "sim",
+       "symbol": "BTCUSDT",
+       "side": 1,
+       "last_qty": 2.0,
+       "last_px": 99.0,
+       "commission": 0.0,
+       "liquidity_side": "taker",
+       "ts": 5,
+       "mark_price": 99.5,
+       "position_side": "BOTH"
+      },
+      "ts": 5,
+      "type": "OrderFilled"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "ghost",
+      "reason": "expired",
+      "ts": 6,
+      "type": "OrderCanceled"
+     }
+    }
+   ],
+   "expect": {
+    "balance": "0000000000000000",
+    "realized_pnl": "0000000000000000",
+    "fees_paid": "0000000000000000",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "equity_all": "40c3888000000000",
+    "positions": [
+     [
+      "sim",
+      "BTCUSDT",
+      "BOTH",
+      "4000000000000000",
+      "4058c00000000000"
+     ]
+    ],
+    "marks": [
+     [
+      "sim",
+      "BTCUSDT",
+      "4058e00000000000"
+     ]
+    ],
+    "registry": [],
+    "denied": [],
+    "delivered": [
+     "OrderSubmitted",
+     "FillEvent",
+     "OrderFilled",
+     "OrderCanceled"
+    ],
+    "submissions": [],
+    "cancels": [],
+    "detached": false,
+    "position_size": "4000000000000000",
+    "total_exposure": "4068e00000000000"
+   }
+  },
+  {
+   "name": "filters_and_flip",
+   "venue": "sim",
+   "symbol": "BTCUSDT",
+   "multiplier": 1.0,
+   "client": "recording",
+   "sim_mark": 100.0,
+   "seed_cash": 10000.0,
+   "limits": null,
+   "actions": [
+    {
+     "do": "event",
+     "event": {
+      "trade_id": "t1",
+      "client_order_id": "a1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "last_qty": 0.4,
+      "last_px": 100.0,
+      "commission": 0.04,
+      "liquidity_side": "taker",
+      "ts": 2,
+      "mark_price": 100.2,
+      "position_side": "BOTH",
+      "type": "FillEvent"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "trade_id": "te",
+      "client_order_id": "e1",
+      "venue": "sim",
+      "symbol": "ETHUSDT",
+      "side": 1,
+      "last_qty": 3.0,
+      "last_px": 2000.0,
+      "commission": 0.0,
+      "liquidity_side": "taker",
+      "ts": 0,
+      "mark_price": 2001.0,
+      "position_side": "BOTH",
+      "type": "FillEvent"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "venue": "sim",
+      "symbol": "ETHUSDT",
+      "position_side": "BOTH",
+      "funding_rate": 0.0001,
+      "amount": -1.25,
+      "mark_price": null,
+      "ts": 7,
+      "type": "FundingEvent"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "position_side": "BOTH",
+      "funding_rate": 0.0001,
+      "amount": -0.75,
+      "mark_price": 100.4,
+      "ts": 8,
+      "type": "FundingEvent"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "venue": "sim",
+      "symbol": "ETHUSDT",
+      "position_side": "BOTH",
+      "qty": 0.0,
+      "liq_price": 1800.0,
+      "fee": 2.0,
+      "ts": 9,
+      "trade_id": "lq-eth",
+      "type": "PositionLiquidated"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "venue": "other",
+      "balances": [
+       [
+        "USDT",
+        555.0
+       ]
+      ],
+      "ts": 10,
+      "type": "AccountState"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "venue": "sim",
+      "balances": [
+       [
+        "BNB",
+        1.0
+       ],
+       [
+        "USDT",
+        1234.5
+       ]
+      ],
+      "ts": 11,
+      "type": "AccountState"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "venue": "sim",
+      "balances": [
+       [
+        "BTC",
+        0.5
+       ]
+      ],
+      "ts": 12,
+      "type": "AccountState"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "venue": "sim",
+      "balances": [
+       [
+        "BTC",
+        0.5
+       ],
+       [
+        "ETH",
+        2.0
+       ]
+      ],
+      "ts": 13,
+      "type": "AccountState"
+     }
+    }
+   ],
+   "expect": {
+    "balance": "4004000000000000",
+    "realized_pnl": "0000000000000000",
+    "fees_paid": "3fa47ae147ae147b",
+    "funding_paid": "bfe8000000000000",
+    "balance_mode": "authoritative",
+    "equity_all": "4004a3d70a3d70a6",
+    "positions": [
+     [
+      "sim",
+      "BTCUSDT",
+      "BOTH",
+      "3fd999999999999a",
+      "4059000000000000"
+     ]
+    ],
+    "marks": [
+     [
+      "sim",
+      "BTCUSDT",
+      "40590ccccccccccd"
+     ]
+    ],
+    "registry": [],
+    "denied": [],
+    "delivered": [
+     "FillEvent",
+     "FillEvent",
+     "FundingEvent",
+     "FundingEvent",
+     "PositionLiquidated",
+     "AccountState",
+     "AccountState",
+     "AccountState",
+     "AccountState"
+    ],
+    "submissions": [],
+    "cancels": [],
+    "detached": false,
+    "position_size": "3fd999999999999a",
+    "total_exposure": "40440a3d70a3d70b"
+   }
+  },
+  {
+   "name": "denials",
+   "venue": "sim",
+   "symbol": "BTCUSDT",
+   "multiplier": 1.0,
+   "client": "recording",
+   "sim_mark": 100.0,
+   "seed_cash": 10000.0,
+   "limits": {
+    "tick_size": null,
+    "lot_size": null,
+    "min_notional": 5.0,
+    "max_notional_per_order": null,
+    "max_total_exposure": null,
+    "max_orders_per_window": null,
+    "window_ms": 1000,
+    "block_reduce_only_overshoot": true
+   },
+   "actions": [
+    {
+     "do": "set_state",
+     "state": "HALTED"
+    },
+    {
+     "do": "submit",
+     "now_ms": 0,
+     "request": {
+      "client_order_id": "d1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "set_state",
+     "state": "REDUCING"
+    },
+    {
+     "do": "event",
+     "event": {
+      "trade_id": "seed",
+      "client_order_id": "d0",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "last_qty": 2.0,
+      "last_px": 100.0,
+      "commission": 0.0,
+      "liquidity_side": "taker",
+      "ts": 0,
+      "mark_price": 100.0,
+      "position_side": "BOTH",
+      "type": "FillEvent"
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 1,
+     "request": {
+      "client_order_id": "d2",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 2,
+     "request": {
+      "client_order_id": "d3",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": -1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "set_state",
+     "state": "ACTIVE"
+    },
+    {
+     "do": "submit",
+     "now_ms": 3,
+     "request": {
+      "client_order_id": "d4",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 0.01,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 4,
+     "request": {
+      "client_order_id": "d5",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 3,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    }
+   ],
+   "expect": {
+    "balance": "0000000000000000",
+    "realized_pnl": "0000000000000000",
+    "fees_paid": "0000000000000000",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "equity_all": "40c3880000000000",
+    "positions": [
+     [
+      "sim",
+      "BTCUSDT",
+      "BOTH",
+      "4000000000000000",
+      "4059000000000000"
+     ]
+    ],
+    "marks": [
+     [
+      "sim",
+      "BTCUSDT",
+      "4059000000000000"
+     ]
+    ],
+    "registry": [
+     [
+      "d3",
+      "INITIALIZED",
+      "0000000000000000",
+      "0000000000000000",
+      null
+     ]
+    ],
+    "denied": [
+     {
+      "coid": "d1",
+      "reason": "halted"
+     },
+     {
+      "coid": "d2",
+      "reason": "reduce-only"
+     },
+     {
+      "coid": "d4",
+      "reason": "below-min-notional"
+     },
+     {
+      "coid": "d5",
+      "reason": "invalid-side"
+     }
+    ],
+    "delivered": [
+     "OrderDenied",
+     "FillEvent",
+     "OrderDenied",
+     "OrderDenied",
+     "OrderDenied"
+    ],
+    "submissions": [
+     [
+      "d3",
+      "4059000000000000",
+      "3ff0000000000000"
+     ]
+    ],
+    "cancels": [],
+    "detached": false,
+    "position_size": "4000000000000000",
+    "total_exposure": "4069000000000000"
+   }
+  },
+  {
+   "name": "throttle",
+   "venue": "sim",
+   "symbol": "BTCUSDT",
+   "multiplier": 1.0,
+   "client": "recording",
+   "sim_mark": 100.0,
+   "seed_cash": 10000.0,
+   "limits": {
+    "tick_size": null,
+    "lot_size": null,
+    "min_notional": null,
+    "max_notional_per_order": null,
+    "max_total_exposure": null,
+    "max_orders_per_window": 2,
+    "window_ms": 1000,
+    "block_reduce_only_overshoot": false
+   },
+   "actions": [
+    {
+     "do": "submit",
+     "now_ms": 0,
+     "request": {
+      "client_order_id": "h0",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 100,
+     "request": {
+      "client_order_id": "h1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 200,
+     "request": {
+      "client_order_id": "h2",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 300,
+     "request": {
+      "client_order_id": "h3",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 999,
+     "request": {
+      "client_order_id": "h4",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 1000,
+     "request": {
+      "client_order_id": "h5",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 1201,
+     "request": {
+      "client_order_id": "h6",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 2500,
+     "request": {
+      "client_order_id": "h7",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    }
+   ],
+   "expect": {
+    "balance": "0000000000000000",
+    "realized_pnl": "0000000000000000",
+    "fees_paid": "0000000000000000",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "equity_all": "40c3880000000000",
+    "positions": [],
+    "marks": [],
+    "registry": [
+     [
+      "h0",
+      "INITIALIZED",
+      "0000000000000000",
+      "0000000000000000",
+      null
+     ],
+     [
+      "h1",
+      "INITIALIZED",
+      "0000000000000000",
+      "0000000000000000",
+      null
+     ],
+     [
+      "h5",
+      "INITIALIZED",
+      "0000000000000000",
+      "0000000000000000",
+      null
+     ],
+     [
+      "h6",
+      "INITIALIZED",
+      "0000000000000000",
+      "0000000000000000",
+      null
+     ],
+     [
+      "h7",
+      "INITIALIZED",
+      "0000000000000000",
+      "0000000000000000",
+      null
+     ]
+    ],
+    "denied": [
+     {
+      "coid": "h2",
+      "reason": "rate-limited"
+     },
+     {
+      "coid": "h3",
+      "reason": "rate-limited"
+     },
+     {
+      "coid": "h4",
+      "reason": "rate-limited"
+     }
+    ],
+    "delivered": [
+     "OrderDenied",
+     "OrderDenied",
+     "OrderDenied"
+    ],
+    "submissions": [
+     [
+      "h0",
+      "4059000000000000",
+      "3ff0000000000000"
+     ],
+     [
+      "h1",
+      "4059000000000000",
+      "3ff0000000000000"
+     ],
+     [
+      "h5",
+      "4059000000000000",
+      "3ff0000000000000"
+     ],
+     [
+      "h6",
+      "4059000000000000",
+      "3ff0000000000000"
+     ],
+     [
+      "h7",
+      "4059000000000000",
+      "3ff0000000000000"
+     ]
+    ],
+    "cancels": [],
+    "detached": false,
+    "position_size": "0000000000000000",
+    "total_exposure": "0000000000000000"
+   }
+  },
+  {
+   "name": "normalization",
+   "venue": "sim",
+   "symbol": "BTCUSDT",
+   "multiplier": 1.0,
+   "client": "recording",
+   "sim_mark": 100.0,
+   "seed_cash": 10000.0,
+   "limits": {
+    "tick_size": 0.5,
+    "lot_size": 0.1,
+    "min_notional": null,
+    "max_notional_per_order": null,
+    "max_total_exposure": null,
+    "max_orders_per_window": null,
+    "window_ms": 1000,
+    "block_reduce_only_overshoot": false
+   },
+   "actions": [
+    {
+     "do": "submit",
+     "now_ms": 0,
+     "request": {
+      "client_order_id": "n1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 0.25,
+      "order_type": "limit",
+      "price": 101.25,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 1,
+     "request": {
+      "client_order_id": "n2",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": -1,
+      "qty": 0.35,
+      "order_type": "limit",
+      "price": 101.75,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 2,
+     "request": {
+      "client_order_id": "n3",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "stop",
+      "price": null,
+      "trigger_price": 99.9,
+      "reduce_only": false,
+      "ts": 0,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    }
+   ],
+   "expect": {
+    "balance": "0000000000000000",
+    "realized_pnl": "0000000000000000",
+    "fees_paid": "0000000000000000",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "equity_all": "40c3880000000000",
+    "positions": [],
+    "marks": [],
+    "registry": [
+     [
+      "n1",
+      "INITIALIZED",
+      "0000000000000000",
+      "0000000000000000",
+      null
+     ],
+     [
+      "n2",
+      "INITIALIZED",
+      "0000000000000000",
+      "0000000000000000",
+      null
+     ],
+     [
+      "n3",
+      "INITIALIZED",
+      "0000000000000000",
+      "0000000000000000",
+      null
+     ]
+    ],
+    "denied": [],
+    "delivered": [],
+    "submissions": [
+     [
+      "n1",
+      "4059400000000000",
+      "3fc999999999999a"
+     ],
+     [
+      "n2",
+      "4059800000000000",
+      "3fd3333333333334"
+     ],
+     [
+      "n3",
+      null,
+      "3ff0000000000000"
+     ]
+    ],
+    "cancels": [],
+    "detached": false,
+    "position_size": "0000000000000000",
+    "total_exposure": "0000000000000000"
+   }
+  },
+  {
+   "name": "liquidation_hedge",
+   "venue": "sim",
+   "symbol": "BTCUSDT",
+   "multiplier": 1.0,
+   "client": "recording",
+   "sim_mark": 100.0,
+   "seed_cash": 10000.0,
+   "limits": null,
+   "actions": [
+    {
+     "do": "submit",
+     "now_ms": 0,
+     "request": {
+      "client_order_id": "L1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 2.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 1,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 1,
+     "request": {
+      "client_order_id": "S1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": -1,
+      "qty": 3.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 2,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "L1",
+      "ts": 1,
+      "type": "OrderSubmitted"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "L1",
+      "venue_order_id": "vL",
+      "ts": 1,
+      "type": "OrderAccepted"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "S1",
+      "ts": 2,
+      "type": "OrderSubmitted"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "S1",
+      "venue_order_id": "vS",
+      "ts": 2,
+      "type": "OrderAccepted"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "trade_id": "tl",
+      "client_order_id": "L1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "last_qty": 2.0,
+      "last_px": 100.0,
+      "commission": 0.0,
+      "liquidity_side": "taker",
+      "ts": 0,
+      "mark_price": 100.0,
+      "position_side": "LONG",
+      "type": "FillEvent"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "trade_id": "ts",
+      "client_order_id": "S1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": -1,
+      "last_qty": 3.0,
+      "last_px": 100.0,
+      "commission": 0.0,
+      "liquidity_side": "taker",
+      "ts": 0,
+      "mark_price": 100.0,
+      "position_side": "SHORT",
+      "type": "FillEvent"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "position_side": "SHORT",
+      "qty": 1.0,
+      "liq_price": 104.0,
+      "fee": 0.5,
+      "ts": 3,
+      "trade_id": "lq1",
+      "type": "PositionLiquidated"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "position_side": "SHORT",
+      "qty": 1.0,
+      "liq_price": 104.0,
+      "fee": 0.5,
+      "ts": 3,
+      "trade_id": "lq1",
+      "type": "PositionLiquidated"
+     }
+    },
+    {
+     "do": "event",
+     "event": {
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "position_side": "SHORT",
+      "qty": 0.0,
+      "liq_price": 105.0,
+      "fee": 0.25,
+      "ts": 4,
+      "trade_id": "",
+      "type": "PositionLiquidated"
+     }
+    }
+   ],
+   "expect": {
+    "balance": "bfe8000000000000",
+    "realized_pnl": "c02c000000000000",
+    "fees_paid": "0000000000000000",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "equity_all": "40c380a000000000",
+    "positions": [
+     [
+      "sim",
+      "BTCUSDT",
+      "LONG",
+      "4000000000000000",
+      "4059000000000000"
+     ],
+     [
+      "sim",
+      "BTCUSDT",
+      "SHORT",
+      "0000000000000000",
+      "0000000000000000"
+     ]
+    ],
+    "marks": [
+     [
+      "sim",
+      "BTCUSDT",
+      "4059000000000000"
+     ]
+    ],
+    "registry": [
+     [
+      "L1",
+      "ACCEPTED",
+      "0000000000000000",
+      "0000000000000000",
+      "vL"
+     ],
+     [
+      "S1",
+      "LIQUIDATED",
+      "0000000000000000",
+      "0000000000000000",
+      "vS"
+     ]
+    ],
+    "denied": [],
+    "delivered": [
+     "OrderSubmitted",
+     "OrderAccepted",
+     "OrderSubmitted",
+     "OrderAccepted",
+     "FillEvent",
+     "FillEvent",
+     "PositionLiquidated",
+     "PositionLiquidated",
+     "PositionLiquidated"
+    ],
+    "submissions": [
+     [
+      "L1",
+      "4059000000000000",
+      "4000000000000000"
+     ],
+     [
+      "S1",
+      "4059000000000000",
+      "4008000000000000"
+     ]
+    ],
+    "cancels": [],
+    "detached": false,
+    "position_size": "0000000000000000",
+    "total_exposure": "4069000000000000"
+   }
+  },
+  {
+   "name": "snapshot_seed",
+   "venue": "sim",
+   "symbol": "BTCUSDT",
+   "multiplier": 1.0,
+   "client": "recording",
+   "sim_mark": 100.0,
+   "seed_cash": 10000.0,
+   "limits": null,
+   "actions": [
+    {
+     "do": "snapshot",
+     "snapshot": {
+      "positions": [
+       [
+        "BTCUSDT",
+        1.5
+       ],
+       [
+        "BTCUSDT",
+        -0.5
+       ]
+      ],
+      "open_orders": [
+       {
+        "request": {
+         "client_order_id": "snap1",
+         "venue": "sim",
+         "symbol": "BTCUSDT",
+         "side": 1,
+         "qty": 0.5,
+         "order_type": "limit",
+         "price": 98.0,
+         "trigger_price": null,
+         "reduce_only": false,
+         "ts": 0,
+         "parent_order_id": null,
+         "linked_order_ids": [],
+         "order_list_id": null,
+         "contingency_type": null,
+         "weight": 0.0,
+         "stop": null,
+         "trail": null,
+         "extreme": null,
+         "on_close": false
+        },
+        "status": "ACCEPTED",
+        "venue_order_id": "vSnap",
+        "filled_qty": 0.0,
+        "avg_fill_px": 0.0
+       }
+      ],
+      "position_avg_px": [
+       [
+        "BTCUSDT",
+        95.0
+       ],
+       [
+        "BTCUSDT",
+        105.0
+       ]
+      ],
+      "position_mark_px": [
+       [
+        "BTCUSDT",
+        101.0
+       ]
+      ],
+      "position_sides": [
+       [
+        "BTCUSDT",
+        "LONG"
+       ],
+       [
+        "BTCUSDT",
+        "SHORT"
+       ]
+      ],
+      "balance": 2500.0
+     }
+    },
+    {
+     "do": "cancel",
+     "coid": "missing"
+    },
+    {
+     "do": "cancel",
+     "coid": "snap1"
+    },
+    {
+     "do": "event",
+     "event": {
+      "client_order_id": "snap1",
+      "reason": "user",
+      "ts": 5,
+      "type": "OrderCanceled"
+     }
+    },
+    {
+     "do": "cancel",
+     "coid": "snap1"
+    },
+    {
+     "do": "shutdown"
+    }
+   ],
+   "expect": {
+    "balance": "40a3880000000000",
+    "realized_pnl": "0000000000000000",
+    "fees_paid": "0000000000000000",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "equity_all": "40c86f8000000000",
+    "positions": [
+     [
+      "sim",
+      "BTCUSDT",
+      "LONG",
+      "3ff8000000000000",
+      "4057c00000000000"
+     ],
+     [
+      "sim",
+      "BTCUSDT",
+      "SHORT",
+      "bfe0000000000000",
+      "405a400000000000"
+     ]
+    ],
+    "marks": [
+     [
+      "sim",
+      "BTCUSDT",
+      "4059400000000000"
+     ]
+    ],
+    "registry": [
+     [
+      "snap1",
+      "CANCELED",
+      "0000000000000000",
+      "0000000000000000",
+      "vSnap"
+     ]
+    ],
+    "denied": [],
+    "delivered": [
+     "OrderCanceled"
+    ],
+    "submissions": [],
+    "cancels": [
+     "snap1"
+    ],
+    "detached": true,
+    "position_size": "0000000000000000",
+    "total_exposure": "4069400000000000"
+   }
+  },
+  {
+   "name": "snapshot_net",
+   "venue": "sim",
+   "symbol": "BTCUSDT",
+   "multiplier": 1.0,
+   "client": "recording",
+   "sim_mark": 100.0,
+   "seed_cash": 10000.0,
+   "limits": null,
+   "actions": [
+    {
+     "do": "snapshot",
+     "snapshot": {
+      "positions": [
+       [
+        "BTCUSDT",
+        2.0
+       ]
+      ],
+      "open_orders": [],
+      "position_avg_px": [
+       [
+        "BTCUSDT",
+        97.5
+       ]
+      ],
+      "position_mark_px": [
+       [
+        "BTCUSDT",
+        99.0
+       ]
+      ],
+      "position_sides": [],
+      "balance": 0.0
+     }
+    }
+   ],
+   "expect": {
+    "balance": "0000000000000000",
+    "realized_pnl": "0000000000000000",
+    "fees_paid": "0000000000000000",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "equity_all": "40c3898000000000",
+    "positions": [
+     [
+      "sim",
+      "BTCUSDT",
+      "BOTH",
+      "4000000000000000",
+      "4058600000000000"
+     ]
+    ],
+    "marks": [
+     [
+      "sim",
+      "BTCUSDT",
+      "4058c00000000000"
+     ]
+    ],
+    "registry": [],
+    "denied": [],
+    "delivered": [],
+    "submissions": [],
+    "cancels": [],
+    "detached": false,
+    "position_size": "4000000000000000",
+    "total_exposure": "4068c00000000000"
+   }
+  },
+  {
+   "name": "sim_roundtrip",
+   "venue": "sim",
+   "symbol": "BTCUSDT",
+   "multiplier": 1.0,
+   "client": "sim",
+   "sim_mark": 101.5,
+   "seed_cash": 10000.0,
+   "limits": null,
+   "actions": [
+    {
+     "do": "submit",
+     "now_ms": 0,
+     "request": {
+      "client_order_id": "c1",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.5,
+      "order_type": "limit",
+      "price": 100.5,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 1,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 1,
+     "request": {
+      "client_order_id": "c2",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": -1,
+      "qty": 0.5,
+      "order_type": "market",
+      "price": null,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 2,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "submit",
+     "now_ms": 2,
+     "request": {
+      "client_order_id": "c3",
+      "venue": "sim",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "qty": 1.0,
+      "order_type": "limit",
+      "price": 100.0,
+      "trigger_price": null,
+      "reduce_only": false,
+      "ts": 3,
+      "parent_order_id": null,
+      "linked_order_ids": [],
+      "order_list_id": null,
+      "contingency_type": null,
+      "weight": 0.0,
+      "stop": null,
+      "trail": null,
+      "extreme": null,
+      "on_close": false
+     }
+    },
+    {
+     "do": "cancel",
+     "coid": "c3"
+    }
+   ],
+   "expect": {
+    "balance": "0000000000000000",
+    "realized_pnl": "3fe0000000000000",
+    "fees_paid": "0000000000000000",
+    "funding_paid": "0000000000000000",
+    "balance_mode": "delta",
+    "equity_all": "40c3880000000000",
+    "positions": [
+     [
+      "sim",
+      "BTCUSDT",
+      "BOTH",
+      "4000000000000000",
+      "4059100000000000"
+     ]
+    ],
+    "marks": [
+     [
+      "sim",
+      "BTCUSDT",
+      "4059000000000000"
+     ]
+    ],
+    "registry": [
+     [
+      "c1",
+      "FILLED",
+      "3ff8000000000000",
+      "4059200000000000",
+      "sim1"
+     ],
+     [
+      "c2",
+      "FILLED",
+      "3fe0000000000000",
+      "4059600000000000",
+      "sim2"
+     ],
+     [
+      "c3",
+      "FILLED",
+      "3ff0000000000000",
+      "4059000000000000",
+      "sim3"
+     ]
+    ],
+    "denied": [],
+    "delivered": [
+     "OrderSubmitted",
+     "OrderAccepted",
+     "FillEvent",
+     "OrderFilled",
+     "OrderSubmitted",
+     "OrderAccepted",
+     "FillEvent",
+     "OrderFilled",
+     "OrderSubmitted",
+     "OrderAccepted",
+     "FillEvent",
+     "OrderFilled"
+    ],
+    "submissions": [
+     [
+      "c1",
+      "4059200000000000",
+      "3ff8000000000000"
+     ],
+     [
+      "c2",
+      null,
+      "3fe0000000000000"
+     ],
+     [
+      "c3",
+      "4059000000000000",
+      "3ff0000000000000"
+     ]
+    ],
+    "cancels": [],
+    "detached": false,
+    "position_size": "4000000000000000",
+    "total_exposure": "4069000000000000"
+   }
+  }
+ ]
+}

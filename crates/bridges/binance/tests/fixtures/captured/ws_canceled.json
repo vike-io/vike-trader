@@ -1,0 +1,52 @@
+{
+  "_provenance": {
+    "captured_at_utc": "2026-07-22T08:53:42Z",
+    "frame_count": 1,
+    "kind": "ws_canceled",
+    "redacted_paths": [],
+    "sanitizer": "vike-bridge-core::capture v1",
+    "source": "binance spot DEMO (wss://demo-ws-api.binance.com/ws-api/v3) — binance_capture_smoke ladder: rest-LIMIT/cancel + market round-trip, real demo orders, account left flat",
+    "venue": "binance"
+  },
+  "frames": [
+    {
+      "event": {
+        "C": "vtrcapR10420137",
+        "E": 1784710420505,
+        "F": "0.00000000",
+        "I": 101419739209,
+        "L": "0.00000000",
+        "M": false,
+        "N": null,
+        "O": 1784710420254,
+        "P": "0.00000000",
+        "Q": "0.00000000",
+        "S": "BUY",
+        "T": 1784710420504,
+        "V": "EXPIRE_MAKER",
+        "W": 1784710420254,
+        "X": "CANCELED",
+        "Y": "0.00000000",
+        "Z": "0.00000000",
+        "c": "oF1GtgDPWknCIgyQz9ZXhX",
+        "e": "executionReport",
+        "f": "GTC",
+        "g": -1,
+        "i": 50361212367,
+        "l": "0.00000000",
+        "m": false,
+        "n": "0",
+        "o": "LIMIT",
+        "p": "59375.52000000",
+        "q": "0.00013000",
+        "r": "NONE",
+        "s": "BTCUSDT",
+        "t": -1,
+        "w": false,
+        "x": "CANCELED",
+        "z": "0.00000000"
+      },
+      "subscriptionId": 0
+    }
+  ]
+}
