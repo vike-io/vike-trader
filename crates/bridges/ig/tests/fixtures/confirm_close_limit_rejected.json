@@ -1,0 +1,23 @@
+{
+  "_provenance": "REAL GET /confirms/{dealReference} reply captured from demo-api.ig.com on 2026-08-22 by tests/ig_limit_close_probe.rs (the confirm's own `date` stamp is in the account's local timezone). The request: POST /positions/otc + `_method: DELETE` (Version 1) with {\"direction\":\"SELL\",\"epic\":\"IX.D.SUNNAS.BMU.IP\",\"expiry\":\"-\",\"level\":\"29448.2\",\"orderType\":\"LIMIT\",\"size\":0.5} against an open 0.5 LONG with bid 29320.1 / offer 29360.1 — a NON-marketable sell level 0.3% above the offer, exactly what a resting reduce-only limit close would be. Verbatim except this key. It is the evidence that IG's close endpoint CANNOT rest: the HTTP layer answered 200 with a dealReference, and the confirm then REJECTED the deal as LIMIT_ORDER_WRONG_SIDE_OF_MARKET — execute-at-level-or-better-NOW semantics, not an order book. The position stayed open (net 0.5, 1 deal) and GET /workingorders stayed empty. The same probe run measured the two neighbours: the MARKETABLE twin (level 29232.1, below the bid) executed IMMEDIATELY at the bid 29320.1 (dealStatus ACCEPTED, status CLOSED — level-or-better, never resting), and orderType STOP was refused at the gateway before any deal existed (HTTP 400, body `invalid.request.orderType`).",
+  "date": "2026-08-21T22:54:52.419",
+  "dealId": "DIAAAAYB663FEAE",
+  "dealReference": "W3FPJTUK2MCTYS9",
+  "dealStatus": "REJECTED",
+  "direction": "SELL",
+  "epic": "IX.D.SUNNAS.BMU.IP",
+  "expiry": null,
+  "guaranteedStop": false,
+  "level": null,
+  "limitDistance": null,
+  "limitLevel": null,
+  "profit": null,
+  "profitCurrency": null,
+  "reason": "LIMIT_ORDER_WRONG_SIDE_OF_MARKET",
+  "size": null,
+  "status": null,
+  "stopDistance": null,
+  "stopLevel": null,
+  "trailingStop": false,
+  "affectedDeals": []
+}

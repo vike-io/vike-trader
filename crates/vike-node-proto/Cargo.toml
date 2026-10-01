@@ -1,0 +1,52 @@
+[package]
+name = "vike-node-proto"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The substrate BOTH node protocols share: the HMAC-SHA256 nonce-challenge handshake generalized over its domain separator (auth), and the length-prefixed frame codec (frame). No vike-* dependency of any kind — it is the crate below vike-datahub-client and vike-tradehub-client, which speak the two protocols and now depend on neither each other nor anything but this."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `leaf` — a crate that
+# names AT MOST the floor. This one names NOTHING: no vike-* dependency at all, which is the
+# property that lets both node protocols sit above it as PEERS rather than as a ladder.
+#
+# ⚠ **A new crate here was CONSIDERED and REFUSED once, and both halves of that refusal have since
+# failed.** `crates/vike-datahub-client/src/node_auth.rs` argued — correctly, when it was written —
+# that "a NEW crate for ~150 lines would buy a workspace member, a CI roster row and a layer
+# negotiation to hold a module that already has a home its sibling depends on". Measured 2026-09-23:
+#
+#   * that module is **937 lines**, not ~150. The premise moved by a factor of six.
+#   * the home argument was CIRCULAR. It rested on `vike-datahub-client` being "the LIGHT crate
+#     BELOW it (layer 30 vs 50)" — but `vike-tradehub-client`'s ONLY vike-* dependency was
+#     `vike-datahub-client`, so it sat at 50 *because* the shared module lived there. The module
+#     lived there because the rank said below; the rank said below because the module lived there.
+#
+# What the workspace rule actually asks for is what this crate is: *when two sides must not
+# disagree, the cure is a shared crate BELOW both, not a shared crate containing both*. The old home
+# was a shared crate CONTAINING one of the two.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+# The HMAC-SHA256 the handshake signs with — the EXACT crates
+# `crates/vike-bridge-core/src/signer.rs` already links, so this adds ZERO new external packages to
+# the workspace audit surface (deny.toml bans a second crypto crate). The `Mac` trait's
+# constant-time `verify_slice` is the verification path — no `subtle`, no `==` on the mac bytes.
+hmac = { workspace = true }
+sha2 = { workspace = true }
+# The per-connection auth NONCE (`auth::fresh_nonce`) — 32 bytes from the OS-backed default
+# generator, which is what makes a captured handshake transcript unreplayable against a later
+# connection.
+#
+# ⚠ It lives in THIS crate rather than in either server for a reason that outlived its original
+# statement: `crates/vike-ops/tests/clock_pin.rs`'s `no_scoped_crate_declares_an_rng_dependency`
+# forbids `vike-backtest` — one of the two daemons speaking this protocol — from naming an RNG at
+# all, because randomness in that crate's fold breaks replay exactly as a wall clock does.
+rand = { workspace = true }
+# `Scope`/`NodeKeys` derive on the auth side; the frame codec serializes and deserializes whatever
+# its caller hands it, which is what keeps this crate ignorant of BOTH protocols' schemas.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

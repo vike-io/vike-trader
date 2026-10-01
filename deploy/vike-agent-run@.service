@@ -1,0 +1,205 @@
+# systemd TEMPLATE unit for ONE unattended agent session, in the ONE-PROJECT-FOLDER shape.
+# `%i` is the TASK (`vike-agent-run@node-review`). Driven by deploy/vike-agent-run@.timer.
+# See docs/ops/agent-schedule.md for the runbook, the read-only argument and how to read the record.
+#
+# ⚠ THIS UNIT IS THE WHOLE SCHEDULER, AND THAT IS A DESIGN DECISION, NOT AN OMISSION. The runner
+# binary has no cron expression, no daemon mode, no catch-up and no retry: systemd already does
+# missed firings (Persistent=), jitter (RandomizedDelaySec=), failure notification (OnFailure=) and
+# single-instance behaviour better than anything that could be written in Rust, and a scheduler in
+# the binary would be a second place the cadence is written down.
+# docs/decisions/0040-the-unattended-agent-runner-is-local-and-read-only.md carries the argument.
+#
+# ⚠ READ-ONLY IS AN ExecStart ARGUMENT, WHICH IS WHY IT CANNOT BE SWITCHED FROM .env BELOW. The
+# runner passes `--profile read-only` to the MCP server it spawns unless `--allow-writes` is on this
+# ExecStart line, and it then CROSS-CHECKS the roster the server advertised back and refuses the run
+# if a destructive tool is on it (crates/vike-agent-eval/src/unattended.rs's `refuse_write_tools`).
+# Adding `--allow-writes` here gives a scheduled, unwatched agent the ability to submit, cancel,
+# modify, flatten and halt on the node named below. Do not add it without meaning it; the binary
+# prints a banner naming the node when you do, and every run's record stamps that the ring was open.
+#
+# ⚠ EVERY PATH BELOW IS THE PLACEHOLDER PROJECT ROOT /srv/vike-<unit>, and the NODE ADDRESS is a
+# placeholder too. Substitute your own everywhere in the installed copy and check nothing was
+# missed — the same recipe deploy/vike-cohort-collector@.service prescribes:
+#
+#   R=/your/project/root
+#   sed "s,/srv/vike-<unit>,$R,g" deploy/vike-agent-run@.service > /tmp/u.service
+#   grep -n /srv/vike-<unit> /tmp/u.service      # must print NOTHING
+#   $EDITOR /tmp/u.service                          # …then set --node to your daemon's address
+#   sudo install -Dm644 /tmp/u.service /etc/systemd/system/vike-agent-run@.service
+#   sudo install -Dm644 deploy/vike-agent-run@.timer /etc/systemd/system/vike-agent-run@.timer
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vike-agent-run@node-review.timer
+#
+# ⚠ A SYSTEM install is the shape to prefer, and add `User=`/`Group=` naming the account that owns
+# the project root. Under a `systemd --user` manager on a stock Ubuntu box the sandbox directives at
+# the bottom are applied as NO-OPS (measured; docs/ops/tradehub-the CI box.md has the probe), so a --user
+# install gives up the whole sandbox silently.
+#
+# ⚠ IT NEEDS TWO BINARIES IN bin/, or systemd fails the unit with status=203/EXEC. Neither is a
+# release asset today (that is a declared follow-up in docs/ops/agent-schedule.md) — build and
+# install them, the way deploy/vike-cohort-collector@.service says to for its own bin:
+#   cargo build --release -p vike-agent-eval --bin vike-agent-run
+#   cargo build --release -p vike-cli --bin vike-cli
+#   install -m755 target/release/vike-agent-run /srv/vike-<unit>/bin/vike-agent-run
+#   install -m755 target/release/vike-cli       /srv/vike-<unit>/bin/vike-cli
+#
+# ⚠ IT MAY SHARE A PROJECT FOLDER WITH THE DAEMON IT WATCHES, and that is the ordinary shape: the
+# runner reads the node's OWN keys out of `<project>/settings/secrets.env` through `vike-cli`, so
+# pointing this unit's root at the trading daemon's project folder is what makes it work with no
+# credential of its own. What it must NOT do is grant itself write access to that folder's code or
+# settings — the ReadWritePaths= line at the bottom is `settings/state` for exactly that reason, and
+# crates/vike-ops/tests/deploy_layout_gate.rs refuses anything wider.
+
+[Unit]
+# The Description names `.env` deliberately: crates/vike-ops/tests/deploy_layout_gate.rs's rule 6
+# refuses a unit that ADVERTISES a property an EnvironmentFile= could falsify, and naming the source
+# is the honest form. What .env supplies here is the MODEL credential, never the tool ring — the
+# ring is the ExecStart argument above and no environment variable can widen it.
+Description=vike-agent-run — one unattended agent session for %i (the model credential comes from <project>/.env)
+After=network-online.target
+Wants=network-online.target
+# The failure notifier, attached the way deploy/vike-cohort-collector@.service attaches it. A
+# `Type=oneshot` that exits non-zero enters the FAILED state, which is what `OnFailure=` keys on —
+# and this binary DOES exit non-zero on every outcome that is not a clean answer: 1 for a failure,
+# 3 for a spent budget, 4 for a roster that did not match the ring it asked for. So a wedged node,
+# an expired model credential or a surface that widened behind your back is a page rather than a
+# line nobody reads.
+OnFailure=vike-notify@%n.service
+
+[Service]
+# One session, then exit. There is no daemon here and no stop story: the process holds one read-only
+# connection to the node, places nothing, and writes one record. `systemctl stop` on a run in flight
+# loses that run's record and nothing else; the next firing is a fresh session.
+Type=oneshot
+
+# ⚠ UNCOMMENT AND FILL THESE IN FOR THE SYSTEM INSTALL THE HEADER PRESCRIBES. Commented rather than
+# guessed because the account is per-deployment and a wrong name is a unit that will not start; but
+# a system unit with NEITHER runs as root, and then ReadWritePaths= below hands root the record.
+#User=
+#Group=
+
+WorkingDirectory=/srv/vike-<unit>
+
+# ⚠ THE ARGUMENT LIST IS THE POLICY, and three of these arguments are load-bearing rather than
+# taste:
+#
+#   --record-dir  REQUIRED by the binary, with no default at all. Every default available to it
+#                 would be a project WALK, and a second walk is $VIKE_SETTINGS_DIR-blind — it can
+#                 answer with a different project than the credentials came from. It must stay
+#                 inside the write grant at the bottom. Both halves of the record land here: this
+#                 run's own document, and the MCP server's per-call transcript, which the runner
+#                 turns on by passing --trace-dir at the same path.
+#   --node        the OPERATOR's running vike-tradehub. 127.0.0.1:7879 is the daemon's own default
+#                 bind; substitute whatever yours actually listens on. Omitting it entirely is legal
+#                 and gives a session with no node — useful for a strategy-authoring task, useless
+#                 for a review.
+#   --budget      the wall-clock ceiling. A run that reaches it ends with a RECORDED timeout rather
+#                 than a stuck process holding a connection to a live trading node until somebody
+#                 notices. Keep it comfortably under this unit's TimeoutStartSec= below, so the
+#                 runner writes its own record instead of being killed by the service manager.
+#   --driver      NAMED here rather than left to the binary's default, even though `api` IS that
+#                 default: this unit ships a sandbox measured against RUST binaries, and the
+#                 `claude-cli` driver is not one. See the note under the hardening block below
+#                 before switching it.
+#
+# ⚠ NOT `--allow-writes`. See the header. Adding it here is the one edit on this line that changes
+# what a scheduled agent is allowed to do to a live account.
+ExecStart=/srv/vike-<unit>/bin/vike-agent-run run --task %i --driver api --record-dir /srv/vike-<unit>/settings/state/agent --node 127.0.0.1:7879 --budget 900
+
+# --- PRE-FLIGHT: refuse a broken configuration instead of recording nothing in silence ------------
+# The node keys come from the CREDENTIAL STORE and an absent one means the trade tools return a
+# clean error — so a settings tree that resolves to nothing is a run that produces a record full of
+# refusals every night for a reason that looks like an outage. `vike-cli config check` resolves the
+# SAME settings directory through the SAME loader and makes the EXIT CODE the product.
+#
+# ⚠ Deliberately NOT `--strict` and NO leading `-`: `--strict` promotes warnings that must not be
+# refusals (a 0644 secrets.env), and a leading `-` makes a failed pre-check non-fatal, i.e. deletes
+# this line while appearing to have it.
+ExecStartPre=/srv/vike-<unit>/bin/vike-cli config check
+
+# The service manager's own ceiling, ABOVE the runner's --budget so the runner is the thing that
+# ends a slow run and writes its record. If this fires instead, the process is killed and the record
+# for that firing is lost — which is why the two numbers are not the same.
+TimeoutStartSec=1200
+
+# --- turn the trace FILE log DOWN -----------------------------------------------------------------
+# RUST_LOG/VIKE_LOG filter the CONSOLE only; the file layer defaults to `trace`. A nightly job that
+# left it there is how 341 GB once nearly filled the disk hosting a live trading node.
+# ⚠ The runner deliberately forms no opinion about this and sets nothing on the child it spawns —
+# the unit owns it, the way every other shipped unit does.
+Environment=VIKE_LOG_FILE_LEVEL=warn
+# ⚠ Deliberately NO VIKE_LOG_DIR — unset, the project layer resolves the rolling log to
+# <project>/settings/state/logs, which is inside the write grant below.
+
+# --- WHERE SETTINGS AND CREDENTIALS LIVE ---------------------------------------------------------
+# `<project>/settings/` holds policy.toml, config.toml, preferences.toml, flags.toml, secrets.env and
+# state/. A DEPLOYED box has a BINARY and no source checkout, so the project walk needs the
+# `settings/` marker to exist at all:
+#   install -d -m700 /srv/vike-<unit>/settings /srv/vike-<unit>/settings/state
+#
+# The node's observe/control keys go in `<project>/settings/secrets.env`, which this unit
+# deliberately does NOT load as an EnvironmentFile — `vike-cli` opens the credential store itself,
+# steered by the line below. The store must never reach the process environment;
+# deploy/vike-recorder.service and crates/vike-ops/tests/deploy_layout_gate.rs carry the full
+# argument.
+Environment=VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings
+
+# ⚠ THE MODEL CREDENTIAL GOES HERE, AND ONLY HERE. `ANTHROPIC_API_KEY` (for the `--driver api` this
+# unit ships) or `CLAUDE_CODE_OAUTH_TOKEN` (for `--driver claude-cli`, from `claude setup-token`)
+# must reach the process ENVIRONMENT, because that is where the runner reads them — they are not
+# venue credentials and nothing reads them from the credential store. The `-` makes the file
+# optional, and an ABSENT credential is a refusal rather than a silent no-op: the run exits 2 saying
+# which variable is unset, instead of recording a night in which nothing was measured.
+#
+#   umask 077; printf 'ANTHROPIC_API_KEY=%s\n' "$KEY" > /srv/vike-<unit>/.env
+#   chmod 600 /srv/vike-<unit>/.env
+#
+# ⚠ The runner REMOVES both names from the environment of the `vike-cli mcp` server it spawns, so
+# the token does not sit inside the process holding the node connection. It reaches the model client
+# and nothing else.
+EnvironmentFile=-/srv/vike-<unit>/.env
+
+# Hardening: the runner needs no privileges. It makes one outbound HTTPS connection to a model
+# provider (or spawns the local Claude Code CLI), one loopback connection to the node, and writes
+# its record. The set below is deploy/vike-cohort-collector@.service's, which is
+# deploy/vike-recorder.service's, MEASURED against the real binaries on the CI box (2026-08-17,
+# systemd 255) — see crates/vike-ops/tests/deploy_layout_gate.rs's REQUIRED_HARDENING for what each
+# line is and why PrivateNetwork= will never join it.
+#
+# ⚠ THAT MEASUREMENT COVERS RUST BINARIES ONLY, AND `--driver claude-cli` IS NOT ONE. That driver
+# spawns the locally-installed Claude Code CLI — a JIT runtime that reads its own configuration out
+# of the operator's HOME directory — and at least two lines below are hostile to it:
+# `ProtectHome=yes` hides the configuration it needs, and `MemoryDenyWriteExecute=yes` denies the
+# writable-executable pages a JIT allocates. Neither has been measured against that CLI on a real
+# box, so this file states the problem rather than shipping a guess: if you switch the ExecStart to
+# `--driver claude-cli`, expect to relax those two (`ProtectHome=read-only` is the narrower of the
+# obvious relaxations) and to find out empirically whether the SystemCallFilter deny-list needs
+# widening too. The shipped `--driver api` path is a Rust binary making one HTTPS request and is
+# covered by the measurement above.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+# ONE grant LINE naming ONE path: `<project>/settings/state`, which holds both the record directory
+# the ExecStart names and the rolling log. It reaches neither binary this unit runs nor the settings
+# files that configure them — anything writable by a unit must be data, never code.
+ReadWritePaths=/srv/vike-<unit>/settings/state
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @module @reboot @swap @raw-io @debug @clock @cpu-emulation
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0077
