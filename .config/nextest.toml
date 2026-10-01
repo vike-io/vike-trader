@@ -1,0 +1,95 @@
+# nextest configuration — auto-loaded from .config/nextest.toml at the workspace root.
+#
+# THREE profiles:
+#
+# [profile.default] — what `just test` / `just t CRATE` and any bare `cargo nextest run`
+#   use. Deliberately minimal: a per-test kill (slow-timeout) plus ONE package-scoped
+#   widening of it, NO retries — local behavior stays otherwise identical, and a test that
+#   fails locally must fail loudly on the first attempt.
+#
+# [profile.ci] — selected ONLY by the CI test job (`cargo nextest run --profile ci …` in
+#   `.github/workflows/ci.yml`). Inherits default; adds flaky-visibility output, a JUnit
+#   report, and TARGETED retries for exactly four known-flaky tests (the override at the
+#   bottom). Retries are scoped by filterset, never blanket.
+#
+# [profile.mutants] — selected ONLY by the mutation lane, through `NEXTEST_PROFILE` rather than
+#   a CLI flag (cargo-mutants owns the nextest invocation). A tighter per-test kill, for failure
+#   modes only a MUTATED tree produces. Its own block explains why, and why it is half of a pair.
+#
+# The four retried tests are the user-data WS pump unit tests in
+# `crates/vike-bridge-core/src/user_data.rs` (they span its `spawn_pump_with_resync_tests`,
+# `resync_supervisor_tests` and `idle_watchdog_tests` modules): real thread/timer races,
+# the one recorded CI flake family — they fail under CI box load, not logic.
+#
+# ⚠ DELIBERATELY NOT RETRIED: `crates/vike-core/tests/journal/gtd_expiry_journal.rs`'s
+# `the_refusal_still_stands_for_the_stuck_order_watchdog`. It fails only under
+# full-workspace load and is SUSPECTED to be a real time-dependent bug, not test noise.
+# It must stay loud until that chase concludes — do not add it (or any name outside the
+# four below) to the retry override without the investigation's verdict.
+
+[profile.default]
+# A hung test (blocking WS read, stuck join) previously could stall the CI test job to its
+# 45-minute timeout with nothing named. period = 120s marks a test slow (nextest prints it
+# and keeps waiting); terminate-after = 2 kills it after 2 periods — a hang now dies in
+# <= 4 minutes with the offending test named in the output.
+slow-timeout = { period = "120s", terminate-after = 2 }
+
+[[profile.default.overrides]]
+# ONE exception to the kill above, and it is a suite that spawns real PROCESSES rather than
+# exercising a library: `crates/vike-agent-eval` starts a paper `vike-tradehub` daemon and a
+# `vike-cli mcp` server per case, one case per shipped skill and all of them inside one test (that
+# file argues why they are one).
+# Warm, the whole suite is ~18s and this ceiling is never reached; the budget is for the
+# PATHOLOGICAL path, where every wait runs to its own bound.
+#
+# The arithmetic it is written against, so that changing either side shows up as a changed number
+# rather than as a silent kill: the crate's `LISTEN_TIMEOUT * ATTEMPTS` is 60s of node start per
+# node-bearing case and five cases stand a node up — 300s, already past the 240s above. A kill
+# arrives with NO reason attached, which is the opposite of what an evaluation harness is for, so
+# the ceiling is raised rather than the harness's own (deliberately loud) bounds lowered.
+#
+# ⚠ It widens nothing else: `filter` scopes it to this package, and every wait inside that crate
+# carries its own deadline, so this is the outer ceiling and never the operative one.
+filter = 'package(vike-agent-eval)'
+slow-timeout = { period = "120s", terminate-after = 5 }
+
+[profile.mutants]
+# Selected ONLY by `.github/workflows/mutants.yml` (via `NEXTEST_PROFILE: mutants`), because
+# cargo-mutants owns the nextest invocation and there is no CLI seam to pass `--profile` through.
+#
+# A mutant's whole job is to break code, so the mutated tree produces failure modes a normal test
+# run never sees: a loop counter mutated from `+=` to `*=` never advances. Two families come out
+# of that — one SPINS, one ALLOCATES — and they need different bounds. This is the spin bound:
+# 60s per test, against a real baseline whose slowest gate measured ~13s (`fixture_consumption_gate`
+# at 13.2s, `duplicate_shape_gate` at 10.5s), so ~4.5x headroom before an honest test is at risk.
+# The allocation family cannot be caught here at all — an allocator hits the memory ceiling long
+# before any per-test clock expires — and is bounded instead by the systemd scope's `MemoryMax` in
+# the workflow. Read the two together; neither one alone keeps the lane unwedgeable.
+#
+# ⚠ `terminate-after` counts PERIODS, PER TEST. It is NOT comparable to cargo-mutants' own
+# `--timeout`, which bounds the whole nextest RUN for one mutant: many individually-fine tests can
+# still blow the run budget, which is exactly how the 2026-08-15 wedge began.
+#
+# Cannot affect any other lane: `just test`/`just t` take the default profile and CI passes
+# `--profile ci` explicitly on the command line, which wins over this variable.
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+[profile.ci]
+# List every flaky-then-passed test in the final summary — a flake that hides in a green
+# run is a flake that never gets chased.
+final-status-level = "flaky"
+# Print a failing test's output the moment it fails AND again in the final summary block —
+# scrolling a long job log for the one red test costs more than the duplication.
+failure-output = "immediate-final"
+
+[profile.ci.junit]
+# Lands at target/nextest/ci/junit.xml on the runner. Nothing uploads it yet; producing
+# the file is step one, wiring an uploader is a separate decision.
+path = "junit.xml"
+
+[[profile.ci.overrides]]
+# The ONLY retried set — see the header comment. `test()` is a substring match on the
+# full module-qualified test name; the package() guard keeps a same-named test in another
+# crate from silently acquiring retries.
+filter = 'package(vike-bridge-core) and (test(silent_stall_trips_the_watchdog_and_reconnects) or test(a_reconnect_racing_the_supervisor_spawn_still_reconciles) or test(resync_fires_on_gen_bump_and_exits_with_the_pump) or test(on_reconcile_is_forwarded_and_fires_once_per_reconnect))'
+retries = 2

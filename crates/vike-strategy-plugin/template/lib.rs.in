@@ -1,0 +1,555 @@
+// @generated — rendered by `crates/vike-strategy-builder/src/render.rs` from this file
+// (`template/lib.rs.in`). Edit the TEMPLATE, never a rendered copy: a rendered copy lives in a
+// scratch directory under `std::env::temp_dir()` and is never committed.
+//
+// This file wraps the user's UNCHANGED entry point —
+// `pub fn build<B: HftBroker + 'static>(params: &toml::Value) -> Box<dyn Strategy<B> + Send>` —
+// in monomorphised `extern "C"` exports. The user's source is spliced in VERBATIM, marked off
+// below by its own banner comment: it is never reformatted, never wrapped in a module, and it
+// never imports this crate or learns that FFI exists. Every export below wraps its body in
+// `std::panic::catch_unwind` and returns a `PluginStatus`; a panic across a C-ABI boundary is UB,
+// so none of these may unwind (docs/superpowers/specs/2026-09-21-runtime-loaded-rust-strategies-design.md).
+//
+// ⚠ **Cross-track dependency, now RESOLVED — read this as history, not as an open question.**
+// `B` must be a CONCRETE type to monomorphise an `extern "C"` fn — a generic `extern "C" fn` does
+// not exist — and the concrete type is `vike_strategy_plugin::guest::HostBroker` (Task 2 /
+// Track A), which now exists on this branch and implements BOTH `vike_model::Broker` and
+// `vike_model::HftBroker` (`ABI_VERSION` 2 — see `crates/vike-strategy-plugin/src/abi.rs`'s own
+// doc for the bump). That closes what used to be TWO separate cross-track gaps recorded here:
+// `guest::HostBroker` not existing at all, and — even once it did — the entry contract this whole
+// design is built on being `pub fn build<B: HftBroker + 'static>(..)`, not merely `B: Broker`.
+// `HftBroker: Broker` adds four required methods with no default impl (`position(&self) -> f64`
+// with no symbol argument, `submit_limit_tagged`, `modify_tagged`, `cancel_tagged`), and
+// `HostBroker` implements all four. So `build::<HostBroker>(&params)` below compiles against the
+// REAL bound the design specifies — not a narrower `Broker`-only stand-in invented to make this
+// file compile early. Do not weaken this bound back to `Broker` for any reason: a plugin author's
+// source calls `HftBroker` methods the same way a build-time strategy's does, and narrowing the
+// bound here would silently break every strategy that does.
+
+// ⚠ **No crate-root `use` in this file, and that is a fix, not a style choice.** This template's
+// FIRST real lane run hit exactly the failure that motivates it: a plugin author's `<name>.rs`
+// conventionally opens with `use vike_model::{Bar, Broker, Strategy};` (see
+// `crates/vike-user-strategies/tests/fixture_user_data/…`'s fixtures, which every real strategy
+// file mirrors), and this wrapper needs `Bar`/`Strategy` too — so a module-level `use` here
+// collided with the user's own (`error[E0252]: the name 'Bar' is defined multiple times`,
+// measured on this branch's own lane before this comment existed). Every name this wrapper needs
+// is therefore reached through a fully-qualified path in a SIGNATURE (which resolves at module
+// scope and so still cannot collide with anything the user's file imports) or a `use` scoped
+// INSIDE a function body (which Rust confines to that block, invisible to sibling items and to
+// the spliced-in source above it). Neither shape can ever collide with whatever the user's file
+// imports at its own top level, no matter what it is.
+
+// ---- the user's unchanged strategy source, spliced in verbatim -----------------------------
+{{USER_SOURCE}}
+// ----------------------------------------------------------------------------------------------
+
+/// The live strategy instance, boxed and erased behind the raw pointer the host holds as its
+/// plugin "handle". `Send` because the host may call in from whichever thread owns its engine.
+struct PluginHandle {
+    strategy: Box<dyn ::vike_model::Strategy<::vike_strategy_plugin::guest::HostBroker> + Send>,
+}
+
+// ---- handshake ---------------------------------------------------------------------------------
+//
+// ⚠ Both exports below wrap their body in `catch_unwind` per this file's own header rule, even
+// though neither can realistically panic (each returns a compile-time constant): the point is not
+// defending against a real failure mode here, it is that a caught panic must never surface as a
+// value indistinguishable from a genuine answer (the same rule the lifecycle/dispatch exports
+// below observe for a REAL failure mode). Each therefore returns a value its own handshake check
+// can never accept as a match: `0` for the ABI version (`abi::ABI_VERSION`'s own doc: "a zero
+// version cannot be distinguished from an unset field, so it must never be reachable" — enforced
+// there at compile time, which is exactly why it is available here as an impossible answer), and a
+// null pointer for the fingerprint (`loader.rs`'s `read_c_str` reads a null pointer as an empty
+// string, which can never equal the host's own non-empty, `target=`-carrying fingerprint).
+
+/// Cheap, catches a DELIBERATE vtable change — see `abi::ABI_VERSION`'s own doc. The toolchain
+/// fingerprint below is the guard against an ACCIDENTAL one.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_abi_version() -> u32 {
+    ::std::panic::catch_unwind(|| ::vike_strategy_plugin::abi::ABI_VERSION).unwrap_or(0)
+}
+
+/// The toolchain fingerprint this `.so` was compiled with (rustc release+commit, target triple,
+/// profile, opt-level — `vike_strategy_plugin::fingerprint`'s module doc), baked in by
+/// `vike-strategy-plugin`'s own `build.rs` and therefore identical to the host's whenever this
+/// crate and the host binary share a toolchain. Pairs with `vike_plugin_abi_version` per the
+/// design's "Two guards" section: that one catches a DELIBERATE vtable change, this one an
+/// ACCIDENTAL toolchain divergence — the builder took a rustc update the server was not rebuilt
+/// against.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_fingerprint() -> *const ::std::os::raw::c_char {
+    ::std::panic::catch_unwind(::vike_strategy_plugin::fingerprint::fingerprint_c_str)
+        .unwrap_or(::std::ptr::null())
+}
+
+// ---- lifecycle -----------------------------------------------------------------------------
+
+/// Build the user's strategy over `HostBroker` and hand the host an opaque handle. `params_ptr`/
+/// `params_len` are a borrowed `(ptr, len)` valid only for the duration of this call — the same
+/// contract `abi`'s module doc states for every string that crosses this boundary — so the bytes
+/// are copied into an owned `str`/`toml::Value` before anything else happens.
+///
+/// Returns null on a panic OR on a params parse failure: a host that gets null back must treat
+/// creation as refused, never dereference the result.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_create(
+    params_ptr: *const u8,
+    params_len: usize,
+) -> *mut ::std::ffi::c_void {
+    let created = ::std::panic::catch_unwind(|| {
+        // SAFETY: the host owns `params_ptr`/`params_len` for the duration of THIS call only,
+        // per the borrowed-(ptr,len) contract every crossing string in `abi` follows.
+        let bytes = unsafe { ::std::slice::from_raw_parts(params_ptr, params_len) };
+        let text = ::std::str::from_utf8(bytes).ok()?;
+        // ⚠ `toml::from_str`, NOT `text.parse()`, and the difference is the whole strategy.
+        // Under the workspace's pinned `toml` 1.1, `<toml::Value as FromStr>` parses a single
+        // VALUE EXPRESSION, not a document — so `"qty = 2.5"` comes back as
+        // `unexpected content, expected nothing` and even `""` fails. This line WAS `.parse()`,
+        // and the consequence was silent and total: every `vike_plugin_create` returned null,
+        // every dispatch reported `PluginStatus::BadHandle`, and a plugin-loaded strategy traded
+        // NOTHING while the artifact built, loaded and handshook cleanly. Found by
+        // `crates/vike-strategy-plugin/tests/equivalence.rs`, which is the one test that drives a
+        // plugin all the way to a trade list. Every other params read in this tree — the
+        // build-time tier's own `crates/vike-user-strategies/src/codegen.rs` included — already
+        // spells it this way.
+        let params: ::toml::Value = ::toml::from_str(text).ok()?;
+        let strategy = build::<::vike_strategy_plugin::guest::HostBroker>(&params);
+        Some(Box::into_raw(Box::new(PluginHandle { strategy })) as *mut ::std::ffi::c_void)
+    });
+    match created {
+        Ok(Some(handle)) => handle,
+        Ok(None) | Err(_) => ::std::ptr::null_mut(),
+    }
+}
+
+/// Drop the strategy and free the handle. A null `handle` is a no-op — the host's own contract,
+/// mirrored from every other FFI teardown site in this tree.
+///
+/// # Safety (documented for the SITE below, per this crate's `unsafe` convention)
+/// `handle` must be exactly what `vike_plugin_create` returned on THIS plugin, not yet destroyed.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_destroy(handle: *mut ::std::ffi::c_void) {
+    if handle.is_null() {
+        return;
+    }
+    let _ = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        // SAFETY: `handle` is non-null and, by the contract on this function, was produced by
+        // `vike_plugin_create` on this plugin and has not been destroyed yet.
+        drop(unsafe { Box::from_raw(handle as *mut PluginHandle) });
+    }));
+}
+
+/// The user's declared warmup — how many bars the R2 gate (`index >= warmup()`,
+/// `crates/vike-backtest/src/engine.rs` / `crates/vike-core/src/runtime/strategy_drive.rs`) skips
+/// before this instance's `on_bar` is ever called (`vike_model::Strategy::warmup`'s own default is
+/// `0`, no warmup).
+///
+/// ⚠ **A caught panic (or a null `handle`) must NOT return `0`.** Unlike `vike_plugin_on_bar`,
+/// this export's wire signature (fixed by `loader.rs`'s `bind!` call and `host.rs`'s
+/// `PluginVTable`) is a bare `usize` with no `PluginStatus` channel — so there is no way to say
+/// "this call failed" distinct from "this strategy legitimately declares no warmup", and `0` is
+/// exactly the value a HEALTHY strategy commonly returns. That is this file's own "a caught panic
+/// must not read as a real answer" rule, restated for a count instead of a price. `usize::MAX` is
+/// the one answer that can never be a plausible real warmup: fed back through the R2 gate, it
+/// means this instance's `on_bar` is never admitted — the fail-SAFE direction for a strategy whose
+/// own `warmup()` panicked, rather than one that silently trades from state its constructor never
+/// finished setting up. (`crates/vike-backtest/src/engine.rs`'s `warmup` field is a plain `usize`
+/// used only as that comparison, so `usize::MAX` here changes no arithmetic elsewhere — it just
+/// never opens the gate.) A null `handle` — never produced by the real host path, which
+/// short-circuits on it before calling this export at all, per `host.rs`'s
+/// `PluginStrategy::warmup` — is treated the same way, for the same reason.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_warmup(handle: *mut ::std::ffi::c_void) -> usize {
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return usize::MAX;
+        }
+        // SAFETY: `handle` is non-null and, by `vike_plugin_create`'s contract, was produced by
+        // that call on this plugin and has not been destroyed yet. `Strategy::warmup` takes
+        // `&self`, so a shared reference is enough.
+        let h = unsafe { &*(handle as *const PluginHandle) };
+        h.strategy.warmup()
+    }));
+    result.unwrap_or(usize::MAX)
+}
+
+// ---- dispatch ------------------------------------------------------------------------------
+//
+// ⚠ **Every `vike_model::Strategy` seam method is wired below except `params`, `save_state` and
+// `load_state`** — the three `vike_strategy_plugin::host::UNWIRED_HOOKS` still names, and that
+// constant's own doc argues why those three are a different kind of omission (a return-ownership
+// contract this ABI has never had, and a save/load pair with no caller) rather than work nobody
+// got to.
+//
+// ⚠ **This block used to wire `on_bar` ALONE and call it "the worked example".** That was a
+// declared scope boundary, not a safe one: a user file overriding `on_fill` compiled, rendered
+// here, linked, loaded and handshook, and then never received the hook — the same source
+// producing different, entirely plausible numbers under the two mechanisms with no signal
+// anywhere. `vike_strategy_builder::render::build_plugin` refuses a source that overrides
+// anything still in `UNWIRED_HOOKS`, and wiring a hook here (plus its `PluginVTable` field, its
+// `loader.rs` bind and its `WIRED_HOOKS` entry) is what lifts that refusal for it. Thirteen of
+// them were lifted at `ABI_VERSION` 3.
+//
+// ⚠ **EVERY export below wraps its body in `catch_unwind` and none may return a neutral value on
+// a caught panic.** A panic across a C-ABI frame is UB, so the wrapper is not optional — and
+// `PluginStatus::Panicked` rather than `Ok` is what stops a caught panic reading, to the host, as
+// a dispatch that happened. The host's own thunks carry the mirror-image guard for the OTHER
+// direction (`host.rs`'s `guarded` and its `POISONED` latch); neither side's rule covers the
+// other's, which is the correction that block's header records.
+//
+// The shape every one of them follows: null-check the handle and the payload, recover
+// `&mut PluginHandle`, copy the borrowed payload into an owned Rust value, wrap the `BrokerRef`
+// as a `HostBroker`, call the matching `Strategy` method, answer `Ok`.
+
+/// SAFETY (documented for the site, per this crate's convention, and shared by every dispatch
+/// export below): `handle` is a live `PluginHandle` from `vike_plugin_create`, not yet destroyed;
+/// a payload pointer is non-null and aligned and the host owns what it points at for the duration
+/// of this call; `broker`'s `vtable` is host-owned, `'static`, and non-null for the whole lifetime
+/// of this loaded plugin.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_on_bar(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_strategy_plugin::abi::BrokerRef,
+    bar: *const ::vike_strategy_plugin::abi::CBar,
+) -> ::vike_strategy_plugin::abi::PluginStatus {
+    use ::vike_strategy_plugin::abi::PluginStatus;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || bar.is_null() {
+            return PluginStatus::BadHandle;
+        }
+        // SAFETY: see the function-level doc above.
+        let h = unsafe { &mut *(handle as *mut PluginHandle) };
+        let bar: ::vike_model::Bar = unsafe { &*bar }.to_bar();
+        let mut host_broker = ::vike_strategy_plugin::guest::HostBroker::new(broker);
+        h.strategy.on_bar(&mut host_broker, &bar);
+        PluginStatus::Ok
+    }));
+    result.unwrap_or(PluginStatus::Panicked)
+}
+
+// ---- tier 1: no payload, or one scalar / borrowed string -------------------------------------
+
+/// SAFETY: see `vike_plugin_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_on_start(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_strategy_plugin::abi::BrokerRef,
+) -> ::vike_strategy_plugin::abi::PluginStatus {
+    use ::vike_strategy_plugin::abi::PluginStatus;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return PluginStatus::BadHandle;
+        }
+        // SAFETY: see `vike_plugin_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut PluginHandle) };
+        let mut host_broker = ::vike_strategy_plugin::guest::HostBroker::new(broker);
+        h.strategy.on_start(&mut host_broker);
+        PluginStatus::Ok
+    }));
+    result.unwrap_or(PluginStatus::Panicked)
+}
+
+/// SAFETY: see `vike_plugin_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_on_stop(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_strategy_plugin::abi::BrokerRef,
+) -> ::vike_strategy_plugin::abi::PluginStatus {
+    use ::vike_strategy_plugin::abi::PluginStatus;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return PluginStatus::BadHandle;
+        }
+        // SAFETY: see `vike_plugin_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut PluginHandle) };
+        let mut host_broker = ::vike_strategy_plugin::guest::HostBroker::new(broker);
+        h.strategy.on_stop(&mut host_broker);
+        PluginStatus::Ok
+    }));
+    result.unwrap_or(PluginStatus::Panicked)
+}
+
+/// The scheduled callback's TAG, as the borrowed `(ptr, len)` every string in this ABI uses.
+///
+/// SAFETY: see `vike_plugin_on_bar`'s doc; `(tag_ptr, tag_len)` is the host's for this call only.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_on_schedule(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_strategy_plugin::abi::BrokerRef,
+    tag_ptr: *const u8,
+    tag_len: usize,
+) -> ::vike_strategy_plugin::abi::PluginStatus {
+    use ::vike_strategy_plugin::abi::PluginStatus;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return PluginStatus::BadHandle;
+        }
+        let tag = ::vike_strategy_plugin::abi::CStrRef { ptr: tag_ptr, len: tag_len }.read();
+        // SAFETY: see `vike_plugin_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut PluginHandle) };
+        let mut host_broker = ::vike_strategy_plugin::guest::HostBroker::new(broker);
+        h.strategy.on_schedule(&mut host_broker, &tag);
+        PluginStatus::Ok
+    }));
+    result.unwrap_or(PluginStatus::Panicked)
+}
+
+/// ⚠ A `status` code this plugin does not know answers `BadParams`, never a guessed variant: a
+/// fabricated `Disconnected` would make a strategy pull quotes that were never in danger.
+///
+/// SAFETY: see `vike_plugin_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_on_feed_status(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_strategy_plugin::abi::BrokerRef,
+    status: u32,
+) -> ::vike_strategy_plugin::abi::PluginStatus {
+    use ::vike_strategy_plugin::abi::PluginStatus;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return PluginStatus::BadHandle;
+        }
+        let Some(status) = ::vike_strategy_plugin::abi::feed_status_from_code(status) else {
+            return PluginStatus::BadParams;
+        };
+        // SAFETY: see `vike_plugin_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut PluginHandle) };
+        let mut host_broker = ::vike_strategy_plugin::guest::HostBroker::new(broker);
+        h.strategy.on_feed_status(&mut host_broker, status);
+        PluginStatus::Ok
+    }));
+    result.unwrap_or(PluginStatus::Panicked)
+}
+
+/// SAFETY: see `vike_plugin_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_on_flow(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_strategy_plugin::abi::BrokerRef,
+    flow: *const ::vike_strategy_plugin::abi::CFlowToxicity,
+) -> ::vike_strategy_plugin::abi::PluginStatus {
+    use ::vike_strategy_plugin::abi::PluginStatus;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || flow.is_null() {
+            return PluginStatus::BadHandle;
+        }
+        // SAFETY: see `vike_plugin_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut PluginHandle) };
+        let flow = unsafe { &*flow }.to_flow();
+        let mut host_broker = ::vike_strategy_plugin::guest::HostBroker::new(broker);
+        h.strategy.on_flow(&mut host_broker, flow);
+        PluginStatus::Ok
+    }));
+    result.unwrap_or(PluginStatus::Panicked)
+}
+
+// ---- tier 2: flat mirrors, the `CBar` idiom ---------------------------------------------------
+
+/// SAFETY: see `vike_plugin_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_on_quote_tick(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_strategy_plugin::abi::BrokerRef,
+    quote: *const ::vike_strategy_plugin::abi::CQuoteTick,
+) -> ::vike_strategy_plugin::abi::PluginStatus {
+    use ::vike_strategy_plugin::abi::PluginStatus;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || quote.is_null() {
+            return PluginStatus::BadHandle;
+        }
+        // SAFETY: see `vike_plugin_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut PluginHandle) };
+        let q = unsafe { &*quote }.to_quote_tick();
+        let mut host_broker = ::vike_strategy_plugin::guest::HostBroker::new(broker);
+        h.strategy.on_quote_tick(&mut host_broker, &q);
+        PluginStatus::Ok
+    }));
+    result.unwrap_or(PluginStatus::Panicked)
+}
+
+/// SAFETY: see `vike_plugin_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_on_trade_tick(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_strategy_plugin::abi::BrokerRef,
+    trade: *const ::vike_strategy_plugin::abi::CTradeTick,
+) -> ::vike_strategy_plugin::abi::PluginStatus {
+    use ::vike_strategy_plugin::abi::PluginStatus;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || trade.is_null() {
+            return PluginStatus::BadHandle;
+        }
+        // SAFETY: see `vike_plugin_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut PluginHandle) };
+        let t = unsafe { &*trade }.to_trade_tick();
+        let mut host_broker = ::vike_strategy_plugin::guest::HostBroker::new(broker);
+        h.strategy.on_trade_tick(&mut host_broker, &t);
+        PluginStatus::Ok
+    }));
+    result.unwrap_or(PluginStatus::Panicked)
+}
+
+/// SAFETY: see `vike_plugin_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_on_mark(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_strategy_plugin::abi::BrokerRef,
+    mark: *const ::vike_strategy_plugin::abi::CMarkTick,
+) -> ::vike_strategy_plugin::abi::PluginStatus {
+    use ::vike_strategy_plugin::abi::PluginStatus;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || mark.is_null() {
+            return PluginStatus::BadHandle;
+        }
+        // SAFETY: see `vike_plugin_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut PluginHandle) };
+        let m = unsafe { &*mark }.to_mark_tick();
+        let mut host_broker = ::vike_strategy_plugin::guest::HostBroker::new(broker);
+        h.strategy.on_mark(&mut host_broker, &m);
+        PluginStatus::Ok
+    }));
+    result.unwrap_or(PluginStatus::Panicked)
+}
+
+/// The cross-EXCHANGE reference touch. `venue` rides as its own borrowed `(ptr, len)` argument
+/// because no tick type carries a venue — `vike_model::Strategy::on_reference_quote`'s own doc
+/// argues why, and the plugin boundary changes nothing about it.
+///
+/// SAFETY: see `vike_plugin_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_on_reference_quote(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_strategy_plugin::abi::BrokerRef,
+    venue_ptr: *const u8,
+    venue_len: usize,
+    quote: *const ::vike_strategy_plugin::abi::CQuoteTick,
+) -> ::vike_strategy_plugin::abi::PluginStatus {
+    use ::vike_strategy_plugin::abi::PluginStatus;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || quote.is_null() {
+            return PluginStatus::BadHandle;
+        }
+        let venue =
+            ::vike_strategy_plugin::abi::CStrRef { ptr: venue_ptr, len: venue_len }.read();
+        // SAFETY: see `vike_plugin_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut PluginHandle) };
+        let q = unsafe { &*quote }.to_quote_tick();
+        let mut host_broker = ::vike_strategy_plugin::guest::HostBroker::new(broker);
+        h.strategy.on_reference_quote(&mut host_broker, &venue, &q);
+        PluginStatus::Ok
+    }));
+    result.unwrap_or(PluginStatus::Panicked)
+}
+
+/// SAFETY: see `vike_plugin_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_on_fill(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_strategy_plugin::abi::BrokerRef,
+    fill: *const ::vike_strategy_plugin::abi::CFill,
+) -> ::vike_strategy_plugin::abi::PluginStatus {
+    use ::vike_strategy_plugin::abi::PluginStatus;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || fill.is_null() {
+            return PluginStatus::BadHandle;
+        }
+        // SAFETY: see `vike_plugin_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut PluginHandle) };
+        let f = unsafe { &*fill }.to_fill();
+        let mut host_broker = ::vike_strategy_plugin::guest::HostBroker::new(broker);
+        h.strategy.on_fill(&mut host_broker, &f);
+        PluginStatus::Ok
+    }));
+    result.unwrap_or(PluginStatus::Panicked)
+}
+
+// ---- tier 3: the payloads no flat mirror can express ------------------------------------------
+
+/// The L2 book, rebuilt on THIS side from the host's cursor — see
+/// `vike_strategy_plugin::guest::book_from_ref` for what the rebuild costs and why a copy is
+/// unavoidable whatever shape the payload takes.
+///
+/// SAFETY: see `vike_plugin_on_bar`'s doc; `book`'s `vtable` is host-owned and `'static` and its
+/// `ctx` is valid for exactly this call.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_on_order_book(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_strategy_plugin::abi::BrokerRef,
+    book: ::vike_strategy_plugin::abi::BookRef,
+) -> ::vike_strategy_plugin::abi::PluginStatus {
+    use ::vike_strategy_plugin::abi::PluginStatus;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || book.vtable.is_null() {
+            return PluginStatus::BadHandle;
+        }
+        // SAFETY: see `vike_plugin_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut PluginHandle) };
+        let rebuilt = ::vike_strategy_plugin::guest::book_from_ref(book);
+        let mut host_broker = ::vike_strategy_plugin::guest::HostBroker::new(broker);
+        h.strategy.on_order_book(&mut host_broker, &rebuilt);
+        PluginStatus::Ok
+    }));
+    result.unwrap_or(PluginStatus::Panicked)
+}
+
+/// ⚠ A `kind` code this plugin does not know answers `BadParams` and delivers NOTHING, rather
+/// than delivering a guessed transition: a strategy's retry/refresh/abort machine keys off
+/// exactly this tag, so an invented `Canceled` would make a live order look dead and free a slot
+/// that is still occupied.
+///
+/// SAFETY: see `vike_plugin_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_on_order_event(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_strategy_plugin::abi::BrokerRef,
+    event: *const ::vike_strategy_plugin::abi::COrderLifecycle,
+) -> ::vike_strategy_plugin::abi::PluginStatus {
+    use ::vike_strategy_plugin::abi::PluginStatus;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || event.is_null() {
+            return PluginStatus::BadHandle;
+        }
+        // SAFETY: see `vike_plugin_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut PluginHandle) };
+        let Some(ev) = unsafe { &*event }.to_order_lifecycle() else {
+            return PluginStatus::BadParams;
+        };
+        let mut host_broker = ::vike_strategy_plugin::guest::HostBroker::new(broker);
+        h.strategy.on_order_event(&mut host_broker, &ev);
+        PluginStatus::Ok
+    }));
+    result.unwrap_or(PluginStatus::Panicked)
+}
+
+/// The live-parameter bag, as the JSON document the host serialised it to —
+/// `vike_strategy_plugin::guest::strategy_params_from_json` carries the argument for JSON over
+/// TOML (measured: `toml` REFUSES the `None` fields `StrategyParams` reaches) and over a flat
+/// mirror. A document this plugin cannot decode answers `BadParams` and swaps NOTHING, so the
+/// strategy keeps running the tunables it already had rather than a half-applied bag.
+///
+/// SAFETY: see `vike_plugin_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_plugin_on_params_updated(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_strategy_plugin::abi::BrokerRef,
+    params_ptr: *const u8,
+    params_len: usize,
+) -> ::vike_strategy_plugin::abi::PluginStatus {
+    use ::vike_strategy_plugin::abi::PluginStatus;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return PluginStatus::BadHandle;
+        }
+        let json =
+            ::vike_strategy_plugin::abi::CStrRef { ptr: params_ptr, len: params_len }.read();
+        let Some(params) = ::vike_strategy_plugin::guest::strategy_params_from_json(&json) else {
+            return PluginStatus::BadParams;
+        };
+        // SAFETY: see `vike_plugin_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut PluginHandle) };
+        let mut host_broker = ::vike_strategy_plugin::guest::HostBroker::new(broker);
+        h.strategy.on_params_updated(&mut host_broker, &params);
+        PluginStatus::Ok
+    }));
+    result.unwrap_or(PluginStatus::Panicked)
+}

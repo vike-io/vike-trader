@@ -1,0 +1,488 @@
+[package]
+name = "vike-tradehub"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — PR-9 of the headless two-layer plan: the headless trading DAEMON (\"tradehub\"). Runs a strategy on a server with NO GUI, controlled by a TOML profile + newline-JSON stdio, surviving an SSH disconnect (a systemd service detached from the login session — R7). PAPER variant: mounts the A-S SpreadMaker on the PRODUCTION live core over the PAPER exchange by REUSING vike_run::build_paper_maker_core verbatim — ZERO real-money/credential/geo risk. Proves the daemon LIFECYCLE (build → stdio control → periodic snapshot summary → bounded shutdown via vike_ops::shutdown::run_with_deadline) with NO network surface. An opt-in LIVE variant (VIKE_TRADEHUB_LIVE=1) mounts the SAME maker on the 12-venue build_node core with credential-gated exec + the venue's live feed (Hyperliquid-testnet first), default stays PAPER; the auth'd network control server is PR-10/11/12. Top-of-graph daemon: the one crate that takes a normal edge to it is the multicall dispatcher vike-backend (crates/vike), behind that crate's own vike-tradehub feature; vike-cli's edge is a dev-dependency for an end-to-end test. ⚠ This ended \"nothing depends on it, like vike-app/vike-run\" until 2026-09-28: vike-backend has linked it since 2026-09-02, vike-run sits BELOW it (this crate depends on vike-run), and vike-app is vike-desktop now."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `daemon` — a headless
+# top-of-graph binary: nothing BELOW it may depend on it. The multicall dispatcher `vike-backend`
+# (crates/vike, 68) sits above it and does, behind that crate's own `vike-tradehub` feature.
+# ⚠ This said "nothing may depend on it" until 2026-09-28; that edge has existed since 2026-09-02.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 65
+
+[dependencies]
+# The SHARED node-protocol substrate: the HMAC-SHA256 nonce-challenge handshake generalized over
+# its domain separator (`auth`) and the length-prefixed frame codec (`frame`). ⚠ Both were
+# `vike-datahub-client`'s until 2026-09-23 and moved to the crate BELOW both node protocols, so the
+# two clients could stop being a ladder; that crate's own doc carries the measurement. It names no
+# vike-* crate at all, so this edge adds no package to any graph that did not already carry
+# hmac/sha2/rand transitively.
+vike-node-proto = { path = "../vike-node-proto" }
+# The maker mounts, REUSED verbatim: build_paper_maker_core (PAPER default) + build_live_maker_core
+# (the opt-in LIVE build_node core, VIKE_TRADEHUB_LIVE=1) + MakerMountConfig + NodeConfig/Node. DEFAULT
+# features (NO polymarket), so the daemon stays native-dep-free + geo-free; the LIVE path's venue feed
+# is wired via the vike-hyperliquid edge below, and per-venue exec is credential-gated inside build_node.
+vike-run = { path = "../vike-run" }
+# The venue mount contract's row type — `vike_mount::VenueRow`, which `src/registry.rs`'s `REGISTRY`
+# is a table of — and the mount's own vocabulary, named at its canonical paths: `MountPolicy`,
+# `VenueArming`, `VenueMode`, `accounts_to_mount`, `venue_arming`, `preflight::PreflightReport`
+# (docs/decisions/0096, amended 2026-09-29). vike-run re-exported seven such names only because
+# this crate had no vike-mount edge; with the edge they were alias shims, and they are gone. No new
+# package: vike-mount was already in this graph through vike-run. Down-only: 30 (60 until the venue
+# mount contract finished), under this crate's 65.
+vike-mount = { path = "../vike-mount" }
+# LIVE path (VIKE_TRADEHUB_LIVE=1): the Hyperliquid keyless-public market FEED (market_feed::Feeds) +
+# its Network enum — and, since the venue mount contract, the venue's mount: `src/registry.rs`'s
+# `REGISTRY` names `vike_hyperliquid::mount::HyperliquidVenueMount`, and nothing else in the graph
+# names the bridge since vike-mount stopped (docs/decisions/0096, amended 2026-09-29). No crate
+# landed with the edge: HL was already in this graph through vike-mount's own edge.
+# ⚠ `exec` is spelled EXPLICITLY since the venue mount contract, although it is hyperliquid's
+# default: the mount lives in the exec plane, and a feeds-only default must never silently drop it
+# from the registry's build.
+vike-hyperliquid = { path = "../bridges/hyperliquid", features = ["exec"] }
+# LIVE CEX path (VIKE_TRADEHUB_LIVE=1): the binance/bybit/okx keyless-public market data. TWO feed
+# objects per venue, and the pair is the point — neither alone mounts a working maker:
+#   • `market_data::spawn_*_market_data(TickSender, symbol, tick_size)` — the QUOTE/TRADE/BOOK pump
+#     that drives the A-S maker's `requote`. It pushes STRAIGHT into the core tick lane, bypassing
+#     the `LiveDataSink` seam, which is why it works where `market_feed::subscribe_depth` cannot:
+#     depth emits `LiveDataSink::l2_snapshot`, whose body is a DEFAULT NO-OP in both sinks this
+#     daemon owns (`vike_core::CoreLaneSink`, `vike_run::MakerSink`), so a depth-wired maker would
+#     connect, report healthy, and post ZERO orders forever. See `live_mount`'s CEX arm.
+#   • `market_feed::Feeds` — the kline lane. Bars are NOT decoration here: the account-wide
+#     margin-call and equity-drawdown sweeps fire on the per-CLOSED-BAR cadence ONLY
+#     (`vike_core`'s `strategy_drive`), so a quote-only mount runs with both safety watchdogs dead.
+# All three venues declare `live_data.quotes = false`, so `subscribe_quotes` is a caps-driven
+# refusal — the hyperliquid arm's shape does NOT transfer, and this edge is what replaces it.
+# Default features on all three (public market data is keyless; per-venue exec stays
+# credential-gated inside build_node). These are ALSO the edges `src/registry.rs`'s `REGISTRY`
+# mounts the three venues through — nothing else in the graph names them since vike-mount stopped
+# (docs/decisions/0096, amended 2026-09-29) — and they added an edge, not a crate: all three were
+# already in this graph through vike-mount's own edges.
+# The alerting primitive — rule model, evaluator and delivery seam. ⚠ A DIRECT edge since 2026-09-25;
+# this crate reached it through `vike_ops::alerting`, a re-export `vike-ops` held for ZERO code of
+# its own (MEASURED: `pub use vike_alerting as alerting;` was the only line in that crate naming the
+# dependency). Layer 15 under this crate's 65, so the edge is down-only, and it is the same crate
+# that was being linked before — what changed is that it is named where it is used.
+vike-alerting = { path = "../vike-alerting" }
+vike-binance = { path = "../bridges/binance" }
+vike-bybit = { path = "../bridges/bybit" }
+vike-okx = { path = "../bridges/okx" }
+# LIVE ASTER path (VIKE_TRADEHUB_LIVE=1, split-plane I9): the binance-fork fourth CEX venue — the
+# same two feed objects as the three above (`market_feed::Feeds` klines + the
+# `market_data::spawn_aster_market_data` quote/trade/book pump), both `Environment`-keyed and
+# pinned to MAINNET hosts by the feed arm (`venue_feed_plan`'s aster arm carries the argument).
+# DEFAULT features — which on this crate means `exec` — and that is DELIBERATE, not inertia: the
+# daemon's `cex_mainnet_enabled` aster arm calls the exec-gated
+# `vike_aster::signing::mountable_tier_for_account` to mirror `AsterVenueMount`'s LIVE-first tier
+# resolution (aster has no `{VENUE}_MAINNET` flag; credential presence IS the network verdict), so
+# a feeds-only (`default-features = false`) edge would not compile it. The exec plane already rode
+# this binary through vike-mount's own edge, so the default edge added NO new code to the
+# order-signing binary; it is also the edge `src/registry.rs`'s `REGISTRY` mounts aster through,
+# and nothing else in the graph names the bridge since vike-mount stopped (docs/decisions/0096,
+# amended 2026-09-29).
+# ⚠ REAL MONEY IN PRACTICE: present `ASTER_LIVE_*` creds make an aster mount LIVE MAINNET exec
+# (root CLAUDE.md's aster paragraph); the wiring here is capability only and changes no default.
+# ⚠ `exec` is spelled EXPLICITLY since the venue mount contract, although it is aster's default:
+# `src/registry.rs`'s `REGISTRY` names the mount, which lives in the exec plane, and a feeds-only
+# default must never silently drop it from the registry's build.
+vike-aster = { path = "../bridges/aster", features = ["exec"] }
+# LIVE ALPACA path (VIKE_TRADEHUB_LIVE=1, split-plane I9): the first CREDENTIALED-DATA feed arm —
+# `AlpacaDataClient` is a real `vike_data::DataClient` (bars/quotes/trades over the market-data WS),
+# but unlike every CEX pump it authenticates (the OAuth2 client-credentials trio), so the feed plan
+# resolves `load_alpaca_config_from(Demo, vars)` from the SAME vars map the exec gate reads and
+# REFUSES the live mount when the trio is absent (a feed-less live mount would quote into the void
+# — see `venue_feed_plan`'s alpaca arm). Not the CEX two-lane shape: no `spawn_*_market_data` pump
+# exists, the one client serves both lanes through `CoreLaneSink`. It is also the edge
+# `src/registry.rs`'s `REGISTRY` mounts alpaca through — nothing else in the graph names the bridge
+# since vike-mount stopped (docs/decisions/0096, amended 2026-09-29) — and it added no crate to the
+# order-signing binary: the crate was already in this graph through vike-mount's own edge.
+vike-alpaca = { path = "../bridges/alpaca" }
+# LIVE CTRADER path (VIKE_TRADEHUB_LIVE=1, split-plane I9): the second credentialed-data arm —
+# `CtraderData` over its own `conn::connect_and_auth` protobuf/TLS socket (a DEDICATED data
+# socket, isolated from the exec socket the bridge's mount opens, the same isolation rule the recon
+# clients follow). The handshake is SYNCHRONOUS at mount: a data connect/auth failure REFUSES
+# daemon startup (documented on `wire_venue_feeds`' ctrader arm — deliberately NOT the exec side's
+# demote-to-paper, which would leave a feed-less core). Feed plan resolves
+# `CtraderConfig::from_vars(Demo, vars)` from the daemon's one vars map. The edge is also the one
+# `src/registry.rs`'s `REGISTRY` mounts ctrader through — nothing else in the graph names the bridge
+# since vike-mount stopped (docs/decisions/0096, amended 2026-09-29) — and it added no crate: the
+# crate was already in this graph through vike-mount's own edge.
+vike-ctrader = { path = "../bridges/ctrader" }
+# LIVE OANDA path (VIKE_TRADEHUB_LIVE=1, split-plane I9): the third credentialed-data arm, and the
+# only one whose feed rides NEITHER a WS nor a shared pump — `market_feed::Feeds` is `OwnPump` in
+# `vike_bridge_core::pump_spec` because the venue publishes no market-data WS at all: quotes come
+# off a chunked-HTTP `/pricing/stream` line stream and bars POLL the candles REST endpoint. One
+# `vike_data::DataClient` serves both lanes, so there is no `spawn_*_market_data` pump to pair it
+# with (the CEX two-lane shape does not transfer). Bearer-authed on BOTH lanes, so the feed plan
+# resolves `load_oanda_config_from(Demo, vars)` — exec's own loader over exec's own tier, from the
+# daemon's one vars map — and REFUSES the live mount when the token/account pair is absent, the
+# same argument as alpaca/ctrader above. It is also the edge `src/registry.rs`'s `REGISTRY` mounts
+# oanda through — nothing else in the graph names the bridge since vike-mount stopped
+# (docs/decisions/0096, amended 2026-09-29) — and it added no crate to the order-signing binary
+# (the crate was already in this graph through vike-mount's own edge); besides the mount, this
+# crate NAMES the feed type, the config loader and the `granularity` table its interval refusal is
+# derived from. No cargo feature exists on vike-oanda — a default build is the whole
+# crate.
+vike-oanda = { path = "../bridges/oanda" }
+# LIVE DERIBIT path (VIKE_TRADEHUB_LIVE=1, split-plane I9): the options venue's market feed —
+# `market_feed::Feeds`, a `pump_spec` `OnDriver` serving FOUR `DataClient` verbs off one keyless
+# public JSON-RPC socket per subscription (bars/quotes/trades/book). KEYLESS, so unlike the three
+# credentialed-data arms above the feed plan resolves NO credentials and absent creds still mount
+# paper — the workspace live gate, unchanged. Besides the feed type this crate NAMES
+# `data::resolution_code`, the interval table its bar-lane refusal is derived from, and — since
+# deribit mounts itself (decision 0096) — `mount::DeribitVenueMount`, the row `src/registry.rs`'s
+# `REGISTRY` holds for it; nothing else in the graph names the bridge since vike-mount stopped
+# (docs/decisions/0096, amended 2026-09-29). The edge added no crate to the order-signing binary:
+# the crate was already in this graph through vike-mount's own edge. Taken with DEFAULT features,
+# the default-on `exec` seam included: `mount` rides `exec`, so this edge needs the exec half
+# itself.
+vike-deribit = { path = "../bridges/deribit" }
+# LIVE IG path (VIKE_TRADEHUB_LIVE=1, split-plane I9): the FOURTH credentialed-data arm, and the
+# only venue whose market feed is not JSON-over-WS — `market_feed::Feeds` speaks Lightstreamer
+# TLCP 2.1.0 raw over the shared tungstenite stack (`pump_spec` `OnDriver`, this workspace's only
+# non-JSON one). TWO verbs only: `subscribe_quotes` + `subscribe_bars`. IG is a DEALER venue
+# publishing its own two-sided price, so it has no public trade tape and no L2 ladder — trades and
+# book are caps refusals, not gaps, and this crate must advertise neither. Every subscription logs
+# in with the SAME `IgConfig` the exec side uses, so the feed plan resolves
+# `load_ig_config_from(Demo, vars)` from the daemon's one vars map and REFUSES the live mount when
+# the trio is absent (the alpaca/ctrader/oanda argument). It is also the edge `src/registry.rs`'s
+# `REGISTRY` mounts ig through — nothing else in the graph names the bridge since vike-mount
+# stopped (docs/decisions/0096, amended 2026-09-29) — and it added no crate to the order-signing
+# binary (the crate was already in this graph through vike-mount's own edge); besides the mount,
+# this crate NAMES the feed type, the config loader, `ig_env_var_names` and the `market_data::
+# ig_scale` table its interval refusal is derived from. No cargo feature exists on vike-ig — a
+# default build is the whole crate.
+vike-ig = { path = "../bridges/ig" }
+# LIVE Polymarket path (behind the `polymarket` feature): the CLOB keyless market FEED
+# (market_feed::Feeds — `subscribe_book` derives the L1 quote + book the A-S maker's NATIVE [0,1]
+# domain prices on). Exec is the bridge's POLY_EXEC-gated `PolymarketVenueMount`, which
+# `src/registry.rs`'s `REGISTRY` registers under this crate's `polymarket` feature
+# (docs/decisions/0096, amended 2026-09-29); this edge is the one the registry names. OPTIONAL — a
+# default build registers the venue `FeatureAbsent` and stays native-dep-free + geo-free; the
+# feature pulls the k256/keccak signing tree in (accepted only when explicitly built).
+vike-polymarket = { path = "../bridges/polymarket", optional = true }
+# LIVE path: the DataClient (subscribe_bars/subscribe_quotes/shutdown) + LiveDataSink traits the live
+# feed is wired through (vike_core::CoreLaneSink is the concrete sink). DEFAULT features (NO
+# hist-datafusion) — the trait seam only, DataFusion-free.
+vike-data = { path = "../vike-data" }
+# CoreHandle (snapshot + send_command + shutdown_and_join) + CoreSnapshot (the summary reads its
+# fields) + CoreLaneSink/StrategyMount (the LIVE feed→core bridge + the maker mount).
+vike-core = { path = "../vike-core" }
+# Command / OrderIntent — the order-write vocabulary the newline-JSON stdio control parses (serde) and
+# hands to CoreHandle::send_command.
+vike-exec = { path = "../vike-exec" }
+# OrderRequest — the order-write schema named by the stdio control + the lifecycle test's synthetic op.
+# Also `Strategy` itself: the daemon now hands a `Box<dyn Strategy<LiveBroker> + Send>` to the mount.
+vike-model = { path = "../vike-model" }
+# The venue CATALOG — the instrument documents and availability classification
+# `crate::catalog_cli` reads. Already in this crate's closure through every bridge dependency, so
+# it adds NO package to the build or to the `cargo deny` surface — what it adds is the ability to
+# NAME the types.
+#
+# ⚠ This comment described a DIFFERENT edge and both of its claims have expired. It read:
+# "`AssetClass` — the asset-class vocabulary a `[[mounts]]` row declares and the
+# `mount.asset_class` column stores (docs/decisions/0061 phase 5). ⚠ This crate is the ONE
+# production site that hands `AssetClass::SQL_WORDS` to
+# `vike_secrets::profile_store::profile_ddl`: that crate is a zero-`vike-*`-dependency leaf at
+# layer 15 and cannot name a layer-20 type, so the schema's CHECK is rendered from the enum's own
+# declaration rather than from a second list in SQL." Two things moved under it. `AssetClass`
+# itself came DOWN into vike-model, which this manifest declares directly above, so it is not what
+# this edge buys any more. And the reason was wrong on both numbers: the enum is at rank 10, inside
+# tier 15's floor, and decision 0072 (accepted 2026-09-20) declared the vike-model edge into
+# vike-secrets anyway, so nothing forbids the direct name. The supplier claim itself survives and
+# is kept where it belongs — at `crate::profile_rows`'s `mount_asset_class_vocabulary`, the one
+# production site. `profile_ddl` keeps taking the words as a PARAMETER as a DESIGN seam (ruled
+# 2026-09-26; its doc is the authority), and that ruling names a second supplier of the vocabulary
+# as what would reopen it — which makes that accessor's role load-bearing rather than incidental.
+vike-catalog = { path = "../vike-catalog" }
+# The PORTABLE strategy registry (`strategy_by_name` / `capability` / the LIVE_CAPABLE table) — how a
+# `[strategy]` profile becomes a mounted strategy. It is the SAME registry `vike-backtest`'s harness
+# resolves through, which is the point: a profile that was backtested is a profile that can trade.
+#
+# ⚠ This is deliberately NOT a `vike-backtest` edge. That crate owns the simulator and, under
+# `datafusion-store`, the whole Arrow/DataFusion tree; pulling it into the binary that signs real
+# orders is the exact cost `vike-ops` was split out to avoid — and `layer_gate.rs` would NOT catch it
+# (vike-backtest is layer 30, this crate 65, so the edge points DOWN and passes). The registry moved
+# DOWN to vike-strategy instead, generic over the broker, so this daemon links the strategies without
+# the engine. MEASURED cost of this edge on the daemon's normal tree: +2 packages (vike-strategy,
+# vike-indicators — vike-mm was already here via vike-run) and ZERO external crates, so the
+# `cargo deny --all-features` audit surface on the trading box is unchanged.
+vike-strategy = { path = "../vike-strategy" }
+# The compiled USER-strategy host: `DaemonProfile` consults it AFTER every built-in arm (resolve +
+# the live gate over its generated `USER_LIVE_CAPABLE`), so a drop-in strategy from
+# user_data/strategies/rust mounts by name with no framework change. Empty registry (= inert) in
+# any checkout without a user_data tree, which includes every CI build of this daemon.
+vike-user-strategies = { path = "../vike-user-strategies" }
+# The Rhai SCRIPT host: `[strategy] rhai = "<path>"` compiles a `RhaiStrategy<LiveBroker>` through
+# the SAME resource-limited engine the backtest arm builds (`vike-script`'s one `build_engine` —
+# this daemon registers no host function of its own). ⚠ A scripting engine in the binary that
+# signs real orders is a SUPPLY-CHAIN DECISION, and it was made deliberately, by the author, not
+# by default: `docs/decisions/0024-rhai-strategies-live.md` carries the verdict, the four rails
+# and the Python/JS refusal. Down-only (vike-script is layer 20, this crate 65); `rhai` itself is
+# a workspace dep the daemon's tree already audits via `cargo deny`.
+vike-script = { path = "../vike-script" }
+# The script mount's audit hash: `config::script_sha256` pins WHICH source was compiled, logged at
+# INFO beside the path. The workspace's ONE SHA-256 (the venue signers already link it) — not a
+# new hash crate.
+sha2 = { workspace = true }
+# The `param(name, default)` override map's type — `RhaiStrategy::compile_with_params` takes an
+# `indexmap::IndexMap`, and first-seen order is part of that seam's contract. Already in this
+# binary's tree via vike-script itself.
+indexmap = { workspace = true }
+# The typed settings model + layered loader (settings unification, Phase 5). This daemon resolves
+# the POLICY ceiling `max_notional_per_order` (the server-edge control limit) from
+# `<project>/settings/policy.toml`, and REFUSES TO START when the removed `VIKE_TRADEHUB_MAX_ORDER_NOTIONAL`
+# is still set — a ceiling a stale systemd unit can raise is not a ceiling. A leaf: vike-model +
+# serde + toml, all already in this graph, so it costs the order-signing binary nothing new.
+# The NODE-key store — `<project>/settings/node.env`, the file that holds this daemon's observe and
+# control keys and nothing else. This daemon reads TWO credential files for two different reasons: the
+# venue grid, through `vike_bridge_core::credentials` (it trades), and its node pair, through this
+# (it serves). Before 2026-09-08 both came out of `secrets.env` and the node server found its keys
+# among 168 venue names.
+# ⚠ `vike-secrets`, NOT `vike_bridge_core::credentials` — the same call the datahub's own dependency
+# comment makes: that wrapper is the canonical one for VENUE credentials and this is not a venue
+# credential. vike-secrets names nothing above the vocabulary floor (layer 15 against this crate's
+# 65) and is already in this closure through vike-boot and vike-config, so the edge adds no package.
+# ⚠ That read "is a ZERO-vike-dependency leaf" until decision 0072 (accepted 2026-09-20) admitted
+# vike-model there. The conclusion survives: the property is the RANK — tier `leaf` names at most
+# the vocabulary floor, machine-checked by `crates/vike-ops/tests/layer_gate.rs` — and this
+# manifest declares vike-model itself, so that edge costs this binary nothing.
+vike-secrets = { path = "../vike-secrets" }
+vike-config = { path = "../vike-config" }
+# The STARTUP SEQUENCE's one owner: refuse the removed variable, refuse a credential file that ARMS
+# REAL MONEY, resolve `<project>/settings` ONCE and load it — in that order, which this `main` used
+# to spell out for itself alongside four other roots doing the same. The walk happening in five
+# places is what made the CI box's "no policy, no credentials, every venue silently paper" expensive to
+# fix; `Booted` now carries the ONE answer that feeds the disclosure. It links no logging and no
+# transport (this daemon's own memoized `workspace_credentials` is passed to it as a FUNCTION), and
+# its whole closure is already in this graph, so it adds no package to the binary that signs orders.
+vike-boot = { path = "../vike-boot" }
+# The BUILD IDENTITY this daemon prints for `--version` and logs at INFO on the first line of every
+# start: the git commit it was built from, whether that tree was dirty, when, and with which
+# toolchain. It is a ZERO-dependency leaf, so the binary that signs real orders pays nothing for it
+# — which is the whole reason it is not `vergen`/`built`. A release binary was once built on a test
+# clone from a bare repo four commits behind `main` and nearly installed on the live recorder.
+vike-buildinfo = { path = "../vike-buildinfo" }
+# The headless-usable OFF-FOLD operations layer: `shutdown::run_with_deadline` (the bounded
+# teardown, so a wedged shutdown_and_join can never hang exit), `stop` (one stop flag for the stdio
+# word and SIGTERM/SIGINT alike) and `live_lock` (one live process per venue account).
+# ⚠ This named `reconcile_config` (the VIKE_RECONCILE* parser) and `journal_mat` (an off-path
+# WAL→store materializer) as the other two until 2026-09-28. Neither is in vike-ops any more: the
+# parser moved INTO this crate on 2026-09-23 (`src/reconcile_config.rs`), and `journal_mat` left for
+# `vike-journal` on 2026-09-25 as `vike_journal::materialize`, which no production root spawns.
+# `shutdown` and those two used to live in vike-app-core, and that ONE edge compiled the
+# ENTIRE egui widget stack — egui, egui_plot, epaint, epaint_default_fonts, vike-chart, vike-panels,
+# vike-cockpit, vike-ui-theme, vike-connections, vike-data-manager — into THIS daemon, the binary
+# that signs real orders on the production box. vike-ops is egui-free by construction; do NOT
+# re-add a vike-app-core edge here to reach anything.
+vike-ops = { path = "../vike-ops" }
+# The LIVE-JOURNAL TEARSHEET reader (ruling 16): `vike_report::tearsheet_from_journal`, behind
+# `server.rs`'s `Request::Tearsheet` arm. The wire half of that verb shipped long before this edge
+# existed and the arm was a written IOU; this is what turns it into an answer.
+#
+# ⚠ **This edge read `default-features = false, features = ["journal"]` until 2026-09-28, and is
+# plain now because the feature is gone.** It named `journal` outright after an incident worth
+# keeping: the line was written `default-features = false` as the "forward-compatible" spelling,
+# vike-report then moved its journal door behind a DEFAULT `journal` feature, and this one line
+# turned OFF the half the edge exists for — invisible to `cargo check --workspace`, where resolver-2
+# unified the default back on, and an E0599 in `cargo test -p vike-cli` (CI's `light-consumers`
+# lane, which takes this crate as a DEV dependency and resolved the narrow graph). The lesson
+# survives the feature: name the feature you USE, never the default you hope for. The feature did
+# not survive: on 2026-09-28 vike-report's renderer half moved to vike-analytics, everything left
+# in vike-report reads a journal or a store, and a switch with one reachable position was deleted.
+# `hist` — the other reason this edge kept `default-features = false` — is not a default either,
+# and this daemon's tearsheet reads its own journal and never a store, so nothing here names it.
+#
+# Cost of this edge on the daemon's normal tree, read off the manifests: vike-report's own vike
+# deps (vike-model, vike-analytics, vike-journal, vike-exec, vike-data) are all in this graph
+# already — four as direct deps here, vike-journal through vike-core — and so are its two external
+# ones (tracing, serde_json). So the `cargo deny --all-features` audit surface on the box that signs
+# real orders is unchanged, which is the test every other dependency in this manifest is held to.
+vike-report = { path = "../vike-report" }
+# The tearsheet arm's DEFAULT annualization, `vike_analytics::DAILY_PERIODS_PER_YEAR` — the ONE
+# spelling of that constant since the move retired the second name vike-report re-exported it
+# under (`vike_report::report::DAILY_PERIODS_PER_YEAR`, gone under the owner's one-name ruling).
+# A DIRECT edge because Rust needs one to name `vike_analytics::…`; it adds no package, since
+# vike-report above already links this crate, and layer_gate holds it down-only.
+vike-analytics = { path = "../vike-analytics" }
+vike-log = { path = "../vike-log" } # tracing-native logging init (the daemon HOLDS the guards)
+# PR-11 observe server: the node wire proto (Response::SnapshotFrame), the HMAC auth (NodeKeys/verify),
+# and the WireSnapshot the CoreSnapshot projects into. The LIGHT, DataFusion-free client crate.
+vike-tradehub-client = { path = "../vike-tradehub-client" }
+# PR-11 keys I/O: the daemon binary owns the workspace `.env` read (load_workspace_dotenv) and builds
+# NodeKeys from it — the client crate deliberately must not pull the bridge/credentials stack.
+vike-bridge-core = { path = "../vike-bridge-core" }
+# PR-11 observe publisher: the SAME lossy arc-swap cell type vike-core publishes CoreSnapshots through
+# (CoreHandle::snapshot_cell) — read-only here. Already a workspace dep (vike-core); not a new crate.
+arc-swap = { workspace = true }
+# PR-11 handshake: the per-connection CSPRNG challenge nonce. Already a workspace dep (vike-backtest).
+rand = { workspace = true }
+# The Telegram CONTROL channel's own blocking `getUpdates` long-poll agent. NOT a new crate in this
+# binary's graph — `ureq` already rides in via vike-bridge-core (whose
+# `http::blocking_agent_with_timeout` builds this agent); the direct edge only lets this crate NAME
+# `ureq::Agent` as a struct field. Reusing the ONE workspace HTTP stack (rustls, no OpenSSL) is the
+# rule `deny.toml`'s `[bans].deny` machine-enforces — a second HTTP/TLS crate would trip the gate.
+# OPTIONAL: this crate NAMES `ureq::Agent` in exactly one place (`telegram/deps.rs`), so the
+# `telegram` feature owns the direct edge. Nothing else here uses `ureq` (`alerts.rs`'s
+# `ureq_webhook_sinks` is `vike-alerting`'s, reached through the direct edge above — ⚠ this called
+# it "a vike-ops re-export" until 2026-09-28, and that re-export went on 2026-09-25), so a default
+# build simply drops the direct edge — the crate is still reachable transitively via
+# vike-bridge-core.
+ureq = { workspace = true, optional = true }
+serde = { workspace = true }        # derive on the TOML daemon profile
+serde_json = { workspace = true }   # newline-JSON stdio commands + the snapshot summary lines
+toml = { workspace = true }         # the reviewable daemon PROFILE (LEAN "environments", steal S8)
+tracing = { workspace = true }      # diagnostics (subscriber lives in vike-log; stdout stays protocol-only)
+# ⚠ THE BRIDGES `src/registry.rs`'s `REGISTRY` NAMES are dependencies of THIS crate (docs/decisions/0096,
+# amended 2026-09-29): eleven were already here for the feed arms above — every venue but
+# dukascopy, fxcm and ibkr — and every roster venue's bridge is a dependency here since the venue
+# mount contract finished (ibkr and fxcm OPTIONAL, behind this crate's own features); `just
+# new-venue` adds a new venue's at this marker. `vike-run` names none.
+# IBKR — OPTIONAL, behind this crate's `ibkr` feature below: its live backends compile the
+# vendored ibapi tree, so a default build carries no ibkr bridge and `src/registry.rs` registers
+# the venue `FeatureAbsent`. The edge moved here from vike-mount with the venue's port
+# (docs/decisions/0096, amended 2026-09-29: the registry, and so each optional bridge edge, is
+# this crate's — vike-run names no bridge).
+vike-ibkr = { path = "../bridges/vike-ibkr", optional = true }
+# FXCM — OPTIONAL, behind this crate's `fxcm` feature below. It hides no heavy tree (vike-fxcm's
+# module tree always compiles; its own `fxcm` feature only lets `build.rs` try the shim compile),
+# so the edge is optional for the ordinary reason: a default build registers the venue
+# `FeatureAbsent`. Moved here from vike-mount with the venue's port (docs/decisions/0096, amended
+# 2026-09-29: the registry, and so each optional bridge edge, is this crate's).
+vike-fxcm = { path = "../bridges/fxcm", optional = true }
+# DUKASCOPY — named for `src/registry.rs`'s `REGISTRY` row alone (docs/decisions/0096, amended
+# 2026-09-29): nothing in production mounts the venue — `vike_run`'s `WIRED_MARKETS` has no
+# dukascopy row (the owner's Q1: ported as it is) — so that row is read by the arming projection
+# (`vike_mount::venue_arming`) and by tests, never by a mount. No new package in this binary's
+# graph: vike-mount linked the bridge until the venue mount contract finished.
+vike-dukascopy = { path = "../bridges/dukascopy" }
+# vike:new-venue:row {crate} = { path = "../bridges/{venue}" } # TODO(new-venue: {venue}): the bridge crates/vike-tradehub/src/registry.rs names
+
+[features]
+# The opt-in TELEGRAM CONTROL channel — a REMOTE ORDER-ORIGINATION path reachable from a
+# third-party chat service. OFF by default, and the default is COMPILE-time, not runtime: without
+# this feature `src/telegram/` is not part of the crate at all, `main.rs` has no
+# `maybe_start_telegram` and no call site, and the direct `ureq` edge is dropped.
+#
+# Why a Cargo feature on top of the four runtime gates it already has: a runtime env gate can be
+# misconfigured, inherited from a stale systemd unit, or set by anything that can write this
+# process's environment. Code that was never compiled in cannot be reached by ANY misconfiguration.
+# This is the same shape as `polymarket` below — the risky venue arm is absent from a default build,
+# not merely dormant in it.
+#
+# Even ON, the channel still needs all four runtime gates simultaneously (VIKE_TRADEHUB_CONTROL=1 +
+# VIKE_TELEGRAM_CONTROL=1 + VIKE_TELEGRAM_BOT_TOKEN + a non-empty VIKE_TELEGRAM_ALLOWED_CHAT_IDS)
+# and every write is preview + /confirm gated. Authorization is per-CHAT (an allowlisted GROUP
+# authorizes every member); the optional VIKE_TELEGRAM_ALLOWED_USER_IDS narrows it to named senders,
+# and every accepted command names its sender in the audit trail either way.
+# See `src/telegram/mod.rs`'s module doc.
+# CI lane: `bash scripts/ci_feature_suite.sh telegram` (test + clippy --all-targets -D warnings) —
+# a feature CI never compiles is how a bug hides.
+telegram = ["dep:ureq"]
+# Arm the LIVE Polymarket venue (the A-S maker's native [0,1] price domain). This crate OWNS the chain
+# since the venue mount contract (docs/decisions/0096, amended 2026-09-29): the optional
+# `vike-polymarket` edge with that crate's own `polymarket` feature (without which it is EMPTY), the
+# `#[cfg(feature = "polymarket")]` row of `src/registry.rs`'s `REGISTRY` that registers the bridge's
+# `PolymarketVenueMount`, and `vike-run/polymarket`, a marker for `build_node`'s `POLYMARKET_MARKET`
+# wiring — AND it lets the daemon name the polymarket `Feeds` type for the market-data lane. ⚠ It
+# reached the mount through `vike-run/polymarket` → `vike-mount/polymarket` until then. OFF by
+# default: a default build registers polymarket `FeatureAbsent` (paper), has no polymarket
+# `live_mount` arm, no k256/keccak tree, and stays geo-free. Even ON, real Polymarket
+# orders still need the full gate stack (VIKE_TRADEHUB_LIVE=1 + POLY_PRIVATE_KEY creds + flags.poly_exec)
+# AND egress through the Dublin SOCKS tunnel (US-geo-blocked otherwise → silent paper fallback).
+polymarket = ["vike-run/polymarket", "dep:vike-polymarket", "vike-polymarket/polymarket"]
+# Arm the LIVE IBKR venue. This crate OWNS the chain since the venue mount contract
+# (docs/decisions/0096, amended 2026-09-29): the optional `vike-ibkr` edge with its `ibkr`
+# umbrella (`ibkr-socket` + `ibkr-cpapi`), the `#[cfg(feature = "ibkr")]` row of
+# `src/registry.rs`'s `REGISTRY`, and `vike-run/ibkr`, a marker for `build_node`'s `IBKR_MARKET`
+# wiring. ⚠ It was a pure forward (`vike-run/ibkr` → `vike-mount/ibkr` + `vike-ibkr/ibkr`) until then.
+#
+# ⚠ It exists because this daemon could not reach that arm AT ALL: `vike-run` has carried an `ibkr`
+# feature since the bridge landed and the GUI shell — `vike-app` then — forwarded it (`ibkr =
+# ["fat", "vike-mount/ibkr", "vike-run/ibkr"]`), but this crate forwarded only `polymarket` and
+# `fxcm` — so the GUI could mount IBKR live and the headless daemon silently could not, falling
+# through `make_engine`'s `("ibkr", _)` to paper with no diagnostic (#1575, 2026-08-30). That
+# asymmetry was an omission, not a decision: nothing in either crate's docs argued for a GUI-only
+# venue. The GUI half is gone since 2026-09-09: #1727 deleted that `ibkr` feature with the shell's
+# `fat` build and renamed the shell `vike-desktop`, which mounts no venue, so this daemon is the only
+# root that reaches the arm. (This said `vike-app` "forwards" it, present tense, until 2026-09-28.)
+#
+# OFF by default, like the other two: a default build registers ibkr `FeatureAbsent` in
+# `src/registry.rs`'s `REGISTRY` and mounts it paper, with no vendored `ibapi` in the graph.
+ibkr = ["vike-run/ibkr", "dep:vike-ibkr", "vike-ibkr/ibkr"]
+# Arm the LIVE FXCM venue. This crate OWNS the chain since the venue mount contract
+# (docs/decisions/0096, amended 2026-09-29): the optional `vike-fxcm` edge — whose own `fxcm`
+# feature only lets `build.rs` try the shim compile — the `#[cfg(feature = "fxcm")]` row of
+# `src/registry.rs`'s `REGISTRY`, and `vike-run/fxcm`, a marker for `build_node`'s `FXCM_MARKET`
+# wiring. ⚠ It was a pure forward (`vike-run/fxcm` → `vike-mount/fxcm` → `vike-fxcm/fxcm`) until
+# then. The shipped binary has it ON: `crates/vike/Cargo.toml`'s `vike-tradehub` feature forwards
+# it, and that crate's `full` enables it.
+#
+# ⚠ Until 2026-09-09 this LINKED ForexConnect into the daemon, and the release built an ADDITIONAL
+# `vike-tradehub-fxcm` asset with it: ON, on a box where the SDK was staged, the binary gained a
+# HARD `DT_NEEDED` on `libForexConnect.so` and would not start where those libraries were absent,
+# which is why that asset shipped under a SEPARATE name `deploy/sbin/vike-trader-ci-deploy` never
+# touched. #1720 moved the SDK behind a shim opened at RUNTIME (`crates/bridges/fxcm/src/loader.rs`),
+# so the feature adds no native link to this binary and the second asset is gone. OFF, a build
+# registers fxcm `FeatureAbsent` and mounts it paper, as before.
+# ⚠ ON, on a box where the loader finds no shim (no SDK staged — every CI runner), the mount
+# refuses to go live (`vike_fxcm::sdk_available()`), so this feature alone is never enough to
+# trade, by construction. (This said `build.rs` "degrades to the `Unavailable` stub" until
+# 2026-09-28; #1720 deleted that stub.)
+# ⚠ It IS enough to mount where the shim loads: `vike_run::build_node` has its fxcm arm and
+# `WIRED_MARKETS` its fxcm row, so this daemon mounts a real FXCM engine and its reconcile client
+# with it (a live mount reconciles by default since 2026-09-06, docs/decisions/0043). It is still
+# NOT enough to name fxcm as this daemon's own profile venue — `LIVE_WIRED_VENUES` is the
+# market-FEED list and this bridge serves no market data; that const's doc carries the argument.
+# ⚠ NEVER MOUNT IT WITH RECONCILE OFF (`VIKE_RECONCILE_OFF=1`). FXCM's async fill lane routes on an
+# in-process map built at accept time, so across a restart every re-surfaced trade is unroutable
+# and dropped; the reconcile client reading the same Trades table by the same `trade_id` is the
+# only thing that recovers them. (This read "MOUNT IT WITH `VIKE_RECONCILE=1`" until 2026-09-28;
+# that flag became a force-on when the default flipped.)
+# CI lane: `bash scripts/ci_feature_suite.sh fxcm`, which compiles this chain on runners with no
+# SDK staged — the FFI is compiled in every build since the stub went, and the branch a runner
+# exercises is the refusal — and the `multicall` lane compiles it again under the shipped `full`.
+fxcm = ["vike-run/fxcm", "dep:vike-fxcm", "vike-fxcm/fxcm"]
+
+[dev-dependencies]
+vike-log = { path = "../vike-log" } # test_init() for the headless-lifecycle test
+# The FIXED-SPREAD SpreadMaker the B4 update-params roundtrip mounts (control_roundtrip.rs):
+# deterministic quotes off the first ticks, so a wire re-tune's effect is observable in the
+# snapshot — the A-S paper mount the other tests use never quotes without a feed. Dev-only: the
+# daemon itself keeps reaching the maker through vike-run's builders.
+vike-mm = { path = "../vike-mm" }
+# The DataFusion-free `MemHistStore` double (vike-data's `test-support`). ⚠ This said a
+# `materializer_sink` integration test drained a hand-written WAL through the `JournalMaterializer`
+# the `materialize` feature spawns, until 2026-09-28: #2093 deleted that test with the feature on
+# 2026-09-22 (`tests/daemon/materializer_sink.rs`), and nothing in this crate names
+# `vike_data::test_support` today, so this enable serves no test.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# The scripted-stream double the DETERMINISTIC venue-feed splice test rides
+# (src/feed_splice_seam_tests.rs): a `ScriptedStream` session through the REAL `wire_venue_feeds`
+# deribit arm — no network. Dev-only FEATURE enable on a crate that is already a normal dep above,
+# so the shipped binary compiles no scripted double.
+vike-bridge-core = { path = "../vike-bridge-core", features = ["test-support"] }
+# Two independent test suites need this feature, both added by decision 0086:
+# `create_empty_store_for_test` — the ONE thing in `vike-secrets` that creates a fresh, current-
+# schema, otherwise-empty settings store: `vike_secrets::profile_store`'s writers all refuse an
+# absent one (`refuse_absent_store`), and `migrate` only creates one when it has a credential or
+# node key to carry, so a spawned-binary test that seeds an active daemon-profile row with no
+# credentials at all has no other path to a store those writers will accept.
+# `plant_settings_rows`/`hold_write_lock` — the settings-write integration suites' own fixtures,
+# needed to seed a real `vike.db` (a bare settings FILE resolves nothing any more).
+# Dev-only feature enable on a crate that is already a normal dep above, so the shipped daemon
+# compiles neither.
+vike-secrets = { path = "../vike-secrets", features = ["test-support"] }
+# Self-deleting throwaway directories for this crate's unit and integration tests — state, settings,
+# lock, script and ledger dirs. ⚠ This said "a throwaway journal directory for that integration
+# test" until 2026-09-28: that test was `materializer_sink`, deleted with the `materialize` feature
+# (#2093), and the dependency outlived it because every other test here had taken it up.
+tempfile = "3"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

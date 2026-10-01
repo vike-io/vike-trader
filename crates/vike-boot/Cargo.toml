@@ -1,0 +1,67 @@
+[package]
+name = "vike-boot"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the STARTUP SEQUENCE's one owner: refuse a removed environment, resolve <project>/settings ONCE, load the settings, load the credentials, and hand back everything a binary needs to build its log subscriber and disclose what it resolved. Takes the environment as a PARAMETER and performs no logging, no transport and no DataFusion, so every composition root shares one order without any of them acquiring the others' dependencies."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `domain-stacked` —
+# one hop over the domain band: `vike-config` (20) is this crate's highest vike-* edge and sets the
+# floor. The crate's JOB is its own sentence, not the tier's: the composition-root startup
+# sequence, over the settings/credential domain crates and below every binary that runs it.
+# ⚠ This said "Tier `boot`" until 2026-09-28, a name rank 25 gave up on 2026-09-23 when it widened
+# past this one crate. The `TIERS` row for 25 records the rename, and leaves this crate's job
+# sentence "at its own manifest, where a crate's job belongs".
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 25
+
+[dependencies]
+# The typed settings model + layered loader, and the three things this crate SEQUENCES around it:
+# `refuse_removed_env`, `load`, `refuse_credential_file_arming` and `boot_lines`. Pure — it reads no
+# environment and walks for no directory, which is exactly why the order has to live somewhere.
+vike-config = { path = "../vike-config" }
+# The credential store's own crate, for the project walk (`project_settings_dir_for`) and the
+# settings-database read (`read_settings_in`). It names nothing above the vocabulary floor
+# (`vike-model`) and one external crate (`rusqlite`, the store's database home) — no transport, no
+# TLS stack and no query engine — which is the whole reason this crate can be depended on by
+# `vike-cli`: reaching for `vike_bridge_core::credentials` instead would put ureq/tungstenite/rustls
+# one edge away from a DataFusion-free, transport-free CLI. The credential READ itself is never
+# performed here: the root passes its own loader as a function (see `BootSpec::credentials`).
+# ⚠ This said "for the project walk alone (`project_settings_dir_from`). ZERO dependencies" until
+# 2026-09-28. `rusqlite` arrived with decision 0054 (2026-09-13) and `vike-model` with decision
+# 0072 (2026-09-20); what survives both is the WEIGHT, which `vike-secrets`' own manifest argues.
+vike-secrets = { path = "../vike-secrets" }
+# `state_path::{STATE_SUBDIR, LOGS_SUBDIR}` — the log home derived from the ONE resolved settings
+# directory. Already in this crate's graph through vike-config, so it adds no package.
+vike-model = { path = "../vike-model" }
+# The BUILD IDENTITY line that opens the startup disclosure. ZERO dependencies, same argument.
+vike-buildinfo = { path = "../vike-buildinfo" }
+
+# ⚠ DELIBERATELY ABSENT, and each absence is load-bearing — `tests/dependency_floor.rs` is the gate:
+#   * `vike-log` — this crate does NOT call `vike_log::init`. Measured on the tree this crate was
+#     written against, that one edge would add 43 packages (tracing-subscriber, tracing-appender,
+#     `time`, `regex-automata` and the whole ICU4X `idna` tree) to `vike-cli`, whose entire
+#     identity is being light and on the FAST CI lane. The root builds its own `LogConfig` and HOLDS
+#     the returned guards, exactly as it does today; what this crate hoists is the ORDER around it
+#     and the log HOME derived from the one settings walk.
+#   * `vike-bridge-core` — see the vike-secrets note above.
+#   * `tracing` — this crate must run BEFORE a subscriber exists (the log directory and both log
+#     levels are themselves settings), so anything it wants to say comes back as DATA.
+
+[dev-dependencies]
+# The project walk and the settings files must be exercised against a real directory tree; a
+# pure-string test would only re-assert `join`. Already in the lockfile, and dev-only, so the
+# crate's runtime graph is unchanged.
+tempfile = "3"
+# `vike_model::libm_walk::cfg_test_module_rel_files` for `tests/one_owner.rs`: a test module that
+# lives in its own file (`#[cfg(test)] mod NAME;`) is test code, not a composition root. Same
+# normal edge as above; this only turns on the feature that compiles the parser.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# Plants a PRE-0095 settings store (`unmark_live_means_mainnet`) for the ceiling-migration tests.
+vike-secrets = { path = "../vike-secrets", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

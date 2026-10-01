@@ -1,0 +1,76 @@
+[package]
+name = "vike-ai"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false
+description = "Headless in-app AI copilot: LlmClient (Anthropic + Cerebras over ureq) + the develop_strategy agentic loop that generates compile-validated, OOS-backtested Rhai strategies (Studio SP3, BYO key)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `engine` — one hop
+# over the domain-stacked band: a crate composed over a layer-25 crate. This one is an `LlmClient`
+# and an agentic loop that generates, compiles and OOS-backtests candidate strategies over the
+# SIMULATOR, and mounts no venue.
+#
+# 30 is the ARITHMETIC FLOOR, set by ONE edge: `vike-sim` (25). Its other normal vike edges are
+# `vike-script` (20), `vike-data` (20) and `vike-analytics` (15). Its only consumer is
+# `vike-studio` (80).
+#
+# ⚠ WAS `engine-stacked` (35) from the simulator split (2026-09-27) until 2026-09-28, while
+# `vike-sim` held 30 — one rung over its own floor. `vike-sim` dropped to 25 and took this crate's
+# floor down with it.
+# ⚠ WAS `research` (45) until the simulator split out of `vike-backtest` (2026-09-27,
+# docs/decisions/0087-the-simulator-leaves-the-harness.md), and `service` (50) before that. The
+# harness was this crate's ceiling, and it never used the harness: every simulator item it names
+# is now `vike-sim`'s. MEASURED at the split: its four normal vike edges were `vike-analytics` (15),
+# `vike-script` (20), `vike-data` (20) and `vike-sim` (then 30), so its arithmetic floor was 31 and
+# `engine-stacked` (35) the nearest tier — the rank follows what the crate DECLARES
+# (docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md), and nothing it declares
+# is a harness any more.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 30
+
+[dependencies]
+vike-script = { path = "../vike-script" }
+# The SIMULATOR — `StrategyEngine`/`SimBroker`/`EngineParams`, the one-run engine the develop loop
+# backtests each candidate on. NOT `vike-backtest`: this crate never used the harness (no profile,
+# no hist replay, no sweep), and taking the simulator alone is what took the harness and its tree
+# out of this crate's closure (docs/decisions/0087's "What dies" table measures it).
+vike-sim = { path = "../vike-sim" }
+# `metrics`, `overfit` (the deflated Sharpe the loop gates a candidate on) and
+# `report::periods_per_year_for_interval` — named at their owner, the way every caller names them
+# since the re-exports that once reached them through `vike_backtest::` were retired (0087).
+vike-analytics = { path = "../vike-analytics" }
+# Default surface only (NO hist-datafusion): the library operates on `&dyn HistStore` + TsRange,
+# and since the tests moved onto MemHistStore's real bar storage (the `test-support` enable in
+# [dev-dependencies] below) NO target of this crate names the concrete DataFusionHist — the whole
+# Arrow/DataFusion tree stays out of `cargo test -p vike-ai`'s graph entirely.
+vike-data = { path = "../vike-data" }
+# The trial ledger + learnings store (`ledger.rs`) persists as JSON, so `AgentResult`/`Trial`/
+# `Learning` derive Serialize/Deserialize. Already a workspace dep in most crates here; nothing
+# new enters the lockfile.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The `tracing` FACADE only (library crate — only binaries call `vike_log::init`): the ledger is
+# best-effort, so a missing/corrupt/unwritable file is exactly one `warn!` rather than a failed
+# authoring run.
+tracing = { workspace = true }
+ureq = { workspace = true }
+
+[dev-dependencies]
+# Test-only: the develop-loop tests build `Bar` fixtures to seed the store with. This crate's
+# PRODUCTION code names no market-data and no domain type at all — it moved out of
+# `[dependencies]` when `vike-marketdata` split from `vike-model`, and the measurement that found
+# it is in `crates/vike-marketdata/src/lib.rs`'s module doc.
+vike-marketdata = { path = "../vike-marketdata" }
+# The trial-ledger tests still park their files under a real directory — the ledger is a real
+# filesystem seam regardless of what backs the bars — so tempfile stays through the store switch.
+tempfile = "3"
+# Test-only store double: the develop-loop tests seed bars with `append_bars` and read them back
+# through `HistStore::load_bars` — shapes `MemHistStore` now serves for REAL (in-memory bar
+# storage behind `test-support`, matching DataFusionHist's observable semantics), so
+# `cargo test -p vike-ai` no longer compiles the Arrow/DataFusion tree at all.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+
+[lints]
+workspace = true

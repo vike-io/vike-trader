@@ -1,0 +1,364 @@
+//! `tradehub_control` — the GUI-side lowering for the thin-client **Scope::Write** WRITE path
+//! (headless two-layer plan, Layer 2): turn a live-core [`vike_exec::Command`] into the thin-wire
+//! [`vike_tradehub_client::WireCommand`] the desktop's observer (every `vike-desktop` launch; a
+//! `vike-app --observe` run when this was written) sends to a remote headless `vike-tradehub`
+//! daemon's control server.
+//!
+//! [`wire_from_command`] is the exact INVERSE of the daemon's `lower_command`
+//! (`vike-tradehub/src/server.rs`, which lowers a received `WireCommand` back into a real
+//! `Command`/`OrderIntent` at its edge). It is deliberately **PARTIAL**: the thin wire vocabulary
+//! ([`vike_tradehub_client::WireCommand`]) is only the SESSION-relevant subset a remote GUI drives
+//! (submit / cancel / modify / mass-cancel / flatten / market-exit / trading-state, plus the
+//! strategy-level live-params re-tune since split-plane B4), NOT the full
+//! internal `Command`/`OrderIntent` surface (brackets, batches, conditionals, combos, margin,
+//! reconcile plumbing, shutdown). A `Command` with no wire form yields `None`; the caller
+//! (the GUI's remote-control dispatch arm) logs and drops it — a future PR either extends
+//! `WireCommand` or grays out the UI control that produces it.
+//!
+//! [`venue_routing_verdict`] is the CLIENT half of the node's routing gate, and it is the only
+//! defence against the one direction the node cannot cover: a backend that predates
+//! [`vike_tradehub_client::proto::FEATURE_VENUE_ROUTING`] accepts a command naming ANY venue and
+//! applies it to its PRIMARY engine — `Ack`, an order in the snapshot, no error — so an operator
+//! picking a venue sees success and the order is signed on a different exchange. Against such a
+//! backend this client sends only a venue the backend has been seen to publish.
+//! [`may_send_to_backend`] is what a shell actually calls — the whole decision AND its log line
+//! live here rather than in `crates/vike-desktop`, which is in `EXCLUDE_FROM_CI` and so is compiled
+//! by one job and executed by nothing; the shell keeps only the handle and the frame's snapshot. It
+//! is applied at `vike-desktop`'s one remote-command choke point (`Dispatch::send`), never per
+//! button.
+//!
+//! [`control_enabled`] is the master env gate for wiring this path at all — the same deliberately-
+//! unfuzzy exact-`"1"` idiom as `vike_tradehub::reconcile_config::reconcile_enabled`, read straight
+//! off the REAL process env (see that module's doc, `crates/vike-tradehub/src/reconcile_config.rs`,
+//! for why a feature toggle reads process env, not the credentials `.env` map). OFF (unset) means
+//! the observer — every desktop launch — stays read-only, byte-identical to before this path
+//! existed. (Both references were intra-doc links to `crate::reconcile_config` until 2026-09-28,
+//! dangling since that module left this crate.)
+
+/// Lower a live-core [`vike_exec::Command`] into the thin-wire [`vike_tradehub_client::WireCommand`]
+/// a remote Scope::Write client sends — the GUI-side inverse of the daemon's `lower_command`.
+///
+/// PARTIAL (see the module doc): every mapped variant copies its fields into the standalone wire
+/// mirror verbatim (a Submit copies all 9 `OrderRequest` fields the wire carries; an
+/// `UpdateParams` copies its target key and re-serializes the typed `StrategyParams` into the
+/// core's own serde JSON — the shape the wire deliberately delegates to); everything with
+/// no wire form — `OrderIntent::{Bracket, SubmitBatch, CancelBatch, Confirm, ArmConditional,
+/// DisarmConditional, Combo}` and `Command::{SetMargin, ApplySnapshot,
+/// ReconcileReports, ConfirmRecon, Shutdown}` — returns `None`.
+pub fn wire_from_command(cmd: &vike_exec::Command) -> Option<vike_tradehub_client::WireCommand> {
+    use vike_exec::{Command, OrderIntent, TradingState};
+    use vike_tradehub_client::{WireCommand, WireOrderRequest, WireTradingState};
+
+    match cmd {
+        Command::Order(OrderIntent::Submit(req)) => Some(WireCommand::Submit(WireOrderRequest {
+            client_order_id: req.client_order_id.clone(),
+            venue: req.venue.clone(),
+            symbol: req.symbol.clone(),
+            side: req.side,
+            qty: req.qty,
+            order_type: req.order_type.clone(),
+            price: req.price,
+            trigger_price: req.trigger_price,
+            reduce_only: req.reduce_only,
+            account: None,
+        })),
+        Command::Order(OrderIntent::Cancel(coid)) => Some(WireCommand::Cancel(coid.clone())),
+        Command::Order(OrderIntent::Modify { client_order_id, new_qty, new_price }) => {
+            Some(WireCommand::Modify {
+                client_order_id: client_order_id.clone(),
+                new_qty: *new_qty,
+                new_price: *new_price,
+            })
+        }
+        // The three risk-REDUCING verbs carry their account across the lift, in the wire spelling
+        // (`Display` — `DEFAULT` for the unlabelled book, as the `MountStrategy` arm below argues).
+        // ⚠ Dropping it here would WIDEN the verb on the far side: an account-less reduce fans out
+        // over every account of the venue, so a lift to `None` turns "cancel ALT's book" into
+        // "cancel the exchange". A node that does not honour the field refuses nothing — the client
+        // refuses the send against it (`vike_tradehub_client::remote_control`'s `required_feature`).
+        Command::Order(OrderIntent::MassCancel { venue, symbol, account }) => {
+            Some(WireCommand::MassCancel {
+                venue: venue.clone(),
+                symbol: symbol.clone(),
+                account: account.as_ref().map(|a| a.to_string()),
+            })
+        }
+        Command::Order(OrderIntent::Flatten { venue, symbol, account }) => {
+            Some(WireCommand::Flatten {
+                venue: venue.clone(),
+                symbol: symbol.clone(),
+                account: account.as_ref().map(|a| a.to_string()),
+            })
+        }
+        Command::Order(OrderIntent::MarketExit { venue, account }) => {
+            Some(WireCommand::MarketExit {
+                venue: venue.clone(),
+                account: account.as_ref().map(|a| a.to_string()),
+            })
+        }
+        Command::SetTradingState(ts) => Some(WireCommand::SetTradingState(match ts {
+            TradingState::Active => WireTradingState::Active,
+            TradingState::Reducing => WireTradingState::Reducing,
+            TradingState::Halted => WireTradingState::Halted,
+        })),
+        // The strategy-level live-params re-tune (split-plane B4): the target key copies verbatim;
+        // the typed `StrategyParams` re-serializes into the core's OWN serde JSON, which is exactly
+        // what the wire variant carries (delegated, not mirrored — see its doc) and what the
+        // daemon's `lower_command` deserializes back. `to_value` on these serde-derive params
+        // structs cannot fail in practice; `.ok()?` keeps the function total rather than panicking
+        // a GUI thread on a hypothetical unserializable future variant.
+        Command::UpdateParams(u) => Some(WireCommand::UpdateParams {
+            venue: u.venue.clone(),
+            symbol: u.symbol.clone(),
+            interval: u.interval.clone(),
+            params: serde_json::to_value(&u.params).ok()?,
+        }),
+        // The runtime mount verbs (split-plane B5): the spec is fully serde, so the lift is a
+        // field-for-field copy — the wire variant mirrors `vike_exec::MountSpec` exactly.
+        Command::MountStrategy(spec) => Some(WireCommand::MountStrategy {
+            venue: spec.venue.clone(),
+            // ⚠ **`Display`, not `text()`** — and the difference is a whole wire state. `text()`
+            // answers `None` for the DEFAULT account, which would flatten "named the unlabelled
+            // account" into "named nothing"; `Display` renders it `DEFAULT`, the spelling
+            // `parse_wire_account` reads back on the far side. The two are different rows of the
+            // routing table at `N >= 2`, so collapsing them here would lose the operator's choice
+            // between the lift and the frame.
+            account: spec.account.as_ref().map(|a| a.to_string()),
+            symbol: spec.symbol.clone(),
+            interval: spec.interval.clone(),
+            controller_id: spec.controller_id.clone(),
+            name: spec.name.clone(),
+            rhai: spec.rhai.clone(),
+            params: spec.params.clone(),
+        }),
+        Command::UnmountStrategy { controller_id } => {
+            Some(WireCommand::UnmountStrategy { controller_id: controller_id.clone() })
+        }
+        // No thin-wire form yet (see the module doc) — the caller logs + drops these:
+        //   OrderIntent::{Bracket, SubmitBatch, CancelBatch, Confirm, ArmConditional,
+        //                 DisarmConditional, Combo}
+        //   Command::{SetMargin, ApplySnapshot, ReconcileReports, ConfirmRecon, Shutdown}
+        _ => None,
+    }
+}
+
+/// What a client should do with a command it is about to send, given WHICH VENUE that command
+/// names and what the connected node has said about itself — the answer to
+/// [`venue_routing_verdict`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VenueRouting {
+    /// Send it. Either this node publishes an engine for that venue, or it advertises
+    /// [`vike_tradehub_client::proto::FEATURE_VENUE_ROUTING`] and will answer a `Response::Error`
+    /// naming its own roster — both of which are honest outcomes.
+    Send,
+    /// Do NOT send it; show the operator this reason instead. The node would accept the frame and
+    /// apply it to a book the operator did not name.
+    Refuse(String),
+}
+
+/// **May this client send a command addressed to `venue`?** — the client half of the routing fix,
+/// and the half that covers the direction the server half cannot.
+///
+/// # The direction this exists for
+///
+/// A node that advertises `FEATURE_VENUE_ROUTING` refuses a venue it runs no engine for, so a
+/// client talking to one can offer the operator anything and let the node answer. A node that does
+/// NOT advertise it takes `vike_core`'s historical `route_of(..).unwrap_or(0)`: it accepts the
+/// command, applies it to its PRIMARY engine, answers `Ack`, and shows the order in the snapshot.
+/// The operator picks a venue, sees no error, and the order is signed on a different exchange.
+/// Nothing on the wire distinguishes that from success, which is why the check has to happen before
+/// the frame is written and why it cannot be a check on the reply.
+///
+/// # The rules, and which way each one leans
+///
+/// * a BLANK venue is refused — an empty string is not a venue, and the node's routing would fall
+///   to engine 0 on every build, advertised or not (this is the same hole
+///   [`crate::orders::order_dispatch::DispatchRejectReason::NoRoutableMarket`] closes for the snapshot's
+///   own empty placeholder, restated here because this function is reachable from paths that never
+///   pass through the planner);
+/// * a venue the node PUBLISHES an engine for is sent — that is positive evidence, and it is the
+///   only evidence available against an old node;
+/// * otherwise, if the node advertises the capability, it is sent — the node can say no, and it
+///   knows more than this client does: `node_venues` comes from a pushed snapshot that lags a
+///   runtime `MountStrategy`, so a client that refused here would block a venue the node had since
+///   acquired. **This is the one rule that leans toward sending**, and it leans there because the
+///   worst case is a clean refusal from the node rather than a misroute;
+/// * otherwise it is REFUSED locally, naming both the venue asked for and what the node publishes.
+///
+/// ⚠ `node_venues` EMPTY plus no capability is the most conservative case and is refused: an
+/// observer that has not yet received a frame knows nothing about the node, and "I know nothing"
+/// must never read as "anything goes" on a path that signs orders.
+pub fn venue_routing_verdict(
+    venue: &str,
+    node_venues: &[String],
+    node_routes_by_venue: bool,
+) -> VenueRouting {
+    let venue = venue.trim();
+    if venue.is_empty() {
+        return VenueRouting::Refuse(
+            "this command names no venue, so the backend would apply it to whichever book it \
+             happens to run first"
+                .to_string(),
+        );
+    }
+    if node_venues.iter().any(|v| v == venue) {
+        return VenueRouting::Send;
+    }
+    if node_routes_by_venue {
+        return VenueRouting::Send;
+    }
+    let known = if node_venues.is_empty() {
+        "it has published none yet".to_string()
+    } else {
+        format!("it publishes: {}", node_venues.join(", "))
+    };
+    VenueRouting::Refuse(format!(
+        "this backend does not check which venue a command names — it would apply an order for \
+         `{venue}` to its PRIMARY book without saying so, and {known}. Upgrade the backend, or \
+         trade a venue it publishes"
+    ))
+}
+
+/// **The venues a backend publishes an ENGINE for**, off the snapshot the GUI is already
+/// rendering — `vike_core::Portfolio::venues` is documented as "one block per engine", so this IS
+/// the backend's engine roster and not an approximation of it. It is the client-side routing
+/// gate's positive evidence, and the twin of `vike-tradehub`'s own
+/// `PublisherHandle::engine_venues`, which reads the same projection one hop earlier.
+///
+/// EMPTY means the observer has not received a frame yet, NOT that the backend runs no engines —
+/// [`venue_routing_verdict`] treats it as "I know nothing", which against a backend that does not
+/// check addresses is a refusal.
+pub fn backend_engine_venues(snap: &vike_core::CoreSnapshot) -> Vec<String> {
+    snap.portfolio.venues.iter().map(|v| v.venue.clone()).collect()
+}
+
+/// **The ONE call a GUI shell makes before writing a command to a backend**: `true` to send, and on
+/// `false` the refusal has already been logged with its reason.
+///
+/// Everything it decides lives here rather than in the shell on purpose — `crates/vike-desktop` is
+/// in `xtask/src/ci/tables.rs`'s `EXCLUDE_FROM_CI`, so logic that lands there is compiled by one
+/// job and executed by nothing, while this crate's tests run on every PR. The shell keeps the two
+/// facts only it holds (the connected handle, the frame's snapshot) and none of the reasoning.
+///
+/// A command that addresses no venue ([`vike_tradehub_client::wire::WireCommand::addressed_venue`]
+/// answers `None` — a cancel by coid, the account-wide kill switch, the UNSCOPED panic button) is
+/// always sendable: those name no book, so there is nothing to get wrong, and a panic button with a
+/// prerequisite is not one.
+pub fn may_send_to_backend(
+    cmd: &vike_tradehub_client::WireCommand,
+    snap: &vike_core::CoreSnapshot,
+    node_routes_by_venue: bool,
+) -> bool {
+    let Some(venue) = cmd.addressed_venue() else {
+        return true;
+    };
+    match venue_routing_verdict(venue, &backend_engine_venues(snap), node_routes_by_venue) {
+        VenueRouting::Send => true,
+        VenueRouting::Refuse(why) => {
+            // The `tracing` facade, which is all a library crate may use (binaries own
+            // `vike_log::init`). One line per refused command: an operator who pressed a button and
+            // saw no order needs the reason, and this path is operator-cadence, never a fold.
+            tracing::warn!(%venue, "remote control: command NOT SENT — {why}");
+            false
+        }
+    }
+}
+
+/// The master gate for wiring the desktop observer's Scope::Write write path (`vike-app --observe`'s
+/// when this was written): `true` iff `VIKE_TRADEHUB_CONTROL` is the EXACT string `"1"`. Read
+/// straight off the REAL process env (like every other `VIKE_*` feature toggle — see
+/// `vike_tradehub::reconcile_config`'s module doc for why a feature toggle reads process env, not
+/// the credentials `.env` map), with the same deliberately-unfuzzy on-string idiom as
+/// `vike_tradehub::reconcile_config::reconcile_enabled` (one unambiguous flag to grep for in an
+/// incident); unset or any other value (`"true"`, `"yes"`, `"0"`, ...) stays `false`, so the
+/// observer stays read-only by default.
+pub fn control_enabled() -> bool {
+    // The pure exact-`"1"` test is factored into `flag_is_on` so it is unit-testable WITHOUT
+    // mutating the process-global env (`std::env::set_var` is unsound from parallel test threads —
+    // the same reason `reconcile_config` takes a `&HashMap`; here the value comes from process env).
+    flag_is_on(std::env::var("VIKE_TRADEHUB_CONTROL").ok().as_deref())
+}
+
+/// The pure exact-`"1"` predicate behind [`control_enabled`] — `true` iff `val` is exactly
+/// `Some("1")`. Unit-testable without touching the process env.
+fn flag_is_on(val: Option<&str>) -> bool {
+    val == Some("1")
+}
+
+/// The longest server-error tail rendered inline in the one-line status summary — a rejected
+/// command / handshake reason can be verbose, so it is truncated with an ellipsis to keep the
+/// status strip a single tidy line (the full text stays in the tracing log).
+const MAX_ERR_TAIL: usize = 80;
+
+/// Render the one-line remote **Scope::Write** channel summary the GUI status bar shows when the
+/// desktop observer has a control channel mounted (`App::remote_ctrl` is `Some`; this said
+/// `vike-app --observe` and `App.remote_ctrl.is_some()` until 2026-09-28), from
+/// the two async surfaces the handle exposes —
+/// [`vike_tradehub_client::RemoteControlHandle::is_connected`] and
+/// [`vike_tradehub_client::RemoteControlHandle::last_error`]. Kept pure (no handle, no egui) so it
+/// is unit-tested here in CI-covered `vike-app-core`; the GUI shell only reads the two inputs off
+/// the handle and paints the returned string. Returns `None` when there is nothing to say — no
+/// control channel (`present == false`) — so the status bar renders exactly as before on every
+/// non-control path (the default).
+///
+/// Shapes (the live case is loud: this observer can drive REAL orders on the daemon, the words
+/// say so, the segment is painted the armed amber, and the status bar leads it with the warning
+/// icon — `crate::ui::status_dot::control_text`):
+/// - connected, no error   → `"CONTROL live — this observer can place REAL orders"`
+/// - connected, with error → `… + " · last error: <tail>"`
+/// - disconnected           → `"CONTROL disconnected"` (+ the same error tail when present)
+///
+/// A long `last_error` is truncated to [`MAX_ERR_TAIL`] chars + `"…"` (the full text is in the log).
+///
+/// **`identity` names WHICH daemon the armed channel points at** (split-plane I3 — the spec's
+/// named most-dangerous ambiguity). When the latest observe frame carried a
+/// [`WireNodeIdentity`](vike_tradehub_client::wire::WireNodeIdentity)
+/// (threaded here by the caller from `BridgeHandle::identity` —
+/// [`crate::backend::observe_bridge::BridgeHandle`]), the line LEADS with
+/// [`crate::backend::observe_bridge::identity_label`]'s tag — `"the build runner [LIVE] · "` (uppercase LIVE,
+/// impossible to miss) or `"sim-box [paper] · "`. `None` (an older pre-B3 node, or no frame yet)
+/// renders BYTE-IDENTICAL to the identity-less shapes above.
+///
+/// ⚠ `last_error` is the handle's LATCHED banner view — it names no command and is cleared only by
+/// [`vike_tradehub_client::RemoteControlHandle::clear_last_error`] (the GUI wires that to a click on
+/// this segment). It must never be used to report the outcome of a particular command: that is what
+/// [`vike_tradehub_client::RemoteControlHandle::await_outcome`] and the `CommandTicket` a send
+/// returns are for. Reading the latch per-command is what made every write after one refusal report
+/// that refusal, including commands the node executed.
+pub fn control_status_line(
+    present: bool,
+    connected: bool,
+    last_error: Option<&str>,
+    identity: Option<&vike_tradehub_client::wire::WireNodeIdentity>,
+) -> Option<String> {
+    if !present {
+        return None;
+    }
+    let mut s = match identity {
+        Some(id) => format!("{} · ", crate::backend::observe_bridge::identity_label(id)),
+        None => String::new(),
+    };
+    // No warning glyph in the text: an icon cannot live inside a string (`vike_ui_theme::icons`'
+    // module doc), so the status bar leads a LIVE line with `icons::WARNING` itself
+    // (`crate::ui::status_dot::control_text`).
+    s.push_str(if connected {
+        "CONTROL live — this observer can place REAL orders"
+    } else {
+        "CONTROL disconnected"
+    });
+    if let Some(err) = last_error.map(str::trim).filter(|e| !e.is_empty()) {
+        let tail = if err.chars().count() > MAX_ERR_TAIL {
+            let cut: String = err.chars().take(MAX_ERR_TAIL).collect();
+            format!("{cut}…")
+        } else {
+            err.to_string()
+        };
+        s.push_str(" · last error: ");
+        s.push_str(&tail);
+    }
+    Some(s)
+}
+
+#[path = "tradehub_control_tests.rs"]
+#[cfg(test)]
+mod tradehub_control_tests;

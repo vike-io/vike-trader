@@ -1,0 +1,14 @@
+# vike frame record v1 (vike_ui_theme::frame_record)
+# scenario: study_only_pane
+ppp 1  primitives 10  vertices 5816  triangles 6950
+----
+   0  clip [0 0 960 620]  tex M0  v 4  t 2  solid [0 0 960 620]  glyph -  runs 2  #161b24ff*2 #0d1117ff*2  d 262bfec614c2df93
+   1  clip [0 0 960 620]  tex M0  v 420  t 210  solid -  glyph [892 2 928 371]  runs 3  #090a0a12*180 #858991ff*24 #090a0a12*216  d 4d7614823a5d8dfa
+   2  clip [0 0 888 374]  tex M0  v 2760  t 3630  solid [-1 -1 889 376]  glyph -  runs 16  #07080934*72 #21252cff*8 #40ba50ff*54 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*274  d 65ea27b2def5e604
+   3  clip [0 0 960 620]  tex M0  v 216  t 152  solid [-1 307 961 378]  glyph [9 13 925 319]  runs 11  #f85249ff*20 #000000ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*72 #2f343cff*4  d 676779f8997c19f6
+   4  clip [0 0 960 620]  tex M0  v 12  t 6  solid -  glyph [892 417 904 483]  runs 1  #858991ff*12  d f401092783bbcc9e
+   5  clip [0 379 888 479]  tex M0  v 504  t 630  solid [-1 379 889 481]  glyph -  runs 16  #0e0f1269*4 #21252cff*8 #2d8238b3*12 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*12  d afdacfe7ded77cda
+   6  clip [0 0 960 620]  tex M0  v 80  t 84  solid [-1 396 961 483]  glyph [6 386 907 408]  runs 4  #9aa4b1ff*24 #f85249ff*20 #000000ff*8 #2f343cff*4  d ec74320a26eba096
+   7  clip [0 0 960 620]  tex M0  v 32  t 16  solid -  glyph [684 484 910 598]  runs 1  #858991ff*32  d 6e991a1bbd4f9d95
+   8  clip [0 484 888 588]  tex M0  v 1640  t 2108  solid [-1 484 889 589]  glyph -  runs 5  #0404051d*32 #14171b9c*4 #21252cff*4 #505050ff*660 #57a5ffff*120  d 9776703358d80b68
+   9  clip [0 0 960 620]  tex M0  v 148  t 112  solid [889 484 920 502]  glyph [6 488 913 503]  runs 3  #9aa4b1ff*96 #57a5ffff*20 #000000ff*12  d 65ddcbc07f7c6fe2
