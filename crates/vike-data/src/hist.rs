@@ -1,0 +1,1218 @@
+//! The unified historical-data seam: ONE store for bars AND ticks (design of record:
+//! docs/superpowers/specs/2026-07-05-tickstore-datafusion-spec.md).
+//!
+//! This module is always compiled — it is just the trait + query types (vike-model only).
+//! The concrete DataFusion+Parquet backend ([`crate::datafusion_hist::DataFusionHist`]) is
+//! behind the `hist-datafusion` feature so default builds never pull the Arrow/DataFusion tree.
+//!
+//! Read half: `load_bars` + `scan_quotes`/`scan_trades`. Ingest: idempotent `append_*` (manifest
+//! file-index). Derive: `resample_*_to_bars` feeds the parity-tested `vike_model::consolidate_*`
+//! (bars-from-ticks, in-store). The tick scans read a bounded range into memory; a range too large
+//! to `Vec` is read a page at a time under a row budget (`HistStore::scan_quotes_capped` and its
+//! siblings). With this the DataFusion+Parquet engine is the SINGLE historical store — the SQLite
+//! bar store is retired.
+
+use vike_model::{Bar, BookUpdate, EquitySample, QuoteTick, SymbolProperties, TradeTick};
+
+use crate::chain_log::ChainRow;
+use crate::cohort_log::CohortRow;
+use crate::exec_log::{ExecFillRow, ExecOrderRow};
+use crate::funding_log::FundingRow;
+use crate::perp_metrics_log::PerpMetricRow;
+use crate::series::{SeriesCoverage, SeriesId};
+
+/// Errors from the historical store. Feature-independent — DataFusion/Arrow/Parquet failures are
+/// stringified so the always-compiled trait never depends on that tree.
+#[derive(Debug)]
+pub enum DataError {
+    /// DataFusion / Arrow / Parquet query or decode failure.
+    Query(String),
+    /// Filesystem / manifest IO failure.
+    Io(String),
+    /// **This store does not implement the series kind that was asked for.** A CAPABILITY answer,
+    /// not a failure of the operation — the call was well-formed and this backend cannot serve it.
+    ///
+    /// It exists because the alternative is worse than an error: `docs/decisions/0080-the-account-funding-kind-takes-the-qualified-name.md` verdict 6
+    /// records that `append_funding` used to DEFAULT to `Ok(0)`, which is the same value a correct
+    /// already-ingested batch and a correct empty batch both return. A backfill against a store that
+    /// never implemented the kind therefore reported success, wrote nothing, and a later empty `ls`
+    /// read as "no data in that window" rather than "nothing was ever stored". Three situations, one
+    /// return value, no way for a caller to separate them.
+    ///
+    /// Carry the KIND and the store in the message, so the reader knows which of the two to change.
+    Unsupported(String),
+}
+
+impl std::fmt::Display for DataError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DataError::Query(e) => write!(f, "hist query: {e}"),
+            DataError::Io(e) => write!(f, "hist io: {e}"),
+            DataError::Unsupported(e) => write!(f, "hist unsupported: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for DataError {}
+
+/// The words every supersede REFUSAL's message opens with — see [`DataError::is_supersede_refusal`].
+const SUPERSEDE_REFUSAL_PREFIX: &str = "cannot supersede commit key ";
+
+impl DataError {
+    /// Whether this is the store REFUSING a superseding commit: `append_quotes_superseding`,
+    /// `append_bars_superseding` or `resample_quotes_to_bars_superseding` (all on `DataFusionHist`)
+    /// found the key they were asked to supersede folded into a multi-key part — background
+    /// compaction merged a provisional part into a neighbour before its canonical commit arrived —
+    /// so the removal cannot be performed exactly and the call is refused whole.
+    ///
+    /// It is the one store failure that is a property of a KEY rather than of the store: no row is
+    /// sealed, no key is spent, and the same call refuses the same way on every retry. Every other
+    /// [`DataError`] (a disk, a lock, a decode) is the store failing, and says nothing about the next
+    /// call's keys — which is why a caller that wants to step over a refused window and go on must
+    /// tell the two apart, and must not step over the rest.
+    ///
+    /// ⚠ **A predicate over the message, because the refusal has no variant of its own.** It is a
+    /// [`DataError::Query`] whose text opens with a fixed phrase, spelled once in the store's
+    /// `plan_supersede` and once in this file's `SUPERSEDE_REFUSAL_PREFIX`.
+    /// `crates/vike-data/tests/supersede_refusal.rs`'s
+    /// `the_store_refusing_a_supersede_is_recognised_in_both_of_its_message_shapes` builds the real
+    /// refusal in both of its shapes and asserts this answers `true`, so a re-worded message reddens
+    /// that test rather than quietly turning every refusal into an ordinary failure. Only `Query` is
+    /// read: an `Io` error that merely quotes the phrase is not mistaken for one. The typed spelling
+    /// — a variant `plan_supersede` returns instead of a `Query` — would reduce this body to a
+    /// `matches!` and change no caller.
+    pub fn is_supersede_refusal(&self) -> bool {
+        matches!(self, DataError::Query(msg) if msg.starts_with(SUPERSEDE_REFUSAL_PREFIX))
+    }
+}
+
+/// Inclusive epoch-ms range; `None` bound = unbounded on that side.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TsRange {
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+impl TsRange {
+    /// The whole series (no bounds).
+    pub fn all() -> Self {
+        Self::default()
+    }
+    /// `[start, end]` inclusive.
+    pub fn of(start: i64, end: i64) -> Self {
+        Self { start: Some(start), end: Some(end) }
+    }
+}
+
+/// What a bar series holds inside a [`TsRange`], described by its two ENDS and its SIZE — the answer
+/// to [`HistStore::bar_edges`], and what [`HistStore::load_bars`]' result says about itself
+/// (`first().ts`, `last().ts`, `len()`) with the rows left out.
+///
+/// A range that holds no bar is ONE state however it is read: both ends `None` and `rows == 0`, which
+/// is [`Default`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BarEdges {
+    /// The smallest `ts` among the rows in range — `load_bars`' first row. `None` = the range holds
+    /// no bar.
+    pub first_ts: Option<i64>,
+    /// The largest `ts` among the rows in range — `load_bars`' last row. `None` = the range holds no
+    /// bar.
+    pub last_ts: Option<i64>,
+    /// How many ROWS are in range — `load_bars(..).len()`. A timestamp stored twice counts twice,
+    /// exactly as it is returned twice.
+    pub rows: u64,
+}
+
+/// The one seam over all historical market data. Readers (backtests, bench, the resample
+/// bridge) depend on this, never on which engine backs it.
+pub trait HistStore {
+    /// Derived OHLCV bars for `(venue, symbol, interval)` in `range`, ts-ascending. Bars are
+    /// small (one row per bar) so a `Vec` is the right shape.
+    ///
+    /// ⚠ **"Small" is per BAR, not per RANGE.** The whole range is materialised, so a caller that
+    /// wants only what the range LOOKS like — its first `ts`, its last, its size — must ask
+    /// [`Self::bar_edges`] instead of loading it to read two numbers off the ends, and a caller that
+    /// wants only its START — a page, or "more than `n` rows, or all of them" — must ask
+    /// [`Self::load_bars_head`] instead of loading it to keep the first few.
+    fn load_bars(
+        &self,
+        venue: &str,
+        symbol: &str,
+        interval: &str,
+        range: TsRange,
+    ) -> Result<Vec<Bar>, DataError>;
+
+    /// The first `ts`, last `ts` and row count of `(venue, symbol, interval)`'s bars in `range` —
+    /// [`Self::load_bars`]' answer about itself, without the bars.
+    ///
+    /// ⚠ **This exists because the alternative is UNBOUNDED, and the alternative is what the data
+    /// daemon's `Backfill` verb did.** That verb reads its requested range back through the served
+    /// store as a write-through proof and reports two numbers from it. `load_bars` builds every row
+    /// of the range — once as Arrow batches and once more as decoded `Vec<Bar>` — so a multi-year
+    /// window of a fine interval (two decades of 5-second candles is tens of millions of bars,
+    /// gigabytes) sits in RAM inside a daemon whose memory cap it shares with the market-data and
+    /// recorder planes. One long request could OOM-kill the daemon and every plane in it.
+    ///
+    /// ⚠ **The DEFAULT falls back to `load_bars` and is exactly as unbounded as it.** That is honest
+    /// rather than lazy, and it is what keeps this method additive: every implementor answers
+    /// correctly the day it lands, and only the ones that can do better have to change. A store
+    /// that can grow large and can fold its ends without decoding rows MUST override —
+    /// `crate::DataFusionHist` does, reading the `ts` column alone. The others inherit for a reason
+    /// each: `crate::MemHistStore` is memory-resident and the flat archive store holds no bars at
+    /// all, so there is nothing for them to bound; `RemoteHistStore` (an RPC seam) has no edges verb
+    /// to forward to, and adding one is a wire change for a caller that today holds the concrete
+    /// store. A wrapper that FRONTS another store must FORWARD — inheriting here would make it pay
+    /// the fallback while its inner store could do better, the same rule the catalog verbs below
+    /// state.
+    ///
+    /// ⚠ **The answer is `load_bars`', not an approximation of it**, and an override is tested
+    /// against exactly that: `first_ts`/`last_ts` are the smallest and largest `ts` among the rows
+    /// `load_bars` returns for the same arguments (the range is inclusive, a `None` bound is open),
+    /// and `rows` is their count with duplicates kept.
+    ///
+    /// ⚠ **What an override does NOT prove.** `load_bars` decodes every column of every row, so a
+    /// part whose price columns cannot be decoded fails it. An edges read decodes the `ts` column
+    /// and no other, and such a part still answers. A caller using this as a write-through proof is
+    /// proving the rows are committed and readable through this handle — not that every column of
+    /// them decodes.
+    fn bar_edges(
+        &self,
+        venue: &str,
+        symbol: &str,
+        interval: &str,
+        range: TsRange,
+    ) -> Result<BarEdges, DataError> {
+        let bars = self.load_bars(venue, symbol, interval, range)?;
+        Ok(BarEdges {
+            first_ts: bars.first().map(|b| b.ts),
+            last_ts: bars.last().map(|b| b.ts),
+            rows: bars.len() as u64,
+        })
+    }
+
+    /// The START of [`Self::load_bars`]' answer, read without reading the rest: a ts-ascending
+    /// COMPLETE PREFIX of `load_bars(range)` — every row of `range` with `ts <= c` for some cut `c`,
+    /// and none past `c` — holding AT LEAST `n` rows unless it is the whole range.
+    ///
+    /// ⚠ **This exists because a capped read of a range used to cost the whole range.** The data
+    /// daemon's `LoadBars` verb answers with at most a client's `limit` rows, and it found them by
+    /// loading the client's ENTIRE range and cutting the reply afterwards — so the FRAME was bounded
+    /// and the ALLOCATION was the range. On a series of tens of millions of `5s` bars that is
+    /// gigabytes for a 10,000-row page, and a paging reader asks it again for every page.
+    /// `docs/superpowers/specs/2026-10-01-loadbars-bounded-read-design.md` carries the measurements
+    /// and the argument.
+    ///
+    /// ⚠ **Both halves of the contract are load-bearing, and neither of them is "about `n` rows".**
+    ///
+    /// * **COMPLETE.** The cut `c` never splits a timestamp: every row at `c` is in the answer. So a
+    ///   caller that cuts the answer on a whole-`ts` boundary of its own gets EXACTLY what cutting
+    ///   `load_bars` would have given it — which is what lets the data daemon's `cap_to_whole_ts`
+    ///   keep every capped reply byte-identical to the one it sent before this method existed.
+    /// * **AT LEAST `n`.** Fewer than `n` rows means the answer IS the whole range. That is what lets
+    ///   one read of `n = C + 1` decide "more than `C` rows, or all of them" — a short answer from a
+    ///   range that goes on and the end of the range look the same from outside. The loop that keeps
+    ///   reading until the count is met therefore lives INSIDE the store, where the point a read
+    ///   stopped at is known. The four `_capped` tick reads promise this half too (see
+    ///   [`Self::scan_quotes_capped`]): they promised only a complete prefix of unstated size until
+    ///   a pager, which stops on an EMPTY answer, was shown to lose a grouped series' rows without
+    ///   it, and `crate::DataFusionHist` now answers both families from one block walk.
+    ///
+    /// The answer may hold MORE than `n` rows — an implementation reads whole storage blocks — and
+    /// trimming it is the caller's job, on a whole-`ts` boundary. `n == 0` asks for nothing: an empty
+    /// answer is a complete prefix (its cut lies before the first row), and so is the whole range.
+    ///
+    /// ⚠ **The DEFAULT is `load_bars` itself: correct, and exactly as unbounded.** The whole range is
+    /// a complete prefix holding every row it has, so it meets the contract for every `n`; that is
+    /// honest rather than lazy, and it is what keeps this method additive — the shape
+    /// [`Self::bar_edges`] has, for the same reasons. A store that can grow large and can stop
+    /// reading early MUST override — `crate::DataFusionHist` does, walking its manifest's parts in
+    /// `ts` order and stopping once `n` rows of the range are in. `crate::MemHistStore` is
+    /// memory-resident and the flat archive store holds no bars, so they inherit. A wrapper that
+    /// FRONTS another store must forward.
+    ///
+    /// ⚠ **`RemoteHistStore` inherits, and must NOT forward to a capped `LoadBars`.** That verb's
+    /// reply is cut on a whole-`ts` boundary and may be SHORT of its `limit` while the range goes on,
+    /// so forwarding would break the at-least half — the very half this method exists to add. The
+    /// default pages the whole range instead, which is correct, and nothing calls this method over
+    /// that seam.
+    fn load_bars_head(
+        &self,
+        venue: &str,
+        symbol: &str,
+        interval: &str,
+        range: TsRange,
+        n: usize,
+    ) -> Result<Vec<Bar>, DataError> {
+        let _ = n;
+        self.load_bars(venue, symbol, interval, range)
+    }
+
+    /// L1 quotes for `(venue, symbol)` in `range`, ts-ascending.
+    ///
+    /// NOTE: reads the whole range into memory (a `Vec`) — for bounded ranges / fixtures. For a
+    /// range too large to `Vec`, read it a page at a time under a row budget
+    /// ([`Self::scan_quotes_capped`]).
+    fn scan_quotes(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+    ) -> Result<Vec<QuoteTick>, DataError>;
+
+    /// Executed trades for `(venue, symbol)` in `range`, ts-ascending. Same slice-1 caveat as
+    /// [`HistStore::scan_quotes`].
+    fn scan_trades(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+    ) -> Result<Vec<TradeTick>, DataError>;
+
+    // ---- ingest (idempotent by commit key — NEVER by row value) ----------------------------
+    //
+    // `commit_key` identifies the SOURCE BATCH (e.g. a venue cursor / "venue:symbol:from-to").
+    // If it was already ingested for this series the append is a NO-OP (returns 0) — the spec's
+    // must-fix #1: trades carry no id, so idempotency lives at the batch level, never per-row
+    // value dedup. `None` = always append (no guard). Each append records the sealed Parquet part
+    // in the series manifest (the file index that also drives reads — no directory LIST).
+
+    /// Append a batch of bars for `(venue, symbol, interval)`. Returns rows written (0 if skipped).
+    fn append_bars(
+        &self,
+        venue: &str,
+        symbol: &str,
+        interval: &str,
+        bars: &[Bar],
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError>;
+
+    /// Append a batch of quotes for `(venue, symbol)`.
+    fn append_quotes(
+        &self,
+        venue: &str,
+        symbol: &str,
+        ticks: &[QuoteTick],
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError>;
+
+    /// Append a batch of trades for `(venue, symbol)`.
+    fn append_trades(
+        &self,
+        venue: &str,
+        symbol: &str,
+        ticks: &[TradeTick],
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError>;
+
+    /// Append recorded L2 book events for `(venue, symbol)` (`kind=book` series; one part
+    /// row per level, regrouped on scan). Returns EVENTS written (0 if commit_key already
+    /// ingested). Same batch-level idempotency contract as the other appends.
+    fn append_book_updates(
+        &self,
+        venue: &str,
+        symbol: &str,
+        updates: &[BookUpdate],
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError>;
+
+    /// [`Self::scan_quotes`] under a ROW BUDGET — and the doc for every capped read
+    /// ([`Self::scan_trades_capped`], [`Self::scan_book_updates_capped`],
+    /// [`Self::scan_depth_capped`], and the three research reads [`Self::scan_cohort_capped`],
+    /// [`Self::scan_perp_metrics_capped`] and [`Self::scan_equity_capped`] point here).
+    ///
+    /// ⚠ **`budget` bounds the READ, not the ANSWER, and only an impl that overrides this can
+    /// honour it.** `crates/vike-datahub-client/src/proto.rs`'s `FEATURE_SCAN_LIMIT` caps the wire
+    /// FRAME by truncating a result the store has already built; that leaves the ALLOCATION
+    /// unbounded, which on the live store is 3.5 billion level-rows for one symbol's `kind=depth`
+    /// series — about 27 GB for its worst single day, in the data daemon beside a live
+    /// order-signing daemon. An impl that can narrow what it READS takes the budget here;
+    /// `crate::DataFusionHist` selects whole manifest parts under it and CLAMPS the range to match.
+    ///
+    /// ⚠ **The contract has TWO halves, and the paging reader needs both** — the one
+    /// [`Self::load_bars_head`] gives bars:
+    ///
+    /// * **COMPLETE.** An impl honouring the budget returns a ts-ascending COMPLETE PREFIX of the
+    ///   unbudgeted answer — every row of `range` with `ts <= c` for some cut `c`, none past it, and
+    ///   never a sample of the asked-for range. The caller pages by continuing past the last row's
+    ///   `ts`, so a gap inside the answered span is lost in silence. That holds for the UNION of
+    ///   every place the symbol's rows live (a per-symbol series and any `group=` directory), not for
+    ///   each separately: two layouts each complete to their own cut make a page complete only to
+    ///   the smaller one.
+    /// * **AT LEAST `budget` rows, unless the answer is the whole range.** The caller stops on the
+    ///   first EMPTY answer, so an empty — or merely short — answer from a range that goes on is
+    ///   read as its end. A grouped part counts every symbol it holds, so a read sized by part rows
+    ///   alone can select a block holding none of this symbol's rows; the impl must keep reading.
+    ///
+    /// Both halves were broken for grouped series from v0.1.34, when budgets landed, until the fix
+    /// `docs/superpowers/specs/2026-10-01-tick-scan-paging-silent-loss-design.md` designs, and a
+    /// paged read lost their rows with no error; that page carries the reproduction. `crate::DataFusionHist` keeps both in one block walk shared with
+    /// `load_bars_head`. The answer may hold MORE than `budget` rows (whole storage blocks), and
+    /// trimming it is the caller's job, on a whole-`ts` boundary. `None` — or a zero budget — is the
+    /// whole range.
+    ///
+    /// ⚠ **The DEFAULT ignores the budget and delegates**, which bounds nothing. That is honest
+    /// rather than lazy: a store with no part index cannot narrow a read, and pretending otherwise
+    /// by truncating the result would claim a bound it does not have. `crate::MemHistStore` and
+    /// the archive store inherit it, and both are small by construction.
+    ///
+    /// ⚠ **Seven verbs, not thirteen — and the reason the family grew is the reason it exists.** It
+    /// started as four (the tick kinds), on the argument that `kind=cohort` and `kind=perp_metrics`
+    /// held thousands of rows per series and `scan_equity`/`scan_exec_fills` held none, so a budget
+    /// bought nothing there. That argument measured SIZE, and the data daemon serves every one of
+    /// these kinds to a client who chooses the range: each page of a paged cohort read decoded the
+    /// whole rest of the range, which is quadratic, and is tolerable only while nobody's series is
+    /// large. So [`Self::scan_cohort_capped`], [`Self::scan_perp_metrics_capped`] and
+    /// [`Self::scan_equity_capped`] joined, under this contract unchanged
+    /// (`docs/superpowers/specs/2026-10-02-remaining-whole-range-reads-design.md`, section 2).
+    /// Exec fills joined as a HEAD rather than a budget, [`Self::scan_exec_fills_head`], because its
+    /// verb has no range on the wire to page with.
+    ///
+    /// `kind=bar` is not in this family either and is not small: the OANDA history lane put tens of
+    /// millions of rows into a single `5s` series. It has a bounded read of its own,
+    /// [`Self::load_bars_head`], whose `n` is a count to REACH rather than an optional budget,
+    /// because the data daemon's `LoadBars` needs one read of `n = C + 1` to decide whether to refuse
+    /// an oversized request by name. Both families answer under the same contract, from the same
+    /// block walk in `crate::DataFusionHist`.
+    fn scan_quotes_capped(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+        budget: Option<usize>,
+    ) -> Result<Vec<QuoteTick>, DataError> {
+        let _ = budget;
+        self.scan_quotes(venue, symbol, range)
+    }
+
+    /// [`Self::scan_trades`] under a row budget — see [`Self::scan_quotes_capped`].
+    fn scan_trades_capped(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+        budget: Option<usize>,
+    ) -> Result<Vec<TradeTick>, DataError> {
+        let _ = budget;
+        self.scan_trades(venue, symbol, range)
+    }
+
+    /// [`Self::scan_book_updates`] under a row budget — see [`Self::scan_quotes_capped`].
+    ///
+    /// ⚠ The row count here is a MULTIPLE of the event count: the write side explodes one
+    /// `BookUpdate` into one row per price level, so a budget expressed in ROWS bounds the read
+    /// while the answer's event count is smaller and data-dependent.
+    fn scan_book_updates_capped(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+        budget: Option<usize>,
+    ) -> Result<Vec<BookUpdate>, DataError> {
+        let _ = budget;
+        self.scan_book_updates(venue, symbol, range)
+    }
+
+    /// [`Self::scan_depth`] under a row budget — see [`Self::scan_quotes_capped`]. Same
+    /// level-rows-per-event caveat as [`Self::scan_book_updates_capped`].
+    fn scan_depth_capped(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+        budget: Option<usize>,
+    ) -> Result<Vec<BookUpdate>, DataError> {
+        let _ = budget;
+        self.scan_depth(venue, symbol, range)
+    }
+
+    /// Recorded L2 book events for `(venue, symbol)` in `range`, sorted by `(ts, seq)` and
+    /// regrouped into [`BookUpdate`]s. Same in-memory `Vec` caveat as [`HistStore::scan_quotes`].
+    fn scan_book_updates(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+    ) -> Result<Vec<BookUpdate>, DataError>;
+
+    /// Append recorded L2 DEPTH snapshots for `(venue, symbol)` — the `kind=depth` series.
+    ///
+    /// ## Why this is not `kind=book`
+    ///
+    /// Same row type, same codec, DIFFERENT series — and that separation is the whole point.
+    /// `kind=book` is the LOSSLESS lane: every delta present, `seq` contiguous, gaps detectable (a
+    /// contract `market_data_conformance` machine-checks). `kind=depth` is the CONFLATING lane: a
+    /// venue like Binance serves `@depth20@100ms` — a full snapshot every 100 ms with **every
+    /// intermediate book state discarded**.
+    ///
+    /// Both fold correctly: a snapshot is a full-state anchor, so `L2Book::apply_snapshot` rebuilds
+    /// from it and no delta is lost — there were none to lose. What differs is what the data can
+    /// SUPPORT. On a conflated series the book teleports rather than evolves, so queue-position
+    /// modelling and maker-fill simulation are fiction. Writing it into `kind=book` would let a
+    /// market-making backtest run on it silently and report fills it could never have got.
+    ///
+    /// **The path IS the disclosure.** A consumer asking for `book` never receives conflated data,
+    /// and `coverage_report` lists `book` and `depth` separately — so a customer sees "book ✗,
+    /// depth ✓" and knows exactly what they hold.
+    ///
+    /// Returns EVENTS written (0 if `commit_key` was already ingested), like
+    /// [`append_book_updates`](HistStore::append_book_updates).
+    ///
+    /// **Defaults to REFUSING**, not to a silent no-op. Most `HistStore` impls in this workspace are
+    /// read-only views over one source (an archive file, a ClickHouse table, an RPC seam) and have no
+    /// depth to offer; a default `Ok(0)` would let a recorder write into them and report success
+    /// while the rows went nowhere. Only [`crate::DataFusionHist`] overrides it.
+    fn append_depth(
+        &self,
+        venue: &str,
+        symbol: &str,
+        updates: &[BookUpdate],
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError> {
+        let (_, _, _, _) = (venue, symbol, updates, commit_key);
+        Err(DataError::Query("append_depth: this store serves no depth lane".into()))
+    }
+
+    /// Recorded L2 depth snapshots for `(venue, symbol)` — the read half of
+    /// [`append_depth`](HistStore::append_depth). Same `(ts, seq)` ordering and both-layouts scan as
+    /// [`scan_book_updates`](HistStore::scan_book_updates).
+    ///
+    /// **Defaults to REFUSING**, symmetrically with its write twin. It used to default to
+    /// `Ok(Vec::new())` on the argument that "a reader asking *is there depth here?* of a store
+    /// that has none is answering correctly with no" — and that argument confuses two different
+    /// facts. A store that HAS the lane and holds nothing in `range` answers `Ok(vec![])` from a
+    /// real read; a store that does not implement the verb never looked, and returning the same
+    /// empty on its behalf fabricates a confident "no data" out of a capability gap. Every caller
+    /// then sees one value for both.
+    ///
+    /// This is the credential store's rule applied to a read verb; the authority for it is
+    /// `crates/vike-secrets/src/dotenv.rs`'s `load_workspace_dotenv`: **an ABSENT thing is the
+    /// ordinary state and is silent; a thing that is PRESENT and unusable is an ERROR.** Here the
+    /// absent thing is the ROWS (an honest empty `Ok`) and the unusable thing is the VERB.
+    ///
+    /// Two impls answer it for real: [`crate::DataFusionHist`], and
+    /// `crates/vike-datahub-client/src/remote.rs`'s `RemoteHistStore`, which FORWARDS it to the
+    /// server. Everyone else takes one of two shapes: a store with no depth lane INHERITS this
+    /// refusal (`crate::MemHistStore` does), while a store that FRONTS another one must not — a
+    /// delegating wrapper FORWARDS to its inner store.
+    ///
+    /// ⚠ **`RemoteHistStore` was this doc's worked example of a THIRD shape — a seam that could
+    /// serve the lane but does not carry it over the wire, overriding with its own reason — and it
+    /// is not one any more.** `docs/decisions/0084-only-the-datahub-touches-the-store.md` put the
+    /// verb on the wire, so that seam forwards like any other wrapper. The shape it illustrated is
+    /// real and still available to a future impl; it just has no instance in this tree, and citing
+    /// a forwarding store as the model for refusing would reproduce by hand the exact gap 0084 was
+    /// written to close. Why that override existed at all is the part worth keeping: while the
+    /// default was an empty `Ok`, inheriting it would have claimed the SERVER holds no depth.
+    fn scan_depth(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+    ) -> Result<Vec<BookUpdate>, DataError> {
+        let (_, _, _) = (venue, symbol, range);
+        Err(DataError::Query("scan_depth: this store serves no depth lane".into()))
+    }
+
+    /// Append observed point-in-time instrument properties for `(venue, symbol)`. Rows are
+    /// `(observation_ts_ms, SymbolProperties)`. `commit_key` gives idempotency (recorders use a
+    /// per-UTC-day key so at most one row lands per symbol per day). See the PIT properties design.
+    fn append_symbol_properties(
+        &self,
+        venue: &str,
+        symbol: &str,
+        rows: &[(i64, SymbolProperties)],
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError>;
+
+    /// Observed properties for `(venue, symbol)` in `range`, ts-ascending.
+    fn scan_symbol_properties(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+    ) -> Result<Vec<(i64, SymbolProperties)>, DataError>;
+
+    /// Point-in-time lookup: the most-recent properties observed at or before `ts` (`None` if none).
+    fn properties_as_of(
+        &self,
+        venue: &str,
+        symbol: &str,
+        ts: i64,
+    ) -> Result<Option<SymbolProperties>, DataError> {
+        Ok(self
+            .scan_symbol_properties(venue, symbol, TsRange::of(i64::MIN, ts))?
+            .pop()
+            .map(|(_, f)| f))
+    }
+
+    // ---- store inventory / metadata (kind-agnostic) -------------------------------------------
+    //
+    // The catalog verbs the Data-Manager / Studio data-browser render from, promoted onto the TRAIT
+    // (they were concrete `DataFusionHist` methods) so a `&dyn HistStore` — notably the RPC-backed
+    // `RemoteHistStore` — can answer them, not only the local DataFusion backend. The two
+    // ENUMERATION verbs (`list_series`/`inventory`) REFUSE by default — a store that can enumerate
+    // implements them consciously; their docs carry the argument. The two DERIVED views
+    // (`series_gaps`/`coverage_report`) still default to an empty `Ok`, each stating its own
+    // vacuous-truth argument on the method. Metadata is TINY — a series list and
+    // a cheap per-series coverage folded straight from the manifest file-index, NO Parquet scan — so,
+    // unlike the tick scans, it is always safe to ship whole over the wire (the compute-to-data rule
+    // caps SLICES, not catalog metadata).
+
+    /// Enumerate every stored series — the `(kind, venue, symbol, interval)` leaves — sorted.
+    ///
+    /// **Defaults to REFUSING.** It used to default to `Ok(Vec::new())`, documented as *"a store
+    /// that cannot enumerate its inventory"* — the admission and the fabrication in one line: the
+    /// default conceded the store CANNOT enumerate, then answered in the voice of a store that HAS
+    /// nothing. A store that serves this verb and holds no series answers `Ok(vec![])` from a real
+    /// fold; a store that does not serve it never looked, and an empty `Ok` on its behalf hands
+    /// every caller — the Studio slice picker, the Data-Manager grid, `vike-datahub`'s catalog
+    /// verbs — one value for both facts.
+    ///
+    /// Same rule and same authority as [`HistStore::scan_depth`]'s default:
+    /// `crates/vike-secrets/src/dotenv.rs`'s `load_workspace_dotenv` — **an ABSENT thing is the
+    /// ordinary state and is silent; a thing that is PRESENT and unusable is an ERROR.** The
+    /// absent thing here is the SERIES (an honest empty listing from a store that looked); the
+    /// unusable thing is the VERB.
+    ///
+    /// The refusal names the verb's absence and claims NOTHING about content — deliberately, so a
+    /// leaf that holds data it cannot enumerate (the ClickHouse bridge, the flat Parquet archive
+    /// store) inherits a true statement, unlike `scan_depth`'s "serves no depth lane" (which the
+    /// RPC seam had to override as false THERE). Three shapes for implementors: a store that CAN
+    /// enumerate implements the verb consciously ([`crate::DataFusionHist`]'s manifest walk, and
+    /// `crate::MemHistStore`'s in-memory fold — which the old default silently SHADOWED: a seeded
+    /// double answered "no series" while holding rows); a delegating wrapper FORWARDS to its inner
+    /// store (poly_mm_batch's `CachedHistStore` was one, until #2046 deleted it on 2026-09-20),
+    /// because "cannot enumerate" is false for a type
+    /// whose whole job is fronting a store that can; and an RPC seam serves it over the wire
+    /// (`crates/vike-datahub-client/src/remote.rs`'s `RemoteHistStore`).
+    fn list_series(&self) -> Result<Vec<SeriesId>, DataError> {
+        Err(DataError::Query("list_series: this store cannot enumerate its inventory".into()))
+    }
+
+    /// Every stored series paired with its cheap coverage (manifest fold — first/last ts, rows, bytes,
+    /// parts, dates; NO scan).
+    ///
+    /// **Defaults to REFUSING**, for exactly [`HistStore::list_series`]'s reasons — it is the same
+    /// enumeration wearing coverage, and the two defaults must agree or one call site could be
+    /// refused the series list while a neighbour is handed a fabricated empty inventory of the
+    /// same store. The empty-inventory answer belongs to a store that folded its real catalog and
+    /// found nothing.
+    fn inventory(&self) -> Result<Vec<(SeriesId, SeriesCoverage)>, DataError> {
+        Err(DataError::Query("inventory: this store cannot enumerate its inventory".into()))
+    }
+
+    /// The GAP ranges (inclusive epoch-ms) missing within `id`'s recorded day span — the Data-Manager
+    /// "where's the hole" view, derived from the manifest `date=` index (NO scan). Default: no gaps —
+    /// and unlike its two enumeration siblings above, that empty is NOT a fabrication: a gap is a
+    /// hole WITHIN a recorded span, a store that serves no catalog records no span, and a hole in
+    /// no span is vacuously absent. The FRONTS rule on [`HistStore::coverage_report`] applies here
+    /// unchanged (`RemoteHistStore` overrides with the server's real answer rather than inheriting
+    /// "no holes" about data it never asked).
+    fn series_gaps(&self, id: &SeriesId) -> Result<Vec<(i64, i64)>, DataError> {
+        let _ = id;
+        Ok(Vec::new())
+    }
+
+    /// One series' COVERAGE plus the commit keys that produced it — the pair a run fingerprint is
+    /// made of.
+    ///
+    /// ⚠ **This was INHERENT to `crate::DataFusionHist` and is on the trait now**, because
+    /// `docs/decisions/0084-only-the-datahub-touches-the-store.md` routes readers through the
+    /// datahub and a method that exists only on the concrete store is one a routed reader cannot
+    /// call. `crates/vike-backtest/src/backtest_cli.rs`'s `collect_data_fingerprint` took
+    /// `Option<&DataFusionHist>` for exactly that reason; the consequence was that a wire-routed
+    /// run would lose its reproducibility record while still reading green — a witness that stops
+    /// witnessing and says nothing.
+    ///
+    /// ⚠ **The default REFUSES rather than answering empty**, which is the opposite of
+    /// [`HistStore::series_gaps`] above and deliberately so. A missing gap is vacuously true — a
+    /// hole in no recorded span is absent. Missing FACTS are not: an empty coverage and an empty
+    /// commit list are a positive claim that the store holds this series and knows nothing about
+    /// it, and a fingerprint built from that would record "nothing was read" about a run that read
+    /// plenty. A store with no per-series manifest has no answer, and says so.
+    fn series_facts(&self, id: &SeriesId) -> Result<(SeriesCoverage, Vec<String>), DataError> {
+        let _ = id;
+        Err(DataError::Query(
+            "series_facts: this store keeps no per-series manifest, so it cannot report coverage \
+             or commit keys"
+                .into(),
+        ))
+    }
+
+    /// The CROSS-KIND coverage report: every instrument with its `trade`/`quote`/`book`/`depth`
+    /// series lined up, so a day one kind has and another lacks is a single visible row
+    /// ([`crate::InstrumentCoverage::partial_days`] — the Data-Manager's "Partial" column). The
+    /// fourth member of this metadata family, promoted onto the trait for the same reason as its
+    /// three siblings above: it is a manifest fold (NO Parquet scan) whose only remaining consumer
+    /// gap was a `&dyn HistStore` — notably the RPC-backed `RemoteHistStore` — that could not reach
+    /// it (split-plane spec §6 Q2).
+    ///
+    /// Default: an empty report. Its former companions in that convention —
+    /// [`HistStore::list_series`] / [`HistStore::inventory`] — have since moved to REFUSING (their
+    /// empty was an ENUMERATION fabricated out of a capability gap); this verb keeps the empty
+    /// `Ok` because it is a DERIVED view: "nothing partial" is a statement about the JOIN of tick
+    /// lanes, and for an impl that serves no tick lanes at all the join is vacuously empty.
+    /// ⚠ An impl that FRONTS a store which *can* compute this (the RPC seam does) must override
+    /// with an honest `Err` rather than inherit the empty `Ok`: there, "no partial days" and "I
+    /// cannot ask" are different facts, and the default states the wrong one. This is the trap
+    /// [`HistStore::scan_depth`]'s default USED to carry for EVERY impl, and it took the other
+    /// cure — the default itself now refuses, because a store that does not implement that verb
+    /// never reads a row and has nothing to be empty ABOUT. One DECLARED residual keeps this
+    /// default honest about its edge: a LEAF that holds tick lanes it cannot join inherits
+    /// "nothing partial" about lanes it genuinely serves — today that is the flat Parquet archive
+    /// store (`crates/vike-data/src/archive_store.rs`'s `ArchiveParquetHistStore`), whose
+    /// callers read its lanes directly and never this report; a store like it that gains a
+    /// Data-Manager surface must override rather than inherit.
+    fn coverage_report(&self) -> Result<Vec<crate::coverage::InstrumentCoverage>, DataError> {
+        Ok(Vec::new())
+    }
+
+    /// One series' INGEST COMMIT KEYS — the store's only record of WHO WROTE it.
+    ///
+    /// **Defaults to REFUSING**, for [`HistStore::list_series`]'s reasons and one sharper one: the
+    /// caller is about to DELETE something, and an empty `Ok` here would read as "this series
+    /// records no provenance", which is a real state with real consequences (a `--produced-by`
+    /// assertion refuses it; without one it may be deleted). A store that cannot answer must not be
+    /// able to impersonate a store that answered "nothing".
+    ///
+    /// Three shapes, as with the enumeration siblings: a store that CAN answer implements it
+    /// (`crate::DataFusionHist`'s manifest read); a delegating wrapper FORWARDS; an RPC seam serves
+    /// it over the wire.
+    fn series_commits(&self, id: &SeriesId) -> Result<Vec<String>, DataError> {
+        let _ = id;
+        Err(DataError::Query(
+            "series_commits: this store cannot report a series' provenance".into(),
+        ))
+    }
+
+    /// **Delete one series, IRREVERSIBLY**, optionally asserting that every commit key it records
+    /// carries `require_produced_by`.
+    ///
+    /// **Defaults to REFUSING.** Every other default on this seam answers a READ; this one destroys
+    /// data, so the default must be the one that does nothing and says so. A store that does not
+    /// implement it would otherwise inherit either a silent success (an operator believing a
+    /// cleanup ran) or a silent no-op — and the two are indistinguishable downstream, which is the
+    /// exact pairing `crate::datafusion_hist::DataFusionHist`'s `series_dir_of` incident list exists
+    /// to warn about.
+    ///
+    /// Implementors owe the assertion INSIDE their own critical section, not before it: the whole
+    /// value of the check is that it holds at the instant the bytes go. `DataFusionHist`'s
+    /// `delete_series_checked` is the reference, and its doc carries the lock mechanics.
+    fn delete_series_checked(
+        &self,
+        id: &SeriesId,
+        require_produced_by: Option<&str>,
+    ) -> Result<(), DataError> {
+        let (_, _) = (id, require_produced_by);
+        Err(DataError::Query("delete_series: this store serves no delete verb".into()))
+    }
+
+    /// Append equity-curve samples for `(venue, symbol)` — the durable store for the vike-core
+    /// equity sampler's output (portfolio-observer PR-3). `venue` is the fixed `"portfolio"`
+    /// partition namespace at the call site; `symbol` carries the per-exchange venue name or the
+    /// cross-venue `"TOTAL"` rollup — the trait stays generic in (venue, symbol) exactly like
+    /// [`HistStore::append_symbol_properties`]. Same batch-level `commit_key` idempotency contract as
+    /// every other append.
+    fn append_equity(
+        &self,
+        venue: &str,
+        symbol: &str,
+        rows: &[EquitySample],
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError>;
+
+    /// Equity-curve samples for `(venue, symbol)` in `range`, ts-ascending.
+    fn scan_equity(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+    ) -> Result<Vec<EquitySample>, DataError>;
+
+    /// [`Self::scan_equity`] under a row budget — the contract, both halves of it, and why the
+    /// DEFAULT delegating to the unbudgeted read is honest: [`Self::scan_quotes_capped`]. A
+    /// `kind=equity` series is per-symbol (`symbol` carries the per-exchange name or `"TOTAL"`), so
+    /// there is one layout to walk.
+    fn scan_equity_capped(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+        budget: Option<usize>,
+    ) -> Result<Vec<EquitySample>, DataError> {
+        let _ = budget;
+        self.scan_equity(venue, symbol, range)
+    }
+
+    // ---- execution trade-log (kind=exec_fill / kind=exec_order) -----------------------------
+    //
+    // The ACCOUNT fill/order log (Tier-2): a strategy's OWN executions, NOT market prints. These are
+    // DISTINCT kinds from `kind=trade` (market trade ticks), partitioned `venue+symbol+date` like the
+    // tick kinds (no interval), so account fills never collide with a symbol's public prints even when
+    // `(venue, symbol)` match. Rows are [`crate::ExecFillRow`] / [`crate::ExecOrderRow`]. Same
+    // batch-level `commit_key` idempotency contract as every other append (NEVER per-row value dedup).
+
+    /// Append a batch of account fills for `(venue, symbol)` (`kind=exec_fill` series). Returns rows
+    /// written (0 if `commit_key` was already ingested or the batch is empty).
+    fn append_exec_fills(
+        &self,
+        venue: &str,
+        symbol: &str,
+        rows: &[ExecFillRow],
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError>;
+
+    /// Account fills for `(venue, symbol)` (`kind=exec_fill`), ts-ascending. Same in-memory `Vec`
+    /// caveat as [`HistStore::scan_quotes`].
+    fn scan_exec_fills(&self, venue: &str, symbol: &str) -> Result<Vec<ExecFillRow>, DataError>;
+
+    /// The START of [`Self::scan_exec_fills`] over `range`: a ts-ascending COMPLETE PREFIX of the
+    /// series' rows in `range` (never splitting a timestamp) holding AT LEAST `n` rows unless it is
+    /// all of them — the contract [`Self::load_bars_head`] states. `n` is a count to reach rather
+    /// than an optional budget for the reason bars have one: the data daemon's `ScanExecFills`
+    /// carries no range and no limit on the wire, so the only bounded answer it can give is one
+    /// read of `n = C + 1` over `TsRange::all()` that decides "all of it, or refused by name".
+    /// `n == 0` asks for nothing.
+    ///
+    /// ⚠ **It TAKES a range although its one caller passes `TsRange::all()`**, and that is the
+    /// family's rule rather than decoration: every `scan_*`/`load_*` series read takes a `TsRange`
+    /// except `scan_exec_fills` and `scan_exec_orders`, a claim the `exec_fill` row of
+    /// `crate::store_kind` makes and `crates/vike-data/tests/store_kind_gate.rs`'s
+    /// `only_the_exec_reads_take_no_range` holds. A bounded read joins the rule rather than
+    /// widening the exception — and the day `ScanExecFills` grows a range and a limit on the wire
+    /// (a wire change deferred until a series nears its ceiling,
+    /// `docs/superpowers/specs/2026-10-02-remaining-whole-range-reads-design.md`'s Q1), this read
+    /// needs no change.
+    ///
+    /// ⚠ **The DEFAULT is `scan_exec_fills` itself, filtered to `range`: correct, and exactly as
+    /// unbounded** — the whole range meets the contract for every `n`. `crate::DataFusionHist`
+    /// overrides it with the block walk; a wrapper that FRONTS another store must forward.
+    fn scan_exec_fills_head(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+        n: usize,
+    ) -> Result<Vec<ExecFillRow>, DataError> {
+        let _ = n;
+        let mut rows = self.scan_exec_fills(venue, symbol)?;
+        rows.retain(|r| {
+            range.start.is_none_or(|lo| r.ts >= lo) && range.end.is_none_or(|hi| r.ts <= hi)
+        });
+        Ok(rows)
+    }
+
+    /// Append a batch of order lifecycle snapshots for `(venue, symbol)` (`kind=exec_order` series).
+    /// Returns rows written (0 if `commit_key` was already ingested or the batch is empty).
+    fn append_exec_orders(
+        &self,
+        venue: &str,
+        symbol: &str,
+        rows: &[ExecOrderRow],
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError>;
+
+    /// Order lifecycle snapshots for `(venue, symbol)` (`kind=exec_order`), ts-ascending. Same
+    /// in-memory `Vec` caveat as [`HistStore::scan_quotes`].
+    fn scan_exec_orders(&self, venue: &str, symbol: &str) -> Result<Vec<ExecOrderRow>, DataError>;
+
+    // ---- realized perp funding (kind=exec_funding) -----------------------------------------
+    //
+    // The ACCOUNT realized-funding series (Tier-2): a strategy's OWN perp funding credits/debits,
+    // NOT a market-wide print. A DISTINCT kind from every market series (`kind=trade`/`kind=book`/…),
+    // keyed `venue+symbol=<coin>` like the tick kinds (no interval), so account funding never collides
+    // with a symbol's public prints even when `(venue, symbol)` match. Rows are [`crate::FundingRow`]
+    // (the venue `coin` is the partition `symbol`, dropped from the row); `hash` is the per-row
+    // at-most-once identity. Same batch-level `commit_key` idempotency contract as every other append
+    // (NEVER per-row value dedup).
+    //
+    // ⚠ DEFAULTED, BUT THE DEFAULT REFUSES — and this paragraph said the opposite until
+    // `docs/decisions/0080-the-account-funding-kind-takes-the-qualified-name.md` verdict 6. It read: "a store that does not hold funding inherits the
+    // empty/no-op default … This keeps the seam additive without forcing every existing impl to grow
+    // a stub." The additive property was real and the cost was hidden: `Ok(0)` is ALSO what a correct
+    // already-ingested batch and a correct empty batch return, so a store that never implemented the
+    // kind was indistinguishable from one that had nothing to do. The seam stays additive — no impl
+    // is forced to grow a stub — but the default now answers `DataError::Unsupported` instead of
+    // pretending to have worked. The three durable backends (`DataFusionHist`, `MemHistStore` and
+    // the remote `DatahubClient`) all override both methods, so this default is reached only by a
+    // store that genuinely cannot serve the kind.
+
+    /// Append a batch of realized funding payments for `(venue, symbol=<coin>)`
+    /// (`kind=exec_funding` series). Returns rows written — `0` meaning **`commit_key` was already
+    /// ingested, or the batch was empty**, and those two alone.
+    ///
+    /// ⚠ **The default REFUSES rather than returning `Ok(0)`**, and that is the whole point of
+    /// `docs/decisions/0080-the-account-funding-kind-takes-the-qualified-name.md` verdict 6. It used to be a no-op returning `Ok(0)`, which collided with
+    /// both legitimate zero answers above: a backfill against a store that never implemented this
+    /// kind reported success, wrote nothing, and a later empty `ls` read as *"no funding in that
+    /// window"* rather than *"nothing was ever stored"*. A backend that holds this kind overrides
+    /// this method; one that does not now says so.
+    fn append_funding(
+        &self,
+        venue: &str,
+        symbol: &str,
+        rows: &[FundingRow],
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError> {
+        let _ = (rows, commit_key);
+        Err(DataError::Unsupported(format!(
+            "this store does not hold kind=exec_funding (asked to append {venue}:{symbol}) — \
+             nothing was written; use a store backend that implements append_funding"
+        )))
+    }
+
+    /// Realized funding payments for `(venue, symbol=<coin>)` (`kind=exec_funding`) in `range`,
+    /// ts-ascending. Same in-memory `Vec` caveat as [`HistStore::scan_quotes`].
+    ///
+    /// ⚠ **The default REFUSES rather than returning an empty `Vec`** — the read twin of
+    /// `append_funding` above, and for the identical reason: an empty scan from a store that CANNOT
+    /// hold the kind is not the same answer as an empty scan from one that can, and a caller handed
+    /// `Ok(vec![])` cannot tell which it got.
+    fn scan_funding(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+    ) -> Result<Vec<FundingRow>, DataError> {
+        let _ = range;
+        Err(DataError::Unsupported(format!(
+            "this store does not hold kind=exec_funding (asked to scan {venue}:{symbol}) — \
+             an empty result would be indistinguishable from a store that holds none"
+        )))
+    }
+
+    // ---- option-chain snapshots (kind=chain) -----------------------------------------------
+    //
+    // The point-in-time OPTIONS-SURFACE series: one row per instrument per snapshot, all rows of
+    // one snapshot sharing `ts` (the chain's asof). Keyed `venue+symbol=<underlying>` like the tick
+    // kinds (no interval) — a DISTINCT kind from every market series, so chain snapshots never
+    // collide with an underlying's public prints even when `(venue, symbol)` match. Rows are
+    // [`crate::ChainRow`]; the opt-in [`crate::ChainRecorder`] (`VIKE_RECORD_CHAINS=1`) is the
+    // producer. Same batch-level `commit_key` idempotency contract as every other append (the
+    // recorder keys per cadence bucket so a re-fetched chain within one bucket is a no-op).
+    //
+    // ⚠ DEFAULTED, BUT BOTH DEFAULTS REFUSE — and this paragraph said the opposite until the
+    // sweep that carried `docs/decisions/0080-the-account-funding-kind-takes-the-qualified-name.md`
+    // verdict 6 onto this kind's pair. It read: "a store that does not hold chains (e.g. a
+    // bars-only test double) inherits the empty/no-op default … This keeps the seam additive
+    // without forcing every existing impl to grow a stub." The additive property was real and the
+    // cost was the funding collision wearing a second kind's name: `Ok(0)` is ALSO what a correct
+    // already-ingested batch and a correct empty batch return, and `Ok(vec![])` is ALSO what a
+    // store that HOLDS chains and has none in `range` returns. The seam stays additive — no impl
+    // is forced to grow a stub — but a store that never implemented the kind now says so instead
+    // of answering in the voice of one that looked.
+
+    /// Append one chain snapshot's rows for `(venue, symbol=<underlying>)` (`kind=chain` series).
+    /// Returns rows written — `0` meaning **`commit_key` was already ingested, or the batch was
+    /// empty**, and those two alone.
+    ///
+    /// ⚠ **The default REFUSES rather than returning `Ok(0)`**, for
+    /// `docs/decisions/0080-the-account-funding-kind-takes-the-qualified-name.md` verdict 6's
+    /// reasons applied to this kind. The write half matters as much as the read half and in one
+    /// respect more: [`crate::ChainRecorder`]'s `record` logs a store error and drops the batch, so
+    /// under the old `Ok(0)` a recorder aimed at a chain-less store had NOTHING to log — it
+    /// recorded for hours, reported success every cadence bucket, and the first sign was an empty
+    /// series. A backend that holds this kind overrides this method; one that does not now says so.
+    fn append_chain_snapshot(
+        &self,
+        venue: &str,
+        underlying: &str,
+        rows: &[ChainRow],
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError> {
+        let _ = (rows, commit_key);
+        Err(DataError::Unsupported(format!(
+            "this store does not hold kind=chain (asked to append {venue}:{underlying}) — \
+             nothing was written; use a store backend that implements append_chain_snapshot"
+        )))
+    }
+
+    /// Chain snapshot rows for `(venue, symbol=<underlying>)` (`kind=chain`) in `range`,
+    /// ts-ascending. Same in-memory `Vec` caveat as [`HistStore::scan_quotes`].
+    ///
+    /// ⚠ **The default REFUSES rather than returning an empty `Vec`** — the read twin of
+    /// `append_chain_snapshot` above, and the half a caller is likelier to be misled by: an empty
+    /// scan from a store that CANNOT hold the kind is not the same answer as an empty scan from one
+    /// that can, and a caller handed `Ok(vec![])` cannot tell which it got. Same rule and same
+    /// authority as [`HistStore::scan_depth`]'s and [`HistStore::list_series`]' defaults:
+    /// `crates/vike-secrets/src/dotenv.rs`'s `load_workspace_dotenv` — **an ABSENT thing is the
+    /// ordinary state and is silent; a thing that is PRESENT and unusable is an ERROR.** The absent
+    /// thing here is the ROWS (an honest empty `Ok` from a store that looked); the unusable thing
+    /// is the VERB.
+    ///
+    /// ⚠ **THE DEFAULT is what changed, so read this before inheriting it.** Two shapes, exactly as
+    /// [`HistStore::scan_depth`] spells them: a store with no chain lane INHERITS this refusal, and
+    /// that is right for it; a store that FRONTS another one must NOT — a delegating wrapper
+    /// FORWARDS to its inner store, because "I hold no chains" is false for a type whose whole job
+    /// is fronting a store that does. An RPC seam that cannot carry the kind over the wire
+    /// overrides with its own reason (`crates/vike-datahub-client/src/remote.rs`'s
+    /// `RemoteHistStore` already does, and had to while this default was empty precisely because
+    /// the empty claimed the SERVER holds no chains).
+    fn scan_chain(
+        &self,
+        venue: &str,
+        underlying: &str,
+        range: TsRange,
+    ) -> Result<Vec<ChainRow>, DataError> {
+        let _ = range;
+        Err(DataError::Unsupported(format!(
+            "this store does not hold kind=chain (asked to scan {venue}:{underlying}) — \
+             an empty result would be indistinguishable from a store that holds none"
+        )))
+    }
+
+    // ---- cohort open interest (kind=cohort) --------------------------------------------------
+    //
+    // The graded POSITIONING panel: for one hour, one asset and one cohort label, the long-side and
+    // total notional a grading service reported. Keyed `venue=<exchange>`/`symbol=<asset>` like the
+    // tick kinds (no interval) — a DISTINCT kind from every market series, so a cohort panel never
+    // collides with that asset's public prints even when `(venue, symbol)` match. Rows are
+    // [`crate::CohortRow`]; [`crate::CohortRecorder`] is the producer.
+    //
+    // ⚠ The row is LONG rather than wide — one row per cohort LABEL, the label in a column — and
+    // that shape is a store-layout decision rather than a codec detail:
+    // `crate::store_kind::STORE_KINDS`' `cohort` row carries the argument and the arithmetic behind
+    // it. What it means for a CALLER of these two verbs is that one append is a whole fetch (every
+    // label of one axis over a window), and one scan returns every axis, label, grading and basis
+    // recorded for that asset — a caller wanting one of them filters columns, not series.
+    //
+    // ⚠ DEFAULTED, AND THESE DEFAULTS STILL ANSWER EMPTY — `cohort` and `perp_metrics` are the LAST
+    // pair on this seam that do, and that is a DECLARED residual rather than an oversight. Every
+    // other default that once answered in the voice of a store that had LOOKED now refuses:
+    // `scan_depth`, `list_series`, `inventory` and `series_commits` first, then `exec_funding`'s
+    // pair under `docs/decisions/0080-the-account-funding-kind-takes-the-qualified-name.md`
+    // verdict 6, then `chain`'s pair above. The collision is IDENTICAL here: an empty `Vec` means
+    // the series holds nothing in `range`, or the series does not exist, or this store cannot
+    // answer the question at all.
+    //
+    // They were left because flipping them is a coordinated edit with its own argument rather than
+    // the same edit again. `crates/vike-user-research/src/contract.rs`'s `cohort` and `perp_metrics`
+    // verbs FORWARD these two straight to a sanctioned, published study surface, so the refusal
+    // reaches user study code written against an `Ok(vec![])` it has always been given — a different
+    // blast radius from the `chain` pair, which no production caller reads at all.
+    // `crates/vike-datahub-client/src/remote.rs`'s `scan_cohort` override cites this permissive
+    // default by name in its own reasoning, so the flip is a two-crate edit. Do it as its own
+    // record, on the evidence of what those study callers do with an `Err`, not as a drive-by.
+    // `crates/vike-data/src/archive_store_tests.rs`'s `the_last_two_kinds_still_answer_empty_rather_than_refusing`
+    // PINS the residual so it fails the day somebody closes it.
+
+    /// Append a batch of cohort marginals for `(venue, symbol=<asset>)` (`kind=cohort` series).
+    /// Returns rows written (0 if `commit_key` was already ingested, the batch is empty, or this
+    /// store does not hold cohort panels). Default = no-op.
+    ///
+    /// ⚠ The `commit_key` must discriminate the AXIS, the GRADING and the LABEL BASIS as well as
+    /// the window — those three are row columns rather than path segments, so two fetches differing
+    /// only in one of them address the SAME series, and a key that names only `(venue, asset,
+    /// window)` would make the second a silent no-op against the first.
+    /// [`crate::CohortRecorder`]'s `commit_key` is the shape that does, and the reason it is a
+    /// function rather than a call-site `format!`.
+    fn append_cohort(
+        &self,
+        venue: &str,
+        asset: &str,
+        rows: &[CohortRow],
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError> {
+        let _ = (venue, asset, rows, commit_key);
+        Ok(0)
+    }
+
+    /// Cohort marginals for `(venue, symbol=<asset>)` (`kind=cohort`) in `range`, ts-ascending —
+    /// EVERY axis, label, grading and label basis recorded for that asset. Same in-memory `Vec`
+    /// caveat as [`HistStore::scan_quotes`]. Default = empty.
+    fn scan_cohort(
+        &self,
+        venue: &str,
+        asset: &str,
+        range: TsRange,
+    ) -> Result<Vec<CohortRow>, DataError> {
+        let _ = (venue, asset, range);
+        Ok(Vec::new())
+    }
+
+    /// [`Self::scan_cohort`] under a row budget — see [`Self::scan_quotes_capped`] for the contract
+    /// and for why the DEFAULT delegates. A cohort series is per-asset, never grouped, so there is
+    /// one layout to walk; the budget counts rows, and one hour of one asset is many rows (one per
+    /// axis, label, grading and label basis), every one of which a complete prefix keeps together.
+    fn scan_cohort_capped(
+        &self,
+        venue: &str,
+        asset: &str,
+        range: TsRange,
+        budget: Option<usize>,
+    ) -> Result<Vec<CohortRow>, DataError> {
+        let _ = budget;
+        self.scan_cohort(venue, asset, range)
+    }
+
+    // ---- perp market-context metrics (kind=perp_metrics) -------------------------------------
+    //
+    // The venue's own per-interval numbers ABOUT a perpetual that are not its funding rate: today,
+    // the funding PREMIUM. Keyed `venue`/`symbol` like the tick kinds (no interval) — a DISTINCT
+    // kind from every market series, so it never collides with that symbol's public prints even
+    // when `(venue, symbol)` match. Rows are [`crate::PerpMetricRow`];
+    // `crates/vike-backfill/src/funding_rate.rs`'s `backfill_funding_rate` is the producer, and it
+    // writes this series from the SAME venue response that fills the funding-rate bars.
+    //
+    // ⚠ The funding RATE is deliberately NOT one of these columns: it already lives on
+    // [`vike_model::Bar::funding`] in the `kind=bar` series under the reserved `interval=funding`
+    // label, and a second stored copy is a duplicate that can disagree with the first.
+    // [`crate::PerpMetricRow`]'s own doc is the authority on that split and on why open interest is
+    // absent.
+    //
+    // DEFAULTED (like [`HistStore::append_cohort`]): a store that does not hold perp metrics (e.g.
+    // a bars-only test double) inherits the empty/no-op default; the durable backends override with
+    // real behavior. ⚠ It is the SECOND half of the declared residual the cohort block above argues
+    // — read that argument there rather than inferring from this line that the empty is correct.
+
+    /// Append a batch of perp market-context rows for `(venue, symbol)` (`kind=perp_metrics`
+    /// series). Returns rows written (0 if `commit_key` was already ingested, the batch is empty,
+    /// or this store does not hold perp metrics). Default = no-op.
+    fn append_perp_metrics(
+        &self,
+        venue: &str,
+        symbol: &str,
+        rows: &[PerpMetricRow],
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError> {
+        let _ = (venue, symbol, rows, commit_key);
+        Ok(0)
+    }
+
+    /// Perp market-context rows for `(venue, symbol)` (`kind=perp_metrics`) in `range`,
+    /// ts-ascending. Same in-memory `Vec` caveat as [`HistStore::scan_quotes`]. Default = empty.
+    fn scan_perp_metrics(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+    ) -> Result<Vec<PerpMetricRow>, DataError> {
+        let _ = (venue, symbol, range);
+        Ok(Vec::new())
+    }
+
+    /// [`Self::scan_perp_metrics`] under a row budget — see [`Self::scan_quotes_capped`] for the
+    /// contract and for why the DEFAULT delegates. A perp-metrics series is per-symbol, never
+    /// grouped, so there is one layout to walk.
+    fn scan_perp_metrics_capped(
+        &self,
+        venue: &str,
+        symbol: &str,
+        range: TsRange,
+        budget: Option<usize>,
+    ) -> Result<Vec<PerpMetricRow>, DataError> {
+        let _ = budget;
+        self.scan_perp_metrics(venue, symbol, range)
+    }
+
+    /// Point-in-time chain lookup: for each instrument, the most-recent row observed at or before
+    /// `ts` — i.e. the latest snapshot state per instrument (the [`HistStore::properties_as_of`]
+    /// analog for the options surface, defaulted over [`HistStore::scan_chain`] the same way).
+    ///
+    /// Per-INSTRUMENT latest (not "rows at the single latest snapshot ts") by design: a full
+    /// surface is recorded as one chain per expiry, each with its own `asof_ms`, so the latest-ts
+    /// snapshot alone would hold only one expiry. Consequence: an instrument that stopped being
+    /// observed (delisted/expired) still surfaces with its LAST recorded row — callers wanting
+    /// live-only contracts filter `expiry_ms > ts`. Returned sorted `(expiry_ms, strike,
+    /// instrument)` — deterministic; empty if nothing was recorded at or before `ts`.
+    ///
+    /// ⚠ **An empty `Ok` here now means what it says.** This verb is derived over
+    /// [`HistStore::scan_chain`], whose default REFUSES, so a store that cannot hold chains
+    /// propagates `DataError::Unsupported` instead of an empty surface. It used to inherit the
+    /// empty and hand a caller a confident "nothing was recorded" built out of a capability gap.
+    ///
+    /// ⚠ COST: this is the UNBOUNDED form — it scans and materializes EVERY chain row ever recorded
+    /// at or before `ts`, so one lookup grows linearly with archive age. That is fine for the
+    /// `kind=properties` shape it is modelled on (~1 row/day/symbol) but NOT for chains: at the
+    /// recorder's 1-minute default cadence one underlying is ~hundreds of rows/minute, so a month of
+    /// recording is tens of millions of rows decoded PER CALL. Prefer
+    /// [`HistStore::chain_as_of_within`], which bounds the scan to a lookback window; reach for this
+    /// form only when an arbitrarily stale last-observation genuinely matters (or pair it with
+    /// [`crate::hist_maint`] retention so the series stays small).
+    fn chain_as_of(
+        &self,
+        venue: &str,
+        underlying: &str,
+        ts: i64,
+    ) -> Result<Vec<ChainRow>, DataError> {
+        let rows = self.scan_chain(venue, underlying, TsRange::of(i64::MIN, ts))?;
+        Ok(fold_chain_as_of(rows))
+    }
+
+    /// Bounded [`HistStore::chain_as_of`]: identical per-instrument-latest semantics and ordering,
+    /// but the scan starts at `ts - lookback_ms` instead of the beginning of time — so the cost is
+    /// proportional to the WINDOW, not to how long the store has been recording. This is the form
+    /// backtests and surface reads should use.
+    ///
+    /// Pick `lookback_ms` as a few recorder cadence periods (the recorder's default is 1 minute, so
+    /// e.g. 5–15 minutes): an instrument the venue stopped quoting inside the window is stale by the
+    /// documented delisting semantics anyway. An instrument NOT observed within the window is simply
+    /// absent from the result — the difference from the unbounded form, and the whole point.
+    /// A non-positive `lookback_ms` yields the `ts`-instant only; the subtraction saturates, so a
+    /// huge lookback degrades to (and matches) [`HistStore::chain_as_of`] rather than overflowing.
+    /// It carries [`HistStore::chain_as_of`]'s refusal note unchanged — the two differ only in the
+    /// scan range they hand [`HistStore::scan_chain`], so both propagate its default.
+    fn chain_as_of_within(
+        &self,
+        venue: &str,
+        underlying: &str,
+        ts: i64,
+        lookback_ms: i64,
+    ) -> Result<Vec<ChainRow>, DataError> {
+        let from = ts.saturating_sub(lookback_ms.max(0));
+        let rows = self.scan_chain(venue, underlying, TsRange::of(from, ts))?;
+        Ok(fold_chain_as_of(rows))
+    }
+
+    // ---- derive: resample stored ticks -> bars (in-store) ----------------------------------
+    //
+    // Read the tick slice for `range` (ts-sorted), feed it to the PARITY-TESTED
+    // `vike_model::consolidate_{quotes,trades}` (the same tick->bar math the backtest uses), and
+    // `append_bars` the result. `interval` is the bar step ("1m"/"5m"/"1h"/"1d"). Idempotent via
+    // `commit_key` like the other appends. Returns bars written.
+
+    /// Resample stored QUOTES → OHLCV bars (bid/ask mid) for `(venue, symbol, interval)`.
+    fn resample_quotes_to_bars(
+        &self,
+        venue: &str,
+        symbol: &str,
+        interval: &str,
+        range: TsRange,
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError>;
+
+    /// Resample stored TRADES → OHLCV bars (trade price) for `(venue, symbol, interval)`.
+    fn resample_trades_to_bars(
+        &self,
+        venue: &str,
+        symbol: &str,
+        interval: &str,
+        range: TsRange,
+        commit_key: Option<&str>,
+    ) -> Result<usize, DataError>;
+}
+
+/// The shared per-instrument-latest fold behind [`HistStore::chain_as_of`] and
+/// [`HistStore::chain_as_of_within`] — the ONE place the PIT semantics live, so the bounded and
+/// unbounded reads can never drift apart (they differ only in the scan range they hand in).
+///
+/// `rows` must be ts-ASCENDING (every `scan_chain` impl guarantees it): the fold is last-write-wins
+/// per instrument, so ordering IS the "freshest observation" rule. Output is sorted
+/// `(expiry_ms, strike, instrument)` — deterministic across backends.
+fn fold_chain_as_of(rows: Vec<ChainRow>) -> Vec<ChainRow> {
+    // BTreeMap (std) for a deterministic fold; no f64 summing happens here, so map order is
+    // presentation-only anyway.
+    let mut latest: std::collections::BTreeMap<String, ChainRow> =
+        std::collections::BTreeMap::new();
+    for r in rows {
+        latest.insert(r.instrument.clone(), r);
+    }
+    let mut out: Vec<ChainRow> = latest.into_values().collect();
+    out.sort_by(|a, b| {
+        a.expiry_ms
+            .cmp(&b.expiry_ms)
+            .then_with(|| a.strike.total_cmp(&b.strike))
+            .then_with(|| a.instrument.cmp(&b.instrument))
+    });
+    out
+}

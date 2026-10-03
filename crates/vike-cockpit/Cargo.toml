@@ -1,0 +1,31 @@
+[package]
+name = "vike-cockpit"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "Polymarket scalp-cockpit egui widgets (chart-engine-free): the window-chain rail, the Price-to-Beat header, the probability ladder and the one-click ticket, drawn from the design system's tokens and component kit."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/layer_gate.rs). Tier `ui-widget` — an egui widget / engine crate (no eframe/wgpu).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 75
+
+[dependencies]
+vike-ui-theme = { path = "../vike-ui-theme" } # the design system: its tokens (components::Tokens), the component kit and the icons — every colour and size the widgets draw
+egui = { workspace = true }
+
+[dev-dependencies]
+# Accessibility-tree tests over the REAL widgets (`tests/ticket_a11y.rs`). NO wgpu / NO snapshot —
+# `Context::run_ui` is pure CPU, so these run on the GPU-less CI runners like any other test. See
+# the workspace manifest's `egui_kittest` rationale.
+egui_kittest = { workspace = true }
+# `frame_sanity` (the geometry assertion every frame test calls) and `harness::type_ready` (the
+# first-frame guard a kittest harness needs before it draws a named weight or an icon). The feature
+# adds modules and no dependency, and the crate is already a normal dependency, so the lockfile's
+# package set is unchanged.
+vike-ui-theme = { path = "../vike-ui-theme", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true
