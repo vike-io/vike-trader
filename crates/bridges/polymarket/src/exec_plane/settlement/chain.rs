@@ -1,0 +1,1388 @@
+//! `chain` — the **Polygon on-chain settlement watcher**: the missing oracle that explains a
+//! Polymarket position → cash movement no CLOB endpoint ever reports.
+//!
+//! ## The blind spot this closes
+//! [`crate::exec_plane::recon_client`]'s module doc states it: Polymarket settlement is a two-step ON-CHAIN
+//! flow — a market RESOLVES, then winning tokens are REDEEMED for USDC — and **redemption produces
+//! no `/data/trades` fill**. Reconcile therefore sees a position vanish and cash appear with
+//! nothing explaining it, which is exactly why the venue shipped `quarantine`-first (#646). And
+//! [`crate::exec_plane::settlement::resolve`]'s doc states the sibling gap: `/positions.redeemable` alone cannot tell a
+//! resolved LOSER from a position still trading.
+//!
+//! Both gaps have the same cure: read the settlement facts from the chain that produced them. This
+//! module is a MINIMAL JSON-RPC reader over the crate's existing `ureq` stack — **no `ethers`, no
+//! `alloy`, no `web3`, no new workspace dependency of any kind** (the `deny.toml` `[bans]` gate
+//! rejects a second HTTP/TLS/curve stack, and `hex`/`serde_json`/`ureq` were already this crate's
+//! deps). It READS only: `eth_blockNumber` / `eth_call` / `eth_getLogs` / `eth_getTransactionReceipt`.
+//! It never signs and never sends a transaction — that stays [`crate::exec_plane::settlement::redeem_relayer`]'s job.
+//!
+//! ## ⚠ It is OPT-IN and DEFAULT-OFF
+//! [`ChainWatchPoller::spawn`] starts the watcher thread only when its caller passes `enabled`, and
+//! NO composition root starts it — decision 0095's D4: code nothing starts takes its values as
+//! PARAMETERS and gets no settings row until something starts it. What a reader dials is a
+//! [`ChainRpcSettings`], supplied by that caller too. Not started (the only state today) ⇒ nothing
+//! is constructed, no socket is opened, and every consumer seam below falls back to its
+//! pre-existing behaviour byte-for-byte. (The `POLY_CHAIN_WATCH`/`POLY_CHAIN_RPC_URL`/
+//! `POLY_CHAIN_MAX_SPAN`/`POLY_CHAIN_PROXY` variables and this module's own walk of the credential
+//! store were how it was configured before that decision; a set variable refuses startup now.)
+//!
+//! ## The event signatures were DERIVED, then verified THREE ways (never guessed)
+//! A wrong `topic0` matches nothing, which looks exactly like "no redemptions happened" — so each
+//! one below was (1) keccak-derived from the canonical contract source's declaration, (2) probed
+//! against the DEPLOYED runtime bytecode (`eth_getCode`, the same method PR #647 used to pin
+//! `convertPositions`), and (3) decoded against REAL Polygon mainnet logs whose ABI head/tail
+//! offsets self-check. All three agreed for every signature (2026-07-23, mainnet):
+//!
+//! | contract | event (canonical signature) | topic0 | in bytecode | live logs decoded |
+//! |---|---|---|---|---|
+//! | CTF [`crate::exec_plane::settlement::redeem::CTF_ADDRESS`] | `ConditionResolution(bytes32,address,bytes32,uint256,uint256[])` | `b44d84d3…` | YES | 12 |
+//! | CTF | `PayoutRedemption(address,address,bytes32,bytes32,uint256[],uint256)` | `2682012a…` | YES | 244 |
+//! | NegRiskAdapter [`crate::exec_plane::settlement::redeem::NEG_RISK_ADAPTER`] | `PayoutRedemption(address,bytes32,uint256[],uint256)` | `9140a6a2…` | YES | 33 |
+//! | CTF (ERC-1155) | `TransferSingle(address,address,address,uint256,uint256)` | `c3d58168…` | YES | ✓ |
+//! | CTF (ERC-1155) | `TransferBatch(address,address,address,uint256[],uint256[])` | `4a39dc06…` | YES | ✓ |
+//!
+//! The two ERC-1155 topics are the universally-published constants, which is what validates the
+//! keccak methodology itself (they reproduce byte-for-byte from the signature literals here).
+//! Indexed-ness is NOT encoded in `topic0`, so it was pinned from the live logs' topic COUNT and
+//! cross-checked: the NegRiskAdapter's `topic2` was proven to be the **conditionId** because the
+//! CTF's own `PayoutRedemption` in the SAME transaction carries that exact bytes32 in its
+//! unambiguous `conditionId` data word (tx `0xc6c3f62a…`).
+//!
+//! The three view-function selectors are pinned the same way — keccak-derived and each found as a
+//! `PUSH4` immediate in the CTF dispatch table: `payoutDenominator(bytes32)` = `dd34de67`,
+//! `payoutNumerators(bytes32,uint256)` = `0504c814`, `getOutcomeSlotCount(bytes32)` = `d42dc0c2`.
+//!
+//! ## ⚠ THE TRAP: the on-chain `redeemer` is NOT our wallet
+//! Filtering `PayoutRedemption` by `topics[1] == funder` finds **nothing** for a Polymarket
+//! account, and "nothing" is indistinguishable from "no redemptions". Verified live against this
+//! repo's own mainnet account: its largest redemption (`0xafc036c2…`, 15.62 USDC, conditionId
+//! `0x8241ea50…`) carries `redeemer = 0xada100db00ca00073811820692005400218fce1f` — a SHARED
+//! Polymarket relayer proxy, not the funder. The funder's own tokens move in a sibling ERC-1155
+//! `TransferBatch` in the same transaction.
+//!
+//! So the account-scoped anchor is the **ERC-1155 transfer OUT of the funder** (`topics[2] ==
+//! funder`), joined by `transactionHash` to the `PayoutRedemption` in the same transaction. That
+//! join is what [`ChainWatcher::poll_once`] performs, and it is why this module scans transfers
+//! rather than redemptions.
+//!
+//! ## Two independent readers, for two different jobs
+//! 1. **`eth_call` payout numerators** ([`PolygonRpc::condition_resolution`]) — a point query per
+//!    conditionId we HOLD. Range-free (works on any RPC, no log-window cap, no archive node), and
+//!    it is the AUTHORITATIVE winner source. This is what [`crate::exec_plane::settlement::resolve`] consumes.
+//! 2. **`eth_getLogs` redemption scan** ([`ChainWatcher`]) — the account-scoped ledger of realised
+//!    settlements, with the exact USDC payout. This is what [`crate::exec_plane::recon_client`] consumes, as
+//!    settlement `FillReport`s that make a redeem-shaped divergence EXPLAINED instead of
+//!    quarantined.
+//!
+//! ## ⚠ FINDING: `/positions.redeemable` does NOT mean "won" (a live refutation)
+//! [`crate::exec_plane::settlement::resolve`]'s winner rule assumes the data-api flags only the WINNING leg. A live read of
+//! this repo's mainnet account (2026-07-23) refutes it: **all four** held positions came back
+//! `redeemable: true`, three of them with `curPrice: 0` / `cashPnl: -100%` — plain losers. Each
+//! wallet holds ONE leg per condition, so `resolve::ambiguous_conditions` (which needs 2+ redeemable
+//! legs of the SAME condition) does not fire, and `resolve::winning_tokens` would have settled all
+//! four at 1.0 — **fabricating ≈29 USDC of profit that never existed**. `eth_call` agreed with the
+//! data-api's `curPrice` on 4/4:
+//!
+//! | market | held index | chain numerators | verdict |
+//! |---|---|---|---|
+//! | SOL Up/Down (`0x13bf6efb…`) | 1 | `[1, 0]` | LOSER |
+//! | DOGE Up/Down (`0xbf336239…`) | 0 | `[0, 1]` | LOSER |
+//! | DOGE Up/Down (`0x5a71ff88…`) | 0 | `[0, 1]` | LOSER |
+//! | BNB Up/Down (`0xf361b0aa…`) | 1 | `[0, 1]` | WINNER |
+//!
+//! `redeemable` is therefore best read as "this condition RESOLVED and the position can be
+//! redeemed (possibly for zero)" — a resolution flag, not a winner flag. That makes the chain read
+//! the only correct payout source, and [`crate::exec_plane::settlement::resolve`]'s chain seam a money-safety fix, not just
+//! a completeness one.
+//!
+//! ## Phase C: the shared decode library (drift unification)
+//! The 5 decoders above were built for this watcher's own narrow settlement need; a SEPARATE
+//! Python on-chain daemon (`vike_db_data_jobs/apps/polymarket/onchain_decode.py`) independently
+//! keccak-derived and decodes a 12-event superset of the SAME contracts/topics — a duplicated,
+//! drifting decode surface. The section below (search "Phase C decoders") extends this module with
+//! the events Rust was missing — `OrderFilled` (both the legacy V1 8-param and the unified V2
+//! 10-param ABI), CTF `PositionSplit`/`PositionsMerge`, NegRiskAdapter `PositionsConverted`, and
+//! the USDC.e ERC-20 `Transfer` funding leg — so a future Rust collector shares ONE decode instead
+//! of re-deriving/re-verifying these layouts a second time. Every new decoder mirrors
+//! `onchain_decode.py`'s semantics exactly (word offsets, side/role assignment, 6-dp USDC scaling)
+//! and is fixture-tested against a REAL mainnet log, the same discipline as the 5 above. Purely
+//! additive: nothing here is wired into [`ChainWatcher`]/[`ChainOracle`], so the settlement
+//! watcher's behavior is unchanged byte-for-byte.
+
+use std::collections::BTreeMap;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use serde_json::Value;
+use vike_bridge_core::poller::{STOP_POLL_SLICE, StopHandle, sleep_stop_aware, spawn_poller};
+
+use crate::exec_plane::order::Side;
+use crate::exec_plane::settlement::redeem::CTF_ADDRESS;
+
+// ---------------------------------------------------------------------------------------------
+// Pinned wire constants (see the module doc for how each was derived and verified)
+// ---------------------------------------------------------------------------------------------
+
+/// `ConditionResolution(bytes32 indexed conditionId, address indexed oracle, bytes32 indexed
+/// questionId, uint outcomeSlotCount, uint[] payoutNumerators)` on the CTF.
+pub const TOPIC_CONDITION_RESOLUTION: &str =
+    "0xb44d84d3289691f71497564b85d4233648d9dbae8cbdbb4329f301c3a0185894";
+
+/// `PayoutRedemption(address indexed redeemer, IERC20 indexed collateralToken, bytes32 indexed
+/// parentCollectionId, bytes32 conditionId, uint[] indexSets, uint payout)` on the CTF.
+pub const TOPIC_CTF_PAYOUT_REDEMPTION: &str =
+    "0x2682012a4a4f1973119f1c9b90745d1bd91fa2bab387344f044cb3586864d18d";
+
+/// `PayoutRedemption(address indexed redeemer, bytes32 indexed conditionId, uint256[] amounts,
+/// uint256 payout)` on the NegRiskAdapter.
+pub const TOPIC_NEG_RISK_PAYOUT_REDEMPTION: &str =
+    "0x9140a6a270ef945260c03894b3c6b3b2695e9d5101feef0ff24fec960cfd3224";
+
+/// ERC-1155 `TransferSingle(address,address,address,uint256,uint256)`.
+pub const TOPIC_TRANSFER_SINGLE: &str =
+    "0xc3d58168c5ae7397731d063d5bbf3d657854427343f4c083240f7aacaa2d0f62";
+
+/// ERC-1155 `TransferBatch(address,address,address,uint256[],uint256[])`.
+pub const TOPIC_TRANSFER_BATCH: &str =
+    "0x4a39dc06d4c0dbc64b70af90fd698a233a518aa5d07e595d983b8c0526c8f7fb";
+
+/// `payoutDenominator(bytes32)` — `0` until the condition resolves.
+pub const SEL_PAYOUT_DENOMINATOR: &str = "0xdd34de67";
+/// `payoutNumerators(bytes32,uint256)` — the per-outcome-slot payout weight.
+pub const SEL_PAYOUT_NUMERATORS: &str = "0x0504c814";
+/// `getOutcomeSlotCount(bytes32)` — how many slots the condition has (2 for a binary market).
+pub const SEL_OUTCOME_SLOT_COUNT: &str = "0xd42dc0c2";
+
+/// USDC / CTF outcome tokens are 6-decimal, so a wire base-unit value divides by this.
+const USDC_DECIMALS: f64 = 1_000_000.0;
+
+/// Tolerance on the `Σ(qty · price) == payout` identity [`join_settlement`] proves its slot mapping
+/// with — half a base unit (5e-7 USDC), i.e. below anything the 6-decimal wire can express.
+pub const PAYOUT_EPSILON: f64 = 5e-7;
+
+/// Polygon PoS. Named here for the health check only — the `137` constants in [`crate::exec_plane::l1`] /
+/// [`crate::exec_plane::order`] / [`crate::exec_plane::settlement::redeem_relayer`] are EIP-712 signing domains and are unrelated.
+pub const POLYGON_CHAIN_ID: u64 = 137;
+
+/// The default JSON-RPC endpoint: keyless, public, and — verified 2026-07-23 — serving all four
+/// methods this module uses INCLUDING archive receipts. Deliberately NOT a keyed provider URL; a
+/// caller points [`ChainRpcSettings::rpc_url`] at its own node or paid endpoint.
+///
+/// (`polygon-rpc.com`, the historical default, now answers `API key disabled` and is unusable;
+/// `polygon-bor-rpc.publicnode.com` and `1rpc.io/matic` serve calls and recent logs but refuse
+/// archive receipts.)
+pub const DEFAULT_RPC_URL: &str = "https://polygon.drpc.org";
+
+/// Conservative default `eth_getLogs` window. `1rpc.io` caps at 50 blocks, `drpc` at 10 000; 45
+/// blocks (~90 s of Polygon) is under every free cap seen and is far wider than one poll interval.
+pub const DEFAULT_MAX_SPAN: u64 = 45;
+
+/// Default watcher cadence — settlement is a human-timescale event, mirroring
+/// [`crate::exec_plane::settlement::resolve::DEFAULT_POLL_INTERVAL`].
+pub const DEFAULT_POLL_INTERVAL: Duration = Duration::from_secs(60);
+
+/// How far back the FIRST poll looks when no cursor exists yet (~10 min of Polygon).
+pub const DEFAULT_COLD_LOOKBACK_BLOCKS: u64 = 300;
+
+/// **What a Polygon JSON-RPC reader dials** — supplied by whichever composition root starts the
+/// settlement code (D4 of decision 0095: code nothing starts takes its values as PARAMETERS and gets
+/// no settings row until something starts it). `Default` is the documented constants.
+///
+/// ⚠ `Debug` is written by hand: a paid endpoint's URL can embed its key, so it prints the URL only
+/// when it is the keyless public [`DEFAULT_RPC_URL`].
+#[derive(Clone, PartialEq, Eq)]
+pub struct ChainRpcSettings {
+    /// The JSON-RPC endpoint. A paid endpoint's URL can embed its key — never log it whole.
+    pub rpc_url: String,
+    /// Max blocks per `eth_getLogs` window (free endpoints cap it hard; the scan CHUNKS anything
+    /// wider rather than failing). `0` means the default.
+    pub max_span: u64,
+    /// Route the RPC through the venue's declared egress ([`crate::egress::proxy_url`]). Off by
+    /// default: Polygon RPCs are not geo-blocked, so the tunnel is only wanted on a host whose DNS
+    /// is (the UA case [`crate::exec_plane::exec`] documents).
+    pub via_proxy: bool,
+}
+
+impl Default for ChainRpcSettings {
+    fn default() -> Self {
+        ChainRpcSettings {
+            rpc_url: DEFAULT_RPC_URL.to_string(),
+            max_span: DEFAULT_MAX_SPAN,
+            via_proxy: false,
+        }
+    }
+}
+
+impl std::fmt::Debug for ChainRpcSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let rpc_url = if self.rpc_url == DEFAULT_RPC_URL { DEFAULT_RPC_URL } else { "<redacted>" };
+        f.debug_struct("ChainRpcSettings")
+            .field("rpc_url", &rpc_url)
+            .field("max_span", &self.max_span)
+            .field("via_proxy", &self.via_proxy)
+            .finish()
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pure hex / ABI helpers (no dependency beyond `hex`, already a crate dep)
+// ---------------------------------------------------------------------------------------------
+
+/// Strip `0x` and lowercase.
+fn clean(s: &str) -> String {
+    s.strip_prefix("0x").unwrap_or(s).to_ascii_lowercase()
+}
+
+/// Split an ABI data blob into 32-byte words (hex, no `0x`). A trailing partial word is dropped —
+/// real ABI data is always word-aligned, and a truncated body must not panic.
+pub fn data_words(data: &str) -> Vec<String> {
+    let d = clean(data);
+    d.as_bytes()
+        .chunks(64)
+        .filter(|c| c.len() == 64)
+        .map(|c| String::from_utf8_lossy(c).into_owned())
+        .collect()
+}
+
+/// One 32-byte word → `u128`. The high 16 bytes MUST be zero: every value this module reads
+/// (payouts, 6-decimal token amounts, slot counts, index sets) fits comfortably, and silently
+/// truncating a genuinely-256-bit value would fabricate a number. Token IDS are the one true
+/// 256-bit field and go through [`u256_word_to_decimal`] instead.
+pub fn word_u128(w: &str) -> Result<u128, String> {
+    let w = clean(w);
+    if w.len() != 64 {
+        return Err(format!("expected a 32-byte word, got {} hex chars", w.len()));
+    }
+    if w[..32].bytes().any(|b| b != b'0') {
+        return Err(format!("word exceeds u128: 0x{w}"));
+    }
+    u128::from_str_radix(&w[32..], 16).map_err(|e| format!("bad hex word: {e}"))
+}
+
+/// One 32-byte word → a lower-case `0x…` 20-byte address (the right-aligned convention every
+/// indexed `address` topic uses).
+pub fn word_address(w: &str) -> Result<String, String> {
+    let w = clean(w);
+    if w.len() != 64 {
+        return Err(format!("expected a 32-byte word, got {} hex chars", w.len()));
+    }
+    Ok(format!("0x{}", &w[24..]))
+}
+
+/// One 32-byte word → the DECIMAL string form of the uint256 — which is exactly how Polymarket
+/// spells an ERC-1155 outcome token id everywhere else in this crate (`/positions.asset`, the CLOB
+/// `asset_id`, and therefore the vike `symbol`). Schoolbook base-256 → base-10 division, so no
+/// bigint dependency is added for the one genuinely 256-bit field on this wire.
+pub fn u256_word_to_decimal(w: &str) -> Result<String, String> {
+    let w = clean(w);
+    if w.len() != 64 {
+        return Err(format!("expected a 32-byte word, got {} hex chars", w.len()));
+    }
+    let mut bytes = hex::decode(&w).map_err(|e| format!("bad hex word: {e}"))?;
+    let mut digits = Vec::new();
+    while bytes.iter().any(|b| *b != 0) {
+        let mut rem = 0u32;
+        for b in bytes.iter_mut() {
+            let cur = (rem << 8) | u32::from(*b);
+            *b = (cur / 10) as u8;
+            rem = cur % 10;
+        }
+        digits.push(b'0' + rem as u8);
+    }
+    if digits.is_empty() {
+        return Ok("0".to_string());
+    }
+    digits.reverse();
+    Ok(String::from_utf8(digits).expect("ascii digits"))
+}
+
+/// A dynamic `uint256[]` living at `words[head]`'s offset → its elements. The offset is measured in
+/// BYTES from the start of the data section (so `/32` is the word index), which is what makes the
+/// decoders self-checking: a wrong layout assumption lands on a nonsense offset and errors instead
+/// of returning plausible garbage.
+fn dyn_array(words: &[String], head: usize) -> Result<Vec<u128>, String> {
+    let off = word_u128(words.get(head).ok_or("array head word missing")?)? as usize;
+    if !off.is_multiple_of(32) {
+        return Err(format!("array offset {off} is not word-aligned"));
+    }
+    let at = off / 32;
+    let len = word_u128(words.get(at).ok_or("array length word missing")?)? as usize;
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        out.push(word_u128(words.get(at + 1 + i).ok_or("array element word missing")?)?);
+    }
+    Ok(out)
+}
+
+/// The same, for a `uint256[]` whose elements are 256-bit token IDs (decimal strings).
+fn dyn_array_ids(words: &[String], head: usize) -> Result<Vec<String>, String> {
+    let off = word_u128(words.get(head).ok_or("array head word missing")?)? as usize;
+    if !off.is_multiple_of(32) {
+        return Err(format!("array offset {off} is not word-aligned"));
+    }
+    let at = off / 32;
+    let len = word_u128(words.get(at).ok_or("array length word missing")?)? as usize;
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        out.push(u256_word_to_decimal(words.get(at + 1 + i).ok_or("array element word missing")?)?);
+    }
+    Ok(out)
+}
+
+fn log_str(l: &Value, key: &str) -> String {
+    l.get(key).and_then(|v| v.as_str()).unwrap_or("").to_string()
+}
+
+fn log_topic(l: &Value, i: usize) -> Result<String, String> {
+    l.get("topics")
+        .and_then(|t| t.as_array())
+        .and_then(|t| t.get(i))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| format!("log has no topic[{i}]"))
+}
+
+fn log_u64(l: &Value, key: &str) -> u64 {
+    l.get(key)
+        .and_then(|v| v.as_str())
+        .and_then(|s| u64::from_str_radix(clean(s).as_str(), 16).ok())
+        .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Decoded types
+// ---------------------------------------------------------------------------------------------
+
+/// Which contract settled a redemption — it selects the event layout, and mirrors
+/// [`crate::exec_plane::settlement::redeem_relayer::RedeemKind`]'s binary/neg-risk split.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedeemVenue {
+    /// The Gnosis ConditionalTokens contract ([`CTF_ADDRESS`]) — a binary market redeem.
+    Ctf,
+    /// The [`NEG_RISK_ADAPTER`] — a multi-outcome (neg-risk) redeem.
+    NegRisk,
+}
+
+/// One decoded `PayoutRedemption`. `payout_usdc` is the REALISED collateral in whole USDC — the
+/// number that explains the cash half of a settlement.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Redemption {
+    pub venue: RedeemVenue,
+    /// The on-chain `msg.sender`. ⚠ For a Polymarket account this is a shared relayer proxy, NOT
+    /// the funder — see the module doc's TRAP section.
+    pub redeemer: String,
+    pub condition_id: String,
+    pub payout_usdc: f64,
+    /// CTF: the `indexSets` argument (`[1, 2]` for a binary redeem). NegRisk: the per-slot AMOUNTS
+    /// (base units), the semantics [`crate::exec_plane::settlement::redeem`] pins from the contract source.
+    pub slot_values: Vec<u128>,
+    pub tx_hash: String,
+    pub block: u64,
+    /// Block timestamp in ms when the RPC supplies `blockTimestamp` (most do), else `0`.
+    pub ts_ms: i64,
+}
+
+/// One decoded `ConditionResolution` log. The same payout vector [`PolygonRpc::condition_resolution`]
+/// reads via `eth_call`, in event form — useful for a historical scan, not needed for the live path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolutionEvent {
+    pub condition_id: String,
+    pub oracle: String,
+    pub question_id: String,
+    pub outcome_slot_count: u128,
+    pub payout_numerators: Vec<u128>,
+    pub tx_hash: String,
+    pub block: u64,
+}
+
+/// One decoded ERC-1155 transfer (`TransferSingle` normalised into the batch shape). `ids` are
+/// DECIMAL token-id strings — the same spelling as a `/positions.asset` and therefore the vike
+/// `symbol`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TokenTransfer {
+    pub operator: String,
+    pub from: String,
+    pub to: String,
+    pub ids: Vec<String>,
+    pub values: Vec<u128>,
+    pub tx_hash: String,
+    pub block: u64,
+}
+
+/// The chain's verdict on one condition, read from the CTF's own payout mappings. `denominator == 0`
+/// means NOT RESOLVED — the CTF's own sentinel (`payoutDenominator` is written only by
+/// `reportPayouts`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainResolution {
+    pub condition_id: String,
+    pub denominator: u128,
+    pub numerators: Vec<u128>,
+}
+
+impl ChainResolution {
+    /// The CTF's own resolution test.
+    pub fn is_resolved(&self) -> bool {
+        self.denominator > 0 && !self.numerators.is_empty()
+    }
+
+    /// The payout of ONE outcome slot, in collateral per token: `numerator / denominator`. `None`
+    /// when unresolved or the index is out of range — never a guessed 0.0, because "unknown" and
+    /// "worthless" must not be the same value in a settlement path.
+    ///
+    /// A binary market pays `[1,0]` or `[0,1]` (⇒ 1.0 / 0.0, matching
+    /// [`crate::exec_plane::settlement::resolve::WINNER_PAYOUT`]/[`LOSER_PAYOUT`](crate::exec_plane::settlement::resolve::LOSER_PAYOUT)); a SPLIT
+    /// resolution (`[1,1]` over denominator 2) pays 0.5 to BOTH legs, which this expresses exactly
+    /// and the `redeemable`-flag heuristic cannot express at all.
+    pub fn payout_for_index(&self, index: u32) -> Option<f64> {
+        if !self.is_resolved() {
+            return None;
+        }
+        let n = *self.numerators.get(index as usize)?;
+        Some(n as f64 / self.denominator as f64)
+    }
+
+    /// The single winning slot when there is exactly one — `None` for unresolved or split payouts.
+    pub fn winner_index(&self) -> Option<u32> {
+        if !self.is_resolved() {
+            return None;
+        }
+        let mut winner = None;
+        for (i, n) in self.numerators.iter().enumerate() {
+            if *n > 0 {
+                if winner.is_some() {
+                    return None; // split payout: no single winner
+                }
+                winner = Some(i as u32);
+            }
+        }
+        winner
+    }
+}
+
+/// One realised, account-scoped settlement: the join of a funder token OUTFLOW with the
+/// `PayoutRedemption` in the same transaction. This is the row that EXPLAINS a position → cash
+/// movement, and the row [`crate::exec_plane::recon_client`] turns into a settlement `FillReport`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainSettlement {
+    pub condition_id: String,
+    /// The ERC-1155 outcome token (decimal) — the vike `symbol` for this venue.
+    pub token_id: String,
+    /// Tokens redeemed, in whole shares (base units / 1e6).
+    pub qty: f64,
+    /// Collateral per token this leg realised: `payout_for_index` when the chain resolution is
+    /// known, else derived from the redemption's total payout when unambiguous.
+    pub price: f64,
+    /// The transaction's TOTAL payout in whole USDC (the same for every leg of one redemption).
+    pub payout_usdc: f64,
+    pub venue: RedeemVenue,
+    pub tx_hash: String,
+    pub block: u64,
+    pub ts_ms: i64,
+}
+
+// ---------------------------------------------------------------------------------------------
+// Pure decoders (fixture-tested against REAL mainnet logs)
+// ---------------------------------------------------------------------------------------------
+
+/// CTF `PayoutRedemption` log → [`Redemption`]. Topics: `[topic0, redeemer, collateralToken,
+/// parentCollectionId]`; data head is `[conditionId, offset(indexSets), payout]` with the array in
+/// the tail — so the offset is ALWAYS `0x60` (three head words), which every one of the 244 live
+/// logs sampled confirmed and which this decoder re-checks through [`dyn_array`].
+pub fn decode_ctf_redemption(l: &Value) -> Result<Redemption, String> {
+    let t0 = log_topic(l, 0)?;
+    if !t0.eq_ignore_ascii_case(TOPIC_CTF_PAYOUT_REDEMPTION) {
+        return Err(format!("not a CTF PayoutRedemption log (topic0 {t0})"));
+    }
+    let w = data_words(&log_str(l, "data"));
+    Ok(Redemption {
+        venue: RedeemVenue::Ctf,
+        redeemer: word_address(&log_topic(l, 1)?)?,
+        condition_id: format!("0x{}", w.first().ok_or("no conditionId word")?),
+        payout_usdc: word_u128(w.get(2).ok_or("no payout word")?)? as f64 / USDC_DECIMALS,
+        slot_values: dyn_array(&w, 1)?,
+        tx_hash: log_str(l, "transactionHash"),
+        block: log_u64(l, "blockNumber"),
+        ts_ms: log_u64(l, "blockTimestamp") as i64 * 1000,
+    })
+}
+
+/// NegRiskAdapter `PayoutRedemption` log → [`Redemption`]. Topics: `[topic0, redeemer, conditionId]`
+/// (the conditionId identity is proven in the module doc); data head is `[offset(amounts), payout]`
+/// ⇒ offset `0x40`, again re-checked structurally.
+pub fn decode_neg_risk_redemption(l: &Value) -> Result<Redemption, String> {
+    let t0 = log_topic(l, 0)?;
+    if !t0.eq_ignore_ascii_case(TOPIC_NEG_RISK_PAYOUT_REDEMPTION) {
+        return Err(format!("not a NegRiskAdapter PayoutRedemption log (topic0 {t0})"));
+    }
+    let w = data_words(&log_str(l, "data"));
+    Ok(Redemption {
+        venue: RedeemVenue::NegRisk,
+        redeemer: word_address(&log_topic(l, 1)?)?,
+        condition_id: log_topic(l, 2)?,
+        payout_usdc: word_u128(w.get(1).ok_or("no payout word")?)? as f64 / USDC_DECIMALS,
+        slot_values: dyn_array(&w, 0)?,
+        tx_hash: log_str(l, "transactionHash"),
+        block: log_u64(l, "blockNumber"),
+        ts_ms: log_u64(l, "blockTimestamp") as i64 * 1000,
+    })
+}
+
+/// Either redemption shape, dispatched on `topic0`. `None` for any other log.
+pub fn decode_redemption(l: &Value) -> Option<Redemption> {
+    match log_topic(l, 0).ok()?.to_ascii_lowercase() {
+        t if t == TOPIC_CTF_PAYOUT_REDEMPTION => decode_ctf_redemption(l).ok(),
+        t if t == TOPIC_NEG_RISK_PAYOUT_REDEMPTION => decode_neg_risk_redemption(l).ok(),
+        _ => None,
+    }
+}
+
+/// CTF `ConditionResolution` log → [`ResolutionEvent`]. Topics: `[topic0, conditionId, oracle,
+/// questionId]`; data head is `[outcomeSlotCount, offset(payoutNumerators)]` ⇒ offset `0x40`.
+pub fn decode_condition_resolution(l: &Value) -> Result<ResolutionEvent, String> {
+    let t0 = log_topic(l, 0)?;
+    if !t0.eq_ignore_ascii_case(TOPIC_CONDITION_RESOLUTION) {
+        return Err(format!("not a ConditionResolution log (topic0 {t0})"));
+    }
+    let w = data_words(&log_str(l, "data"));
+    Ok(ResolutionEvent {
+        condition_id: log_topic(l, 1)?,
+        oracle: word_address(&log_topic(l, 2)?)?,
+        question_id: log_topic(l, 3)?,
+        outcome_slot_count: word_u128(w.first().ok_or("no outcomeSlotCount word")?)?,
+        payout_numerators: dyn_array(&w, 1)?,
+        tx_hash: log_str(l, "transactionHash"),
+        block: log_u64(l, "blockNumber"),
+    })
+}
+
+/// ERC-1155 `TransferSingle`/`TransferBatch` → [`TokenTransfer`], the single form normalised into
+/// one-element vectors so the caller has ONE shape to reason about.
+pub fn decode_token_transfer(l: &Value) -> Result<TokenTransfer, String> {
+    let t0 = log_topic(l, 0)?.to_ascii_lowercase();
+    let w = data_words(&log_str(l, "data"));
+    let (ids, values) = if t0 == TOPIC_TRANSFER_SINGLE {
+        (
+            vec![u256_word_to_decimal(w.first().ok_or("no id word")?)?],
+            vec![word_u128(w.get(1).ok_or("no value word")?)?],
+        )
+    } else if t0 == TOPIC_TRANSFER_BATCH {
+        (dyn_array_ids(&w, 0)?, dyn_array(&w, 1)?)
+    } else {
+        return Err(format!("not an ERC-1155 transfer log (topic0 {t0})"));
+    };
+    if ids.len() != values.len() {
+        return Err(format!("ids/values length mismatch ({} vs {})", ids.len(), values.len()));
+    }
+    Ok(TokenTransfer {
+        operator: word_address(&log_topic(l, 1)?)?,
+        from: word_address(&log_topic(l, 2)?)?,
+        to: word_address(&log_topic(l, 3)?)?,
+        ids,
+        values,
+        tx_hash: log_str(l, "transactionHash"),
+        block: log_u64(l, "blockNumber"),
+    })
+}
+
+/// One `eth_call` result word → `u128` (the shape every view function here returns).
+pub fn decode_uint_result(hex: &str) -> Result<u128, String> {
+    let w = data_words(hex);
+    word_u128(w.first().ok_or("empty eth_call result")?)
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase C decoders — the shared decode library (drift unification, see the module doc). Pure,
+// additive, and NOT consumed by [`ChainWatcher`]/[`ChainOracle`] below.
+// ---------------------------------------------------------------------------------------------
+
+/// `OrderFilled(bytes32,address,address,uint8,uint256,uint256,uint256,uint256,bytes32,bytes32)` on
+/// the unified V2 CTF Exchange ([`V2_EXCHANGE`]) — the sole `OrderFilled` emitter since the
+/// ~Apr-2026 V1→V2 migration. Mirrors `onchain_decode.py`'s `ORDERFILLED_TOPIC0`.
+pub const TOPIC_ORDER_FILLED_V2: &str =
+    "0xd543adfd945773f1a62f74f0ee55a5e3b9b1a28262980ba90b1a89f2ea84d8ee";
+/// `OrderFilled(bytes32,address,address,uint256,uint256,uint256,uint256,uint256)` — the legacy
+/// 8-param layout on [`V1_EXCHANGE_STD`]/[`V1_EXCHANGE_NEG`] (pre-~Apr-2026).
+pub const TOPIC_ORDER_FILLED_V1: &str =
+    "0xd0a08e8c493f9c94f29311604c9de1b4e8c8d4c06bd0c789af57f2d65bfec0f6";
+/// CTF `PositionSplit(address,bytes32,bytes32,uint256[])` — mints a full outcome-token set against
+/// collateral.
+pub const TOPIC_CTF_POSITION_SPLIT: &str =
+    "0x2e6bb91f8cbcda0c93623c54d0403a43514fabc40084ec96b6d5379a74786298";
+/// CTF `PositionsMerge(address,bytes32,bytes32,uint256[])` — burns a full outcome-token set back
+/// into collateral.
+pub const TOPIC_CTF_POSITION_MERGE: &str =
+    "0x6f13ca62553fcc2bcd2372180a43949c1e4cebba603901ede2f4e14f36b282ca";
+/// NegRiskAdapter `PositionsConverted(address,bytes32,uint256,uint256)` — converts YES tokens
+/// across a neg-risk market's outcome set. `indexSet` is a BITMAP over the outcome slots, NOT a
+/// per-slot amount (see the memory note `polymarket-negrisk-set-facts`).
+pub const TOPIC_NEG_RISK_POSITIONS_CONVERTED: &str =
+    "0xb03d19dddbc72a87e735ff0ea3b57bef133ebe44e1894284916a84044deb367e";
+/// Standard ERC-20 `Transfer(address,address,uint256)` — the universally-published constant,
+/// reused here for the USDC.e collateral leg ([`crate::exec_plane::settlement::redeem::USDC_E_ADDRESS`]).
+pub const TOPIC_USDC_TRANSFER: &str =
+    "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+/// The unified V2 CTF Exchange — every market's `OrderFilled` emitter since the ~Apr-2026
+/// migration (the same literal `onchain_decode.py` calls `EXCHANGE`/`NEGRISK_EXCHANGE`).
+pub const V2_EXCHANGE: &str = "0xe111180000d2663c0091e4f400237545b87b996b";
+/// V1 (legacy) CTF Exchange — standard/binary markets, pre-~Apr-2026.
+pub const V1_EXCHANGE_STD: &str = "0x4bfb41d5b3570defd03c39a9a4d8de6bd8b8982e";
+/// V1 (legacy) NegRisk CTF Exchange, pre-~Apr-2026.
+pub const V1_EXCHANGE_NEG: &str = "0xc5d563a36ae78145c45a50134d48a1215220f80a";
+
+/// Which `OrderFilled` ABI generation decoded a fill.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderFillAbi {
+    /// The 10-param layout on the unified [`V2_EXCHANGE`] — `side`-tagged, single `tokenId`.
+    V2,
+    /// The 8-param legacy layout on [`V1_EXCHANGE_STD`]/[`V1_EXCHANGE_NEG`] —
+    /// `makerAssetId`/`takerAssetId`, side inferred from which asset id is the zero (USDC) leg.
+    V1,
+}
+
+/// Which side of the fill this row is — mirrors the Python daemon's MAKER-ONLY row model
+/// (`onchain_decode.py`'s module doc): the indexed `maker` is always the order owner, and
+/// recording the taker leg too would double-count a mint-matched trade.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillRole {
+    /// The on-chain `taker` topic IS the exchange contract itself — this maker's order aggressed.
+    Taker,
+    /// The on-chain `taker` topic is a real counter-wallet — this maker's resting order was hit.
+    Maker,
+}
+
+/// One decoded `OrderFilled` fill, MAKER perspective — [`decode_order_fill_v2`]/
+/// [`decode_order_fill_v1`] normalise both ABI generations into this one shape, mirroring
+/// `onchain_decode.py`'s `decode_orderfilled`/`decode_orderfilled_v1` row.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OrderFill {
+    pub abi: OrderFillAbi,
+    pub order_hash: String,
+    pub maker: String,
+    pub taker: String,
+    /// The ERC-1155 outcome token (decimal) — the vike `symbol` for this venue.
+    pub token_id: String,
+    pub side: Side,
+    pub size: f64,
+    pub price: f64,
+    pub fee_usdc: f64,
+    pub role: FillRole,
+    pub tx_hash: String,
+    pub block: u64,
+    /// Block timestamp in ms when the RPC supplies `blockTimestamp` (most do), else `0`.
+    pub ts_ms: i64,
+}
+
+/// V2 (10-param) `OrderFilled` on [`V2_EXCHANGE`]. Topics: `[topic0, orderHash, maker, taker]`;
+/// data is `[side, tokenId, makerAmt, takerAmt, fee, builder, metadata]` — 7 fixed words, no
+/// dynamic array. `side` 0 = BUY (maker pays USDC, gets tokens) / 1 = SELL (maker pays tokens,
+/// gets USDC) — the same convention [`crate::exec_plane::order::Side::code`] encodes for order signing. A
+/// zero-size fill is rejected, mirroring the Python decoder's `None` return.
+pub fn decode_order_fill_v2(l: &Value) -> Result<OrderFill, String> {
+    let t0 = log_topic(l, 0)?;
+    if !t0.eq_ignore_ascii_case(TOPIC_ORDER_FILLED_V2) {
+        return Err(format!("not a V2 OrderFilled log (topic0 {t0})"));
+    }
+    let w = data_words(&log_str(l, "data"));
+    let side =
+        if word_u128(w.first().ok_or("no side word")?)? == 0 { Side::Buy } else { Side::Sell };
+    let token_id = u256_word_to_decimal(w.get(1).ok_or("no tokenId word")?)?;
+    let maker_amt = word_u128(w.get(2).ok_or("no makerAmt word")?)? as f64 / USDC_DECIMALS;
+    let taker_amt = word_u128(w.get(3).ok_or("no takerAmt word")?)? as f64 / USDC_DECIMALS;
+    let fee = word_u128(w.get(4).ok_or("no fee word")?)? as f64 / USDC_DECIMALS;
+    let (size, usd) = match side {
+        Side::Buy => (taker_amt, maker_amt),
+        Side::Sell => (maker_amt, taker_amt),
+    };
+    if size == 0.0 {
+        return Err("zero-size fill".to_string());
+    }
+    let taker = word_address(&log_topic(l, 3)?)?;
+    let role =
+        if taker.eq_ignore_ascii_case(V2_EXCHANGE) { FillRole::Taker } else { FillRole::Maker };
+    Ok(OrderFill {
+        abi: OrderFillAbi::V2,
+        order_hash: log_topic(l, 1)?,
+        maker: word_address(&log_topic(l, 2)?)?,
+        taker,
+        token_id,
+        side,
+        size,
+        price: usd / size,
+        fee_usdc: fee,
+        role,
+        tx_hash: log_str(l, "transactionHash"),
+        block: log_u64(l, "blockNumber"),
+        ts_ms: log_u64(l, "blockTimestamp") as i64 * 1000,
+    })
+}
+
+/// V1 (8-param, legacy) `OrderFilled` on [`V1_EXCHANGE_STD`]/[`V1_EXCHANGE_NEG`]. Topics:
+/// `[topic0, orderHash, maker, taker]`; data is `[makerAssetId, takerAssetId, makerAmt, takerAmt,
+/// fee]`. `makerAssetId == 0` (the USDC collateral asset id) ⇒ BUY (maker pays USDC, token =
+/// takerAssetId); `takerAssetId == 0` ⇒ SELL. Neither leg being the USDC asset id is not a
+/// collateral fill (a token/token match) and is rejected, mirroring the Python decoder's `None`.
+pub fn decode_order_fill_v1(l: &Value) -> Result<OrderFill, String> {
+    let t0 = log_topic(l, 0)?;
+    if !t0.eq_ignore_ascii_case(TOPIC_ORDER_FILLED_V1) {
+        return Err(format!("not a V1 OrderFilled log (topic0 {t0})"));
+    }
+    let w = data_words(&log_str(l, "data"));
+    let maker_asset = w.first().ok_or("no makerAssetId word")?;
+    let taker_asset = w.get(1).ok_or("no takerAssetId word")?;
+    let maker_amt = word_u128(w.get(2).ok_or("no makerAmt word")?)? as f64 / USDC_DECIMALS;
+    let taker_amt = word_u128(w.get(3).ok_or("no takerAmt word")?)? as f64 / USDC_DECIMALS;
+    let fee = word_u128(w.get(4).ok_or("no fee word")?)? as f64 / USDC_DECIMALS;
+    let (token_id, side, size, usd) = if word_u128(maker_asset)? == 0 {
+        (u256_word_to_decimal(taker_asset)?, Side::Buy, taker_amt, maker_amt)
+    } else if word_u128(taker_asset)? == 0 {
+        (u256_word_to_decimal(maker_asset)?, Side::Sell, maker_amt, taker_amt)
+    } else {
+        return Err("neither asset leg is USDC — not a collateral fill".to_string());
+    };
+    if size == 0.0 {
+        return Err("zero-size fill".to_string());
+    }
+    let taker = word_address(&log_topic(l, 3)?)?;
+    let role = if taker.eq_ignore_ascii_case(V1_EXCHANGE_STD)
+        || taker.eq_ignore_ascii_case(V1_EXCHANGE_NEG)
+    {
+        FillRole::Taker
+    } else {
+        FillRole::Maker
+    };
+    Ok(OrderFill {
+        abi: OrderFillAbi::V1,
+        order_hash: log_topic(l, 1)?,
+        maker: word_address(&log_topic(l, 2)?)?,
+        taker,
+        token_id,
+        side,
+        size,
+        price: usd / size,
+        fee_usdc: fee,
+        role,
+        tx_hash: log_str(l, "transactionHash"),
+        block: log_u64(l, "blockNumber"),
+        ts_ms: log_u64(l, "blockTimestamp") as i64 * 1000,
+    })
+}
+
+/// Which position-accounting event a [`PositionEvent`] decoded — CTF `PositionSplit` mints a full
+/// outcome-token set against collateral; `PositionsMerge` burns one back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PositionEventKind {
+    Split,
+    Merge,
+}
+
+/// One decoded CTF `PositionSplit`/`PositionsMerge` log — the position-accounting twin of a
+/// redemption. Topics: `[topic0, stakeholder, parentCollectionId, conditionId]`; data head is
+/// `[collateralToken, offset(partition), amount, ...]` — offset is ALWAYS `0x60` (three head
+/// words), the same shape [`decode_ctf_redemption`] documents. `amount` is the full-SET mint/burn
+/// total, not a per-outcome value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PositionEvent {
+    pub kind: PositionEventKind,
+    pub stakeholder: String,
+    pub condition_id: String,
+    pub amount: f64,
+    pub tx_hash: String,
+    pub block: u64,
+}
+
+fn decode_ctf_position_event(
+    l: &Value,
+    topic0: &str,
+    kind: PositionEventKind,
+) -> Result<PositionEvent, String> {
+    let t0 = log_topic(l, 0)?;
+    if !t0.eq_ignore_ascii_case(topic0) {
+        return Err(format!("not a CTF {kind:?} log (topic0 {t0})"));
+    }
+    let w = data_words(&log_str(l, "data"));
+    Ok(PositionEvent {
+        kind,
+        stakeholder: word_address(&log_topic(l, 1)?)?,
+        condition_id: log_topic(l, 3)?,
+        amount: word_u128(w.get(2).ok_or("no amount word")?)? as f64 / USDC_DECIMALS,
+        tx_hash: log_str(l, "transactionHash"),
+        block: log_u64(l, "blockNumber"),
+    })
+}
+
+/// CTF `PositionSplit` → [`PositionEvent`].
+pub fn decode_ctf_position_split(l: &Value) -> Result<PositionEvent, String> {
+    decode_ctf_position_event(l, TOPIC_CTF_POSITION_SPLIT, PositionEventKind::Split)
+}
+
+/// CTF `PositionsMerge` → [`PositionEvent`].
+pub fn decode_ctf_position_merge(l: &Value) -> Result<PositionEvent, String> {
+    decode_ctf_position_event(l, TOPIC_CTF_POSITION_MERGE, PositionEventKind::Merge)
+}
+
+/// One decoded NegRiskAdapter `PositionsConverted` log — converts YES tokens across a neg-risk
+/// market's outcome set. Topics: `[topic0, stakeholder, marketId, indexSet]`; data is a single
+/// word `[amount]`. `index_set` is a BITMAP over the market's outcome slots, NOT a per-slot amount.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PositionsConverted {
+    pub stakeholder: String,
+    pub market_id: String,
+    /// Bitmap over outcome slots — NOT per-slot amounts (see `polymarket-negrisk-set-facts`).
+    pub index_set: u128,
+    pub amount: f64,
+    pub tx_hash: String,
+    pub block: u64,
+}
+
+/// NegRiskAdapter `PositionsConverted` → [`PositionsConverted`].
+pub fn decode_positions_converted(l: &Value) -> Result<PositionsConverted, String> {
+    let t0 = log_topic(l, 0)?;
+    if !t0.eq_ignore_ascii_case(TOPIC_NEG_RISK_POSITIONS_CONVERTED) {
+        return Err(format!("not a NegRiskAdapter PositionsConverted log (topic0 {t0})"));
+    }
+    let w = data_words(&log_str(l, "data"));
+    Ok(PositionsConverted {
+        stakeholder: word_address(&log_topic(l, 1)?)?,
+        market_id: log_topic(l, 2)?,
+        index_set: word_u128(&log_topic(l, 3)?)?,
+        amount: word_u128(w.first().ok_or("no amount word")?)? as f64 / USDC_DECIMALS,
+        tx_hash: log_str(l, "transactionHash"),
+        block: log_u64(l, "blockNumber"),
+    })
+}
+
+/// One decoded USDC.e ERC-20 `Transfer` — the funding/withdrawal leg no CLOB endpoint reports
+/// (deposits, a redemption payout landing back in the funder's wallet, on-chain withdrawals).
+/// Standard ERC-20 shape: topics `[topic0, from, to]`, data `[value]` (6-dp, [`USDC_DECIMALS`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct UsdcTransfer {
+    pub from: String,
+    pub to: String,
+    pub value_usdc: f64,
+    pub tx_hash: String,
+    pub block: u64,
+}
+
+/// USDC.e `Transfer` → [`UsdcTransfer`].
+pub fn decode_usdc_transfer(l: &Value) -> Result<UsdcTransfer, String> {
+    let t0 = log_topic(l, 0)?;
+    if !t0.eq_ignore_ascii_case(TOPIC_USDC_TRANSFER) {
+        return Err(format!("not a USDC Transfer log (topic0 {t0})"));
+    }
+    let w = data_words(&log_str(l, "data"));
+    Ok(UsdcTransfer {
+        from: word_address(&log_topic(l, 1)?)?,
+        to: word_address(&log_topic(l, 2)?)?,
+        value_usdc: word_u128(w.first().ok_or("no value word")?)? as f64 / USDC_DECIMALS,
+        tx_hash: log_str(l, "transactionHash"),
+        block: log_u64(l, "blockNumber"),
+    })
+}
+
+// ---------------------------------------------------------------------------------------------
+// Joining a redemption to the funder's own tokens
+// ---------------------------------------------------------------------------------------------
+
+/// PURE join: one transaction's funder token-outflows + its redemption + (optionally) the chain's
+/// payout numerators → the per-token [`ChainSettlement`] rows.
+///
+/// Pricing, in strict precedence — and **never a guess**:
+/// 1. `resolution` known ⇒ each leg is priced at `payout_for_index(i)`, where `i` is the token's
+///    position in the transfer's id vector, **and the mapping is then PROVEN, not assumed**: the
+///    identity `Σ(qtyᵢ · priceᵢ) == payout` must hold to [`PAYOUT_EPSILON`]. That check is what
+///    makes this safe — the CTF builds its ERC-1155 batch in `indexSets` order, so vector position
+///    equals outcome slot for a `[1, 2]` redeem but NOT for a single-leg `[2]` redeem (observed
+///    live). A mismatch falls through to rule 2 instead of booking a wrong price.
+/// 2. If exactly ONE leg has a non-zero amount, that leg absorbs the whole payout (`payout / qty`)
+///    and every other leg prices at 0.0 — arithmetically forced, so it is correct whatever the slot
+///    ordering turns out to be.
+/// 3. Otherwise the transaction is SKIPPED with a warning. Two moved legs and one total is
+///    under-determined, and a fabricated realised PnL is worse than a missing one — the same
+///    refuse-to-guess rule [`crate::exec_plane::settlement::resolve::ambiguous_conditions`] applies.
+pub fn join_settlement(
+    redemption: &Redemption,
+    transfers: &[TokenTransfer],
+    resolution: Option<&ChainResolution>,
+) -> Vec<ChainSettlement> {
+    let mut legs: Vec<(String, u128)> = Vec::new();
+    for t in transfers {
+        for (id, v) in t.ids.iter().zip(t.values.iter()) {
+            legs.push((id.clone(), *v));
+        }
+    }
+    if legs.is_empty() {
+        return Vec::new();
+    }
+    let non_zero: Vec<usize> =
+        legs.iter().enumerate().filter(|(_, (_, v))| *v > 0).map(|(i, _)| i).collect();
+    // Rule 1, with its proof obligation.
+    let by_resolution = resolution.filter(|r| r.is_resolved()).and_then(|r| {
+        let prices: Vec<f64> =
+            (0..legs.len()).map(|i| r.payout_for_index(i as u32).unwrap_or(0.0)).collect();
+        let implied: f64 =
+            legs.iter().zip(&prices).map(|((_, v), px)| (*v as f64 / USDC_DECIMALS) * px).sum();
+        if (implied - redemption.payout_usdc).abs() <= PAYOUT_EPSILON {
+            Some(prices)
+        } else {
+            tracing::warn!(
+                target: "vike_polymarket::chain",
+                condition_id = %redemption.condition_id,
+                tx = %redemption.tx_hash,
+                implied, payout = redemption.payout_usdc,
+                "chain watcher: slot mapping failed its payout identity — falling back"
+            );
+            None
+        }
+    });
+    let prices: Vec<f64> = match by_resolution {
+        Some(p) => p,
+        None if non_zero.len() == 1 => {
+            let qty = legs[non_zero[0]].1 as f64 / USDC_DECIMALS;
+            let px = if qty > 0.0 { redemption.payout_usdc / qty } else { 0.0 };
+            (0..legs.len()).map(|i| if i == non_zero[0] { px } else { 0.0 }).collect()
+        }
+        None => {
+            tracing::warn!(
+                target: "vike_polymarket::chain",
+                condition_id = %redemption.condition_id,
+                tx = %redemption.tx_hash,
+                legs = legs.len(),
+                "chain watcher: payout split across legs is under-determined without a chain \
+                 resolution — settlement not synthesised (refusing to guess)"
+            );
+            return Vec::new();
+        }
+    };
+    legs.into_iter()
+        .zip(prices)
+        .filter(|((_, v), _)| *v > 0)
+        .map(|((token_id, v), price)| ChainSettlement {
+            condition_id: redemption.condition_id.clone(),
+            token_id,
+            qty: v as f64 / USDC_DECIMALS,
+            price,
+            payout_usdc: redemption.payout_usdc,
+            venue: redemption.venue,
+            tx_hash: redemption.tx_hash.clone(),
+            block: redemption.block,
+            ts_ms: redemption.ts_ms,
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------------------------
+// The JSON-RPC client
+// ---------------------------------------------------------------------------------------------
+
+/// A MINIMAL Polygon JSON-RPC reader over the crate's existing blocking `ureq` stack. Four read
+/// methods, no signing, no transaction submission, no new dependency.
+pub struct PolygonRpc {
+    url: String,
+    agent: ureq::Agent,
+    max_span: u64,
+}
+
+impl Default for PolygonRpc {
+    fn default() -> Self {
+        Self::new(&ChainRpcSettings::default())
+    }
+}
+
+impl PolygonRpc {
+    /// Build from the caller's [`ChainRpcSettings`].
+    pub fn new(settings: &ChainRpcSettings) -> Self {
+        let max_span = if settings.max_span == 0 { DEFAULT_MAX_SPAN } else { settings.max_span };
+        PolygonRpc {
+            url: settings.rpc_url.clone(),
+            agent: Self::build_agent(settings.via_proxy),
+            max_span,
+        }
+    }
+
+    /// An explicit endpoint, direct (the smoke and the offline tests use this).
+    pub fn with_url(url: impl Into<String>) -> Self {
+        PolygonRpc { url: url.into(), agent: Self::build_agent(false), max_span: DEFAULT_MAX_SPAN }
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn max_span(&self) -> u64 {
+        self.max_span
+    }
+
+    /// A fresh agent, tunnelled only when `via_proxy` ([`ChainRpcSettings::via_proxy`]). Deliberately
+    /// NOT [`crate::exec_plane::exec`]'s `agent()`: that one tunnels unconditionally, and a Polygon RPC
+    /// is not geo-blocked, so paying the tunnel by default would add a failure mode for no benefit.
+    fn build_agent(via_proxy: bool) -> ureq::Agent {
+        let mut b = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(Duration::from_secs(30)))
+            .user_agent("vike-trader-rust");
+        if via_proxy
+            && let Some(url) = crate::egress::proxy_url()
+            && let Ok(p) = ureq::Proxy::new(&url)
+        {
+            b = b.proxy(Some(p));
+        }
+        b.build().new_agent()
+    }
+
+    /// One JSON-RPC round trip. A JSON-RPC `error` member is a hard `Err` (a silently-`None`
+    /// result would read as "no events", the exact failure this module exists to avoid).
+    pub fn call(&self, method: &str, params: Value) -> Result<Value, String> {
+        let body =
+            serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
+        let mut resp = self
+            .agent
+            .post(&self.url)
+            .content_type("application/json")
+            .send(body.to_string())
+            .map_err(|e| format!("rpc {method}: network: {e}"))?;
+        let text =
+            resp.body_mut().read_to_string().map_err(|e| format!("rpc {method}: body: {e}"))?;
+        let v: Value =
+            serde_json::from_str(&text).map_err(|e| format!("rpc {method}: bad json: {e}"))?;
+        if let Some(err) = v.get("error") {
+            return Err(format!("rpc {method}: {err}"));
+        }
+        v.get("result").cloned().ok_or_else(|| format!("rpc {method}: no result member"))
+    }
+
+    pub fn chain_id(&self) -> Result<u64, String> {
+        let r = self.call("eth_chainId", serde_json::json!([]))?;
+        let s = r.as_str().ok_or("eth_chainId: not a string")?;
+        u64::from_str_radix(clean(s).as_str(), 16).map_err(|e| format!("eth_chainId: {e}"))
+    }
+
+    pub fn block_number(&self) -> Result<u64, String> {
+        let r = self.call("eth_blockNumber", serde_json::json!([]))?;
+        let s = r.as_str().ok_or("eth_blockNumber: not a string")?;
+        u64::from_str_radix(clean(s).as_str(), 16).map_err(|e| format!("eth_blockNumber: {e}"))
+    }
+
+    pub fn eth_call(&self, to: &str, data: &str) -> Result<String, String> {
+        let r = self.call("eth_call", serde_json::json!([{ "to": to, "data": data }, "latest"]))?;
+        r.as_str().map(|s| s.to_string()).ok_or_else(|| "eth_call: not a string".to_string())
+    }
+
+    /// `eth_getLogs`, CHUNKED at [`max_span`](Self::max_span) blocks so a free endpoint's window
+    /// cap is a cadence detail rather than a hard failure. `topics` is passed through verbatim, so
+    /// a caller can use the `[[a,b], null, x]` OR/positional form.
+    pub fn get_logs(
+        &self,
+        address: &str,
+        topics: Value,
+        from_block: u64,
+        to_block: u64,
+    ) -> Result<Vec<Value>, String> {
+        let mut out = Vec::new();
+        let mut lo = from_block;
+        while lo <= to_block {
+            let hi = to_block.min(lo + self.max_span.saturating_sub(1));
+            let filter = serde_json::json!({
+                "address": address,
+                "topics": topics,
+                "fromBlock": format!("0x{lo:x}"),
+                "toBlock": format!("0x{hi:x}"),
+            });
+            let r = self.call("eth_getLogs", serde_json::json!([filter]))?;
+            let arr = r.as_array().ok_or("eth_getLogs: result is not an array")?;
+            out.extend(arr.iter().cloned());
+            lo = hi + 1;
+        }
+        Ok(out)
+    }
+
+    pub fn transaction_receipt(&self, tx_hash: &str) -> Result<Option<Value>, String> {
+        let r = self.call("eth_getTransactionReceipt", serde_json::json!([tx_hash]))?;
+        Ok(if r.is_null() { None } else { Some(r) })
+    }
+
+    /// **The authoritative winner read**: the CTF's own payout mappings for one condition, via
+    /// `eth_call` — no log window, no archive node, and correct for a SPLIT resolution that no
+    /// flag-based heuristic can express. `denominator == 0` ⇒ not resolved (and the numerators are
+    /// then not fetched at all).
+    pub fn condition_resolution(&self, condition_id: &str) -> Result<ChainResolution, String> {
+        let cid = clean(condition_id);
+        if cid.len() != 64 {
+            return Err(format!("conditionId must be 32 bytes, got {} hex chars", cid.len()));
+        }
+        let denominator = decode_uint_result(
+            &self.eth_call(CTF_ADDRESS, &format!("{SEL_PAYOUT_DENOMINATOR}{cid}"))?,
+        )?;
+        if denominator == 0 {
+            return Ok(ChainResolution {
+                condition_id: condition_id.to_string(),
+                denominator: 0,
+                numerators: Vec::new(),
+            });
+        }
+        let slots = decode_uint_result(
+            &self.eth_call(CTF_ADDRESS, &format!("{SEL_OUTCOME_SLOT_COUNT}{cid}"))?,
+        )?;
+        let mut numerators = Vec::with_capacity(slots as usize);
+        for i in 0..slots {
+            let arg = format!("{i:064x}");
+            numerators.push(decode_uint_result(
+                &self.eth_call(CTF_ADDRESS, &format!("{SEL_PAYOUT_NUMERATORS}{cid}{arg}"))?,
+            )?);
+        }
+        Ok(ChainResolution { condition_id: condition_id.to_string(), denominator, numerators })
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The oracle (what the consumer seams read)
+// ---------------------------------------------------------------------------------------------
+
+/// The shared, in-memory chain view: resolved conditions (cached `eth_call` verdicts) plus the
+/// account-scoped ledger of observed settlements. `Arc`-shared and interior-mutable so
+/// [`crate::exec_plane::settlement::resolve`] and [`crate::exec_plane::recon_client`] can hold `&self` clones while the watcher thread
+/// writes.
+///
+/// Only RESOLVED verdicts are cached: an unresolved condition is re-read next time, because "not
+/// resolved yet" is by definition temporary. A resolved one never un-resolves on chain, so caching
+/// it is sound and keeps the per-tick `eth_call` count at zero once a watchlist settles.
+pub struct ChainOracle {
+    rpc: PolygonRpc,
+    resolutions: Mutex<BTreeMap<String, ChainResolution>>,
+    settlements: Mutex<Vec<ChainSettlement>>,
+}
+
+impl ChainOracle {
+    pub fn new(rpc: PolygonRpc) -> Self {
+        ChainOracle {
+            rpc,
+            resolutions: Mutex::new(BTreeMap::new()),
+            settlements: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// From the caller's [`ChainRpcSettings`] ([`PolygonRpc::new`]).
+    pub fn from_settings(settings: &ChainRpcSettings) -> Self {
+        Self::new(PolygonRpc::new(settings))
+    }
+
+    pub fn rpc(&self) -> &PolygonRpc {
+        &self.rpc
+    }
+
+    /// The cached-or-fetched verdict. `None` on an RPC failure (logged) — a transport blip must
+    /// leave the caller on its pre-existing behaviour, never assert "unresolved".
+    pub fn resolution(&self, condition_id: &str) -> Option<ChainResolution> {
+        let key = clean(condition_id);
+        if let Some(hit) = self.resolutions.lock().unwrap().get(&key) {
+            return Some(hit.clone());
+        }
+        match self.rpc.condition_resolution(condition_id) {
+            Ok(r) => {
+                if r.is_resolved() {
+                    self.resolutions.lock().unwrap().insert(key, r.clone());
+                    Some(r)
+                } else {
+                    Some(r) // fresh, uncached: it may resolve at any time
+                }
+            }
+            Err(e) => {
+                tracing::warn!(target: "vike_polymarket::chain", %condition_id, %e, "chain resolution read failed");
+                None
+            }
+        }
+    }
+
+    /// Seed a verdict without a network call — the test seam, and the path a historical
+    /// [`ResolutionEvent`] scan would feed.
+    pub fn insert_resolution(&self, r: ChainResolution) {
+        self.resolutions.lock().unwrap().insert(clean(&r.condition_id), r);
+    }
+
+    /// Record observed settlements, DEDUPED on `(tx_hash, token_id)` so a re-scanned block window
+    /// never double-books.
+    pub fn record_settlements(&self, rows: impl IntoIterator<Item = ChainSettlement>) -> usize {
+        let mut guard = self.settlements.lock().unwrap();
+        let mut added = 0;
+        for r in rows {
+            if guard.iter().any(|s| s.tx_hash == r.tx_hash && s.token_id == r.token_id) {
+                continue;
+            }
+            guard.push(r);
+            added += 1;
+        }
+        added
+    }
+
+    /// Every observed settlement, oldest first.
+    pub fn settlements(&self) -> Vec<ChainSettlement> {
+        self.settlements.lock().unwrap().clone()
+    }
+
+    /// Settlements at or after `since_ms`. `since_ms <= 0` returns everything (the reconcile
+    /// lookback's "no cutoff" spelling).
+    pub fn settlements_since(&self, since_ms: i64) -> Vec<ChainSettlement> {
+        self.settlements
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| since_ms <= 0 || s.ts_ms == 0 || s.ts_ms >= since_ms)
+            .cloned()
+            .collect()
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The watcher
+// ---------------------------------------------------------------------------------------------
+
+/// One poll's outcome — settlements found and the block cursor reached.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct ChainTick {
+    pub from_block: u64,
+    pub to_block: u64,
+    pub transfers: usize,
+    pub settlements: Vec<ChainSettlement>,
+}
+
+/// Scans Polygon for the funder's own settlements. See the module doc's TRAP section for why the
+/// scan anchors on the funder's ERC-1155 OUTFLOW rather than on `PayoutRedemption.redeemer`.
+pub struct ChainWatcher {
+    oracle: Arc<ChainOracle>,
+    funder_topic: String,
+    cursor: Option<u64>,
+    cold_lookback: u64,
+}
+
+impl ChainWatcher {
+    /// `funder` is the address whose holdings move — `POLY_FUNDER` / the deposit wallet, the same
+    /// key [`crate::exec_plane::recon_client`] reads `/positions` with.
+    pub fn new(oracle: Arc<ChainOracle>, funder: &str) -> Result<Self, String> {
+        let f = clean(funder);
+        if f.len() != 40 {
+            return Err(format!("funder must be a 20-byte address, got {funder:?}"));
+        }
+        Ok(ChainWatcher {
+            oracle,
+            funder_topic: format!("0x{}{}", "0".repeat(24), f),
+            cursor: None,
+            cold_lookback: DEFAULT_COLD_LOOKBACK_BLOCKS,
+        })
+    }
+
+    /// Start the next scan at an explicit block instead of the cold lookback.
+    pub fn resume_from(&mut self, block: u64) {
+        self.cursor = Some(block);
+    }
+
+    pub fn cursor(&self) -> Option<u64> {
+        self.cursor
+    }
+
+    /// The funder-outflow filter: `[[TransferSingle, TransferBatch], null, funder]` — topic1 is the
+    /// operator (any), topic2 is `from`.
+    fn transfer_topics(&self) -> Value {
+        serde_json::json!([
+            [TOPIC_TRANSFER_SINGLE, TOPIC_TRANSFER_BATCH],
+            Value::Null,
+            self.funder_topic
+        ])
+    }
+
+    /// ONE scan pass: funder outflows → their transactions' receipts → the `PayoutRedemption` in
+    /// each → per-token [`ChainSettlement`]s, recorded in the oracle. A transaction with no
+    /// redemption log is an ordinary trade/transfer and is skipped silently — that filter is what
+    /// makes this a SETTLEMENT watcher rather than a transfer log.
+    pub fn poll_once(&mut self) -> Result<ChainTick, String> {
+        let head = self.oracle.rpc().block_number()?;
+        let from = self.cursor.unwrap_or_else(|| head.saturating_sub(self.cold_lookback));
+        if from > head {
+            self.cursor = Some(head + 1);
+            return Ok(ChainTick { from_block: from, to_block: head, ..Default::default() });
+        }
+        let tick = self.scan_range(from, head)?;
+        self.cursor = Some(head + 1);
+        Ok(tick)
+    }
+
+    /// One EXPLICIT block range, cursor untouched — the historical-replay twin of
+    /// [`poll_once`](Self::poll_once) (and what it delegates to). Bounded on both ends, so replaying
+    /// a known past settlement costs the range, not "everything since then".
+    pub fn scan_range(&self, from: u64, to: u64) -> Result<ChainTick, String> {
+        let logs = self.oracle.rpc().get_logs(CTF_ADDRESS, self.transfer_topics(), from, to)?;
+        let mut by_tx: BTreeMap<String, Vec<TokenTransfer>> = BTreeMap::new();
+        for l in &logs {
+            match decode_token_transfer(l) {
+                Ok(t) => by_tx.entry(t.tx_hash.clone()).or_default().push(t),
+                Err(e) => {
+                    tracing::warn!(target: "vike_polymarket::chain", %e, "undecodable transfer log skipped")
+                }
+            }
+        }
+        let transfers = by_tx.values().map(|v| v.len()).sum();
+        let mut settlements = Vec::new();
+        for (tx, ts) in &by_tx {
+            let Some(receipt) = self.oracle.rpc().transaction_receipt(tx)? else { continue };
+            let Some(redemption) = receipt
+                .get("logs")
+                .and_then(|l| l.as_array())
+                .and_then(|l| l.iter().find_map(decode_redemption))
+            else {
+                continue; // not a settlement transaction
+            };
+            let resolution =
+                self.oracle.resolution(&redemption.condition_id).filter(|r| r.is_resolved());
+            settlements.extend(join_settlement(&redemption, ts, resolution.as_ref()));
+        }
+        let added = self.oracle.record_settlements(settlements.clone());
+        if added > 0 {
+            tracing::info!(
+                target: "vike_polymarket::chain",
+                from, to, added,
+                "chain watcher: recorded on-chain settlements"
+            );
+        }
+        Ok(ChainTick { from_block: from, to_block: to, transfers, settlements })
+    }
+}
+
+pub struct ChainWatchPoller;
+
+impl ChainWatchPoller {
+    /// Spawn the watcher thread. Returns `None` — starting NOTHING, opening no socket — unless
+    /// `funder` is non-empty AND the caller passes `enabled` (D4 of decision 0095: no composition
+    /// root starts it, so it reads no setting of its own). Not started ⇒ byte-identical to before
+    /// this module existed.
+    pub fn spawn(
+        oracle: Arc<ChainOracle>,
+        funder: String,
+        interval: Duration,
+        enabled: bool,
+    ) -> Option<StopHandle> {
+        if funder.trim().is_empty() || !enabled {
+            return None;
+        }
+        let mut watcher = match ChainWatcher::new(Arc::clone(&oracle), funder.trim()) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::warn!(target: "vike_polymarket::chain", %e, "chain watcher not started");
+                return None;
+            }
+        };
+        Some(spawn_poller("vike-polymarket-chain", move |stop| {
+            while !stop.load(Ordering::Relaxed) {
+                if let Err(e) = watcher.poll_once() {
+                    tracing::warn!(target: "vike_polymarket::chain", %e, "chain watcher tick failed");
+                }
+                if sleep_stop_aware(&stop, interval, STOP_POLL_SLICE) {
+                    break;
+                }
+            }
+        }))
+    }
+}
+
+#[path = "chain_tests.rs"]
+#[cfg(test)]
+mod chain_tests;

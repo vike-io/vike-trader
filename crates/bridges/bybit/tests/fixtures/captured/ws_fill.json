@@ -1,0 +1,97 @@
+{
+  "_provenance": {
+    "captured_at_utc": "2026-07-22T08:55:08Z",
+    "frame_count": 2,
+    "kind": "ws_fill",
+    "redacted_paths": [],
+    "sanitizer": "vike-bridge-core::capture v1",
+    "source": "bybit V5 linear DEMO (wss://stream-demo.bybit.com/v5/private) — bybit_capture_smoke ladder: rest-LIMIT/cancel + market round-trip (reduce-only flatten), real demo orders, position left flat",
+    "venue": "bybit"
+  },
+  "frames": [
+    {
+      "creationTime": 1784710505482,
+      "data": [
+        {
+          "blockTradeId": "",
+          "category": "linear",
+          "closedSize": "0",
+          "createType": "CreateByUser",
+          "execFee": "0.03627052",
+          "execId": "fdd4f195-2c98-414e-aff8-a155d394f60e",
+          "execPnl": "0",
+          "execPrice": "65946.4",
+          "execQty": "0.001",
+          "execTime": "1784710505481",
+          "execType": "Trade",
+          "execValue": "65.9464",
+          "extraFees": [],
+          "feeCurrency": "USDT",
+          "feeRate": "0.00055",
+          "indexPrice": "",
+          "isLeverage": "0",
+          "isMaker": false,
+          "leavesQty": "0",
+          "markIv": "",
+          "markPrice": "65946.4",
+          "marketUnit": "",
+          "orderId": "d081b41f-906a-4819-9a0c-9dc382bcdfc6",
+          "orderLinkId": "vtrcapB10505393",
+          "orderPrice": "66605.8",
+          "orderQty": "0.001",
+          "orderType": "Market",
+          "seq": 140717864285519,
+          "side": "Buy",
+          "stopOrderType": "UNKNOWN",
+          "symbol": "BTCUSDT",
+          "tradeIv": "",
+          "underlyingPrice": ""
+        }
+      ],
+      "id": "556453271_BTCUSDT_140717864285519",
+      "topic": "execution"
+    },
+    {
+      "creationTime": 1784710505803,
+      "data": [
+        {
+          "blockTradeId": "",
+          "category": "linear",
+          "closedSize": "0.001",
+          "createType": "CreateByUser",
+          "execFee": "0.03627052",
+          "execId": "1e78d379-ac54-4299-8dc4-9afadc272d01",
+          "execPnl": "0",
+          "execPrice": "65946.4",
+          "execQty": "0.001",
+          "execTime": "1784710505801",
+          "execType": "Trade",
+          "execValue": "65.9464",
+          "extraFees": [],
+          "feeCurrency": "USDT",
+          "feeRate": "0.00055",
+          "indexPrice": "",
+          "isLeverage": "0",
+          "isMaker": false,
+          "leavesQty": "0",
+          "markIv": "",
+          "markPrice": "65946.4",
+          "marketUnit": "",
+          "orderId": "6560ddee-72b5-44a3-bba7-a3143e6df80e",
+          "orderLinkId": "vtrcapS10505714",
+          "orderPrice": "65286",
+          "orderQty": "0.001",
+          "orderType": "Market",
+          "seq": 140717864285555,
+          "side": "Sell",
+          "stopOrderType": "UNKNOWN",
+          "symbol": "BTCUSDT",
+          "tradeIv": "",
+          "underlyingPrice": ""
+        }
+      ],
+      "id": "556453271_BTCUSDT_140717864285555",
+      "topic": "execution"
+    }
+  ]
+}

@@ -1,0 +1,99 @@
+# The cdylib TEMPLATE's manifest. Rendered by `crates/vike-strategy-builder/src/render.rs`'s
+# `render_cargo_toml` into a SCRATCH directory outside this checkout — never a workspace member
+# (see `render.rs`'s module doc for why that is safe: Cargo resolves each `path` dependency's own
+# `workspace = true` fields against ITS OWN enclosing workspace, not against this scratch crate).
+#
+# Five double-curly placeholders below, substituted by `render_cargo_toml` and nowhere else —
+# spelled out here WITHOUT their braces, deliberately, so this header comment does not itself
+# contain a second copy of a placeholder for `.replace()` to find and corrupt (the exact bug
+# `lib.rs.in`'s own header comment had until this template's first real lane run caught it):
+#   NAME                     — the sanitized strategy/package name
+#   VIKE_MODEL_PATH          — absolute path to the real `vike-model` in the checkout that is
+#                              currently building this template
+#   VIKE_STRATEGY_PLUGIN_PATH — absolute path to the real `vike-strategy-plugin`, same checkout
+#   VIKE_STRATEGY_PATH       — absolute path to the real `vike-strategy`, same checkout
+#   VIKE_INDICATORS_PATH     — absolute path to the real `vike-indicators`, same checkout
+
+[package]
+name = "{{NAME}}"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+# The one property this whole design rests on: an `extern "C"` boundary, not a Rust ABI one.
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+# `Bar`/`Broker`/`HftBroker`/`Strategy` — the SAME re-exports the build-time tier's user files
+# already write against (`crates/vike-user-strategies/tests/fixture_user_data/…`), so a strategy
+# author's `use vike_model::{Bar, Broker, Strategy};` line is unchanged by which mechanism loads
+# their file.
+vike-model = { path = "{{VIKE_MODEL_PATH}}" }
+# The Controller/PositionExecutor framework and the indicator catalog — the OTHER two crates
+# `crates/vike-user-strategies/Cargo.toml` declares, and that manifest says in as many words that
+# its dependency table IS the user-strategy API surface. They are here because decision 3 of
+# `docs/superpowers/specs/2026-09-21-runtime-loaded-rust-strategies-design.md` ("one folder, the
+# HOST decides the mechanism") is false for any user file that names one of them while only ONE
+# tier can resolve it: that file compiles built-in and fails to compile as a plugin, so promoting
+# it to live IS a file move. `crates/vike-ops/tests/user_strategy_surface_gate.rs` derives both
+# sides — this file and that manifest — and fails BY NAME when they diverge again.
+#
+# ⚠ What they cost is MEASURED, not assumed, and the measurement is in the design doc beside the
+# artifact figure it moved. Availability is near-free (an unnamed crate is dead code the linker
+# drops); USE is not, and the catalog in particular is a static table of the whole indicator
+# roster. `tests/equivalence.rs`'s `FLOOR_SOURCE` artifact is the figure that prices availability
+# apart from use.
+#
+# ⚠ They bring `vike-mm` and `tracing` with them (measured, not inferred — the design doc carries
+# the `cargo tree` delta). `tracing`'s dispatcher is a process-GLOBAL, so a statically linked
+# plugin has its own and a warning emitted inside one is dropped rather than logged by the host.
+# A lost log line and no wrong number today, because nothing reads back through that global; it is
+# the duplicate-`static`s trap the design named, arriving in its benign form.
+#
+# ⚠ **This is `34b8d6756` partially undone, and that commit is the one to check this against.**
+# `34b8d6756` split the builder out of this very crate for the EXPLICIT stated purpose of keeping
+# `tracing` (and `vike-datahub-client`) OUT of a compiled plugin's tree — "a plugin should be tens
+# of kilobytes, not megabytes," in its own words. Naming `vike-strategy` here brings `tracing`
+# straight back, by a path that commit never touched: `vike-strategy` -> `vike-mm` -> `tracing`,
+# not the builder's own dependency graph.
+#
+# What that split actually refused is still refused: `vike-datahub-client` — the builder's
+# authenticated wire protocol — names no path anywhere in this file. And what returns is narrower
+# than what was removed, and OPT-IN rather than unconditional: a plugin naming neither
+# `vike-strategy` nor `vike-indicators` pays nothing for their presence (the FLOOR artifact costs
+# 24 bytes LESS with them offered than without — see above), where the pre-split defect taxed
+# EVERY plugin regardless of what it used. That is the accepted trade, not the same accident back.
+#
+# ⚠ **Where the split's own language stops holding, said plainly rather than qualified away: a
+# plugin that DOES name `vike-strategy` is megabytes, not "tens of kilobytes."** +1.50 MiB over the
+# floor, measured on the equivalence fixture. Read this as a QUALIFICATION of `34b8d6756`, not its
+# reversal: the +1.50 MiB is overwhelmingly the indicator CATALOG (a static table over all 171
+# indicators), which `tracing` rides in on rather than causes, and it is the direct, MEASURED price
+# of decision 3 ("one folder, the host decides the mechanism") — a later ruling `34b8d6756` predates
+# and could not have weighed against. A plugin that stays at the floor keeps the split's promise; one
+# that reaches for the shared framework spends megabytes on the framework, and `tracing` is a
+# rounding error inside that spend, not its cause.
+vike-strategy = { path = "{{VIKE_STRATEGY_PATH}}" }
+vike-indicators = { path = "{{VIKE_INDICATORS_PATH}}" }
+# The wrapper's own C-ABI vocabulary (`abi::*`) and the guest-side `Broker` implementation
+# (`guest::HostBroker`) this template's `lib.rs.in` instantiates `build::<B>` with.
+#
+# ⚠ **The one dependency that is DELIBERATELY not in the build-time tier's manifest**, and the
+# gate named above carries it as a declared, argued exemption rather than tolerating it silently:
+# the build-time tier needs no FFI vocabulary because there is no boundary to cross. It is the
+# MECHANISM's own crate, not part of the user-facing surface.
+vike-strategy-plugin = { path = "{{VIKE_STRATEGY_PLUGIN_PATH}}" }
+# The `params: &toml::Value` table every `build` constructor reads — same pinned version the root
+# workspace uses (this crate is NOT a workspace member, so `{ workspace = true }` does not resolve
+# here; the version is copied by hand and must be bumped alongside the root's own `toml` pin).
+toml = "1.1"
+
+[profile.release]
+# Mirrors the root workspace's own `[profile.release]` (opt-level 3, thin LTO) so a plugin's
+# optimisation level does not silently diverge from the host binary's — one of the two facts
+# `vike_strategy_plugin::fingerprint` (Task 4) folds into the toolchain fingerprint both sides
+# compare.
+opt-level = 3
+lto = "thin"
