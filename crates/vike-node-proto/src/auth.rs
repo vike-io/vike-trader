@@ -1,0 +1,562 @@
+//! The SHARED node-auth primitive: an HMAC-SHA256 nonce-challenge handshake, generalized over its
+//! DOMAIN SEPARATOR so both localhost services (`vike-datahub` and the `vike-tradehub` node) sign
+//! with one implementation and two disjoint preimages.
+//!
+//! # Why this lives HERE
+//!
+//! It was born in `crates/vike-tradehub-client/src/auth.rs` (PR-10) and moved down when
+//! `docs/decisions/0025-datahub-remote-posture.md` was adopted. That record's verdict is explicit
+//! about the shape of the borrow: *"One scheme, not two … 'Shape', not bytes: the domain separator
+//! and the key names must be datahub's own … so the borrow is the module generalized over its
+//! domain constant, not a second implementation."* A verbatim copy of the crypto would be the
+//! wrong answer twice over — this workspace deletes duplicate implementations, and two copies of a
+//! constant-time compare is exactly the kind of duplication that drifts silently.
+//!
+//! ⚠ **It moved a SECOND time on 2026-09-23, out of `vike-datahub-client` and into this crate**,
+//! and the paragraph that stood here argued against exactly that. It read: the home is that crate
+//! "for the same reason the FRAMING lives here … `vike-datahub-client` is the LIGHT crate BELOW it
+//! (layer 30 vs 50)", and "a NEW crate for ~150 lines would buy a workspace member, a CI roster
+//! row and a layer negotiation to hold a module that already has a home its sibling depends on".
+//! Both premises had failed by the time anyone measured them:
+//!
+//! * **~150 lines had become 937.** The trade-off was priced at a sixth of the real weight.
+//! * **The rank argument was CIRCULAR.** `vike-tradehub-client`'s ONLY `vike-*` dependency was
+//!   `vike-datahub-client` — this module and the framing beside it were the whole of the edge. So
+//!   it sat at 50 *because* the shared code lived in its sibling, and the shared code lived in its
+//!   sibling *because* the sibling sat below. Nothing outside the pair held either fact up.
+//!
+//! The conclusion the old paragraph reached from the right rule was the wrong one: *when two sides
+//! must not disagree, the cure is a shared crate BELOW both, not a shared crate containing both* —
+//! and a crate that is ONE OF THE TWO is the second shape, however light it is. See
+//! [`crate`]'s own doc for what the correction measured.
+//!
+//! This crate stays what it was: I/O-free, transport-free and DataFusion-free. `hmac`/`sha2` are
+//! the EXACT crates `crates/vike-bridge-core/src/signer.rs` already links (the workspace `deny.toml`
+//! bans a second crypto stack), so the move adds no package to any consumer's graph that the
+//! tradehub half did not already carry.
+//!
+//! # The signed message
+//!
+//! [`sign`] and [`verify`] agree on ONE domain-separated message layout so the mac binds every
+//! security-relevant field of the handshake — a wrong key, a wrong scope, a bumped protocol
+//! version, a REPLAYED nonce, **or a tag minted for the other service** all change the bytes that
+//! get HMAC'd and therefore fail verification:
+//!
+//! ```text
+//! msg = domain.as_bytes()                  (the NUL-terminated per-service separator)
+//!     ++ proto_version.to_be_bytes()       (4 bytes, big-endian u32)
+//!     ++ [scope_tag(scope)]                (1 byte: Read=0x00, Write=0x01, Account=0x02)
+//!     ++ nonce                             (32 bytes, the per-connection challenge)
+//! mac = HMAC-SHA256(key, msg)              (32-byte tag)
+//! ```
+//!
+//! The domain separator makes this HMAC's preimage disjoint from any OTHER HMAC the workspace signs
+//! (the venue request signers in `vike-bridge-core`) **and from the other node service's**, so a tag
+//! can never be cross-purposed. That last clause is the whole reason the parameter exists rather
+//! than a shared constant: [`DATAHUB_DOMAIN`] and `vike_tradehub_client::auth::DOMAIN` differ, so a
+//! `Write` mac captured off a tradehub connection cannot be replayed at a datahub that happens to
+//! hold the same key bytes. `domain_separators_are_disjoint` in this module's tests is what says so.
+//!
+//! The scope byte binds capability INTO the signature: because [`Scope::Read`] and
+//! [`Scope::Write`] sign under DIFFERENT keys AND stamp a different tag byte, a read-scope key (the
+//! credential store names it the observe key) can never yield a valid `Write` mac. The nonce binds the tag to ONE connection: a mac captured off
+//! connection A (nonce A) fails against connection B (nonce B), so the handshake is replay-proof.
+//!
+//! # The key FINGERPRINT — [`key_fingerprint`], and what it is NOT
+//!
+//! [`NodeKeys::key_id`] answers *"which configured key authenticated"* with a stable, non-secret,
+//! non-reversible string (`nk-<16 hex chars>`), so an audit record can name the credential without
+//! carrying it. It exists because there are no human accounts in this system:
+//! `vike_model::change_journal::Actor::Wire`'s `key_id` is the honest answer to "who", and until
+//! this function existed that field could only be recorded ABSENT.
+//!
+//! It is the SAME [`sign`] call the protocol uses, over its OWN domain [`KEY_ID_DOMAIN`] and with
+//! every other input pinned to a constant, then truncated to [`KEY_ID_TAG_BYTES`] and hex-encoded:
+//!
+//! ```text
+//! id = "nk-" ++ hex(sign(KEY_ID_DOMAIN, key, [0u8; 32], KEY_ID_VERSION, KEY_ID_SCOPE)[..8])
+//! ```
+//!
+//! ⚠ **[`KEY_ID_DOMAIN`] is not an `-auth` domain and must never become one.** A fingerprint that
+//! were also a valid auth tag would be a credential leak wearing a diagnostic's clothes, so the
+//! separator is `b"vike-node-key-id\0"` — disjoint from [`DATAHUB_DOMAIN`], from
+//! `vike_tradehub_client::auth::DOMAIN`, and from every venue signer's preimage.
+//! `a_fingerprint_can_never_be_replayed_as_an_auth_tag` is what says so, and the structural half of
+//! the argument is stronger than the byte comparison: presenting a tag requires matching the
+//! connection's FRESH nonce, while this one is pinned to all-zero forever.
+//!
+//! ⚠ **The nonce and the version are pinned, and pinning them is the whole stability property.**
+//! Signing the live `proto_version` would change every id on a protocol bump; signing a real nonce
+//! would change it per connection. [`KEY_ID_VERSION`] versions the FINGERPRINT SCHEME and nothing
+//! else — bump it only to deliberately re-mint every id.
+//!
+//! ⚠ **The id is a pure function of the KEY BYTES — the scope is deliberately NOT folded in**, so
+//! one key has one id wherever it is configured. That makes key REUSE visible: an operator who set
+//! [`DATAHUB_OBSERVE_KEY_ENV`] and [`DATAHUB_CONTROL_KEY_ENV`] to the same value has silently
+//! destroyed the property [`NodeKeys`] exists for (a read-scope credential must not be able to forge
+//! a `Write` mac), nothing else in this workspace checks for it, and two matching ids in a ledger
+//! is the one place it would show. Treating that as a disclosure rather than a signal would be
+//! backwards.
+//!
+//! ⚠ **This is NOT a password KDF, and the guidance that reached for one was worth checking.**
+//! HMAC keyed by a low-entropy secret over a PUBLIC fixed message costs an attacker the same one
+//! hash per guess as a bare digest of the same secret would; a domain separator buys disjointness,
+//! never a work factor. What makes that acceptable is not that the construction is strong but that
+//! it is **exactly as strong as the protocol's own weakest exposure**: the handshake is PLAINTEXT
+//! (see "What this does NOT buy"), so a passive observer already collects
+//! `HMAC(key, domain ++ version ++ scope ++ nonce)` with every field but the key in the clear, and
+//! can offline-guess against it at the identical cost. A fingerprint derived the same way widens no
+//! attack that the wire does not already offer. The one thing it does widen is the AUDIENCE — a
+//! ledger file can be read by a backup or a log shipper that never saw the socket — and the reason
+//! that is tolerable is that the ledger lives at `<project>/settings/state/changes/` while the key
+//! lives in the node-key store (`<project>/settings/node.env`, or the settings database's
+//! `node_key` table), in plaintext, in the same settings tree. An iterated
+//! construction was considered and REJECTED: a real work factor (~10^5 rounds) is ~1-3 seconds per
+//! `NodeKeys` in a debug test build, and it would harden the fingerprint past a protection the
+//! handshake itself does not have. **What would reopen this:** shipping the change journal off the
+//! box while the node-key store stays on it.
+//!
+//! # Constant-time verification
+//!
+//! [`verify`] recomputes the mac with a fresh [`Hmac`] and compares via the [`Mac`] trait's
+//! `verify_slice`, which is constant-time — it does NOT early-return on the first differing byte, so
+//! it leaks no timing signal about how much of a forged mac matched. This is why verification never
+//! does `==` on the raw bytes (and why no `subtle` dependency is needed — the constant-time compare
+//! is already in `hmac`).
+//!
+//! # What this does NOT buy
+//!
+//! The handshake is PLAINTEXT and authenticates the CONNECTION, not each frame. Confidentiality and
+//! integrity still come from the tunnel (or a VPN) in front of it — 0025's "honest limits of B"
+//! says so in as many words. This is scoped AUTHORIZATION behind that barrier, never a replacement
+//! for it.
+
+use std::collections::HashMap;
+
+use hmac::{Hmac, KeyInit, Mac};
+use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// The capability ceiling a client authenticates under. The scope is bound INTO the signed auth
+/// message (see [`sign`]) and each scope signs under its OWN key ([`NodeKeys`]), so a client
+/// holding only the read-scope key (the credential store still names it the `observe` key) can
+/// never forge a [`Scope::Write`] mac — capability is cryptographic, not a claim the server has to
+/// trust.
+///
+/// ⚠ Defined HERE and re-exported by both node protocols (`vike_datahub_client::proto::Scope` and
+/// `vike_tradehub_client::proto::Scope` are this type), because [`sign`]/[`verify`] fold the scope
+/// TAG into the message: two `Scope` enums would be two tag tables, which is precisely the
+/// disagreement a shared primitive exists to make impossible.
+///
+/// ⚠ **THE VARIANT NAMES ARE THE WIRE — there are TWO encodings here and only one of them is the
+/// byte.** [`scope_tag`] folds a stable byte (`0x00`/`0x01`/`0x02`) into the signed preimage, and
+/// that byte is UNCHANGED by any rename. But `Request::Auth` carries this type through the derived
+/// serde impl, so the VARIANT NAME travels as a string on the frame itself.
+///
+/// So the 2026-09-20 rename `Observe`/`Control`/`Admin` → [`Scope::Read`]/[`Scope::Write`]/
+/// [`Scope::Account`] IS a protocol change, and it is a HARD one by decision: no `#[serde(alias)]`
+/// was added, on the owner's instruction and in line with this workspace's no-alias-shims rule
+/// (*a symbol has ONE name*). A client and a node across that boundary do not interoperate — the
+/// old side sends `"Control"`, the new side deserializes nothing, and the connection fails at the
+/// handshake rather than misbehaving later. **Both sides update together.** The blast radius is two
+/// boxes (the daemon's and the operator's), which is what made the hard cut affordable.
+///
+/// Why rename at all: `Admin` read as *the rank above `Control`*, and it is not — it is a different
+/// grant, which the ⚠ on [`Scope::Account`] states. Names that sound like rungs invite exactly the
+/// collapse that variant's own reopener forbids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Scope {
+    /// Read-only. On the tradehub node: snapshots and subscriptions. On the datahub: the history
+    /// and catalog READ verbs — and NOT the compute verbs, which compile client-supplied Rhai (see
+    /// `crates/vike-datahub-client/src/proto.rs`'s `required_scope`, which is the authority for that
+    /// split).
+    Read,
+    /// Read-write: everything [`Scope::Read`] can do, plus the state-changing and code-executing
+    /// verbs.
+    Write,
+    /// **KEY MATERIAL and the filing around it** — the tradehub node's account verbs
+    /// (`docs/decisions/0065-accounts-are-managed-and-the-barrier-is-declared.md` §3c part 2).
+    ///
+    /// ⚠ **It is not a superset of [`Scope::Write`] and must never become one.** The two are
+    /// different GRANTS rather than two rungs of one ladder: a [`Scope::Write`] peer can already
+    /// place real orders on every armed venue, flatten the book and mount a node-local Rhai script
+    /// into the live-trading core — an enormous grant — and what it cannot do is reach key
+    /// material. 0065's reason 4 is what forces the split: *"the key every desktop carries to place
+    /// orders is NOT the key that writes key material"*, and collapsing the two back together is
+    /// that record's own named reopener.
+    ///
+    /// ⚠ **The DATAHUB never grants it**, and that is structural rather than a check:
+    /// [`node_keys_from_vars`] reads two names and leaves this key EMPTY, so [`NodeKeys::has`]
+    /// answers `false` and its handshake refuses the scope before consulting a key — the same
+    /// closed gate an absent write key already is there.
+    Account,
+}
+
+impl Scope {
+    /// The scope as a lowercase word — `observe` / `control` / `admin`, the names an operator reads
+    /// in an auth-denied error and in `vike-cli node ping --json`.
+    ///
+    /// A match rather than `{scope:?}`: the `Debug` rendering of a wire enum is not a promised
+    /// string, and these two reach a message a person acts on and a `--json` document a script
+    /// reads. The ONE spelling — `vike_tradehub_client`'s handshake and `vike-cli` each carried a
+    /// private copy of this `match` until it moved to the type's own crate.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Scope::Read => "observe",
+            Scope::Write => "control",
+            Scope::Account => "admin",
+        }
+    }
+}
+
+/// A service's domain separator — the NUL-terminated byte string prefixed to every message it
+/// signs. A newtype rather than a bare `&[u8]` so the parameter cannot be confused for the key or
+/// the mac at a call site, and so the ONE property that matters (two services never share one) is
+/// attached to a named type instead of a convention.
+///
+/// Each service declares its own next to the protocol it belongs to: [`DATAHUB_DOMAIN`] here,
+/// `vike_tradehub_client::auth::DOMAIN` there. Nothing in this module picks a default — a caller
+/// that had to choose is a caller that could choose wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Domain(&'static [u8]);
+
+impl Domain {
+    /// Declare a service's separator. `const` so each protocol's is a compile-time constant beside
+    /// its own wire schema.
+    ///
+    /// ⚠ The convention is `b"vike-<service>-auth\0"` — NUL-terminated so no separator can be a
+    /// PREFIX of another (without the terminator, a future `b"vike-datahub-auth-v2"` would share a
+    /// prefix with `b"vike-datahub-auth"` and the length-extension-shaped confusion that invites).
+    pub const fn new(bytes: &'static [u8]) -> Self {
+        Domain(bytes)
+    }
+
+    /// The raw separator bytes, as folded into the signed message.
+    pub const fn as_bytes(&self) -> &'static [u8] {
+        self.0
+    }
+}
+
+/// The `vike-datahub` data-service separator (18 bytes, NUL-terminated) — datahub's OWN, disjoint
+/// from the tradehub node's by construction, which is what stops a tag signed for one surface from
+/// being replayed against the other. 0025: *"the separator exists precisely so a tag signed for one
+/// surface can never be replayed against another"*.
+pub const DATAHUB_DOMAIN: Domain = Domain::new(b"vike-datahub-auth\0");
+
+/// The credential-store key names datahub's [`node_keys_from_vars`] reads — the
+/// `VIKE_TRADEHUB_{OBSERVE,CONTROL}_KEY` pair's datahub twin, per 0025's "the key names must be
+/// datahub's own".
+///
+/// Spelled as constants IN THIS CRATE (not imported from elsewhere) because `vike_ops::scan`'s
+/// map-lookup sweep resolves constants CRATE-wide: an imported one would make the read invisible to
+/// the settings registry, and a DECLARED read is the whole point of that gate. Same reasoning
+/// `crates/vike-bridge-core/src/credentials.rs`'s `load_workspace_secrets_from_env` spells out for
+/// its own literal.
+pub const DATAHUB_OBSERVE_KEY_ENV: &str = "VIKE_DATAHUB_OBSERVE_KEY";
+/// The write-scope key's name (the credential store still calls it `control`) — see
+/// [`DATAHUB_OBSERVE_KEY_ENV`].
+pub const DATAHUB_CONTROL_KEY_ENV: &str = "VIKE_DATAHUB_CONTROL_KEY";
+
+/// The separator [`key_fingerprint`] signs under — **IDENTIFICATION, never authentication.**
+///
+/// ⚠ It deliberately breaks [`Domain::new`]'s `b"vike-<service>-auth\0"` convention, and the break
+/// is the point: this domain names no service and ends in `-key-id` rather than `-auth`, so it can
+/// never be mistaken for (or grown into) one of the two protocol separators. Still NUL-terminated,
+/// for the prefix reason [`Domain::new`] gives. The disjointness this buys is what stops a
+/// fingerprint from ever being a valid auth tag —
+/// `a_fingerprint_can_never_be_replayed_as_an_auth_tag`, and the module doc's argument.
+pub const KEY_ID_DOMAIN: Domain = Domain::new(b"vike-node-key-id\0");
+
+/// The FINGERPRINT SCHEME's version, folded in as [`sign`]'s `proto_version`.
+///
+/// ⚠ **Never the live `PROTO_VERSION`.** A wire-protocol bump must not re-mint every operator's key
+/// id — the whole value of the id is that it is the same string this month as last. Bump this only
+/// to deliberately invalidate every previously-recorded id (a changed construction).
+const KEY_ID_VERSION: u32 = 1;
+
+/// The pinned nonce. All-zero, because the id must not vary per connection — the exact opposite of
+/// what a nonce is for in [`sign`], which is why it is a constant here and a `fresh_nonce()` there.
+const KEY_ID_NONCE: [u8; 32] = [0u8; 32];
+
+/// The pinned scope tag. **Arbitrary and immaterial**: the id is a pure function of the key bytes
+/// (module doc), so ONE scope has to be chosen and which one cannot matter — [`KEY_ID_DOMAIN`]
+/// already separates this preimage from every auth message, so the scope byte is carrying no
+/// security work here at all. It exists only because [`sign`] is reused verbatim rather than
+/// re-implemented with a bespoke message layout.
+const KEY_ID_SCOPE: Scope = Scope::Read;
+
+/// How many bytes of the 32-byte tag survive into the id: **8**, rendered as 16 hex characters.
+///
+/// Not a security parameter — truncation neither helps nor hurts one-wayness. It is here because
+/// the id lands in log lines and in a `vike_model::change_journal` identifier cell that a human
+/// reads, where 19 characters is legible and 67 is not, and because a truncated tag does not have
+/// the SHAPE of a mac. 64 bits distinguishes the at-most-two keys a node holds by an enormous
+/// margin.
+pub const KEY_ID_TAG_BYTES: usize = 8;
+
+/// Every key id starts with this, so a bare string in a ledger is self-describing.
+pub const KEY_ID_PREFIX: &str = "nk-";
+
+/// The 1-byte scope tag folded into the signed message. Distinct per scope so capability is bound
+/// into the signature, not merely asserted alongside it.
+fn scope_tag(scope: Scope) -> u8 {
+    match scope {
+        Scope::Read => 0x00,
+        Scope::Write => 0x01,
+        // ⚠ A THIRD tag inside the SIGNED preimage, which is what makes this a cryptographic
+        // capability rather than a claim: a `Write` mac cannot satisfy an `Account` challenge even
+        // when both scopes hold the same key bytes. It needs no `NODE_PROTO_VERSION` bump — the
+        // version is folded into the same preimage, so a bump would break the handshake against
+        // every running node, and the scope byte carries this capability on its own.
+        Scope::Account => 0x02,
+    }
+}
+
+/// Build the exact domain-separated challenge message [`sign`]/[`verify`] both HMAC over. Kept
+/// private and shared so the two sides can never drift.
+fn message(domain: Domain, nonce: &[u8; 32], proto_version: u32, scope: Scope) -> Vec<u8> {
+    let mut msg = Vec::with_capacity(domain.as_bytes().len() + 4 + 1 + 32);
+    msg.extend_from_slice(domain.as_bytes());
+    msg.extend_from_slice(&proto_version.to_be_bytes());
+    msg.push(scope_tag(scope));
+    msg.extend_from_slice(nonce);
+    msg
+}
+
+/// Compute the HMAC-SHA256 tag a client presents in its protocol's `Auth` request, binding the
+/// service `domain`, the per-connection `nonce`, the `proto_version`, and the `scope` under `key`.
+/// `key` is the scope's node key (see [`NodeKeys::key_for`]). Returns the 32-byte tag.
+pub fn sign(
+    domain: Domain,
+    key: &[u8],
+    nonce: &[u8; 32],
+    proto_version: u32,
+    scope: Scope,
+) -> Vec<u8> {
+    // HMAC accepts a key of any length (it internally pads/hashes), so this never fails.
+    let mut mac = HmacSha256::new_from_slice(key).expect("hmac accepts any key length");
+    mac.update(&message(domain, nonce, proto_version, scope));
+    mac.finalize().into_bytes().to_vec()
+}
+
+/// Constant-time verify a client-presented `mac` against the server-held `key` for `scope`, over the
+/// connection's `nonce`, `proto_version` and service `domain`. Returns `true` iff the mac is valid.
+/// Uses the [`Mac`] trait's `verify_slice` (constant-time) — NEVER a byte-wise `==` — so a near-miss
+/// forgery leaks no timing signal. A wrong key, wrong scope, bumped version, replayed/foreign nonce,
+/// or a tag minted under the OTHER service's domain all fail here.
+pub fn verify(
+    domain: Domain,
+    key: &[u8],
+    nonce: &[u8; 32],
+    proto_version: u32,
+    scope: Scope,
+    mac: &[u8],
+) -> bool {
+    let mut h = HmacSha256::new_from_slice(key).expect("hmac accepts any key length");
+    h.update(&message(domain, nonce, proto_version, scope));
+    h.verify_slice(mac).is_ok()
+}
+
+/// 32 fresh random bytes for ONE connection's auth challenge — what makes a captured handshake
+/// transcript unreplayable against a later connection.
+///
+/// ⚠ **It lives here, in the crate BELOW both servers, and that placement is forced rather than
+/// tidy.** `vike_datahub::server` had its own copy until ruling 7 gave the compute verbs a second
+/// daemon; the natural second copy would have been `vike_backtest::compute_server`, and
+/// `crates/vike-ops/tests/clock_pin.rs`'s `no_scoped_crate_declares_an_rng_dependency` refuses it —
+/// `vike-backtest` is DETERMINISM-CRITICAL (it is one of the two sides `tests/r7_gate.rs` compares
+/// bit for bit), so that crate may not NAME an RNG at all. Randomness in the fold breaks replay
+/// exactly as a wall clock does.
+///
+/// The gate is right and the placement it forces is better than what it refused: one generator, two
+/// servers, and the crate that holds it computes nothing anybody replays. `rand`'s OS-backed default
+/// generator, the same call `vike_tradehub::server::handshake`'s own `fresh_nonce` makes.
+pub fn fresh_nonce() -> [u8; 32] {
+    use rand::Rng; // rand 0.10 core trait — provides `fill_bytes` (formerly `RngCore` in rand 0.8)
+    let mut nonce = [0u8; 32];
+    rand::rng().fill_bytes(&mut nonce);
+    nonce
+}
+
+/// The stable, non-secret, non-reversible id for one raw key — `nk-` plus [`KEY_ID_TAG_BYTES`]
+/// hex-encoded bytes of [`sign`]'s tag under [`KEY_ID_DOMAIN`].
+///
+/// Safe to log, to journal and to print: recovering `key` from the result means inverting
+/// HMAC-SHA256, and the module doc states the one residual (this is not a password KDF, and why the
+/// plaintext handshake means it need not be one) rather than assuming it away. Same key ⇒ same id,
+/// in this process and the next; different keys ⇒ different ids.
+///
+/// ⚠ An EMPTY key is not identified — see [`NodeKeys::key_id`], which is the form every caller
+/// should reach for. This free function is the seam for a caller that holds raw bytes and no
+/// `NodeKeys`; it does not decide what an absent key means, because that is the credential-is-the-
+/// gate contract and it belongs on the carrier.
+pub fn key_fingerprint(key: &[u8]) -> String {
+    let tag = sign(KEY_ID_DOMAIN, key, &KEY_ID_NONCE, KEY_ID_VERSION, KEY_ID_SCOPE);
+    let mut out = String::with_capacity(KEY_ID_PREFIX.len() + KEY_ID_TAG_BYTES * 2);
+    out.push_str(KEY_ID_PREFIX);
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for b in tag.iter().take(KEY_ID_TAG_BYTES) {
+        out.push(char::from(HEX[usize::from(b >> 4)]));
+        out.push(char::from(HEX[usize::from(b & 0x0f)]));
+    }
+    out
+}
+
+/// A node's per-scope signing keys, loaded from the credential store. Each scope signs under its
+/// OWN key so a read-scope (`observe`-named) credential can never forge a [`Scope::Write`] mac.
+/// An EMPTY key means that capability is ABSENT (the credential-is-the-gate idiom): a scope with no key can neither sign nor
+/// verify a valid mac, so the node simply does not offer it.
+///
+/// HARD: the raw key bytes never reach `Debug`/`Display`/any log line — see the manual redacting
+/// [`std::fmt::Debug`] impl below (mirrors `vike_bridge_core::credentials::Credentials`).
+///
+/// The type is SERVICE-AGNOSTIC: which key NAMES fill it is each protocol's own decision
+/// ([`node_keys_from_vars`] here, `vike_tradehub_client::auth::from_vars` there), and which DOMAIN
+/// the keys then sign under is a [`sign`]/[`verify`] argument. Nothing about a `NodeKeys` value
+/// says which service it belongs to, which is exactly why the domain is not optional at the
+/// signing site.
+#[derive(Clone)]
+pub struct NodeKeys {
+    observe: Vec<u8>,
+    control: Vec<u8>,
+    /// [`Scope::Account`]'s key. EMPTY unless a caller used [`NodeKeys::with_admin`] — every
+    /// existing constructor leaves it so, which is what makes the datahub's refusal of that scope
+    /// structural rather than a check somebody has to remember.
+    admin: Vec<u8>,
+}
+
+impl NodeKeys {
+    /// Construct from raw key bytes (an empty `Vec` = that capability absent). The keys are the
+    /// UTF-8 bytes of the credential-store values [`NodeKeys::from_vars_named`] reads.
+    pub fn new(observe: Vec<u8>, control: Vec<u8>) -> Self {
+        NodeKeys { observe, control, admin: Vec::new() }
+    }
+
+    /// …and the [`Scope::Account`] key beside them.
+    ///
+    /// ⚠ **A separate constructor rather than a third parameter on [`NodeKeys::new`]**, and the
+    /// choice is the point: every existing caller — the datahub's server and CLI included — keeps
+    /// compiling AND keeps producing keys whose admin capability is absent. A widened `new` would
+    /// have made every one of them state a value for a capability they must not have, which is a
+    /// dozen chances to pass the wrong one. The only caller that passes a non-empty key here is
+    /// the tradehub daemon, and only when its own declaration armed it.
+    #[must_use]
+    pub fn with_admin(mut self, admin: Vec<u8>) -> Self {
+        self.admin = admin;
+        self
+    }
+
+    /// The signing key for `scope`. An EMPTY slice means the scope has no configured key.
+    ///
+    /// ⚠ **This doc claimed until 2026-08-29 that "verifying against it always fails, so an absent
+    /// key is a closed gate". THAT IS FALSE, and it had already propagated into new code.**
+    /// [`verify`] builds `HmacSha256::new_from_slice(key)`, which accepts ANY key length including
+    /// zero, so an empty key yields a perfectly ordinary HMAC — a peer that signs with the empty
+    /// key produces a mac that VERIFIES. The empty slice is not self-guarding.
+    ///
+    /// **What actually closes the gate is [`NodeKeys::has`], consulted BEFORE the key.** Both
+    /// handshakes refuse an unkeyed scope without reaching `verify` at all
+    /// (`crates/vike-datahub/src/server.rs`'s `run_handshake` and
+    /// `crates/vike-tradehub/src/server/handshake.rs`'s handshake), which is why the false claim was never
+    /// exploitable — and exactly why it survived long enough to be copied. Cite `has`, never this.
+    pub fn key_for(&self, scope: Scope) -> &[u8] {
+        match scope {
+            Scope::Read => &self.observe,
+            Scope::Write => &self.control,
+            Scope::Account => &self.admin,
+        }
+    }
+
+    /// `true` iff `scope` has a non-empty configured key (the capability is available at all).
+    pub fn has(&self, scope: Scope) -> bool {
+        !self.key_for(scope).is_empty()
+    }
+
+    /// The stable, non-secret [`key_fingerprint`] of `scope`'s key — the string an audit record
+    /// names the authenticating credential by (`vike_model::change_journal::Actor::Wire`'s
+    /// `key_id`).
+    ///
+    /// ⚠ **`None` for an ABSENT key, and that is not a convenience.** An empty key means the
+    /// capability does not exist ([`NodeKeys::new`]: "an empty `Vec` = that capability absent"),
+    /// and a fingerprint of nothing is a perfectly stable string that would appear in a ledger as
+    /// the id of a key nobody ever configured — a lie in the one record whose job is to be true.
+    /// `an_absent_key_yields_no_id` is the gate.
+    pub fn key_id(&self, scope: Scope) -> Option<String> {
+        self.has(scope).then(|| key_fingerprint(self.key_for(scope)))
+    }
+
+    /// Build the node keys from an already-loaded var map, reading the two CALLER-NAMED keys.
+    ///
+    /// The names are parameters because each service owns its own pair — `VIKE_TRADEHUB_*` there,
+    /// [`DATAHUB_OBSERVE_KEY_ENV`]/[`DATAHUB_CONTROL_KEY_ENV`] here — and 0025 requires exactly
+    /// that ("the key names must be datahub's own"). Sharing ONE pair across both services would
+    /// mean one leaked key opens both, which is the property the separate domains exist to prevent.
+    ///
+    /// The CALLER supplies the map (the server/CLI binary, from the credential store), so THIS crate
+    /// stays a pure, I/O-free wire primitive that never pulls the bridge transport stack just to
+    /// read a file — the whole point of a LIGHT client crate. ⚠ It must be the credential-store MAP,
+    /// not process env: a store-defined key is INVISIBLE to a `std::env::var` reader (the
+    /// store-is-not-exported gotcha), so a caller reading `std::env` would silently miss it.
+    ///
+    /// Returns `None` when NEITHER key is present (nothing to authenticate — the
+    /// credential-is-the-gate idiom, byte-identical to the venue loaders' "no creds → stay paper").
+    /// An absent single key loads as an empty `Vec`, so a node can be brought up observe-only (or
+    /// control-only) without the other capability existing at all.
+    pub fn from_vars_named(
+        vars: &HashMap<String, String>,
+        observe_name: &str,
+        control_name: &str,
+    ) -> Option<NodeKeys> {
+        let read = |name: &str| -> Option<Vec<u8>> {
+            let v = vars.get(name)?.trim();
+            if v.is_empty() { None } else { Some(v.as_bytes().to_vec()) }
+        };
+        let observe = read(observe_name);
+        let control = read(control_name);
+        if observe.is_none() && control.is_none() {
+            return None;
+        }
+        Some(NodeKeys::new(observe.unwrap_or_default(), control.unwrap_or_default()))
+    }
+}
+
+impl std::fmt::Debug for NodeKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // NEVER print the key bytes/hex — only whether each scope's key is present. Mirrors the
+        // redacting Debug on `vike_bridge_core::credentials::Credentials`.
+        let tag = |k: &[u8]| if k.is_empty() { "absent" } else { "set" };
+        write!(
+            f,
+            "NodeKeys(observe={}, control={}, admin={})",
+            tag(&self.observe),
+            tag(&self.control),
+            tag(&self.admin)
+        )
+    }
+}
+
+/// The DATAHUB's named constructor: [`NodeKeys::from_vars_named`] over
+/// [`DATAHUB_OBSERVE_KEY_ENV`] / [`DATAHUB_CONTROL_KEY_ENV`].
+///
+/// `None` — neither key configured — is what makes datahub authentication OPT-IN: the server then
+/// authenticates nothing, and its `Welcome` is byte-identical to the pre-auth protocol's (see
+/// `vike_datahub::server`'s `serve_authed`, which is where that contract is stated and tested).
+/// Writing the two keys into the node-key store (`vike-cli datahub setup` mints and writes the
+/// pair) is the whole of turning auth on.
+///
+/// ⚠ **This used to say the server "serves exactly as it did before this module existed", and that
+/// stopped being true on 2026-09-07.** Key absence now also decides ONE verb: the destructive
+/// `crates/vike-datahub-client/src/proto.rs`'s `Request::DeleteSeries` is neither advertised nor
+/// answered without keys, because `Scope::Write` is a word nothing enforces on a server that
+/// authenticates nothing (`docs/decisions/0050-a-key-less-datahub-serves-no-delete-verb.md`). The
+/// still-true claim is the narrower one above — the HANDSHAKE is unchanged, not the verb set — and
+/// that module's `FEATURE_DELETE_SERIES` carries the argument.
+pub fn node_keys_from_vars(vars: &HashMap<String, String>) -> Option<NodeKeys> {
+    NodeKeys::from_vars_named(vars, DATAHUB_OBSERVE_KEY_ENV, DATAHUB_CONTROL_KEY_ENV)
+}
+
+#[path = "auth_tests.rs"]
+#[cfg(test)]
+mod auth_tests;
