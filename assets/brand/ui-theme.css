@@ -1,0 +1,170 @@
+/* @generated from crates/vike-ui-theme/ui-theme.toml by crates/vike-ui-theme/tests/tokens_gen
+   — do not edit; change the TOML and regenerate (see tests/brand_assets.rs).
+   Graphite, Standard text and Normal density are the defaults; data-theme="midnight|dusk|carbon",
+   data-text-size="small|large", data-density="compact|comfortable" and
+   data-market="tradingview|exchange|colorblind" on any element switch what is beneath it. An HTML mock-up that links this file is drawn with the app's real values. */
+
+:root {
+  --bg: #0d1117;
+  --grad-top: #161b24;
+  --surface: #161b22;
+  --card: #1c2028;
+  --hover: #21252c;
+  --border: #2f343c;
+  --text: #e7ecf4;
+  --text-ui: #e4e9f0;
+  --text2: #9aa4b1;
+  --text3: #858991;
+  --analysis-line: #595e64;
+  --accent: #3ee08a;
+  --status-ok: #3fbf6e;
+  --status-warning: #e6b428;
+  --status-error: #f0524a;
+  --status-info: #57a5ff;
+  --status-muted: #787878;
+  --caption: 11px;
+  --body: 12px;
+  --strong: 13px;
+  --title: 15px;
+  --heading: 19px;
+  --display: 26px;
+  --hero: 40px;
+  --control-h: 24px;
+  --row-h: 18px;
+  --pad: 8px;
+  --gap: 6px;
+  --header-h: 24px;
+  --chrome-title-bar-h: 25px;
+  --chrome-title-inset: 9px;
+  --chrome-window-control: 20px;
+  --chrome-window-control-gap: 4px;
+  --chrome-window-controls-pad: 4px;
+  --chrome-separator-h: 14px;
+  --chrome-slot-to-controls: 15px;
+  --chrome-slot-to-separator: 7px;
+  --up: #40ba50;
+  --down: #f85249;
+  --up-text: #40ba50;
+  --down-text: #f85249;
+  --heat-cool: #35c9f2;
+  --heat-warm: #f2b53a;
+  --heat-alpha-min: 0.15;
+  --heat-alpha-span: 0.45;
+  --brand-orange: #ff6a00;
+  --brand-orange-on-light: #d95400;
+  --space-xs: 2px;
+  --space-sm: 4px;
+  --space-md: 6px;
+  --space-lg: 8px;
+  --space-xl: 12px;
+  --stroke-hairline: 1px;
+  --stroke-line: 1.5px;
+  --stroke-edge: 2px;
+  --alpha-lift: 0.12;
+  --alpha-wash: 0.14;
+  --radius: 4px;
+  --font-words: "Inter", sans-serif;
+  --font-numbers: "JetBrains Mono", monospace;
+}
+
+[data-theme="midnight"] {
+  --bg: #0a1020;
+  --grad-top: #13213d;
+  --surface: #141a2a;
+  --card: #191f2f;
+  --hover: #1e2433;
+  --border: #2c3241;
+  --text: #e4ecf8;
+  --text-ui: #e1e9f5;
+  --text2: #9ca3b1;
+  --text3: #828997;
+  --analysis-line: #565d6c;
+  --accent: #35c9f2;
+}
+
+[data-theme="dusk"] {
+  --bg: #0e0d16;
+  --grad-top: #1c1a2e;
+  --surface: #181720;
+  --card: #1e1c26;
+  --hover: #22212a;
+  --border: #302f39;
+  --text: #eceaf6;
+  --text-ui: #e9e7f3;
+  --text2: #a3a1ac;
+  --text3: #888791;
+  --analysis-line: #5c5a64;
+  --accent: #aa82fa;
+}
+
+[data-theme="carbon"] {
+  --bg: #09090b;
+  --grad-top: #17171b;
+  --surface: #131315;
+  --card: #19191b;
+  --hover: #1e1e20;
+  --border: #2c2c2e;
+  --text: #ededf0;
+  --text-ui: #eaeaed;
+  --text2: #a2a2a4;
+  --text3: #848487;
+  --analysis-line: #59595b;
+  --accent: #f2b53a;
+}
+
+[data-text-size="small"] {
+  --caption: 10px;
+  --body: 11px;
+  --strong: 12px;
+  --title: 14px;
+  --heading: 18px;
+  --display: 24px;
+  --hero: 40px;
+}
+
+[data-text-size="large"] {
+  --caption: 13px;
+  --body: 14px;
+  --strong: 15px;
+  --title: 17px;
+  --heading: 22px;
+  --display: 30px;
+  --hero: 44px;
+}
+
+[data-density="compact"] {
+  --control-h: 20px;
+  --row-h: 16px;
+  --pad: 6px;
+  --gap: 4px;
+  --header-h: 22px;
+}
+
+[data-density="comfortable"] {
+  --control-h: 28px;
+  --row-h: 22px;
+  --pad: 10px;
+  --gap: 8px;
+  --header-h: 28px;
+}
+
+[data-market="tradingview"] {
+  --up: #089981;
+  --down: #f23645;
+  --up-text: #0a9a82;
+  --down-text: #f34a58;
+}
+
+[data-market="exchange"] {
+  --up: #2ebd85;
+  --down: #f6465d;
+  --up-text: #2ebd85;
+  --down-text: #f6465d;
+}
+
+[data-market="colorblind"] {
+  --up: #3b82f6;
+  --down: #f59e0b;
+  --up-text: #4186f6;
+  --down-text: #f59e0b;
+}

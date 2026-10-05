@@ -1,0 +1,424 @@
+# ui-theme.toml — THE source of every design value in the desktop GUI (the brand book).
+#
+# Edit a value HERE, then regenerate and look at the result:
+#
+#     VIKE_REGEN_BRAND_ASSETS=1 cargo test -p vike-ui-theme --test brand_assets
+#
+# Everything below is read by `crates/vike-ui-theme/tests/tokens_gen/`, which writes
+#
+#   * the Rust constants the app compiles (five `*_tokens.rs` files in `crates/vike-ui-theme/src/`,
+#     included by theme.rs, type_scale.rs, metrics.rs, status.rs and chrome.rs),
+#   * `assets/brand/ui-theme.css`, the same values as CSS variables, so an HTML mock-up is drawn with
+#     the real numbers and not a hand copy of them, and
+#   * `assets/brand/brand-book.html`, the page that shows them all.
+#
+# `crates/vike-ui-theme/tests/brand_assets.rs` derives each of those again and fails when a
+# committed file differs from this one. Do not edit a generated file by hand.
+#
+# This file holds the product's VALUES. What a trader CHOOSES among them (theme, density, text size,
+# market colours, header gradient) stays a `preferences.*` row in the settings database.
+#
+# Colours are `#rrggbb`. Sizes are points (1 pt = 1 CSS px in the brand book).
+
+[meta]
+name = "Vike design tokens"
+schema = 1
+
+[themes.graphite]
+label = "Graphite"
+bg = "#0d1117"
+grad_top = "#161b24"
+surface = "#161b22"
+card = "#1c2028"
+hover = "#21252c"
+border = "#2f343c"
+text = "#e7ecf4"
+text_ui = "#e4e9f0"
+text2 = "#9aa4b1"
+text3 = "#858991"
+analysis_line = "#595e64"
+accent = "#3ee08a"
+
+[themes.midnight]
+label = "Midnight"
+bg = "#0a1020"
+grad_top = "#13213d"
+surface = "#141a2a"
+card = "#191f2f"
+hover = "#1e2433"
+border = "#2c3241"
+text = "#e4ecf8"
+text_ui = "#e1e9f5"
+text2 = "#9ca3b1"
+text3 = "#828997"
+analysis_line = "#565d6c"
+accent = "#35c9f2"
+
+[themes.dusk]
+label = "Dusk"
+bg = "#0e0d16"
+grad_top = "#1c1a2e"
+surface = "#181720"
+card = "#1e1c26"
+hover = "#22212a"
+border = "#302f39"
+text = "#eceaf6"
+text_ui = "#e9e7f3"
+text2 = "#a3a1ac"
+text3 = "#888791"
+analysis_line = "#5c5a64"
+accent = "#aa82fa"
+
+[themes.carbon]
+label = "Carbon"
+bg = "#09090b"
+grad_top = "#17171b"
+surface = "#131315"
+card = "#19191b"
+hover = "#1e1e20"
+border = "#2c2c2e"
+text = "#ededf0"
+text_ui = "#eaeaed"
+text2 = "#a2a2a4"
+text3 = "#848487"
+analysis_line = "#59595b"
+accent = "#f2b53a"
+
+[type]
+roles = ["caption", "body", "strong", "title", "heading", "display", "hero"]
+
+# Three scales. Small is what Standard was before 2026-10-05, Standard is what Large was (and is the default),
+# and Large is new: the owner found both old scales too small on a 2560 x 1600 screen.
+[type.small]
+caption = 10.0
+body = 11.0
+strong = 12.0
+title = 14.0
+heading = 18.0
+display = 24.0
+hero = 40.0
+
+[type.standard]
+caption = 11.0
+body = 12.0
+strong = 13.0
+title = 15.0
+heading = 19.0
+display = 26.0
+hero = 40.0
+
+[type.large]
+caption = 13.0
+body = 14.0
+strong = 15.0
+title = 17.0
+heading = 22.0
+display = 30.0
+hero = 44.0
+
+[density.compact]
+control_h = 20.0
+row_h = 16.0
+pad = 6.0
+gap = 4.0
+header_h = 22.0
+
+[density.normal]
+control_h = 24.0
+row_h = 18.0
+pad = 8.0
+gap = 6.0
+header_h = 24.0
+
+[density.comfortable]
+control_h = 28.0
+row_h = 22.0
+pad = 10.0
+gap = 8.0
+header_h = 28.0
+
+[[status]]
+name = "OK"
+hex = "#3fbf6e"
+doc = "A healthy state — a live link, a configured credential, a saved write."
+
+[[status]]
+name = "WARNING"
+hex = "#e6b428"
+doc = "Not settled yet — a link dialling or reconnecting, an armed remote-control segment, an account named but not yet saved, a store nobody could open."
+
+[[status]]
+name = "ERROR"
+hex = "#f0524a"
+doc = "A fault — a failed link, a refused write, an inline error."
+
+[[status]]
+name = "INFO"
+hex = "#57a5ff"
+doc = "Information — egui's hyperlink colour."
+
+[[status]]
+name = "MUTED"
+hex = "#787878"
+doc = "Nothing live to show — `Disconnected` and `Unknown` alike (only a label tells them apart), an unset credential. Grey 120 is a MARK's colour and sits below the 4.5:1 floor for text."
+
+
+# What each role is FOR — read by the brand book and by the type tests. The sizes are above.
+[type.use]
+caption = "Axis labels, column headers, units, timestamps."
+body = "Tables, ladders, most text, and every window's name and controls."
+strong = "Buttons, tabs, menus."
+title = "Section and panel headings."
+heading = "Dialog titles."
+display = "Balance, day PnL."
+hero = "The Polymarket cockpit countdown."
+
+# The faces. Only these weights are bundled (assets/fonts): there is NO weight lighter than regular.
+[fonts.words]
+family = "Inter"
+weights = [400, 600, 700]
+use = "Words: labels, menus, buttons, headings, prose."
+
+[fonts.numbers]
+family = "JetBrains Mono"
+weights = [400, 600]
+use = "Anything read character by character: prices, sizes, counts, axis labels, key names, addresses, account numbers."
+
+[fonts.icons]
+family = "Phosphor Regular 2.1.2"
+weights = [400]
+use = "Icons: one glyph per meaning."
+
+# The rules of use. A value says WHAT; a rule says WHERE. Each rule NAMES the tests that fail when the code
+# breaks it, as `repo-relative path::test fn`; `crates/vike-ops/tests/rules_of_use_gate.rs` opens every
+# one and fails when a name no longer resolves. A rule with an empty `checked_by` is words only — the
+# brand book says so on its own line, so a rule nothing can fail is never mistaken for one that is
+# enforced.
+[[rule]]
+id = "words-are-inter"
+text = "Words are Inter. A venue name, an account NAME (`main`), a label, a button, a menu item."
+checked_by = ["crates/vike-ui-theme/src/components/account_menu.rs::the_venue_is_regular_and_the_account_is_dim_and_smaller"]
+
+[[rule]]
+id = "numbers-are-mono"
+text = "Anything read character by character is JetBrains Mono: prices, sizes, counts, addresses, account NUMBERS (`3709890`)."
+checked_by = ["crates/vike-ui-theme/src/components/account_menu.rs::the_venue_is_regular_and_the_account_is_dim_and_smaller"]
+
+[[rule]]
+id = "menus-are-regular"
+text = "Menu items, buttons and tabs are the Strong role at regular weight (400). Semibold (600) is ruled only where the design draws it — the places listed under `weight_use` below — and is never a venue or a label."
+checked_by = ["crates/vike-ui-theme/src/components/account_menu.rs::the_venue_is_regular_and_the_account_is_dim_and_smaller", "crates/vike-ops/tests/ui_literal_ratchet.rs::no_file_gains_a_heavy_weight"]
+
+[[rule]]
+id = "two-things-by-size-and-ink"
+text = "Two things on one line (a venue and its account) are told apart by size and ink — the primary ink for the first, the dim ink and the Body size for the second — not by weight."
+checked_by = ["crates/vike-ui-theme/src/components/account_menu.rs::the_venue_is_regular_and_the_account_is_dim_and_smaller"]
+
+[[rule]]
+id = "accent-is-a-shape"
+text = "The accent is a shape (an underline, a fill, a ring, an edge), never the colour of a number or a word."
+checked_by = ["crates/vike-ui-theme/src/components/input.rs::selected_text_is_never_drawn_in_the_accent"]
+
+[[rule]]
+id = "status-colours-do-not-move"
+text = "The status colours are the same in every theme. \"Connected\" is the status green, never the accent."
+checked_by = ["crates/vike-ui-theme/src/components/mod.rs::status_colours_are_fixed_and_never_the_accent", "crates/vike-ui-theme/src/status.rs::no_status_colour_is_a_theme_or_market_colour"]
+
+[[rule]]
+id = "one-title-bar"
+text = "Every window has the same 25 pt title bar at every density. Density scales the controls inside a window, never the bar around it."
+checked_by = []
+
+[[rule]]
+id = "text-size-reaches-everything"
+text = "A size is a ROLE. A literal font size anywhere in a GUI crate fails a gate: the Text size setting must reach every window."
+checked_by = ["crates/vike-ops/tests/ui_literal_ratchet.rs::no_file_gains_a_literal_text_size"]
+
+# Where a weight HEAVIER than regular is ruled. A call that draws semibold or bold sits in a file that
+# `crates/vike-ops/tests/ui_literal_ratchet.rs`'s `WEIGHT_PIN` pins under one of these ids, or under
+# `debt` (a use no row here rules yet: its author argues a row for it, or removes it); every id here is claimed by at least
+# one pinned file, so a row cannot outlive the use it rules.
+[[weight_use]]
+id = "trade-bar"
+weight = 600
+where = "The Trade window's bar: the instrument symbol and the window price (the v3 design draws both at 600)."
+
+[[weight_use]]
+id = "ladder"
+weight = 600
+where = "The Trade ladder's last-price row, in mono (the v3 design draws it at 600)."
+
+[[weight_use]]
+id = "ticket"
+weight = 600
+where = "The Trade ticket: Buy and Sell's words and quantity, and the LONG / SHORT word of the position line (the v3 design draws them at 600)."
+
+# The window chrome: one title bar for every window (crates/vike-ui-theme/src/chrome.rs).
+[[chrome]]
+name = "TITLE_BAR_H"
+value = 25.0
+doc = "The bar's height."
+
+[[chrome]]
+name = "TITLE_INSET"
+value = 9.0
+doc = "The window's name, or the first thing on the bar, from its left edge."
+
+[[chrome]]
+name = "WINDOW_CONTROL"
+value = 20.0
+doc = "One window control (`─ □ ✕`): a square, so its hover fill reads as a button."
+
+[[chrome]]
+name = "WINDOW_CONTROL_GAP"
+value = 4.0
+doc = "The gap between two controls."
+
+[[chrome]]
+name = "WINDOW_CONTROLS_PAD"
+value = 4.0
+doc = "The pad after the last control."
+
+[[chrome]]
+name = "SEPARATOR_H"
+value = 14.0
+doc = "The hairline that parts a tabbed window's segments from the controls: its height."
+
+[[chrome]]
+name = "SLOT_TO_CONTROLS"
+value = 15.0
+doc = "Between the last segment and the first control: seven points, the hairline, seven more."
+
+[[chrome]]
+name = "SLOT_TO_SEPARATOR"
+value = 7.0
+doc = "Where the hairline sits, from the last segment."
+
+# ---- Market colours (crates/vike-ui-theme/src/market.rs) ----------------------------------------------
+# What "up" and "down" look like on a candle, a depth bar and a P&L, in each of the four sets
+# `preferences.market_colors` chooses among. `up`/`down` are graphics (held to 3:1 on every background by
+# the tests in market.rs); `up_text`/`down_text` are the same colours as small text (held to 4.5:1 on every
+# card, lifted toward white only where the rule needs it). The keys are the stored values.
+[market]
+depth_up_alpha = 48
+depth_down_alpha = 46
+volume_factor = 0.7
+depth_up_doc = "Depth-bar alpha for \"up\". The DOM window (deleted) drew bid bars at 48 and ask bars at 46 before it read these tokens. Why the two differ is not recorded, so the token does not decide it."
+depth_down_doc = "Depth-bar alpha for \"down\". See `DEPTH_UP_ALPHA`."
+volume_doc = "Volume-bar strength: the chart's volume pane fills with `up_volume`/`down_volume`, or with a colour the user picked at this strength."
+
+[market.classic]
+label = "Classic"
+up = "#40ba50"
+down = "#f85249"
+up_text = "#40ba50"
+down_text = "#f85249"
+
+[market.tradingview]
+label = "TradingView"
+up = "#089981"
+down = "#f23645"
+up_text = "#0a9a82"
+down_text = "#f34a58"
+doc = "TradingView's CURRENT chart default; the older `#26A69A`/`#EF5350` is what Lightweight Charts still ships. Both text colours are lifted: down measured 4.19:1 on Graphite's card, and up 4.57:1, inside the rule's margin."
+
+[market.exchange]
+label = "Exchange"
+up = "#2ebd85"
+down = "#f6465d"
+up_text = "#2ebd85"
+down_text = "#f6465d"
+
+[market.colorblind]
+label = "Colour-blind"
+up = "#3b82f6"
+down = "#f59e0b"
+up_text = "#4186f6"
+down_text = "#f59e0b"
+doc = "Up measured 4.44:1 on Graphite's card."
+
+# ---- The heat ramp (crates/vike-ui-theme/src/heat.rs) -------------------------------------------------
+# ONE ramp, the same in every theme and every market-colour set: it says how MUCH resting liquidity a cell
+# held, which is neither up nor down. Cyan below the middle, amber above it, more opaque the fuller the cell.
+[heat]
+cool = "#35c9f2"
+warm = "#f2b53a"
+alpha_min = 0.15
+alpha_span = 0.45
+cool_doc = "The cool end of the ramp: the owner's v3 design draws the lighter half of its heatmap in this cyan."
+warm_doc = "The warm end: the design's amber, for the heavier half."
+alpha_doc = "The opacity of the emptiest cell and the added opacity of the fullest, as the design's measured (cyan from 0.16, amber to 0.56 and past it)."
+
+# ---- The brand marks' colours (crates/vike-ui-theme/src/brand.rs) -------------------------------------
+# The orange is the mark's, never a UI accent (decision 0093).
+[[brand]]
+name = "ORANGE"
+hex = "#ff6a00"
+doc = "The brand orange, vike.io's `--color-brand`. The site's PNG is painted `#FF751F`; that one is not used (refinement 2)."
+
+[[brand]]
+name = "ORANGE_ON_LIGHT"
+hex = "#d95400"
+doc = "The orange on a LIGHT background: `ORANGE` on white is under the 3:1 a graphic needs (refinement 4)."
+
+# ---- Shape (crates/vike-ui-theme/src/metrics.rs) ------------------------------------------------------
+[shape]
+radius = 4
+radius_doc = "Every rounded corner in the app."
+
+# ---- Spacing, strokes and strengths (crates/vike-ui-theme/src/metrics.rs) ---------------------------------
+# The steps the kit and the windows draw with, so a gap, a line or a mix is a NAME and not a number typed at the
+# call site. Each table becomes a `pub mod` of consts in `vike_ui_theme::metrics` (`space::SM`, `stroke::HAIRLINE`,
+# `alpha::LIFT`). The five spacing steps are the five values the GUI's literal `add_space` calls already use most
+# (measured 2026-10-05 across the GUI crates: 4.0 x55, 6.0 x45, 8.0 x38, 2.0 x22, 12.0 x7); the off-scale values
+# (3, 5, 7, 9 and 10) are the windows' migration, and `crates/vike-ops/tests/ui_literal_ratchet.rs` pins them.
+
+[[space]]
+name = "XS"
+value = 2.0
+doc = "The finest step: the padding an icon button leaves round its glyph, and how far the focus ring stands off its widget."
+
+[[space]]
+name = "SM"
+value = 4.0
+doc = "A small gap and the vertical padding of a button; the most-used step."
+
+[[space]]
+name = "MD"
+value = 6.0
+doc = "A medium gap; Normal density's gap between controls."
+
+[[space]]
+name = "LG"
+value = 8.0
+doc = "A large gap; Normal density's cell padding."
+
+[[space]]
+name = "XL"
+value = 12.0
+doc = "The largest step the windows already use."
+
+[[stroke]]
+name = "HAIRLINE"
+value = 1.0
+doc = "A control's edge, a card's border, a rule: every kit widget draws its outline at this width."
+
+[[stroke]]
+name = "LINE"
+value = 1.5
+doc = "A mark that must read at a glance, such as the venue chip's ring."
+
+[[stroke]]
+name = "EDGE"
+value = 2.0
+doc = "The selected edge: the underline of the chosen tab."
+
+[[alpha]]
+name = "LIFT"
+value = 0.12
+doc = "How far a filled button moves toward the text colour while it is hovered or pressed."
+
+[[alpha]]
+name = "WASH"
+value = 0.14
+doc = "How far a chip's fill is mixed into the ground behind it (`Mode::wash`): enough to read as a coloured band on every theme's near-black background, and little enough that what is written on it still reads. On LIVE's accent wash the least of the three inks is the accent itself as text on Dusk, 5.58:1; the theme text clears 12.21:1 and the warning amber 7.53:1 on every theme, Carbon's amber wash included (8.25:1)."

@@ -1,0 +1,244 @@
+<!doctype html>
+<!-- @generated from crates/vike-ui-theme/ui-theme.toml by crates/vike-ui-theme/tests/tokens_gen — do not edit; change the TOML and regenerate (see tests/brand_assets.rs). -->
+<html lang="en" data-theme="graphite">
+<head>
+<meta charset="utf-8">
+<title>Vike — the brand book</title>
+<link rel="stylesheet" href="ui-theme.css">
+<style>
+@font-face { font-family: "Inter"; font-weight: 400; src: url("../fonts/Inter-Regular.ttf"); }
+@font-face { font-family: "Inter"; font-weight: 600; src: url("../fonts/Inter-SemiBold.ttf"); }
+@font-face { font-family: "Inter"; font-weight: 700; src: url("../fonts/Inter-Bold.ttf"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 400; src: url("../fonts/JetBrainsMono-Regular.ttf"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 600; src: url("../fonts/JetBrainsMono-SemiBold.ttf"); }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-words); font-size: var(--body); line-height: 1.5; }
+header.top { position: sticky; top: 0; z-index: 2; background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 28px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+header.top h1 { font-size: var(--title); font-weight: 600; margin: 0; letter-spacing: .01em; }
+header.top nav { display: flex; gap: 14px; font-size: var(--body); }
+header.top nav a { color: var(--text2); text-decoration: none; }
+header.top nav a:hover { color: var(--text); }
+.switch { margin-left: auto; display: flex; gap: 14px; align-items: center; color: var(--text3); font-size: var(--caption); }
+.switch select { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font: inherit; font-size: var(--body); }
+main { max-width: 1120px; margin: 0 auto; padding: 8px 28px 80px; }
+section { margin-top: 36px; }
+h2 { font-size: var(--heading); font-weight: 600; margin: 0 0 4px; }
+section > h3 { font-size: var(--title); font-weight: 600; margin: 18px 0 4px; }
+section > p.lead { color: var(--text2); margin: 0 0 14px; max-width: 760px; }
+code, .num { font-family: var(--font-numbers); font-size: .92em; }
+code { color: var(--text2); }
+table { border-collapse: collapse; width: 100%; font-size: var(--body); }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--text3); font-weight: 400; font-size: var(--caption); }
+.theme { display: inline-block; vertical-align: top; width: 262px; margin: 0 14px 14px 0; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px 12px; }
+.theme h3 { margin: 0 0 8px; font-size: var(--strong); font-weight: 600; }
+.swatches { display: grid; grid-template-columns: 1fr; gap: 4px; }
+.sw { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; font-size: var(--caption); color: var(--text2); }
+.sw i { width: 22px; height: 14px; border-radius: 3px; border: 1px solid #ffffff22; }
+.sw code { font-size: var(--caption); }
+.status { display: flex; gap: 10px; margin: 0 22px 12px 0; vertical-align: top; width: 330px; float: left; }
+.status i { flex: none; width: 26px; height: 26px; border-radius: 6px; margin-top: 2px; }
+.status p { margin: 2px 0 0; color: var(--text2); font-size: var(--caption); }
+.clear { clear: both; }
+.spec { font-family: var(--font-words); }
+.spec .num { color: var(--text2); }
+ul.rules { padding-left: 18px; max-width: 820px; }
+ul.rules li { margin: 0 0 8px; }
+ul.rules .by { display: block; margin-top: 2px; font-size: var(--caption); color: var(--text3); }
+ul.rules .by.none { color: var(--status-warning); }
+.dot { display: inline-block; width: 12px; height: 12px; border-radius: var(--radius); vertical-align: -1px; margin-right: 2px; }
+td small { color: var(--text3); font-size: var(--caption); }
+.heat { display: flex; gap: 4px; margin: 6px 0 10px; }
+.heat div { text-align: center; color: var(--text3); font-size: var(--caption); line-height: 1.2; }
+.heat i { display: block; width: 52px; height: 34px; border-radius: var(--radius); margin-bottom: 4px; background-clip: padding-box; }
+.shape { width: 120px; height: 64px; display: grid; place-items: center; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); font-family: var(--font-numbers); color: var(--text2); }
+.bar { display: inline-block; height: 10px; background: var(--accent); border-radius: 2px; vertical-align: middle; }
+.rule { display: block; width: 120px; height: 0; border-top: 1px solid var(--text2); }
+.wash { display: inline-block; width: 90px; height: 22px; border-radius: var(--radius); border: 1px solid var(--border); vertical-align: middle; }
+.btn { display: inline-flex; align-items: center; height: var(--control-h); padding: 0 var(--pad); background: var(--card); border: 1px solid var(--border); border-radius: 4px; font-size: var(--strong); font-family: var(--font-numbers); }
+/* the title bar, drawn from the chrome tokens */
+.win { width: 520px; max-width: 100%; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); overflow: hidden; }
+.win .bar { height: var(--chrome-title-bar-h); display: flex; align-items: center; padding: 0 var(--chrome-window-controls-pad) 0 var(--chrome-title-inset); background: var(--surface); }
+.win .bar .name { font-size: var(--body); color: var(--text-ui); }
+.win .bar .ctls { margin-left: auto; display: flex; gap: var(--chrome-window-control-gap); }
+.win .bar .ctl { width: var(--chrome-window-control); height: var(--chrome-window-control); display: grid; place-items: center; color: var(--text2); border-radius: 4px; font-size: var(--body); }
+.win .bar .ctl:hover { background: var(--hover); }
+.win .body { padding: 14px; color: var(--text3); font-size: var(--caption); }
+/* do / don't */
+.dd { display: flex; gap: 20px; flex-wrap: wrap; }
+.dd > div { width: 340px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+.dd h4 { margin: 0 0 8px; font-size: var(--caption); font-weight: 400; color: var(--text3); text-transform: uppercase; letter-spacing: .06em; }
+.dd .row { display: flex; align-items: baseline; gap: 8px; padding: 7px 0; }
+.dd .chip { margin-left: auto; font-size: 10px; font-weight: 600; padding: 2px 7px; border: 1px solid var(--status-warning); color: var(--status-warning); border-radius: 4px; }
+.right .v { font-weight: 400; font-size: var(--strong); }
+.right .a { font-weight: 400; font-size: var(--body); color: var(--text3); }
+.right .a.n { font-family: var(--font-numbers); }
+.wrong .v { font-weight: 600; font-size: var(--strong); }
+.wrong .a { font-family: var(--font-numbers); font-size: var(--body); color: var(--text2); }
+footer { margin-top: 48px; color: var(--text3); font-size: var(--caption); }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Vike — the brand book</h1>
+  <nav><a href="#themes">Themes</a><a href="#status">Status</a><a href="#market">Market</a><a href="#heat">Heat</a><a href="#type">Type</a><a href="#rules">Rules</a><a href="#spacing">Spacing</a><a href="#density">Density</a><a href="#chrome">Window bar</a><a href="#shape">Shape</a><a href="#mark">Mark</a></nav>
+  <div class="switch">
+    <label>Theme <select id="theme"><option>graphite</option><option>midnight</option><option>dusk</option><option>carbon</option></select></label>
+    <label>Text <select id="text"><option value="small">small</option><option value="standard" selected>standard</option><option value="large">large</option></select></label>
+    <label>Market <select id="market"><option>classic</option><option>tradingview</option><option>exchange</option><option>colorblind</option></select></label>
+    <label>Density <select id="density"><option>compact</option><option selected>normal</option><option>comfortable</option></select></label>
+  </div>
+</header>
+<main>
+<p class="lead" style="margin-top:22px;color:var(--text2);max-width:780px">This page is drawn from <code>crates/vike-ui-theme/ui-theme.toml</code>, the one file that holds every design value of the desktop GUI. It is regenerated by a test, so it cannot disagree with the app. The switches above change the theme, the text size and the density of the whole page the way the Appearance settings change the app.</p>
+
+<section id="themes"><h2>Themes</h2><p class="lead">Four dark themes. Each binds a background to its own accent. Graphite with green is the default.</p>
+<div class="theme" data-theme="graphite"><h3>Graphite</h3><div class="swatches"><div class="sw"><i style="background:#0d1117"></i><b>bg</b><code>#0d1117</code></div><div class="sw"><i style="background:#161b24"></i><b>grad-top</b><code>#161b24</code></div><div class="sw"><i style="background:#161b22"></i><b>surface</b><code>#161b22</code></div><div class="sw"><i style="background:#1c2028"></i><b>card</b><code>#1c2028</code></div><div class="sw"><i style="background:#21252c"></i><b>hover</b><code>#21252c</code></div><div class="sw"><i style="background:#2f343c"></i><b>border</b><code>#2f343c</code></div><div class="sw"><i style="background:#e7ecf4"></i><b>text</b><code>#e7ecf4</code></div><div class="sw"><i style="background:#e4e9f0"></i><b>text-ui</b><code>#e4e9f0</code></div><div class="sw"><i style="background:#9aa4b1"></i><b>text2</b><code>#9aa4b1</code></div><div class="sw"><i style="background:#858991"></i><b>text3</b><code>#858991</code></div><div class="sw"><i style="background:#595e64"></i><b>analysis-line</b><code>#595e64</code></div><div class="sw"><i style="background:#3ee08a"></i><b>accent</b><code>#3ee08a</code></div></div></div>
+<div class="theme" data-theme="midnight"><h3>Midnight</h3><div class="swatches"><div class="sw"><i style="background:#0a1020"></i><b>bg</b><code>#0a1020</code></div><div class="sw"><i style="background:#13213d"></i><b>grad-top</b><code>#13213d</code></div><div class="sw"><i style="background:#141a2a"></i><b>surface</b><code>#141a2a</code></div><div class="sw"><i style="background:#191f2f"></i><b>card</b><code>#191f2f</code></div><div class="sw"><i style="background:#1e2433"></i><b>hover</b><code>#1e2433</code></div><div class="sw"><i style="background:#2c3241"></i><b>border</b><code>#2c3241</code></div><div class="sw"><i style="background:#e4ecf8"></i><b>text</b><code>#e4ecf8</code></div><div class="sw"><i style="background:#e1e9f5"></i><b>text-ui</b><code>#e1e9f5</code></div><div class="sw"><i style="background:#9ca3b1"></i><b>text2</b><code>#9ca3b1</code></div><div class="sw"><i style="background:#828997"></i><b>text3</b><code>#828997</code></div><div class="sw"><i style="background:#565d6c"></i><b>analysis-line</b><code>#565d6c</code></div><div class="sw"><i style="background:#35c9f2"></i><b>accent</b><code>#35c9f2</code></div></div></div>
+<div class="theme" data-theme="dusk"><h3>Dusk</h3><div class="swatches"><div class="sw"><i style="background:#0e0d16"></i><b>bg</b><code>#0e0d16</code></div><div class="sw"><i style="background:#1c1a2e"></i><b>grad-top</b><code>#1c1a2e</code></div><div class="sw"><i style="background:#181720"></i><b>surface</b><code>#181720</code></div><div class="sw"><i style="background:#1e1c26"></i><b>card</b><code>#1e1c26</code></div><div class="sw"><i style="background:#22212a"></i><b>hover</b><code>#22212a</code></div><div class="sw"><i style="background:#302f39"></i><b>border</b><code>#302f39</code></div><div class="sw"><i style="background:#eceaf6"></i><b>text</b><code>#eceaf6</code></div><div class="sw"><i style="background:#e9e7f3"></i><b>text-ui</b><code>#e9e7f3</code></div><div class="sw"><i style="background:#a3a1ac"></i><b>text2</b><code>#a3a1ac</code></div><div class="sw"><i style="background:#888791"></i><b>text3</b><code>#888791</code></div><div class="sw"><i style="background:#5c5a64"></i><b>analysis-line</b><code>#5c5a64</code></div><div class="sw"><i style="background:#aa82fa"></i><b>accent</b><code>#aa82fa</code></div></div></div>
+<div class="theme" data-theme="carbon"><h3>Carbon</h3><div class="swatches"><div class="sw"><i style="background:#09090b"></i><b>bg</b><code>#09090b</code></div><div class="sw"><i style="background:#17171b"></i><b>grad-top</b><code>#17171b</code></div><div class="sw"><i style="background:#131315"></i><b>surface</b><code>#131315</code></div><div class="sw"><i style="background:#19191b"></i><b>card</b><code>#19191b</code></div><div class="sw"><i style="background:#1e1e20"></i><b>hover</b><code>#1e1e20</code></div><div class="sw"><i style="background:#2c2c2e"></i><b>border</b><code>#2c2c2e</code></div><div class="sw"><i style="background:#ededf0"></i><b>text</b><code>#ededf0</code></div><div class="sw"><i style="background:#eaeaed"></i><b>text-ui</b><code>#eaeaed</code></div><div class="sw"><i style="background:#a2a2a4"></i><b>text2</b><code>#a2a2a4</code></div><div class="sw"><i style="background:#848487"></i><b>text3</b><code>#848487</code></div><div class="sw"><i style="background:#59595b"></i><b>analysis-line</b><code>#59595b</code></div><div class="sw"><i style="background:#f2b53a"></i><b>accent</b><code>#f2b53a</code></div></div></div>
+</section>
+
+<section id="status"><h2>Status colours</h2><p class="lead">The same in every theme. A theme recolours the background, the neutrals and the accent, and never recolours "connected".</p>
+<div class="status"><i style="background:#3fbf6e"></i><div><b>ok</b> <code>#3fbf6e</code><p>A healthy state — a live link, a configured credential, a saved write.</p></div></div>
+<div class="status"><i style="background:#e6b428"></i><div><b>warning</b> <code>#e6b428</code><p>Not settled yet — a link dialling or reconnecting, an armed remote-control segment, an account named but not yet saved, a store nobody could open.</p></div></div>
+<div class="status"><i style="background:#f0524a"></i><div><b>error</b> <code>#f0524a</code><p>A fault — a failed link, a refused write, an inline error.</p></div></div>
+<div class="status"><i style="background:#57a5ff"></i><div><b>info</b> <code>#57a5ff</code><p>Information — egui's hyperlink colour.</p></div></div>
+<div class="status"><i style="background:#787878"></i><div><b>muted</b> <code>#787878</code><p>Nothing live to show — <code>Disconnected</code> and <code>Unknown</code> alike (only a label tells them apart), an unset credential. Grey 120 is a MARK's colour and sits below the 4.5:1 floor for text.</p></div></div>
+<div class="clear"></div></section>
+
+<section id="market"><h2>Market colours</h2><p class="lead">What "up" and "down" look like on a candle, a depth bar and a P&amp;L. A trader picks one set; it is independent of the theme. The Market switch above recolours the page's own up and down.</p>
+<table><thead><tr><th>Set</th><th>Up</th><th>Down</th><th>Up as text</th><th>Down as text</th><th>A P&amp;L and a candle pair</th></tr></thead><tbody>
+<tr><td><b>Classic</b> <code>classic</code></td><td><i class="dot" style="background:#40ba50"></i> <code>#40ba50</code></td><td><i class="dot" style="background:#f85249"></i> <code>#f85249</code></td><td><i class="dot" style="background:#40ba50"></i> <code>#40ba50</code></td><td><i class="dot" style="background:#f85249"></i> <code>#f85249</code></td><td><span class="num" style="color:#40ba50">+1,204.50</span> <span class="num" style="color:#f85249">-86.20</span> <i class="dot" style="background:#40ba50"></i><i class="dot" style="background:#f85249"></i></td></tr>
+<tr><td><b>TradingView</b> <code>tradingview</code><br><small>TradingView's CURRENT chart default; the older <code>#26A69A</code>/<code>#EF5350</code> is what Lightweight Charts still ships. Both text colours are lifted: down measured 4.19:1 on Graphite's card, and up 4.57:1, inside the rule's margin.</small></td><td><i class="dot" style="background:#089981"></i> <code>#089981</code></td><td><i class="dot" style="background:#f23645"></i> <code>#f23645</code></td><td><i class="dot" style="background:#0a9a82"></i> <code>#0a9a82</code></td><td><i class="dot" style="background:#f34a58"></i> <code>#f34a58</code></td><td><span class="num" style="color:#0a9a82">+1,204.50</span> <span class="num" style="color:#f34a58">-86.20</span> <i class="dot" style="background:#089981"></i><i class="dot" style="background:#f23645"></i></td></tr>
+<tr><td><b>Exchange</b> <code>exchange</code></td><td><i class="dot" style="background:#2ebd85"></i> <code>#2ebd85</code></td><td><i class="dot" style="background:#f6465d"></i> <code>#f6465d</code></td><td><i class="dot" style="background:#2ebd85"></i> <code>#2ebd85</code></td><td><i class="dot" style="background:#f6465d"></i> <code>#f6465d</code></td><td><span class="num" style="color:#2ebd85">+1,204.50</span> <span class="num" style="color:#f6465d">-86.20</span> <i class="dot" style="background:#2ebd85"></i><i class="dot" style="background:#f6465d"></i></td></tr>
+<tr><td><b>Colour-blind</b> <code>colorblind</code><br><small>Up measured 4.44:1 on Graphite's card.</small></td><td><i class="dot" style="background:#3b82f6"></i> <code>#3b82f6</code></td><td><i class="dot" style="background:#f59e0b"></i> <code>#f59e0b</code></td><td><i class="dot" style="background:#4186f6"></i> <code>#4186f6</code></td><td><i class="dot" style="background:#f59e0b"></i> <code>#f59e0b</code></td><td><span class="num" style="color:#4186f6">+1,204.50</span> <span class="num" style="color:#f59e0b">-86.20</span> <i class="dot" style="background:#3b82f6"></i><i class="dot" style="background:#f59e0b"></i></td></tr>
+</tbody></table>
+<p class="lead" style="margin-top:10px">Depth bars are the colour at alpha 48 (up) and 46 (down) of 255; volume bars at 0.7 strength.</p>
+</section>
+
+<section id="heat"><h2>The heat ramp</h2><p class="lead">One ramp for every theme and every market set: it says how much resting liquidity a cell held, which is neither up nor down. Left to right, a cell from empty to full.</p>
+<div class="heat"><div><i style="background:rgba(53, 201, 242, 0.149)"></i><small>0.0<br>38</small></div><div><i style="background:rgba(53, 201, 242, 0.196)"></i><small>0.1<br>50</small></div><div><i style="background:rgba(53, 201, 242, 0.239)"></i><small>0.2<br>61</small></div><div><i style="background:rgba(53, 201, 242, 0.286)"></i><small>0.3<br>73</small></div><div><i style="background:rgba(53, 201, 242, 0.329)"></i><small>0.4<br>84</small></div><div><i style="background:rgba(242, 181, 58, 0.376)"></i><small>0.5<br>96</small></div><div><i style="background:rgba(242, 181, 58, 0.420)"></i><small>0.6<br>107</small></div><div><i style="background:rgba(242, 181, 58, 0.467)"></i><small>0.7<br>119</small></div><div><i style="background:rgba(242, 181, 58, 0.510)"></i><small>0.8<br>130</small></div><div><i style="background:rgba(242, 181, 58, 0.557)"></i><small>0.9<br>142</small></div><div><i style="background:rgba(242, 181, 58, 0.600)"></i><small>1.0<br>153</small></div></div>
+<table><tbody>
+<tr><td><b>cool</b></td><td><code>#35c9f2</code></td><td>The cool end of the ramp: the owner's v3 design draws the lighter half of its heatmap in this cyan.</td></tr>
+<tr><td><b>warm</b></td><td><code>#f2b53a</code></td><td>The warm end: the design's amber, for the heavier half.</td></tr>
+<tr><td><b>opacity</b></td><td><code>0.15 + 0.45 x t</code></td><td>The opacity of the emptiest cell and the added opacity of the fullest, as the design's measured (cyan from 0.16, amber to 0.56 and past it).</td></tr>
+</tbody></table>
+</section>
+
+<section id="type"><h2>Type</h2><p class="lead">A size is a role. The Text size setting picks the column; every window reads its sizes from a role.</p>
+<table><thead><tr><th>Face</th><th>Weights</th><th>Used for</th></tr></thead><tbody>
+<tr><td><b>Inter</b></td><td>400, 600, 700</td><td>Words: labels, menus, buttons, headings, prose.</td></tr>
+<tr><td><b>JetBrains Mono</b></td><td>400, 600</td><td>Anything read character by character: prices, sizes, counts, axis labels, key names, addresses, account numbers.</td></tr>
+<tr><td><b>Phosphor Regular 2.1.2</b></td><td>400</td><td>Icons: one glyph per meaning.</td></tr>
+</tbody></table>
+<p></p>
+<table><thead><tr><th>Role</th><th>Used for</th><th>Small</th><th>Standard</th><th>Large</th><th>Specimen</th></tr></thead><tbody>
+<tr><td><b>caption</b></td><td>Axis labels, column headers, units, timestamps.</td><td>10 px</td><td>11 px</td><td>13 px</td><td><span class="spec" style="font-size:var(--caption)">Binance Spot main <span class="num">85,342.61</span></span></td></tr>
+<tr><td><b>body</b></td><td>Tables, ladders, most text, and every window's name and controls.</td><td>11 px</td><td>12 px</td><td>14 px</td><td><span class="spec" style="font-size:var(--body)">Binance Spot main <span class="num">85,342.61</span></span></td></tr>
+<tr><td><b>strong</b></td><td>Buttons, tabs, menus.</td><td>12 px</td><td>13 px</td><td>15 px</td><td><span class="spec" style="font-size:var(--strong)">Binance Spot main <span class="num">85,342.61</span></span></td></tr>
+<tr><td><b>title</b></td><td>Section and panel headings.</td><td>14 px</td><td>15 px</td><td>17 px</td><td><span class="spec" style="font-size:var(--title)">Binance Spot main <span class="num">85,342.61</span></span></td></tr>
+<tr><td><b>heading</b></td><td>Dialog titles.</td><td>18 px</td><td>19 px</td><td>22 px</td><td><span class="spec" style="font-size:var(--heading)">Binance Spot main <span class="num">85,342.61</span></span></td></tr>
+<tr><td><b>display</b></td><td>Balance, day PnL.</td><td>24 px</td><td>26 px</td><td>30 px</td><td><span class="spec" style="font-size:var(--display)">Binance Spot main <span class="num">85,342.61</span></span></td></tr>
+<tr><td><b>hero</b></td><td>The Polymarket cockpit countdown.</td><td>40 px</td><td>40 px</td><td>44 px</td><td><span class="spec" style="font-size:var(--hero)">Binance Spot main <span class="num">85,342.61</span></span></td></tr>
+</tbody></table>
+</section>
+
+<section id="rules"><h2>Rules of use</h2><p class="lead">A value says what; a rule says where.</p>
+<ul class="rules">
+<li id="words-are-inter">Words are Inter. A venue name, an account NAME (<code>main</code>), a label, a button, a menu item.<small class="by">Enforced by <code>crates/vike-ui-theme/src/components/account_menu.rs::the_venue_is_regular_and_the_account_is_dim_and_smaller</code></small></li>
+<li id="numbers-are-mono">Anything read character by character is JetBrains Mono: prices, sizes, counts, addresses, account NUMBERS (<code>3709890</code>).<small class="by">Enforced by <code>crates/vike-ui-theme/src/components/account_menu.rs::the_venue_is_regular_and_the_account_is_dim_and_smaller</code></small></li>
+<li id="menus-are-regular">Menu items, buttons and tabs are the Strong role at regular weight (400). Semibold (600) is ruled only where the design draws it — the places listed under <code>weight_use</code> below — and is never a venue or a label.<small class="by">Enforced by <code>crates/vike-ui-theme/src/components/account_menu.rs::the_venue_is_regular_and_the_account_is_dim_and_smaller</code>, <code>crates/vike-ops/tests/ui_literal_ratchet.rs::no_file_gains_a_heavy_weight</code></small></li>
+<li id="two-things-by-size-and-ink">Two things on one line (a venue and its account) are told apart by size and ink — the primary ink for the first, the dim ink and the Body size for the second — not by weight.<small class="by">Enforced by <code>crates/vike-ui-theme/src/components/account_menu.rs::the_venue_is_regular_and_the_account_is_dim_and_smaller</code></small></li>
+<li id="accent-is-a-shape">The accent is a shape (an underline, a fill, a ring, an edge), never the colour of a number or a word.<small class="by">Enforced by <code>crates/vike-ui-theme/src/components/input.rs::selected_text_is_never_drawn_in_the_accent</code></small></li>
+<li id="status-colours-do-not-move">The status colours are the same in every theme. &quot;Connected&quot; is the status green, never the accent.<small class="by">Enforced by <code>crates/vike-ui-theme/src/components/mod.rs::status_colours_are_fixed_and_never_the_accent</code>, <code>crates/vike-ui-theme/src/status.rs::no_status_colour_is_a_theme_or_market_colour</code></small></li>
+<li id="one-title-bar">Every window has the same 25 pt title bar at every density. Density scales the controls inside a window, never the bar around it.<small class="by none">Words only — no test fails if this is broken.</small></li>
+<li id="text-size-reaches-everything">A size is a ROLE. A literal font size anywhere in a GUI crate fails a gate: the Text size setting must reach every window.<small class="by">Enforced by <code>crates/vike-ops/tests/ui_literal_ratchet.rs::no_file_gains_a_literal_text_size</code></small></li>
+</ul>
+<h3>Where a weight heavier than regular is ruled</h3>
+<p class="lead">Everything else is regular. A call that draws semibold or bold must sit under one of these, or be on the debt list the gate keeps.</p>
+<table><thead><tr><th>Id</th><th>Weight</th><th>Where</th></tr></thead><tbody>
+<tr><td><code>trade-bar</code></td><td>600</td><td>The Trade window's bar: the instrument symbol and the window price (the v3 design draws both at 600).</td></tr>
+<tr><td><code>ladder</code></td><td>600</td><td>The Trade ladder's last-price row, in mono (the v3 design draws it at 600).</td></tr>
+<tr><td><code>ticket</code></td><td>600</td><td>The Trade ticket: Buy and Sell's words and quantity, and the LONG / SHORT word of the position line (the v3 design draws them at 600).</td></tr>
+</tbody></table>
+
+<div class="dd">
+  <div class="right"><h4>Right — a venue and its account</h4>
+    <div class="row"><span class="v">Binance Spot</span><span class="a">main</span><span class="chip">DEMO</span></div>
+    <div class="row"><span class="v">Dukascopy</span><span class="a n">3709890</span><span class="chip">DEMO</span></div>
+  </div>
+  <div class="wrong"><h4>Wrong — weight and a mono name</h4>
+    <div class="row"><span class="v">Binance Spot</span><span class="a">main</span><span class="chip">DEMO</span></div>
+    <div class="row"><span class="v">Dukascopy</span><span class="a">3709890</span><span class="chip">DEMO</span></div>
+  </div>
+</div></section>
+
+<section id="spacing"><h2>Spacing, strokes and strengths</h2><p class="lead">The steps the kit and the windows draw with. A gap, a line or a mix is a name, not a number typed at the call site.</p>
+<h3>Spacing</h3>
+<table><thead><tr><th>Token</th><th>Value</th><th>Drawn</th><th>What it is</th></tr></thead><tbody>
+<tr><td><code>XS</code></td><td>2px</td><td><i class="bar" style="width:2px"></i></td><td>The finest step: the padding an icon button leaves round its glyph, and how far the focus ring stands off its widget.</td></tr>
+<tr><td><code>SM</code></td><td>4px</td><td><i class="bar" style="width:4px"></i></td><td>A small gap and the vertical padding of a button; the most-used step.</td></tr>
+<tr><td><code>MD</code></td><td>6px</td><td><i class="bar" style="width:6px"></i></td><td>A medium gap; Normal density's gap between controls.</td></tr>
+<tr><td><code>LG</code></td><td>8px</td><td><i class="bar" style="width:8px"></i></td><td>A large gap; Normal density's cell padding.</td></tr>
+<tr><td><code>XL</code></td><td>12px</td><td><i class="bar" style="width:12px"></i></td><td>The largest step the windows already use.</td></tr>
+</tbody></table>
+<h3>Strokes</h3>
+<table><thead><tr><th>Token</th><th>Value</th><th>Drawn</th><th>What it is</th></tr></thead><tbody>
+<tr><td><code>HAIRLINE</code></td><td>1px</td><td><i class="rule" style="border-top-width:1px"></i></td><td>A control's edge, a card's border, a rule: every kit widget draws its outline at this width.</td></tr>
+<tr><td><code>LINE</code></td><td>1.5px</td><td><i class="rule" style="border-top-width:1.5px"></i></td><td>A mark that must read at a glance, such as the venue chip's ring.</td></tr>
+<tr><td><code>EDGE</code></td><td>2px</td><td><i class="rule" style="border-top-width:2px"></i></td><td>The selected edge: the underline of the chosen tab.</td></tr>
+</tbody></table>
+<h3>Strengths</h3>
+<table><thead><tr><th>Token</th><th>Value</th><th>Drawn</th><th>What it is</th></tr></thead><tbody>
+<tr><td><code>LIFT</code></td><td>0.12</td><td><i class="wash" style="background:color-mix(in srgb, var(--accent) 12%, var(--bg))"></i></td><td>How far a filled button moves toward the text colour while it is hovered or pressed.</td></tr>
+<tr><td><code>WASH</code></td><td>0.14</td><td><i class="wash" style="background:color-mix(in srgb, var(--accent) 14.000000000000002%, var(--bg))"></i></td><td>How far a chip's fill is mixed into the ground behind it (<code>Mode::wash</code>): enough to read as a coloured band on every theme's near-black background, and little enough that what is written on it still reads. On LIVE's accent wash the least of the three inks is the accent itself as text on Dusk, 5.58:1; the theme text clears 12.21:1 and the warning amber 7.53:1 on every theme, Carbon's amber wash included (8.25:1).</td></tr>
+</tbody></table>
+</section>
+
+<section id="density"><h2>Density</h2><p class="lead">What a trader's Density setting changes: the controls and the rows inside a window. It never changes the window bar.</p>
+<table><thead><tr><th>Density</th><th>control-h</th><th>row-h</th><th>pad</th><th>gap</th><th>header-h</th><th>A control</th></tr></thead><tbody>
+<tr data-density="compact"><td><b>compact</b></td><td>20</td><td>16</td><td>6</td><td>4</td><td>22</td><td><span class="btn">Buy 0.010</span></td></tr>
+<tr data-density="normal"><td><b>normal</b></td><td>24</td><td>18</td><td>8</td><td>6</td><td>24</td><td><span class="btn">Buy 0.010</span></td></tr>
+<tr data-density="comfortable"><td><b>comfortable</b></td><td>28</td><td>22</td><td>10</td><td>8</td><td>28</td><td><span class="btn">Buy 0.010</span></td></tr>
+</tbody></table>
+</section>
+
+<section id="chrome"><h2>The window bar</h2><p class="lead">One bar for every window, at every density.</p>
+<div class="win"><div class="bar"><span class="name">Connections</span><span class="ctls"><span class="ctl">─</span><span class="ctl">□</span><span class="ctl">✕</span></span></div><div class="body">The bar above is drawn from these numbers.</div></div>
+<p></p>
+<table><thead><tr><th>Token</th><th>Points</th><th>What it is</th></tr></thead><tbody>
+<tr><td><code>TITLE_BAR_H</code></td><td>25</td><td>The bar's height.</td></tr>
+<tr><td><code>TITLE_INSET</code></td><td>9</td><td>The window's name, or the first thing on the bar, from its left edge.</td></tr>
+<tr><td><code>WINDOW_CONTROL</code></td><td>20</td><td>One window control (<code>─ □ ✕</code>): a square, so its hover fill reads as a button.</td></tr>
+<tr><td><code>WINDOW_CONTROL_GAP</code></td><td>4</td><td>The gap between two controls.</td></tr>
+<tr><td><code>WINDOW_CONTROLS_PAD</code></td><td>4</td><td>The pad after the last control.</td></tr>
+<tr><td><code>SEPARATOR_H</code></td><td>14</td><td>The hairline that parts a tabbed window's segments from the controls: its height.</td></tr>
+<tr><td><code>SLOT_TO_CONTROLS</code></td><td>15</td><td>Between the last segment and the first control: seven points, the hairline, seven more.</td></tr>
+<tr><td><code>SLOT_TO_SEPARATOR</code></td><td>7</td><td>Where the hairline sits, from the last segment.</td></tr>
+</tbody></table>
+</section>
+
+<section id="shape"><h2>Shape</h2><p class="lead">One corner radius for the whole app.</p>
+<div class="shape">4 pt</div><p class="lead" style="margin-top:8px">Every rounded corner in the app.</p>
+</section>
+
+<section id="mark"><h2>The mark</h2><p class="lead">The Vike mark and its orange are drawn from <code>crates/vike-ui-theme/src/brand.rs</code>; the files are in this folder (see <code>SOURCES.md</code>). The orange is the logo's colour and never a UI accent.</p>
+<img src="mark.svg" alt="The Vike mark" width="96" height="96"> <img src="app-icon.svg" alt="The app icon" width="96" height="96">
+<p></p>
+<div class="status"><i style="background:#ff6a00"></i><div><b>orange</b> <code>#ff6a00</code><p>The brand orange, vike.io's <code>--color-brand</code>. The site's PNG is painted <code>#FF751F</code>; that one is not used (refinement 2).</p></div></div>
+<div class="status"><i style="background:#d95400"></i><div><b>orange-on-light</b> <code>#d95400</code><p>The orange on a LIGHT background: <code>ORANGE</code> on white is under the 3:1 a graphic needs (refinement 4).</p></div></div>
+<div class="clear"></div>
+</section>
+
+<footer>Generated — do not edit. Change <code>ui-theme.toml</code>, run <code>VIKE_REGEN_BRAND_ASSETS=1 cargo test -p vike-ui-theme --test brand_assets</code>, and look at this page.</footer>
+</main>
+<script>
+const root = document.documentElement;
+document.getElementById("theme").onchange = (e) => root.setAttribute("data-theme", e.target.value);
+document.getElementById("text").onchange = (e) => root.setAttribute("data-text-size", e.target.value);
+document.getElementById("market").onchange = (e) => root.setAttribute("data-market", e.target.value);
+document.getElementById("density").onchange = (e) => root.setAttribute("data-density", e.target.value);
+</script>
+</body>
+</html>

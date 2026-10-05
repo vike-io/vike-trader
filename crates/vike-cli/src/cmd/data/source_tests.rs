@@ -1,0 +1,1064 @@
+use super::*;
+
+fn parse_of(args: &[&str]) -> Result<Args, String> {
+    parse(&args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>())
+}
+
+fn ls_text() -> String {
+    ls_lines(&rows()).join("\n")
+}
+
+fn ls_doc() -> serde_json::Value {
+    serde_json::from_str(&ls_json(&rows())).expect("ls --json is one document")
+}
+
+fn row_of(name: &str) -> Row {
+    resolve(name).unwrap_or_else(|e| panic!("`{name}` must resolve: {e}"))
+}
+
+/// The instant every date-dependent assertion here is written against: 2026-09-30 UTC, a FIXED
+/// point and never the clock, so these tests read the same tomorrow. `run` reads the real clock
+/// once and hands it down; nothing below it does.
+fn today() -> i64 {
+    vike_model::time::days_from_civil(2026, 9, 30) * vike_model::MS_PER_DAY
+}
+
+fn show_text(name: &str) -> String {
+    show_lines(&row_of(name), today()).join("\n")
+}
+
+fn show_doc(name: &str) -> serde_json::Value {
+    serde_json::from_str(&show_json(&row_of(name), today())).expect("show --json is one document")
+}
+
+/// Collapse every run of whitespace to one space. Used where a message's EXACT spacing is not
+/// the property under test — see
+/// `the_output_axis_refuses_the_same_pair_the_hist_group_refuses`.
+fn squeeze(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The [`USAGE`] ROW a token heads, or `None` — the smallest unit that carries "this token is
+/// DISCOVERABLE".
+///
+/// ⚠ It exists because a `contains` over the whole page cannot fail for that reason: `ls` is a
+/// substring of `jsonl` in the `--format` row, of `` `ls` `` in the `--json` prose and of the
+/// word `false`, so the page satisfies `USAGE.contains("ls")` with the `ls` ROW deleted. A row
+/// is found by its HEAD — the token at the start of an indented line, followed by space or by
+/// the comma in `-h, --help` — which only that row can satisfy.
+fn usage_row(token: &str) -> Option<&'static str> {
+    USAGE.lines().map(str::trim_start).find(|line| {
+        line.strip_prefix(token)
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_whitespace() || c == ','))
+    })
+}
+
+/// **THE DERIVATION.** Every row of `UNBUILT_SOURCES` reaches the listing carrying its own WHY,
+/// and every built source reaches it by the name `--source` takes. A row added to either
+/// declaration is rendered by [`rows`] with no edit here, so this test fails on the one thing
+/// that could go wrong: somebody re-typing the roster in this module and letting the copies
+/// drift.
+///
+/// ⚠ Paired with an anti-vacuity control, because "every X appears in a long string" passes
+/// trivially when the string is long enough: a name in NEITHER declaration must be ABSENT,
+/// which also pins that the listing is not quietly printing a venue roster.
+#[test]
+fn the_listing_is_derived_from_both_declarations() {
+    let text = ls_text();
+    for (name, why) in UNBUILT_SOURCES {
+        assert!(text.contains(name), "`ls` must name the designed source `{name}`: {text}");
+        assert!(text.contains(why), "…with what `{name}` is waiting on: {text}");
+    }
+    for source in SOURCES {
+        let row = built_row(*source);
+        assert!(text.contains(&row.name), "`ls` must name `{}`: {text}", row.name);
+        assert!(text.contains(row.cost), "…with what `{}` costs: {text}", row.name);
+    }
+    assert!(
+        !text.contains("binance"),
+        "a venue is not a source row — the token class is `{VENUE_TOKEN}`: {text}"
+    );
+}
+
+/// **THE ROUND TRIP.** Every built row is named by the spelling `super::parse_source` actually
+/// accepts, so the listing cannot advertise a value the axis refuses.
+///
+/// ⚠ The control matters more than the assertion: `parse_source` answers `Venue` for
+/// EVERYTHING it does not recognise, so a round trip alone would pass on a misspelt `startr`.
+/// The second half pins that the two named sources do NOT collapse into that fallback.
+#[test]
+fn every_built_source_round_trips_through_the_parser() {
+    for source in SOURCES {
+        let row = built_row(*source);
+        assert_eq!(
+            super::super::parse_source(&row.name),
+            Ok(*source),
+            "`{}` must be the spelling the axis takes",
+            row.name
+        );
+    }
+    assert_eq!(super::super::parse_source("starter"), Ok(Source::Starter));
+    assert_eq!(super::super::parse_source("demo"), Ok(Source::Demo));
+    assert_eq!(
+        super::super::parse_source("startr"),
+        Ok(Source::Venue),
+        "an unrecognised value is a venue, which is why the control above is needed"
+    );
+}
+
+/// The BUILT half lists no source twice — the one direction of [`SOURCES`]' residual that is
+/// checkable at all. That const's doc carries the direction that is not, and why stable Rust
+/// offers no gate for it.
+#[test]
+fn the_built_half_lists_no_source_twice() {
+    let names: Vec<String> = SOURCES.iter().copied().map(|s| built_row(s).name).collect();
+    let mut unique = names.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len(), names.len(), "a source is listed twice: {names:?}");
+}
+
+/// **EVERY `Source` VARIANT IS IN [`SOURCES`]**, held by an EXHAUSTIVE MATCH rather than by a
+/// count.
+///
+/// ⚠ This is the hole the review left open and the comment in [`built_row`] admitted: the
+/// compiler demands an arm there when a variant lands, but nothing demanded a `SOURCES` row —
+/// so a fourth source would be accepted by the axis, absent from `ls`, absent from `ls --json`,
+/// and green in every test here, because all of them iterate `SOURCES` and would simply never
+/// see it. `built_row`'s note asked the author to remember; this asks the COMPILER.
+///
+/// The mechanism is the match below, which has no `_` arm. A new variant does not fail this
+/// test — it fails to BUILD it, at the line that names the roster, which is the one place the
+/// author can fix it. A length assertion would have been the wrong tool twice over: it passes
+/// while naming nothing, and it is the exact shape (`[T; N]` vs the rows it counts) that has
+/// merged wrong in this repository before.
+#[test]
+fn every_source_variant_is_in_the_roster() {
+    fn token(s: Source) -> &'static str {
+        match s {
+            Source::Venue => "venue",
+            Source::Starter => "starter",
+            Source::Demo => "demo",
+        }
+    }
+    for s in [Source::Venue, Source::Starter, Source::Demo] {
+        assert!(
+            SOURCES.contains(&s),
+            "`Source::{:?}` has a `built_row` arm and no SOURCES row, so `data source ls` says \
+                 it does not exist while `--source {}` accepts it",
+            s,
+            token(s)
+        );
+    }
+    // ...and the control: the roster names nothing the enum does not, so the check above
+    // cannot be passing because `SOURCES` simply holds everything.
+    assert_eq!(SOURCES.len(), 3, "the roster grew without this test being told: {SOURCES:?}");
+}
+
+/// A designed source is never rendered as reachable, in either form: `reaches` is `null` in the
+/// document and the cell reads `nothing yet` in the table — and the STATE agrees with what the
+/// axis actually does, which is refuse the value by name.
+#[test]
+fn a_designed_source_is_never_rendered_as_reachable() {
+    for (name, _) in UNBUILT_SOURCES {
+        let row = row_of(name);
+        assert_eq!(row.state, State::Designed, "{name}");
+        assert_eq!(row.reaches, None, "{name}");
+        assert!(
+            super::super::parse_source(name).is_err(),
+            "`ls` calls `{name}` designed, so the axis must refuse it"
+        );
+    }
+    for source in SOURCES {
+        let row = built_row(*source);
+        assert_eq!(row.state, State::Built, "{}", row.name);
+        assert!(row.reaches.is_some(), "{}", row.name);
+    }
+}
+
+/// The TRANSPORT column is read out of `Source::engine_verb` rather than restated — so the two
+/// engine-verb sources and the one datahub source land in different cells, and a source that
+/// changed transport would move without an edit in this module.
+#[test]
+fn the_transport_cell_follows_the_engine_verb_seam() {
+    assert_eq!(reaches(Source::Venue), "a datahub");
+    assert_eq!(reaches(Source::Starter), reaches(Source::Demo));
+    assert_ne!(
+        reaches(Source::Venue),
+        reaches(Source::Starter),
+        "the split is the point: one asks a server, the other spawns a child"
+    );
+}
+
+/// **THE BOUNDARY, ON BOTH VERBS.** Every `show` — built, designed and venue-token alike — and
+/// `ls` in both its renderings say that nothing was verified, and each document says it as a
+/// testable FIELD rather than as prose.
+///
+/// ⚠ **`ls` was not covered and did not say it**, while this module's doc claimed every answer
+/// did. [`NOT_VERIFIED`] was pushed by [`show_lines`] alone and `verified_against_the_vendor`
+/// appeared in [`show_json`] alone, so the verb that prints a column headed REACHES — `a
+/// datahub`, `the engine, on this box` — carried no disclaimer anywhere, and a wrapper folding
+/// `ls --json` could read `"reaches": "the engine, on this box"` as a probe of the box it was
+/// running on.
+#[test]
+fn every_answer_in_this_group_says_that_nothing_was_verified() {
+    let mut names: Vec<String> = SOURCES.iter().map(|s| built_row(*s).name).collect();
+    names.extend(UNBUILT_SOURCES.iter().map(|(n, _)| (*n).to_string()));
+    // ...and a name in neither declaration, which is the venue-token path.
+    names.push("binance".to_string());
+    for name in &names {
+        let text = show_text(name);
+        assert!(text.contains(NOT_VERIFIED), "`show {name}` must name the limit: {text}");
+        assert_eq!(
+            show_doc(name)["verified_against_the_vendor"],
+            serde_json::Value::Bool(false),
+            "`show {name} --json` must say so as a FIELD"
+        );
+    }
+    assert!(ls_text().contains(NOT_VERIFIED), "`ls` must name it too: {}", ls_text());
+    assert_eq!(
+        ls_doc()["verified_against_the_vendor"],
+        serde_json::Value::Bool(false),
+        "`ls --json` must carry the same FIELD the other verb carries: {}",
+        ls_doc()
+    );
+    // The control: the constant is not the empty string, which would make every assertion
+    // above pass against any output at all.
+    assert!(NOT_VERIFIED.len() > 40, "the note must actually say something");
+}
+
+/// **ONE FIELD NAME, ONE KIND OF DOCUMENT.** `notes` is a list of FOOTNOTE SENTENCES in both
+/// verbs, and every note a document carries is printed by the same verb's table.
+///
+/// ⚠ **The correction.** `show --json` used to set `notes` to the whole human rendering —
+/// `source:   vike`, `state:    designed`, the empty strings where the table has blank lines —
+/// while `ls --json` set the same field to three footnotes. So the document re-encoded as prose
+/// every structured field it already carried, and a consumer that learned `notes` from one verb
+/// read something categorically different from the other. Nothing pinned it: neither the unit
+/// test nor the integration test asserted anything about `notes` on `show`.
+#[test]
+fn notes_means_footnotes_in_both_verbs_and_each_table_prints_its_own() {
+    let ls_table = ls_text();
+    let listing = ls_doc();
+    let notes = listing["notes"].as_array().expect("`ls --json` carries notes");
+    assert!(!notes.is_empty(), "…and they are not an empty array: {listing}");
+    for note in notes {
+        let note = note.as_str().expect("a note is a sentence");
+        assert!(!note.is_empty(), "a blank line is not a note");
+        assert!(ls_table.contains(note), "`ls` must print the note it documents: {note}");
+    }
+
+    for name in ["vike", "demo", "binance"] {
+        let text = show_text(name);
+        let doc = show_doc(name);
+        let notes = doc["notes"].as_array().expect("`show --json` carries notes");
+        assert!(!notes.is_empty(), "…and they are not an empty array: {doc}");
+        for note in notes {
+            let note = note.as_str().expect("a note is a sentence");
+            assert!(!note.is_empty(), "a blank line is not a note: {doc}");
+            assert!(text.contains(note), "`show {name}` must print it: {note}");
+            // THE PROPERTY: a note is a footnote, never a re-encoding of a cell this document
+            // already carries as a FIELD. These four prefixes are the rendering's own cells.
+            for cell in ["source:", "state:", "reaches:", "cost:"] {
+                assert!(
+                    !note.starts_with(cell),
+                    "`{note}` is the RENDERING of `{cell}`, which the document carries as a \
+                         field — see this test's doc for what that cost"
+                );
+            }
+        }
+    }
+}
+
+/// **THE OTHER DIRECTION, WHICH WAS GATED BY NOTHING.**
+/// `notes_means_footnotes_in_both_verbs_and_each_table_prints_its_own` walks the DOCUMENT and
+/// asks the table to print each note, so it holds document ⊆ table. This one walks the TABLE's
+/// FOOTER and asks the document to carry each line, which is the containment that was open: a
+/// footnote appended to [`ls_lines`] alone — a per-row caveat under the table, say — left
+/// `ls --json`'s `notes` array short, a wrapper rendering the document showed an operator fewer
+/// footnotes than the table did, and both tests stayed green.
+///
+/// ⚠ The wiring is the real fix and this is its gate: [`ls_lines`] now renders [`ls_notes`]
+/// whole rather than re-spelling the chain, so the two sets are one by construction. The test
+/// is what keeps that true after the next edit, because the re-spelling compiled perfectly and
+/// read as tidy code.
+#[test]
+fn the_table_prints_no_footnote_the_document_omits() {
+    let derived = ls_notes();
+    let table_rows = rows();
+    let lines = ls_lines(&table_rows);
+
+    // The document IS the derivation, in order.
+    let documented: Vec<String> = ls_doc()["notes"]
+        .as_array()
+        .expect("`ls --json` carries notes")
+        .iter()
+        .map(|n| n.as_str().expect("a note is a sentence").to_string())
+        .collect();
+    assert_eq!(documented, derived, "the document must render `ls_notes` and nothing else");
+
+    // …and so is the FOOTER: one header line, one line per row, a blank, then footnotes only.
+    assert_eq!(lines[table_rows.len() + 1], "", "the blank that ends the table: {lines:?}");
+    // ⚠ **A SEQUENCE, not a membership loop plus a COUNT.** This was
+    // `assert!(derived.contains(&note))` per line followed by
+    // `assert_eq!(printed, derived.len(), "…and every derived footnote is printed once")`, and
+    // that pair does not check what the message says: a footer printing ONE note twice and
+    // omitting another satisfies both halves, because every printed line is still in `derived`
+    // and the tally still matches. Comparing the stripped footer to [`ls_notes`] directly earns
+    // the sentence — containment BOTH ways, the multiplicity and the order, in one assertion.
+    // (The omitted direction was covered next door by
+    // `notes_means_footnotes_in_both_verbs_and_each_table_prints_its_own`, so nothing was
+    // actually open; what was wrong was a message claiming more than its assertion, which is
+    // how that neighbour gets deleted as redundant.)
+    let printed: Vec<&str> = lines[table_rows.len() + 2..]
+        .iter()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.strip_prefix("note: ").unwrap_or(l.as_str()))
+        .collect();
+    assert_eq!(
+        printed, derived,
+        "the footer IS `ls_notes`, rendered whole and in order — every derived footnote \
+             printed once, and nothing printed that `ls --json` omits: {lines:?}"
+    );
+
+    // The controls: the derivation is not empty, so the loop above is not passing vacuously,
+    // and it is strictly WIDER than [`LS_NOTES`] — the closer is in it, which is the note that
+    // was appended at the call site rather than derived.
+    assert_eq!(derived.len(), LS_NOTES.len() + 1, "{derived:?}");
+    assert!(derived.contains(&NOT_VERIFIED), "{derived:?}");
+}
+
+/// `show vike` keeps §9.2's two classes apart, states the keyed/keyless split, prints no URL,
+/// and states the licensing constraint outright.
+///
+/// ⚠ The licence assertion is the one that is not decoration. Class 1 names a venue axis and
+/// class 2 an exchange, so a reader could infer an offer of exchange candles from the table
+/// alone; the ruling of 2026-09-21 is that there is none, and this pins the sentence that says
+/// so into the OUTPUT rather than into a comment.
+#[test]
+fn show_vike_carries_two_classes_the_keyed_split_and_the_licence() {
+    let text = show_text(VIKE);
+    for (class, what) in VIKE_CLASSES {
+        assert!(text.contains(class), "`show vike` must name the `{class}` class: {text}");
+        assert!(text.contains(what), "…and what it is: {text}");
+    }
+    assert!(text.contains("NO CEX market data"), "the ruling must be stated: {text}");
+    assert!(text.contains(VIKE_KEYS), "the keyed/keyless split is this source's property");
+    assert!(!text.contains("https://"), "no base is resolved here, so none may be printed: {text}");
+    assert_eq!(
+        show_doc(VIKE)["holds"].as_array().map(Vec::len),
+        Some(VIKE_CLASSES.len()),
+        "the document carries the classes SEPARATELY, which is §9.2's whole correction"
+    );
+
+    // The control: no other source grows a `holds` array, so the assertion above is about this
+    // row rather than about every row.
+    assert_eq!(show_doc("demo")["holds"].as_array().map(Vec::len), Some(0));
+}
+
+/// **NO STORE-KIND ROSTER LIVES IN THIS CRATE.** [`VIKE_CLASSES`] used to end each class on
+/// `Lands as kind=book / trade / quote` and `kind=cohort / perp_metrics` — five names copied
+/// out of `crates/vike-data/src/store/store_kind.rs`'s `STORE_KINDS`, the declared authority, in the
+/// crate whose own `rm` and `repair` arms say a kind roster "copied into this crate would be a
+/// second list to keep in step". Nothing compared the two, so a rename on that side would have
+/// left this verb advertising a kind the far side refuses — and being unable to derive the list
+/// is an argument for not printing it, never for typing it.
+#[test]
+fn the_class_descriptions_name_no_store_kind() {
+    for (class, what) in VIKE_CLASSES {
+        assert!(
+            !what.contains("kind="),
+            "`{class}` names a store kind: {what} — that roster belongs to `vike-data`, which \
+                 this crate cannot link, so it may not be copied here"
+        );
+    }
+    // The control: the descriptions still SAY something, so the assertion above is not passing
+    // on an empty table.
+    assert!(VIKE_CLASSES.iter().all(|(_, what)| what.len() > 40), "{VIKE_CLASSES:?}");
+}
+
+/// The one special case is anchored to a DECLARED row, so renaming or BUILDING `vike` reddens
+/// this module instead of silently turning the expansion off.
+#[test]
+fn the_special_cased_name_is_still_a_declared_row() {
+    assert!(
+        UNBUILT_SOURCES.iter().any(|(name, _)| *name == VIKE),
+        "`{VIKE}` must still be a row of UNBUILT_SOURCES — if it was BUILT, its expansion \
+             belongs on the built row instead"
+    );
+}
+
+/// An unknown name is a VENUE token, exactly as `--source` takes it — and `show` says that is
+/// what happened rather than implying the venue was judged.
+#[test]
+fn show_of_an_unknown_name_is_a_venue_token_and_says_so() {
+    let row = row_of("binance");
+    assert!(row.venue_token);
+    assert_eq!(row.state, State::Built, "the venue lane works today");
+    let text = show_text("binance");
+    assert!(text.contains("taken as a VENUE token"), "{text}");
+    assert!(text.contains("nothing here asked it"), "the limit, again: {text}");
+    // The control: the token-class row itself does NOT carry that sentence — nothing was
+    // substituted, because it IS the class.
+    assert!(!show_text(VENUE_TOKEN).contains("taken as a VENUE token"));
+}
+
+/// **ONE MISTAKE, ONE REFUSAL, WORDED FOR THE RUNG THAT PRINTS IT.** `show ""` and `show` are
+/// both "no name was given", so they answer with the same sentence — and an operator who obeys
+/// it by dropping the empty argument meets that sentence again rather than a different one.
+///
+/// ⚠ **Two corrections, in order.** `data source show ""` first exited 0 and printed `source:`
+/// blank, `state: built`, `reaches: a datahub` and "the same answer `--source ` gets", which
+/// was false — `data hist fetch --source ""` is refused on the usage rung. The fix made this
+/// rung print the AXIS's own empty-value sentence byte for byte, and that sentence is written
+/// for a FLAG: *"Omit the flag to use a venue"*. `show` takes no flag, and omitting the
+/// argument answered with [`SHOW_NEEDS_A_NAME`] — two refusals for one mistake, the first of
+/// them wrong about what the operator typed.
+///
+/// What the byte-identity was BUYING is kept and asserted below: this group is still not a
+/// looser grammar than the axis it documents. The empty value is refused on the same USAGE
+/// rung, [`resolve`] still refuses it, and `super::parse_source` still refuses it — the two
+/// sides agree on the VERDICT, which is the property, and each states it in its own rung's
+/// terms, which is the correction.
+#[test]
+fn an_empty_name_is_one_refusal_written_for_the_rung_that_prints_it() {
+    let empty = parse_of(&["show", ""]).unwrap_err();
+    let missing = parse_of(&["show"]).unwrap_err();
+    assert_eq!(empty, missing, "obeying the refusal must not produce a SECOND, different refusal");
+    assert_eq!(empty, SHOW_NEEDS_A_NAME, "…and it is the rung's own sentence");
+    // THE PROPERTY the byte-identity broke: an instruction a reader can carry out HERE. The
+    // axis's sentence names a flag this rung does not take.
+    assert!(
+        !empty.contains("Omit the flag"),
+        "a positional rung may not tell an operator to omit a flag: {empty}"
+    );
+
+    // …and the VERDICT still matches the axis's, which is what the identity was for.
+    assert!(super::super::parse_source("").is_err(), "the axis refuses an empty value");
+    assert!(resolve("").is_err(), "…and so does the resolver, as the backstop below it");
+
+    // THE CONTROLS, all three classes: the venue-token fallback, a built row and a DESIGNED
+    // row — the last one because describing a value the axis refuses is this verb's whole job,
+    // so `resolve` must refuse the empty value WITHOUT refusing the designed ones.
+    assert!(resolve("binance").is_ok(), "an unrecognised name is a venue, not an error");
+    assert!(resolve("demo").is_ok());
+    for (name, _) in UNBUILT_SOURCES {
+        assert!(resolve(name).is_ok(), "`{name}` is DESCRIBED here, never refused");
+    }
+    // …and `show NAME` still parses, so the assertions above are not passing because this verb
+    // refuses everything.
+    assert!(parse_of(&["show", "demo"]).is_ok());
+}
+
+/// A positional carrying an `=` reaches [`resolve`] WHOLE, so `show X` and `--source X`
+/// describe the same X.
+///
+/// ⚠ `crate::cmd::args`'s `Flags::next_flag` splits every token on its first `=` — right for a
+/// FLAG, wrong for a positional. `show a=b` arrived as `("a", Some("b"))` and the positional
+/// arm bound `a`, discarding `b` with no error, so this group answered for `a` while the axis
+/// answered for `a=b`.
+#[test]
+fn a_positional_carrying_an_equals_sign_is_not_truncated() {
+    let row = parse_of(&["show", "a=b"]).unwrap().row.expect("a resolved row");
+    assert_eq!(row.name, "a=b", "the value was truncated at the `=`");
+    // The shapes the split also manufactures: a trailing `=` and a leading one.
+    assert_eq!(parse_of(&["show", "a="]).unwrap().row.expect("a row").name, "a=");
+    assert_eq!(parse_of(&["show", "=b"]).unwrap().row.expect("a row").name, "=b");
+    // ...and `ls`'s refusal echoes the whole token rather than half of it.
+    assert!(parse_of(&["ls", "a=b"]).unwrap_err().contains("'a=b'"));
+    // THE CONTROL: the FLAG form still splits, which is what `next_flag` is for.
+    assert!(parse_of(&["ls", "--format=json"]).unwrap().json);
+}
+
+/// A `designed` row's `show` says what the axis DOES take, so learning it costs no round trip
+/// through a refusal — and it explains what its COST cell means, which only `ls` used to.
+///
+/// ⚠ It used to print `state: designed` and the cost cell and stop. An operator reading
+/// `cost: the paid crypto L2 archive — feature-gated at module AND bin, and keyed (P4)` had to
+/// type `--source tardis` and read the refusal to learn what IS usable, which is exactly the
+/// round trip this group exists to remove.
+#[test]
+fn a_designed_row_says_what_the_axis_takes_instead() {
+    for (name, _) in UNBUILT_SOURCES {
+        let text = show_text(name);
+        assert!(
+            text.contains(&format!("`--source {name}` is REFUSED")),
+            "`show {name}` must say the axis refuses it: {text}"
+        );
+        for source in SOURCES {
+            let built = built_row(*source).name;
+            assert!(text.contains(&built), "…and name `{built}`, which works: {text}");
+        }
+        assert!(text.contains(DESIGNED_COST), "…and what the COST cell means here: {text}");
+    }
+    // THE CONTROL: a BUILT row carries none of it — there is nothing to redirect from, and a
+    // note that fired on every row would stop being read.
+    let demo = show_text("demo");
+    assert!(!demo.contains("is REFUSED"), "{demo}");
+    assert!(!demo.contains(DESIGNED_COST), "{demo}");
+}
+
+/// `--addr` is refused BY NAME on `ls`, with the reason and with the verbs that do take one: `ls`
+/// opens no socket, so accepting it would advertise a reach that verb does not have.
+///
+/// ⚠ It was refused on `show` too until the history-channels read (the owner's Q3): `show VENUE`
+/// now takes it for a ROSTER venue, and every other row is refused by name — a source name or an
+/// unclassified venue token has no channels to ask a datahub about.
+#[test]
+fn the_addr_flag_is_refused_by_name() {
+    let err = parse_of(&["ls", "--addr", "1.2.3.4:9"]).unwrap_err();
+    assert!(err.contains("--addr"), "{err}");
+    assert!(err.contains("no server"), "the refusal must say WHY: {err}");
+    assert!(err.contains("data hist"), "…and what does take one: {err}");
+    assert!(err.contains("show VENUE --addr"), "…including this group's own: {err}");
+    for name in ["vike", "demo", "notavenue"] {
+        let err = parse_of(&["show", name, "--addr=1.2.3.4:9"]).unwrap_err();
+        assert!(err.contains("ROSTER VENUE") && err.contains(name), "{name}: {err}");
+    }
+    let err = parse_of(&["show", "oanda", "--addr", ""]).unwrap_err();
+    assert!(err.contains("EMPTY"), "an empty address names no datahub: {err}");
+    // A roster venue takes it — and only when asked: a plain `show` carries no address at all.
+    let asked = parse_of(&["show", "oanda", "--addr", "127.0.0.1:7878"]).unwrap();
+    assert_eq!(asked.addr.as_deref(), Some("127.0.0.1:7878"));
+    assert_eq!(
+        parse_of(&["show", "--addr=127.0.0.1:7878", "oanda"]).unwrap().addr.as_deref(),
+        Some("127.0.0.1:7878")
+    );
+    assert_eq!(parse_of(&["show", "oanda"]).unwrap().addr, None, "the reach is opt-in");
+    // The control: another flag gets a DIFFERENT answer, so the assertions above are not
+    // passing because every flag is refused identically.
+    let err = parse_of(&["ls", "--nope"]).unwrap_err();
+    assert!(err.contains("not a `data source` flag"), "{err}");
+    assert!(!err.contains("no server"), "{err}");
+}
+
+/// **A SIBLING GROUP'S FLAG IS NOT "UNKNOWN".** [`ADDR_REFUSAL`] cites
+/// `super::refuse_foreign_flags`'s rule — a flag an operator typed because a SIBLING verb takes
+/// it is not unknown, so saying so would be a lie — and this module applied it to `--addr`
+/// alone. `--store`, `--engine`, `--days`, `--from`/`--to`, `--venue`, `--kind` and `--source`
+/// are every one a real `data hist` flag, and every one landed on `unknown option '--store'`,
+/// which sent an operator to check a spelling that was right.
+///
+/// The flags below are EXAMPLES of that class rather than a roster: [`foreign_flag_refusal`]
+/// answers for every `--` token, which is why this file writes no list of another group's
+/// flags — see that function's doc.
+#[test]
+fn a_sibling_groups_flag_is_not_called_unknown() {
+    for flag in ["--store", "--engine", "--days", "--source"] {
+        let err = parse_of(&["ls", flag, "x"]).unwrap_err();
+        assert!(err.contains(flag), "the refusal must name `{flag}`: {err}");
+        assert!(!err.contains("unknown"), "`{flag}` is a real `data hist` flag: {err}");
+        assert!(err.contains("data hist"), "…and must say where it belongs: {err}");
+    }
+    // THE CONTROL: a flag that is a real flag HERE is accepted, so the refusal above is about
+    // foreign flags rather than about every `--` token.
+    assert!(parse_of(&["ls", "--json"]).is_ok());
+}
+
+/// **THE OUTPUT DOOR.** The same axis, the same shorthand and the same by-name refusals the
+/// `hist` group carries, reached through the SAME `parse_format` rather than a second parser.
+///
+/// ⚠ The disagreement message is a COPY — `crate::cmd::data`'s `parse` owns the other one —
+/// and this holds the two equal after whitespace normalisation. Exact bytes are deliberately
+/// not the property: that literal carries a run of spaces from an earlier edit, and pinning a
+/// typo would make the test about the typo instead of about the sentence.
+#[test]
+fn the_output_axis_refuses_the_same_pair_the_hist_group_refuses() {
+    assert!(!parse_of(&["ls"]).unwrap().json, "table is the default");
+    assert!(parse_of(&["ls", "--json"]).unwrap().json);
+    assert!(parse_of(&["ls", "--format", "json"]).unwrap().json);
+    assert!(!parse_of(&["ls", "--format", "table"]).unwrap().json);
+    assert!(parse_of(&["ls", "--json", "--format", "json"]).unwrap().json);
+
+    let mine = parse_of(&["ls", "--json", "--format", "table"]).unwrap_err();
+    let hist = super::super::parse(
+        ["hist", "ls", "--json", "--format", "table"].iter().map(|s| (*s).to_string()),
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(
+        squeeze(&mine),
+        squeeze(&hist),
+        "one axis, one sentence — the two copies have drifted"
+    );
+
+    // ⚠ **This looped over `super::super::UNBUILT_FORMATS` and became VACUOUS when that roster
+    // emptied** — `csv` and `parquet` are WRITTEN now, by `data hist export`, so neither is
+    // "designed but not built" and the loop had nothing to iterate. The claim it was making is
+    // still worth holding, and it is about the SHARED PARSER: a format this verb does not
+    // serve is refused here in the same words the `hist` group uses, because both reach
+    // `crate::cmd::data::parse_format`. So the values are named and the two sides compared.
+    for name in ["csv", "parquet", "jsonl"] {
+        let mine = parse_of(&["ls", "--format", name]).unwrap_err();
+        let hist = super::super::parse(
+            ["hist", "ls", "--format", name].iter().map(|s| (*s).to_string()),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(squeeze(&mine), squeeze(&hist), "{name}: one parser, one sentence");
+        // ANTI-VACUITY: the shared sentence is not empty and it names the value.
+        assert!(mine.contains(name), "{name}: {mine}");
+    }
+}
+
+/// A missing or misspelt verb RENDERS the roster rather than restating it, and `--help` is a
+/// success rather than a diagnostic (the shared `HELP_SENTINEL` path).
+///
+/// ⚠ **The roster half could not fail and now can.** It asserted `err.contains("ls")` against
+/// ``unknown `data source` verb 'lsit' (ls | show)`` — and the ECHOED token `lsit` satisfies
+/// that on its own, so a message that named no roster at all still passed. What the claim is
+/// about is the RENDERED suffix, so that is what is compared: the exact parenthesis [`VERBS`]
+/// produces, which a hand-typed roster stops matching the moment that const moves.
+#[test]
+fn the_verb_roster_is_rendered_not_restated() {
+    let roster = format!("({})", VERBS.join(" | "));
+    assert!(VERBS.len() >= 2, "a one-verb roster would make the suffix trivially matchable");
+    for verb in VERBS {
+        assert!(
+            parse_of(&[*verb]).is_ok() || parse_of(&[*verb, "vike"]).is_ok(),
+            "`{verb}` must be reachable by the name the roster advertises"
+        );
+    }
+    let err = parse_of(&[]).unwrap_err();
+    assert!(err.ends_with(&roster), "the refusal must RENDER `{roster}`: {err}");
+
+    let err = parse_of(&["lsit"]).unwrap_err();
+    assert!(err.contains("unknown"), "{err}");
+    assert!(err.contains("'lsit'"), "…echoing what was typed: {err}");
+    assert!(err.ends_with(&roster), "…and still rendering `{roster}`: {err}");
+
+    assert_eq!(
+        parse_of(&["--help"]).unwrap_err(),
+        crate::cmd::args::HELP_SENTINEL,
+        "help is CONTROL FLOW, not a diagnostic"
+    );
+}
+
+/// `ls` takes no positional and `show` requires one — both refused by name rather than
+/// defaulted, because either default would answer a question nobody asked.
+#[test]
+fn each_verb_refuses_the_argument_shape_that_is_not_its_own() {
+    let err = parse_of(&["ls", "vike"]).unwrap_err();
+    assert!(err.contains("takes no argument"), "{err}");
+    assert!(err.contains("data source show vike"), "…and names the verb that does: {err}");
+
+    let err = parse_of(&["show"]).unwrap_err();
+    assert_eq!(err, SHOW_NEEDS_A_NAME, "worded once, so [`run`]'s arm cannot disagree");
+    assert!(err.contains("data source ls"), "…and says where to find one: {err}");
+
+    let err = parse_of(&["show", "vike", "demo"]).unwrap_err();
+    assert!(err.contains("one source per `show`"), "{err}");
+
+    assert_eq!(parse_of(&["show", "vike"]).unwrap().row.expect("a row").name, "vike");
+    assert_eq!(parse_of(&["ls"]).unwrap().row, None);
+}
+
+/// The usage names every verb this parser accepts and every option it takes — each in a ROW of
+/// its own, which is the only form of that claim that can fail.
+///
+/// ⚠ **This test could not fail for its stated reason.** It asserted `USAGE.contains(verb)`
+/// over the whole page while calling itself "the only thing standing between an operator and a
+/// verb they cannot discover" — and `ls` is a substring of `jsonl` in the `--format` row, of
+/// `` `ls` `` in the `--json` prose and of the word `false`, while `show` is a substring of
+/// "For `show`". Deleting either verb's ROW left the page advertising neither and every
+/// assertion green. [`usage_row`] asserts against the smallest unit that carries the claim, and
+/// the controls below prove it can answer `None`.
+#[test]
+fn the_usage_names_every_verb_and_flag_this_parser_accepts() {
+    for verb in VERBS {
+        let row = usage_row(verb).unwrap_or_else(|| panic!("USAGE must give `{verb}` a row"));
+        assert!(row.len() > verb.len() + 8, "…that says what the verb does: {row}");
+    }
+    for option in ["--format", "--json", "--addr", "-h"] {
+        assert!(usage_row(option).is_some(), "USAGE must give `{option}` a row");
+    }
+    // `--addr` has a row since `show VENUE` takes it, and the row must say which verb, and that
+    // it is opt-in — `ls` still refuses it.
+    let addr_row = usage_row("--addr").expect("the --addr row");
+    assert!(addr_row.contains("show VENUE"), "{addr_row}");
+    assert!(
+        USAGE.contains("verified"),
+        "…and the limit, which is the one thing this group must not leave to the code"
+    );
+    // THE CONTROLS: tokens this parser does not accept head no row, so the assertions above
+    // are about the rows rather than about the page being long enough to contain anything.
+    assert_eq!(usage_row("fetch"), None, "a `data hist` verb is not a row of this page");
+    assert_eq!(usage_row("jsonl"), None, "a refused format is named in prose, not as a row");
+}
+
+/// **THE HELP MAY NOT PROMISE WHAT THE OUTPUT DENIES.** [`USAGE`]'s `show` row said `show NAME`
+/// reports "what THIS box reaches", the module doc's verb table said it a second time and
+/// [`LS_NOTES`]' third note a third — while [`NOT_VERIFIED`], which every answer ends on, says
+/// no line here is a probe of what your box, your network or your key reaches. An operator who
+/// read the help, ran `show vike` and saw `reaches: nothing yet` would read it as a fact about
+/// their box rather than about the build: positive confirmation of something false.
+#[test]
+fn nothing_rendered_promises_a_per_box_reach() {
+    let show_row = usage_row("show").expect("the `show` row");
+    assert!(
+        !show_row.contains("THIS box"),
+        "the help may not promise a probe the output denies: {show_row}"
+    );
+    for note in LS_NOTES {
+        assert!(!note.contains("this box reaches"), "a footnote may not promise it either: {note}");
+    }
+    // The control: the phrase is not simply absent from the whole surface — NOT_VERIFIED uses
+    // it, to DENY it, which is the one place it belongs.
+    assert!(NOT_VERIFIED.contains("your box"), "{NOT_VERIFIED}");
+}
+
+// ── The history channels: `docs/superpowers/specs/2026-09-30-history-channels-design.md`, Part A ──
+
+/// **THE SURFACE THE OWNER ASKED FOR.** `show <venue>` prints that venue's channels — every one, by
+/// name, with its class in the first column — and the document carries the same rows.
+#[test]
+fn a_roster_venue_prints_its_channels_in_the_table_and_the_document() {
+    let text = show_text("dukascopy");
+    assert!(text.contains(HISTORY_HEADING), "{text}");
+    for ch in history_channels_for("dukascopy") {
+        assert!(text.contains(ch.name), "`show dukascopy` must name `{}`: {text}", ch.name);
+    }
+    assert!(text.contains("  request HTTP datafeed"), "the class column, padded: {text}");
+    assert!(text.contains("  bulk    S3 bulk archive"), "…and a bulk channel beside it: {text}");
+
+    let doc = show_doc("dukascopy");
+    assert_eq!(doc["channels_declared"], true);
+    assert_eq!(doc["channels_as_of"], "2026-09-30");
+    assert_eq!(
+        doc["channels"].as_array().map(Vec::len),
+        Some(history_channels_for("dukascopy").len()),
+        "the document carries the same rows the table prints: {doc}"
+    );
+}
+
+/// EVERY roster venue has a block — a named row is what proves it was classified — and none of them
+/// is told it is undeclared. Iterates the roster, so a venue added to it is judged here with no edit.
+#[test]
+fn every_roster_venue_shows_at_least_one_channel_and_declares_it() {
+    for &venue in VENUES {
+        let doc = show_doc(venue);
+        assert_eq!(doc["channels_declared"], true, "{venue}");
+        let channels =
+            doc["channels"].as_array().unwrap_or_else(|| panic!("{venue}: no channels array"));
+        assert_eq!(channels.len(), history_channels_for(venue).len(), "{venue}");
+        assert!(!channels.is_empty(), "{venue} declares nothing: {doc}");
+        let text = show_text(venue);
+        assert!(text.contains(HISTORY_HEADING), "{venue}: {text}");
+        assert!(
+            !text.contains("declares no history channels"),
+            "{venue}: a roster venue was told it is undeclared: {text}"
+        );
+    }
+}
+
+/// **THE CHANNELS ARE NOT A PROBE, AND EVERY BLOCK SAYS SO.** Each roster venue's block carries
+/// [`HISTORY_NOTE`] — in the table and as a footnote of the document — and its answer STILL ends on
+/// [`NOT_VERIFIED`], the limit every answer in this group ends on. The table is compiled-in data
+/// dated by the day a maintainer read a page; without the note a date beside a vendor URL reads
+/// like a check this command just made.
+#[test]
+fn every_channel_block_carries_the_note_that_denies_a_probe_and_still_ends_on_the_limit() {
+    for &venue in VENUES {
+        let text = show_text(venue);
+        assert!(text.contains(HISTORY_NOTE), "{venue}: no note denying a probe: {text}");
+        assert!(text.trim_end().ends_with(NOT_VERIFIED), "{venue}: must END on the limit: {text}");
+        let doc = show_doc(venue);
+        let notes = doc["notes"].as_array().expect("`show --json` carries notes");
+        assert!(notes.iter().any(|n| n == HISTORY_NOTE), "{venue}: the document lost it: {doc}");
+    }
+    // The control: a source that is not a venue carries no channels, so it carries no such note.
+    assert!(!show_text("demo").contains(HISTORY_NOTE));
+}
+
+/// **AN EMPTY ANSWER MUST NOT READ AS "NONE EXIST".** A name that is not on the roster is still a
+/// venue token, exactly as `--source` takes it, and gets no channels — and the note says that is a
+/// statement about this table. The control: a roster venue does not get the note.
+#[test]
+fn an_unknown_venue_declares_no_channels_and_says_that_is_not_none_exist() {
+    let text = show_text("no-such-venue");
+    assert!(text.contains("declares no history channels for `no-such-venue`"), "{text}");
+    assert!(text.contains("not about the venue"), "…and what that means: {text}");
+    assert!(!text.contains(HISTORY_HEADING), "no block for a name the table never saw: {text}");
+    let doc = show_doc("no-such-venue");
+    assert_eq!(doc["channels_declared"], false);
+    assert_eq!(doc["channels"].as_array().map(Vec::len), Some(0));
+    assert!(!show_text("binance").contains("declares no history channels"));
+}
+
+/// The sources that are not venues carry no channels at all, and say `false` rather than nothing.
+#[test]
+fn a_non_venue_source_carries_no_channels() {
+    for name in ["demo", "starter", "vike", "tardis", VENUE_TOKEN] {
+        let doc = show_doc(name);
+        assert_eq!(doc["channels_declared"], false, "{name}");
+        assert_eq!(doc["channels"].as_array().map(Vec::len), Some(0), "{name}");
+        assert!(!show_text(name).contains(HISTORY_HEADING), "{name}");
+        assert!(!show_text(name).contains("declares no history channels"), "{name}");
+    }
+}
+
+/// **A rolling window is resolved against the clock the CALLER passes**, in the table and in the
+/// document — so the terminal says a DATE and a test can pin it. One day later the date moves,
+/// which is the whole reason a window is stored as days.
+#[test]
+fn a_rolling_window_is_resolved_against_the_clock_the_caller_passes() {
+    let text = show_text("ibkr");
+    assert!(text.contains("back to 2026-03-31"), "the six-month window has a date: {text}");
+    let doc = show_doc("ibkr");
+    assert_eq!(doc["channels"][0]["depth"]["steps"][0]["since"], "2026-03-31", "{doc}");
+    let later = show_lines(&row_of("ibkr"), today() + vike_model::MS_PER_DAY).join("\n");
+    assert!(later.contains("back to 2026-04-01"), "{later}");
+}
+
+/// The block's layout: the class column, the detail indent that hangs the cells under the name, and
+/// the cells in one fixed order.
+#[test]
+fn a_channels_cells_hang_under_its_name_in_a_fixed_order() {
+    assert_eq!(DETAIL_INDENT.len(), 2 + CLASS_W + 1, "the indent is the width of the class column");
+    for &venue in VENUES {
+        for ch in history_channels_for(venue) {
+            assert!(
+                ch.class.word().len() <= CLASS_W,
+                "{venue}: `{}` overflows the column",
+                ch.name
+            );
+        }
+    }
+    let lines = channel_lines(&history_channels_for("oanda")[0], today());
+    assert_eq!(lines[0], "  request v20 REST candles");
+    let labels = ["serves:", "depth:", "per request:", "pace:", "access:", "state:", "evidence:"];
+    for (i, label) in labels.iter().enumerate() {
+        assert!(
+            lines[i + 1].starts_with(&format!("{DETAIL_INDENT}{label}")),
+            "`{label}` out of place: {lines:?}"
+        );
+    }
+}
+
+/// A row with several sources prints the first beside the `evidence:` label and hangs each further
+/// one under it, on a line whose label is blank — so the sources read as one list.
+#[test]
+fn a_further_evidence_source_hangs_under_the_first() {
+    let oanda = history_channels_for("oanda")[0];
+    let lines = channel_lines(&oanda, today());
+    let sources = oanda.evidence_lines().len();
+    assert!(sources > 1, "the control needs a row with several sources");
+    let first = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("evidence:"))
+        .unwrap_or_else(|| panic!("no evidence line: {lines:?}"));
+    let continuation = format!("{DETAIL_INDENT}{:<w$}", "", w = LABEL_W);
+    for line in &lines[first + 1..first + sources] {
+        assert!(
+            line.starts_with(&continuation) && !line.trim().is_empty(),
+            "a further source hangs under the first: {line:?}"
+        );
+    }
+}
+
+/// The three shapes a row can be print three different ways: a channel prints its cells (the test
+/// above), a finding prints the finding and nothing that would describe a channel (this one), and a
+/// blank says it is blank (the next).
+#[test]
+fn a_finding_prints_the_finding_and_no_cell_that_would_describe_a_channel() {
+    let finding = channel_lines(&history_channels_for("oanda")[1], today());
+    assert!(finding[0].contains("bulk archive"), "{finding:?}");
+    assert!(finding.iter().any(|l| l.contains("none found in what was read")), "{finding:?}");
+    assert!(
+        !finding.iter().any(|l| l.contains("serves:") || l.contains("depth:")),
+        "a finding describes no channel: {finding:?}"
+    );
+}
+
+/// A row nobody classified prints that it is blank and why, and nothing else — two lines, the name
+/// and the reason — so a scaffolded venue can never read as a channel with unknown limits.
+#[test]
+fn a_blank_prints_that_it_is_blank() {
+    let blank = channel_lines(&history_channels_for("fxcm")[0], today());
+    assert_eq!(blank.len(), 2, "{blank:?}");
+    assert!(blank[1].contains("not classified —"), "{blank:?}");
+}
+
+/// Evidence prints with its date and its source — the property that keeps a row from being an
+/// assertion nobody can check — and a blank cell says which kind of blank it is.
+#[test]
+fn evidence_prints_with_its_date_and_a_blank_says_which_kind() {
+    let oanda = show_text("oanda");
+    assert!(oanda.contains("vendor documentation, read 2026-09-30"), "{oanda}");
+    assert!(oanda.contains("measured 2026-09-30"), "{oanda}");
+    let binance = show_text("binance");
+    assert!(
+        binance.contains("not known (unmeasured)"),
+        "nobody read a source for binance: {binance}"
+    );
+    let ibkr = show_text("ibkr");
+    assert!(ibkr.contains("not stated by the sources read"), "IBKR's ticks: {ibkr}");
+}
+
+/// **THE RULE THE TABLE EXISTS FOR, at the terminal.** No venue's `show` ever says a depth is
+/// unlimited — the vendor's silence is not a promise. (The footnote names neither word.)
+#[test]
+fn no_channel_line_ever_says_unlimited() {
+    for &venue in VENUES {
+        let text = show_text(venue).to_lowercase();
+        for word in ["unlimited", "no limit", "unbounded", "infinite"] {
+            assert!(!text.contains(word), "`show {venue}` says {word:?}: {text}");
+        }
+    }
+}
+
+/// **THE FIRST OF THE TWO WORDINGS THAT WERE FALSE: the venue-class COST cell.** It said "no
+/// credentials — public market data", which is false for a venue whose history needs a token or a
+/// gateway session. The row is a CLASS, so it now says most venues are public, that a credentialed
+/// one is MARKED, and where to look.
+#[test]
+fn the_cost_cell_no_longer_claims_every_venue_needs_no_credential() {
+    let cost = built_row(Source::Venue).cost;
+    assert!(!cost.to_lowercase().contains("no credentials"), "{cost}");
+    assert!(cost.contains("marked"), "a credentialed venue is marked: {cost}");
+    assert!(cost.contains("data source show <venue>"), "…and the cell says where to look: {cost}");
+}
+
+/// **THE SECOND: the `fetch` help.** It said "No credentials — this is public market data" over
+/// EVERY venue token, the same falsehood one page over. It now says most venues need none, that a
+/// venue that does is marked, and names the verb that answers — spelt with the placeholder a reader
+/// substitutes, and asserted after whitespace is squeezed because the help wraps mid-command.
+#[test]
+fn the_fetch_help_no_longer_claims_every_venue_is_public() {
+    let usage = squeeze(super::super::USAGE);
+    assert!(
+        !usage.contains("No credentials — this is public market data"),
+        "the fetch help still says every venue is public"
+    );
+    assert!(usage.contains("Most venues need no credentials"), "{usage}");
+    assert!(usage.contains("`vike-cli data source show VENUE` says what a venue needs"), "{usage}");
+}
+
+// ── `show VENUE --addr A`: the history-channels read, the owner's Q3 ─────────────────────────────
+
+/// A served answer: the client's own compiled rows standing in for a server's, with an overlay
+/// planted on OANDA's credentialed row and on what the store holds.
+fn served(addr: &str) -> Asked {
+    let mut report = compiled_report(today());
+    let oanda = report.venues.iter_mut().find(|v| v.venue == "oanda").expect("oanda");
+    oanda.channels[0].mounted = Some(true);
+    oanda.channels[0].credential = CredentialPresence::Absent;
+    oanda.held = vec![HeldKind {
+        kind: "bar".to_string(),
+        series: 2,
+        rows: 1_234,
+        first_ts: vike_model::time::days_from_civil(2015, 1, 1) * vike_model::MS_PER_DAY,
+        last_ts: today(),
+    }];
+    Asked { addr: addr.to_string(), report, served: true }
+}
+
+/// **The served table**: the server's rows, its overlay on the credentialed row, what its store
+/// holds — and an ending that names the datahub that answered, never the sentence saying no server
+/// was asked, which would be false here.
+#[test]
+fn an_addr_answer_prints_the_servers_rows_and_overlay_and_names_who_answered() {
+    let asked = served("127.0.0.1:7878");
+    let text = asked_lines(&row_of("oanda"), &asked).join("\n");
+    assert!(text.contains("as the datahub at 127.0.0.1:7878 declares it"), "{text}");
+    assert!(text.contains("v20 REST candles"), "{text}");
+    assert!(text.contains("since 2005-01-03"), "the server's depth cell: {text}");
+    assert!(text.contains("mounted:") && text.contains("yes"), "{text}");
+    assert!(text.contains(CredentialPresence::Absent.phrase()), "{text}");
+    assert!(text.contains("held — what the store at 127.0.0.1:7878 holds for it:"), "{text}");
+    assert!(text.contains("2 series, 1234 rows, 2015-01-01 .. 2026-09-30"), "{text}");
+    assert!(!text.contains(NOT_VERIFIED), "a server WAS asked: {text}");
+    assert!(!text.contains(HISTORY_NOTE), "the rows are the SERVER's table, not this binary's");
+    assert!(text.trim_end().ends_with(&asked_closer(&asked)), "{text}");
+    assert!(text.contains("nothing was read from a vendor"), "{text}");
+
+    let doc: serde_json::Value =
+        serde_json::from_str(&asked_json(&row_of("oanda"), &asked)).expect("one document");
+    assert_eq!(doc["verified_against_the_vendor"], false, "a datahub is not a vendor");
+    assert_eq!(doc["datahub"]["served"], true);
+    assert_eq!(doc["datahub"]["addr"], "127.0.0.1:7878");
+    assert_eq!(doc["channels"][0]["credential"], "Absent");
+    assert_eq!(doc["held"][0]["rows"], 1234);
+}
+
+/// **An older datahub**: this binary's own table, under the caption, with the overlay marked not
+/// known — and no store line it never asked for.
+#[test]
+fn an_older_datahub_is_answered_from_this_binarys_table_and_says_so() {
+    let asked = Asked {
+        addr: "127.0.0.1:7878".to_string(),
+        report: compiled_report(today()),
+        served: false,
+    };
+    let text = asked_lines(&row_of("oanda"), &asked).join("\n");
+    assert!(text.contains(COMPILED_TABLE_CAPTION), "{text}");
+    assert!(!text.contains("mounted:"), "nothing is known to be mounted: {text}");
+    assert!(text.contains(CredentialPresence::NotChecked.phrase()), "{text}");
+    assert!(text.contains("held: not known"), "{text}");
+    let doc: serde_json::Value =
+        serde_json::from_str(&asked_json(&row_of("oanda"), &asked)).expect("one document");
+    assert_eq!(doc["datahub"]["served"], false);
+    assert_eq!(doc["datahub"]["caption"], COMPILED_TABLE_CAPTION);
+    assert!(doc["held"].is_null(), "no store was asked: {}", doc["held"]);
+}
+
+/// **The verb's second consumer, driven headless** (the design's Q3): a REAL datahub with no
+/// collector table answers, every built row reading not mounted — and a server that does not
+/// advertise the read is answered from this binary's table with nothing sent to it.
+#[test]
+fn the_cli_asks_a_real_datahub_and_falls_back_on_an_older_one() {
+    use std::net::TcpListener;
+    use std::sync::Arc;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let addr = listener.local_addr().expect("addr").to_string();
+    let store: Arc<dyn vike_data::HistStore + Send + Sync> =
+        Arc::new(vike_data::MemHistStore::new());
+    std::thread::spawn(move || {
+        let _ = vike_datahub::serve(listener, store);
+    });
+    let asked = ask_the_datahub(&addr, None, today()).expect("the datahub answers");
+    assert!(asked.served, "a current datahub serves the read");
+    let text = asked_lines(&row_of("oanda"), &asked).join("\n");
+    assert!(
+        text.contains("mounted:") && text.contains("no — that datahub mounts no lane"),
+        "{text}"
+    );
+    assert!(text.contains("held: nothing"), "{text}");
+
+    // An OLDER datahub: answers `Hello` without the capability and must receive nothing else.
+    let old = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+    let old_addr = old.local_addr().expect("addr").to_string();
+    let (tx, rx) = std::sync::mpsc::channel::<usize>();
+    std::thread::spawn(move || {
+        use vike_datahub_client::{
+            proto::{Request, Response, write_frame},
+            read_frame,
+        };
+        let (mut s, _) = old.accept().expect("accept");
+        let _ = read_frame::<_, Request>(&mut s).expect("Hello");
+        write_frame(
+            &mut s,
+            &Response::Welcome {
+                proto_version: vike_datahub_client::PROTO_VERSION,
+                features: vec!["load_bars".to_string()],
+                nonce: None,
+            },
+        )
+        .expect("Welcome");
+        let mut after = 0;
+        while read_frame::<_, Request>(&mut s).is_ok() {
+            after += 1;
+        }
+        let _ = tx.send(after);
+    });
+    let asked =
+        ask_the_datahub(&old_addr, None, today()).expect("an older datahub is not an error");
+    assert!(!asked.served);
+    assert_eq!(rx.recv().expect("the fake reports"), 0, "nothing was sent after the handshake");
+
+    // And an unreachable one is the CONNECT rung, not a fallback.
+    let closed = TcpListener::bind("127.0.0.1:0").expect("bind").local_addr().expect("addr");
+    let err = ask_the_datahub(&closed.to_string(), None, today()).expect_err("nothing listens");
+    assert_eq!(err.exit, crate::exit::Exit::Connect);
+}
