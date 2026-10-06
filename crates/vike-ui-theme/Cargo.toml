@@ -1,0 +1,75 @@
+[package]
+name = "vike-ui-theme"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The vike design system's egui layer: four dark themes bound to their accents, market and status colours, text roles, densities, and the one install function every GUI binary calls, and the Vike brand mark and app icon — plus the transitional palette consts the GUI crates are migrating off, the font-weight RichText helpers and the byte/count formatters. Dep: egui only."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/arch/layer_gate.rs). Tier `ui-foundation` — the egui foundation leaf — everything above here links egui.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 70
+
+[features]
+# The workspace's "one owned double behind a `test-support` feature" convention (CLAUDE.md): a
+# DEFAULT build compiles none of `src/frame_sanity.rs`, `src/frame_record.rs` or
+# `src/pixel_liveness.rs`. Consumers take it as a dev-dependency with this feature on, which is
+# what makes the shared frame-geometry assertion, the tessellated-frame golden recorder and the
+# png-export harnesses' pixel-liveness floors cost a default build nothing while every GUI crate's
+# test/example target can reach them. It pulls in NO new dependency — frame_sanity/frame_record are
+# pure `egui`, the one dep this crate already has, and pixel_liveness is pure std (it reads a raw
+# RGBA buffer, so even `image` stays out) — so the cargo-deny surface, the lockfile and the layer
+# gate are all unchanged by it.
+test-support = []
+
+# The offscreen rasterizer `src/offscreen.rs` holds, for the two `png-export` harnesses.
+#
+# SEPARATE from `test-support` on that feature's own terms: its doc promises it "pulls in NO new
+# dependency", and this one pulls four heavy ones. Keeping them apart is what lets a GUI crate
+# take the frame-geometry and pixel-liveness helpers without compiling wgpu.
+#
+# It exists because the two harnesses each held a 121-line copy of one renderer and each pinned
+# `pollster`/`wgpu`/`egui-wgpu` independently — pins that had already come apart once (1.0 vs 0.4)
+# while a Dependabot bump went green. One home means one pin.
+offscreen = ["dep:wgpu", "dep:pollster", "dep:egui-wgpu", "dep:image"]
+
+# The component gallery (`examples/gallery.rs`): the offscreen renderer plus the pixel-liveness
+# floors, which is exactly what the two other `png-export` harnesses take from this crate. Named
+# `png-export` like theirs, so all three lane lines read the same.
+png-export = ["offscreen", "test-support"]
+
+# `required-features` keeps the wgpu stack out of a plain `--all-targets` run, as it does for the
+# other two harnesses.
+[[example]]
+name = "gallery"
+required-features = ["png-export"]
+
+[dependencies]
+# ALL FOUR optional and off by default, behind `offscreen` — a consumer that wants the theme, the
+# formatter or the frame helpers compiles none of them. Versions are the ones both harnesses
+# already carried; this crate is now the ONE place they are spelled.
+egui-wgpu = { version = "0.36", optional = true } # the production egui renderer eframe drives
+wgpu = { version = "30", optional = true }        # offscreen render target (headless DX12/WARP)
+pollster = { version = "1.0", optional = true }   # block on the async wgpu handshake
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+# egui only — this is a leaf crate below vike-chart/vike-connections/vike-data-manager/vike-app-core/
+# vike-desktop, so the cargo-deny surface is unchanged (egui is already workspace-pinned).
+egui = { workspace = true }
+
+[dev-dependencies]
+# Reads `ui-theme.toml` for the generator in `tests/tokens_gen/` — the file every design value comes from.
+# Already a workspace dependency (vike-config), so no new package enters the lockfile.
+toml = { workspace = true }
+sha2 = { workspace = true } # the bundled fonts' SHA-256 pins (`src/fonts.rs`'s tests)
+# PNG encode/decode for the brand files' gate (`tests/brand_assets.rs`). Already this crate's
+# optional normal dependency under `offscreen`, so the lockfile does not change.
+image = { version = "0.25", default-features = false, features = ["png"] }
+# The component kit's accessibility-tree tests (`src/components/`): a selected item must be a Label,
+# a disabled control must say it is disabled (spec §4.2). Already a dev-dependency of six GUI crates,
+# so nothing new enters the lockfile's package set.
+egui_kittest = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

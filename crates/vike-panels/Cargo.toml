@@ -1,0 +1,43 @@
+[package]
+name = "vike-panels"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "Shared egui trading widgets (chart-engine-free). The future home for reusable egui panels; today it holds the Trade window: the price ladder, the order ticket, the instrument bar and a status strip."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/arch/layer_gate.rs). Tier `ui-widget` — an egui widget / engine crate (no eframe/wgpu).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 75
+
+[dependencies]
+vike-model = { path = "../vike-model" } # L2Book/Level/VenueCaps — the types the Trade window paints over
+vike-ui-theme = { path = "../vike-ui-theme" } # the design system: tokens read from the installed appearance, and the component kit
+egui = { workspace = true }
+
+[features]
+# `examples/trade_shot.rs`: the Trade window's body drawn off-screen on the app's own renderer,
+# posed with the owner's v3 design's numbers, for a capture to lay beside a capture of that design.
+# The feature adds the theme crate's `offscreen` module (the wgpu stack), never a dependency of this
+# crate, so the lockfile's package set is unchanged. Off by default, and the example below carries
+# `required-features`, so a plain `--all-targets` run compiles none of it.
+png-export = ["vike-ui-theme/offscreen"]
+
+[[example]]
+name = "trade_shot"
+required-features = ["png-export"]
+
+[dev-dependencies]
+# Accessibility-tree tests over the REAL widget (`tests/trade_actions.rs`). NO wgpu / NO snapshot —
+# `Context::run_ui` is pure CPU, so these run on the GPU-less CI runners like any other test. See
+# the workspace manifest's `egui_kittest` rationale.
+egui_kittest = { workspace = true }
+# `harness::appearance_ready` — the Trade window draws icons, whose family only the app's bundled type binds, and
+# kittest's build-time frame runs on egui's default fonts. The feature adds a module, no dependency,
+# and the crate is already a normal dependency, so the lockfile's package set is unchanged.
+vike-ui-theme = { path = "../vike-ui-theme", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

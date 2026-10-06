@@ -1,0 +1,203 @@
+---
+name: arm-a-venue
+description: What to do when a user asks an agent to arm, enable, activate, go live on, switch to demo on, connect, or "turn on" a venue (binance, bybit, okx, deribit, or any other venue) for real trading through Vike. No MCP tool can arm a venue — the per-venue ceiling is a `policy.venues.<venue>` settings-database row written with `vike-cli config set`, and the credential store — `secrets.env`, or the settings database `settings/db/vike.db` once this box has migrated — is written by nothing but the narrow `vike-cli secrets set` verb — so this skill tells the agent to stop trying, hand the human the two gates in the right order, and then verify what it can from node_snapshot. Also use when a user asks "why is this venue still paper", "why did my order go to the paper book", "I set live and it is still paper", or asks the agent to put API keys somewhere.
+metadata:
+  tools: "node_snapshot"
+  source: "trader/guides/arm-a-venue ai/trader/tools ai/trader/trading"
+---
+
+# Arm a venue
+
+## The one thing to say first
+
+You cannot do this. **No MCP tool can arm a venue.** A write tool mounts nothing: it hands a
+command to a node that is already running, and what that node may do to a venue was decided at
+*its* mount, not by anything you send. A venue with no credentials mounts as paper, and the
+per-venue ceiling `policy.venues.<venue>` defaults to `paper` and can only ever refuse — it lowers
+what credentials would otherwise allow and can never raise it. The fold is
+`crates/vike-config/src/venue_mode.rs`'s `VenueMode::cap`, a minimum and never a maximum
+(https://vike.io/docs/ai/trader/trading, https://vike.io/docs/ai/trader/tools).
+
+So do not:
+
+- try submit_order "to see whether it goes live" — it cannot change where the order goes;
+- try to write the ceiling yourself — there is no file to edit, and `config set` is a human's act
+  on the box running the node — or rewrite `secrets.env` with an editor or a redirection, or ask
+  for API keys in the chat;
+- report a venue as armed because a write tool returned `outcome: "accepted"`.
+
+Tell the human the two gates below, in this order, and that both are edits they make on the box
+running the node. Then the node must be started again: the ceiling and the credentials are read by
+`crates/vike-mount/src/lib.rs`'s `make_engine` at mount, so a node that was already up before the
+edits still trades whatever it mounted with (https://vike.io/docs/trader/guides/arm-a-venue).
+
+## Gate 1 — the ceiling, consulted first
+
+`make_engine` consults the deployment's per-venue arming ceiling **before** it reads any
+credential: a `paper` venue returns the paper client having loaded no credential, fetched no
+instrument grid and opened no socket. This is the usual reason a store full of keys still mounts
+paper (https://vike.io/docs/trader/guides/arm-a-venue).
+
+The human runs one command per venue, on the box running the node (settings live only in the database, and a write is one row — there is no
+`policy.toml` to hand-edit any more):
+
+```sh
+vike-cli config set policy.venues.binance demo
+```
+
+Facts to carry with it (all from https://vike.io/docs/trader/guides/arm-a-venue):
+
+1. The tiers are `paper < demo < live` (`crates/vike-config/src/venue_mode.rs`'s `VenueMode`).
+   `demo` is the venue's own demo/testnet/sandbox account — real wire, real rejections, no real
+   funds. Recommend `demo` unless the human explicitly wants mainnet.
+2. **A ceiling only ever refuses; it never arms a venue by itself.** `policy.venues.bybit = live`
+   puts bybit live only if the credentials (gate 2) and the mount arm say so too. ⚠ **Decision
+   0095: for binance/bybit/okx/hyperliquid, `live` also means MAINNET directly.** There used to be a THIRD gate here, a separate `{VENUE}_MAINNET` process-env
+   flag those four venues also needed set — it is DELETED, refused if still set anywhere. So for
+   those four, "the credentials and the mount arm say so" now collapses to one question: does the
+   store hold that venue's LIVE-tier key set? A `live` ceiling with only DEMO-tier keys stays
+   PAPER (`LiveCredentialsAbsent` — mainnet is never signed with demo keys, and there is no
+   fallback to the demo tier under a `live` ceiling any more); a `live` ceiling with LIVE-tier
+   keys is mainnet, full stop. Every OTHER roster venue is unaffected — aster still picks its tier
+   by which credential prefix exists, polymarket has no demo tier at all, and neither ever had a
+   `{VENUE}_MAINNET` flag to lose.
+3. The default, with no `policy.venues.*` row ever written, is a filled map, one `paper` row per
+   roster venue. `Policy` has no environment layer at all (`crates/vike-config/src/policy.rs`) —
+   there is no env variable that raises a ceiling, so do not suggest one.
+4. If the box had credentials and never armed a venue, the first mount prints a paste-ready block
+   naming every venue that has credentials and is now paper, as `vike-cli config set
+   policy.venues.<venue> live` lines to choose from
+   (`crates/vike-mount/src/paper_fallback.rs`'s `venue_arming_migration_message`). Writing even one
+   of those rows silences it, including a `paper` one.
+
+## Gate 2 — the credentials, in the one store
+
+There is one store and no precedence, and which ARTIFACT it is depends on this box
+(`crates/vike-secrets/src/lib.rs` is the authority):
+
+- `<project>/settings/secrets.env` — a `KEY=VALUE` file, until this box has been migrated;
+- `<project>/settings/db/vike.db` — the settings database, from then on. It answers **wholly**:
+  `secrets.env` stays on disk, stays the operator's own copy, and is read by nothing. The choice is
+  made once per RUN by looking for that database, never per key, so nothing ever reads half from
+  each. `vike-cli secrets migrate` is the one act that creates it.
+
+**Do not tell a human to edit a file without checking which one answers.** `vike-cli secrets path`
+prints it; on a migrated box its `answers:` line names the database outright, and a
+`vike-cli secrets list` there warns that the file is no longer read.
+
+`<project>` is resolved at runtime by walking
+up for a project marker; `VIKE_SETTINGS_DIR` names the `settings` directory outright — the level
+holding the store, not `<project>` above it (https://vike.io/docs/trader/guides/arm-a-venue).
+
+Tell the human to ask the binary rather than guess, with these read-only commands on the box:
+
+```sh
+vike-cli secrets path       # where it resolved for THIS invocation, and its exposure
+vike-cli secrets template   # the key grid, empty values, to stdout
+vike-cli secrets list       # key NAMES only, never a value
+```
+
+⚠ Those three are read-only, but `vike-cli secrets` as a whole is NOT: `secrets set KEY` upserts
+ONE named key into an EXISTING store, taking the value from stdin or a named environment variable
+and never from the command line. It is the only credential writer anywhere, it cannot create the
+store and it cannot be aimed at another path. `template` still has no `--out` flag on purpose —
+that redirection truncates, so creating the file stays the human's editor's job. The whole verb,
+its refusals and what you must never do with a key is the `manage-the-credential-store` skill
+(https://vike.io/docs/trader/guides/arm-a-venue).
+
+Key facts for the human (from https://vike.io/docs/trader/guides/arm-a-venue):
+
+1. Names are `{VENUE}_{SIM|DEMO|LIVE}_API_KEY` / `_API_SECRET` / `_API_PASSPHRASE`; FX venues
+   have bespoke shapes, and a second account per venue appends `__{LABEL}` after the whole key.
+2. Required is per-venue: key + secret for binance, bybit and deribit; **OKX additionally
+   requires `_API_PASSPHRASE`**. A store with two of the three resolves `None` and the venue
+   stays paper exactly like an unconfigured one — `crates/vike-bridge-core/src/credentials.rs`'s
+   `missing_required_passphrase` names the missing variable at the mount.
+3. Absent credentials **are** the live gate: no store means every venue stays paper. A store that
+   exists and cannot be read is a different case and errors.
+4. **A `{VENUE}_MAINNET` name in the store still refuses startup — decision 0095 retired the switch,
+   it did not stop refusing it.** `crates/vike-config/src/arming.rs` refuses when one of the four
+   names (`BINANCE_MAINNET`/`BYBIT_MAINNET`/`OKX_MAINNET`/`HYPERLIQUID_MAINNET`) carries the exact
+   value `1`, anywhere in the store — not because it would arm anything (it arms nothing now, at any
+   layer), but because an operator who wrote it believes it still does something, and the refusal
+   names `policy.venues.<venue>` as the real lever instead of silently doing nothing. It is handed
+   the parsed credential map rather than a file, so the refusal is the same whether that map came
+   out of `secrets.env` or out of the database's `credential` table.
+
+## Gate 3 — check before starting
+
+Have the human run `vike-cli config check` (`crates/vike-cli/src/cmd/config/check.rs`): it
+resolves the same directory through the same loader as `config show` and returns an exit code. An
+absent store is `ok` (that is the live gate); a `VIKE_SETTINGS_DIR` naming a non-directory is a
+failure; an unreadable store is a warning that becomes a failure only on a box armed for live
+(https://vike.io/docs/trader/guides/arm-a-venue).
+
+## Verify afterwards — what `node_snapshot` can and cannot tell you
+
+After the human has made both edits and started the node, call **`node_snapshot`**. It takes no
+arguments (`inputSchema.properties` is empty in `tools_spec`) and reads the running node's live
+state: orders, positions, per-venue equity, recent events. It needs the server started with
+`--node <host:port>` plus `VIKE_TRADEHUB_OBSERVE_KEY`; if the key is set neither in the process
+environment nor in the node-key store, the tool error names both places and points at
+`vike-cli secrets path` / `vike-cli backend status` (`crates/vike-cli/src/cmd/mcp/tool_schemas.rs`'s
+`tools_spec`, `Server::ensure_observe`, `Server::missing_key`).
+
+The result is the node's `WireSnapshot` (`crates/vike-tradehub-client/src/wire.rs`) serialized
+as-is, plus a `pre_fold` flag. The tool waits only for the node's first frame on the connection —
+normally one round trip, never more than about two seconds.
+
+**If `pre_fold` is `true`, call again before you judge anything.** The frame carries nothing built
+(`seq: 0`): `venues`, `balance`, `equity_total` and `accounts_epoch` are placeholders, not
+readings, and `venues: []` does NOT mean a venue is unmounted. `identity` says which placeholder it
+is, and `pre_fold_note` says the same in words: with `identity` present it is the frame the node
+publishes before its first fold — the node is up and has built nothing yet; with `identity: null`
+it is this client's own placeholder, because no frame from the node arrived within the read's wait.
+A node that has nothing to fold yet (an idle paper node with no feed) can stay `pre_fold` until its
+first order, so if a stamped one persists, report "the node is up and has built nothing yet" rather
+than reading the empty lists (https://vike.io/docs/ai/trader/trading, `Server::tool_node_snapshot`).
+
+Read these fields, from a frame with `pre_fold: false`:
+
+1. `venues[]` — one ledger block per venue the node carries, each with `venue`, `balance`,
+   `equity`, `trading_state` and `positions`. A venue absent from this list is not mounted on
+   this node at all, whatever the files say. This holds only for a `pre_fold: false` frame.
+2. `identity.live` — `true` iff the daemon is LIVE (`flags.tradehub_live`), `false` = paper.
+   This is the **process-wide** gate, not the venue's tier.
+3. `fault` — set once a handler panicked; the core is halted in safe-state.
+4. `trading_state` and `recent_events` — the primary engine's state and the bounded journal tail.
+
+**What the snapshot does not carry:** a per-venue `paper` / `demo` / `live` tier. Nothing in
+`WireSnapshot` says which tier a venue mounted at, and the one per-venue `live` flag
+(`WireMountRow::live`, filled from the mount's arming record) rides on a different response, not
+on the snapshot. So report exactly what you can see — "the node is up, it carries these venues,
+`identity.live` is X" — and send the human to the node's own startup output for the tier. Do not
+infer "demo" or "live" from a balance or an equity number.
+
+## When it is still paper
+
+If the human says "I set it and it is still paper", `crates/vike-config/src/venue_arming.rs`'s
+`ArmingBlock` names one observable cause per variant (https://vike.io/docs/trader/guides/arm-a-venue):
+
+| Variant | Meaning | What the human checks |
+| --- | --- | --- |
+| `Disarmed` | the ceiling | the `policy.venues.<venue>` row (`vike-cli config show --filter policy`) |
+| `NoCredentials` | the store | `vike-cli secrets list` for the required names |
+| `FeatureAbsent` | this binary has no arm for the venue (`ibkr`, `polymarket`, `fxcm` features) | the build |
+| `LiveCredentialsAbsent` | decision 0095: for a CEX venue or hyperliquid, a `live` ceiling with only DEMO-tier keys stays PAPER — mainnet needs the venue's LIVE-tier key set specifically; aster falls to its testnet tier instead | which key TIER is in the store (`vike-cli secrets list`), not just which keys |
+| `LiveTierNotWired` | a LIVE-tier key set is stored and this venue's arm mounts only its demo tier (alpaca, ig, deribit, ibkr, ctrader, fxcm, oanda), so it stays PAPER and the daemon logs an `error!` | store the DEMO-tier keys to trade the demo account (oanda also needs its live-named key removed); that arm cannot trade the live account |
+| `LiveOnlyArm` | Polymarket runs no testnet | there is no `demo` for it |
+| `SdkAbsent` | FXCM without its linked SDK | the binary |
+
+## If the conversation goes on to placing an order
+
+Once the venue is armed, order placement is a separate skill and every write tool
+(submit_order, cancel_order, modify, flatten, market_exit, mass_cancel and
+set_trading_state — none of which this skill calls) is a two-call gate: call once without
+`confirm` and read `will_execute`
+(`false`), `node_verdict` and the `preview_token`; call again with both `confirm: true` and that
+exact `preview_token`. The token fires once, expires after 60 seconds and is bound to the command
+it previewed; `confirm: true` on its own returns another preview, not an error and not an
+execution. An `outcome: "unknown"` or a dropped-connection error means the command may have
+executed — call `node_snapshot` before retrying anything (`crates/vike-cli/src/cmd/mcp.rs`'s
+`Server::call_tool` and `crates/vike-cli/src/cmd/mcp/node_writes.rs`'s `Server::execute`). Even then, a ceiling still applies: a write tool
+cannot loosen it (https://vike.io/docs/ai/trader/tools).

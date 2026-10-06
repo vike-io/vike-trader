@@ -1,0 +1,47 @@
+[package]
+name = "vike-script"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false
+description = "Rhai-scripted strategies: run a Rhai script as a vike-model Strategy<B> (Studio SP1)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/arch/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# ⚠ WAS `engine` (30) until 2026-09-23, and the drop is a CEILING being tightened rather than
+# slack being released. This crate is the Rhai host: its normal dependencies are what a user's
+# script can reach, so its rank is a permission. At 30 that permission covered the whole
+# `domain` band — vike-data, vike-exec, vike-config, vike-catalog, vike-mm, vike-analytics — none
+# of which it names or should offer. At 20 it covers the vocabulary and the leaf band, which is
+# exactly its surface: `vike-indicators` (which moved to 15 with this change) and `vike-model`.
+# The residual, stated because a single threshold cannot express it: `vike-secrets` sits at 15
+# and is therefore still nameable. docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+vike-model = { path = "../vike-model" }
+vike-indicators = { path = "../vike-indicators" }
+rhai = { workspace = true }
+indexmap = { workspace = true }
+tracing = { workspace = true } # fail-safe warn/error on a runtime script error (RhaiStrategy::run_hook)
+
+[[bench]]
+name = "eval_overhead"
+harness = false
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# The starter templates' own compile+param gate builds a `RhaiStrategy<MockBroker>`. `vike-model` is
+# already this crate's normal dependency, so enabling its `test-support` feature for dev targets
+# adds NO package.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# `vike_log::capture::captured` — the workspace's ONE scoped `tracing` capture, which
+# `tests/script_print_is_not_stdout.rs` reads the redirected `print`/`debug` lines with. Unlike the
+# edge above, this one DOES add packages to this crate's test build (vike-log's subscriber tree —
+# none of them new to the workspace lockfile). Taken anyway because the alternative is the
+# hand-rolled collector this file used to carry, which could not hold against another thread's
+# uncaptured first hit without a second copy of the process-lifetime interest anchor.
+vike-log = { path = "../vike-log", features = ["test-support"] }

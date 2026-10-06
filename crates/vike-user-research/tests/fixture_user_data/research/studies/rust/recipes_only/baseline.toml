@@ -1,0 +1,6 @@
+# A RECIPES-ONLY folder — a named configuration with no Rust beside it. The scan must SKIP it
+# silently (no entry file, and no `.rs` at all), which is what tells it apart from the half-written
+# study `gen.rs` refuses. Recipes are loaded by whatever runs the study, never by the scan.
+venue = "binance"
+symbol = "ETHUSDT"
+period = 3

@@ -1,0 +1,52 @@
+tree
+version=v4
+num_class=1
+num_tree_per_iteration=1
+label_index=0
+max_feature_idx=2
+objective=binary sigmoid:1
+feature_names=Column_0 Column_1 Column_2
+feature_infos=[0:1] [0:9] [0:2]
+tree_sizes=0 0
+
+Tree=0
+num_leaves=1
+num_cat=0
+leaf_value=-0.40546510810816438
+is_linear=0
+shrinkage=1
+
+
+Tree=1
+num_leaves=3
+num_cat=1
+split_feature=1 2
+split_gain=10 5
+threshold=4.5 0
+decision_type=2 1
+left_child=1 -1
+right_child=-3 -2
+leaf_value=0.1 -0.2 0.3
+leaf_weight=3 4 5
+leaf_count=3 4 5
+internal_value=0 0.05
+internal_weight=12 9
+internal_count=12 9
+cat_boundaries=0 1
+cat_threshold=5
+is_linear=0
+shrinkage=0.1
+
+
+end of trees
+
+feature_importances:
+Column_1=1
+Column_2=1
+
+parameters:
+[boosting: gbdt]
+[objective: binary sigmoid:1]
+end of parameters
+
+pandas_categorical:null

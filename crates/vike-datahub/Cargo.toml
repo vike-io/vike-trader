@@ -1,0 +1,456 @@
+[package]
+name = "vike-datahub"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the DATA daemon: a headless server for a vike_data::HistStore over localhost TCP (length-prefixed serde_json frames). A client ships a small typed request and gets back the ANSWER — bars, ticks, a properties row, a catalog page, a coverage report — plus the two verbs that CHANGE the store (Backfill, DeleteSeries). Owns no engine and no collector; the seven COMPUTE verbs moved to `vike-backend backtest --addr` under ruling 7."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/arch/layer_gate.rs). Tier `daemon` — a headless top-of-graph binary: nothing may depend on it.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 65
+
+[dependencies]
+# The SHARED node-protocol substrate: the HMAC-SHA256 nonce-challenge handshake generalized over
+# its domain separator (`auth`) and the length-prefixed frame codec (`frame`). ⚠ Both were
+# `vike-datahub-client`'s until 2026-09-23 and moved to the crate BELOW both node protocols, so the
+# two clients could stop being a ladder; that crate's own doc carries the measurement. It names no
+# vike-* crate at all, so this edge adds no package to any graph that did not already carry
+# hmac/sha2/rand transitively.
+vike-node-proto = { path = "../vike-node-proto" }
+# The LIGHT client crate owns the wire protocol (`proto`), the `DatahubClient`, and `RemoteHistStore`
+# since Phase 2. The SERVER (server.rs) imports the proto from here (`vike_datahub_client::proto`) —
+# the ONE home of the wire schema; every consumer imports vike-datahub-client directly (this crate
+# re-exports nothing). It is DataFusion-free, so this edge adds no Arrow/DataFusion weight.
+vike-datahub-client = { path = "../vike-datahub-client" }
+# The domain types (down-only layering; surfaced by the profile/report the wire carries). No
+# unused_crate_dependencies lint in this workspace, so naming it is free even where a phase-1 file
+# does not reference it directly.
+vike-model = { path = "../vike-model" }
+# The `Instrument` the venue-catalog verb serves and the `catalog_availability` classification its
+# provider table is BUILT from — `docs/decisions/0062`'s decision 3 is enforced in
+# `CatalogTable::new`, which needs that function on every build, armed or not.
+#
+# ⚠ It adds NO PACKAGE: vike-catalog's whole dependency set is vike-model + serde + serde_json, all
+# three already here, and `vike-datahub-client` above already carries the same edge. Named directly
+# rather than reached through that crate because a `use vike_catalog::` needs a declared dependency,
+# and because the classification is consumed by THIS crate's own table constructor.
+vike-catalog = { path = "../vike-catalog" }
+# ⚠ THE `vike-backtest`, `vike-studio-core` AND `vike-script` EDGES ARE GONE — ruling 7 of
+# `docs/superpowers/specs/2026-09-09-datahub-market-data-wire-design.md` moved the seven compute
+# verbs to `vike-backend backtest --addr`. This crate served them by FORWARDING to those crates
+# (it never held an engine), so with the verbs gone the forwards are gone too: no harness, no
+# `run_slice`, and no process-wide Rhai indicator install, because this daemon no longer compiles a
+# client-supplied strategy at all. That is the whole point of the split for THIS crate — a data
+# server whose dependency tree no longer carries a script compiler.
+# The `HistStore` TRAIT only (the backend-agnostic seam the server holds as `Arc<dyn HistStore>`).
+# DEFAULT features — NO hist-datafusion here: the library never names the concrete backend, so the
+# concrete `DataFusionHist` stays a BIN concern behind `serve-datafusion`.
+vike-data = { path = "../vike-data" }
+# The store-touching ingest half of the kline pipeline: `kline_source::backfill_kline_source`, which
+# the backfill-on-demand verb (split-plane REQ-9) calls once per venue. OPTIONAL and enabled ONLY by
+# `backfill-serve` (below), which takes it FEATURE-LESS now: docs/decisions/0094 deleted
+# `venue-backfill`, the last feature this dependency ever named — it had pulled no bridge crate even
+# before the deletion (only `dep:vike-bridge-core`; its dispatch registry moved here, see
+# the next paragraph). The six kline bridge crates `backfill-serve` needs are that feature's OWN
+# direct `dep:` edges, a few lines down — this dependency contributes none of them. The dispatch
+# goes through `src/backfill.rs`'s feature-free `BackfillTable` seam, so `server.rs` names no
+# collector; only `backfill::real_backfill_table` (cfg `backfill-serve`) does.
+# ⚠ Since docs/decisions/0094 this is no longer where the kline COLLECTORS themselves come
+# from: the dispatch registry, `KLINE_SOURCES`, moved to THIS crate's own `src/backfill.rs` (below),
+# which now names every kline bridge directly. This edge survives for the one function every source
+# still shares.
+# NB the layer gate: vike-backfill moved from tier 65 to 55 (service-stacked) in the PR that added
+# this edge, then on down to 42 and, since docs/decisions/0094, to 30 — it was already
+# consumed as a LIBRARY by vike-app, so "daemon: nothing may depend on it" had stopped being its
+# truth before this edge existed.
+vike-backfill = { path = "../vike-backfill", optional = true }
+vike-log = { path = "../vike-log" } # tracing-native logging init — the BIN calls vike_log::init (see crates/vike-log)
+# The BUILD IDENTITY `--version` prints and the server logs on startup — which commit this binary
+# came from. A ZERO-dependency leaf; it adds no package to this crate's graph. It matters here for
+# the same reason it matters on the trading daemons: this server is DEPLOYED (the CI box, behind an SSH
+# tunnel, `deploy/vike-datahub.service`), so "is the running binary the code I pushed?" is a question
+# somebody asks it from a terminal.
+vike-buildinfo = { path = "../vike-buildinfo" }
+# The STARTUP SEQUENCE's one owner. The value of the edge is not the two lines it saves: it is that
+# the ways this root DEPARTS from the sequence (no removed-env refusal, no credentials, no
+# disclosure) become named arms with reasons instead of a prose comment nothing can check.
+# ⚠ "no settings" LEFT that list on 2026-09-16: `docs/decisions/0066` made the venue-catalog lane
+# default-ON, so its refusal is a settings key and this root takes `SettingsLoad::Load`. Its closure
+# (vike-config + vike-model + vike-secrets + vike-buildinfo) is already in this graph, so the edge
+# adds no package.
+vike-boot = { path = "../vike-boot" }
+# The stranded-venue-setting refusal (`vike_config::refuse_stranded_venue_settings`, decision 0095's
+# Task 7): this root loads no credential map at boot, so it runs that refusal itself over a scoped
+# read of the declared legacy names. ⚠ There was deliberately NO `vike-config` edge here until then —
+# the one field this root read (`booted.settings.flags.venue_catalog_off`) names no crate — and this
+# manifest said the edge would become necessary the day this root called a `vike_config` function;
+# this is that call. Already in this graph through vike-boot, so the edge adds no package.
+vike-config = { path = "../vike-config" }
+# This root's OWN credential loader (`Credentials::LoadWith` in the bin), reading the datahub node
+# keys `docs/decisions/0025-datahub-remote-posture.md` adopted. ⚠ `vike-secrets`, NOT
+# `vike-bridge-core::credentials`: the canonical wrapper drags the ureq/tungstenite/rustls transport
+# stack, which is absent from a DEFAULT vike-datahub graph and must not join it just to read a
+# `.env`. `vike-recorder`'s `webhook_targets` reads the store the same way for the same reason, and
+# vike-secrets names nothing above the vocabulary floor and is already in this crate's closure
+# through vike-boot and vike-config — so the edge adds no package.
+# ⚠ That read "vike-secrets is a ZERO-vike-dependency leaf" until decision 0072 (accepted
+# 2026-09-20) admitted vike-model there. The CONCLUSION is untouched and is now true for a reason
+# that can be checked rather than one that had to be restated: the property is the RANK (tier
+# `leaf` names at most the vocabulary floor, machine-checked by
+# `crates/vike-ops/tests/arch/layer_gate.rs`), and the one edge it gained is vike-model, which this
+# manifest declares outright — so the edge still adds no package.
+vike-secrets = { path = "../vike-secrets" }
+# RULING 10 — the RECORDING plane's library half: the subscription profile, the family membership,
+# the sessions, the runtime and the venue-free family resolvers. OPTIONAL, and enabled only by
+# `record` below, because a data server that records nothing carries no recording plane at all.
+#
+# ⚠ It names NO bridge since decision 0092 (one venue client per process): the recording table —
+# the one place a venue is named for recording — moved to `crates/vike-datahub/src/recording.rs`,
+# and every recorder feed takes its client from `crate::feeds`' broker, so this edge drags no venue
+# tree. The bridges arrive through the `venue-<v>` features each `record-<v>` implies (below), which
+# is the same arm the market-data plane links.
+#
+# ⚠ THE LAYER. This edge is why `vike-recorder` moved from tier 65 (`daemon`) to 55
+# (`service-stacked`): both crates declared 65, `crates/vike-ops/tests/arch/layer_gate.rs` fails on
+# `to >= from`, and 65 means "a headless top-of-graph binary: only the layer-68 dispatcher may
+# depend on it" — so no edge in EITHER direction was available while both claimed to be daemons.
+# The tier follows the ROLE: the recorder's `[[bin]]` retired into this crate, so it is a library
+# now and ranks as one. `vike-backfill` (below) made the identical move for the identical reason.
+# (It went on down — 55 -> 42 `collector` on 2026-09-20, then 42 -> 25 `domain-stacked` on decision
+# 0092, once it named no bridge; `crates/vike-recorder/Cargo.toml`'s layer comment carries both.)
+vike-recorder = { path = "../vike-recorder", optional = true }
+# The silence watchdog's DELIVERY half, reached from `recorder::webhook_targets`: this root resolves
+# the `VIKE_ALERT_*` targets out of the credential store and hands them to `RecorderAlerts::mount`,
+# which is where the settings-registry rule puts an I/O-performing configuration read —
+# `vike_alerting::webhook_configs_from_env` is PURE over a caller-supplied map and the alerting
+# library opens no store itself. No feature qualifier, because there is nothing to qualify:
+# vike-alerting has no features and names no vike-* crate in any build, which is the whole reason
+# it was split out of vike-ops — a watchdog pages without the trading core. ⚠ This said "DEFAULT
+# FEATURES ON PURPOSE … `features = ["core"]` is that crate's only vike-* edge (vike-core +
+# vike-model)" until 2026-09-28; `core` and both of its edges were deleted on 2026-09-23. OPTIONAL
+# under the same `record` gate — a serve-only build pages nobody.
+vike-alerting = { path = "../vike-alerting", optional = true }
+# The graceful stop the recording plane owes an operator: `vike_ops::stop` (one stop flag, many
+# triggers — SIGTERM/SIGINT raise the SAME flag the stdio `quit` word does) and
+# `vike_ops::shutdown::run_with_deadline` (so the final Parquet flush cannot outrun the unit's
+# `TimeoutStopSec=` and be SIGKILLed mid-write). `crates/vike-ops/tests/deploy/graceful_stop_pin.rs` is
+# what holds this daemon to ONE signal surface rather than a private handler.
+#
+# Taken WITHOUT a feature qualifier since 2026-09-26. It carried `default-features = false` — and
+# a paragraph arguing it was LOAD-BEARING — while vike-ops' default `full` feature was the
+# OPERATIONAL half (vike-core -> vike-exec, vike-data, vike-alerting -> ureq), because this daemon
+# places no orders, holds no trading credentials and must not link the live core to obtain a stop
+# flag. That property holds by construction now: vike-ops has no features at all and sits at tier
+# `leaf` — std, vike-model (already here) and the per-platform stop-signal pair — so there is no
+# heavy half left to turn off. OPTIONAL under the same gate as vike-recorder: a serve-only build
+# installs no handler at all (see `crate::recorder::arm` for why that is deliberate rather than an
+# omission).
+vike-ops = { path = "../vike-ops", optional = true }
+# The wire proto (Request/Response derive + framing) moved to vike-datahub-client (Phase 2), so this
+# crate no longer needs the `serde` DERIVE dep directly. It still serializes the report ANSWER, so it
+# keeps `serde_json`: server.rs does `serde_json::to_string(&BacktestReport)`.
+serde_json = { workspace = true }   # the frame decode site (server.rs) + the re-exported frame codec
+# ...and `serde` itself again, for its TRAIT rather than its derive: the byte-aware reply cap
+# (server/range_reads.rs's `fit_to_frame`) bounds each row by `serde::Serialize` to count its exact JSON without
+# building it. Already in the lockfile through every serde_json user, so no new package.
+serde = { workspace = true }
+# ⚠ NO `rand` any more. `fresh_nonce` MOVED to `vike_datahub_client::node_auth` when ruling 7 gave
+# the node protocol a SECOND server: `vike-backtest` may not name an RNG at all
+# (`crates/vike-ops/tests/hygiene/clock_pin.rs`, which is right — it is a determinism-critical crate), so the
+# generator had to go to the crate below both. This one follows it rather than keeping a second copy,
+# and drops the dependency with it. (It moved again on 2026-09-23, with the rest of the shared
+# handshake, to `vike_node_proto::auth` — the crate below both node protocols.)
+# tracing facade for connection-boundary spans/events in the server (subscriber lives in vike-log);
+# same split every library crate uses. NOT a new transport/stack dep — the workspace-pinned facade.
+tracing = { workspace = true }
+
+# THE MARKET-DATA PLANE'S VENUE BRIDGES (`live-feeds`, below) — the FEEDS half of each, and nothing
+# else. Every one is `default-features = false`, which is ruling 8's compiled benefit actually taken:
+# a feeds build of these crates carries no signed REST client, no private user-data pump, no
+# `ws_auth`, no `key_permissions` and no reconcile client — precisely the objection
+# `crates/vike-recorder/src/lib.rs`'s verdict raises about dependency trees audited by `cargo deny`
+# on the box that signs real orders.
+#
+# ⚠ polymarket is spelled with an explicit `feeds` (on its feature row) rather than
+# `default-features = false`, because its default is EMPTY: a no-feature build of that crate is an
+# empty crate, and `feeds` is the opt-in keyless market-data plane (`polymarket` would imply it AND
+# link the k256/keccak signer).
+#
+# ⚠ **A `record-binance` build used to unify binance's `exec` BACK ON**, because
+# `crates/vike-recorder/Cargo.toml` declared `vike-binance` with DEFAULT features and resolver-2
+# unions features across the graph — a gap in ruling 8's delivery that this manifest could not fix.
+# Decision 0092 closed it by removing the edge rather than trimming it: the recorder names no bridge
+# now, and `record-binance` reaches binance only through `venue-binance` below, i.e. this
+# `default-features = false` row. (The structural tree check still greps only the EIP-712 crates,
+# for `live-feeds`' own reason: binance's feeds and default trees are identical at crate
+# granularity, so a crate-name grep could not see `exec` either way.)
+vike-binance = { path = "../bridges/binance", default-features = false, optional = true }
+vike-bybit = { path = "../bridges/bybit", default-features = false, optional = true }
+vike-okx = { path = "../bridges/okx", default-features = false, optional = true }
+vike-aster = { path = "../bridges/aster", default-features = false, optional = true }
+vike-hyperliquid = { path = "../bridges/hyperliquid", default-features = false, optional = true }
+vike-polymarket = { path = "../bridges/polymarket", optional = true }
+# backfill-serve: DeribitKlines is a KLINE_SOURCES row (docs/decisions/0094). `default-features =
+# false`, like the five bridges above it: deribit's default-on `exec` feature is the same feeds/exec
+# seam theirs is (given to it as a 0094 follow-up), so this edge asks for the keyless read half
+# only — no authed order transport, no private fill pump, no reconcile client. The one path
+# `backfill-serve` reaches, `DeribitKlines::fetch`, is keyless.
+# ⚠ `venue-deribit` (the market-data plane, below) is the SECOND reason this edge exists, and it
+# reaches `market_feed::Feeds` — keyless public sockets onto `www.deribit.com`, the same feeds-only
+# half. Still no order transport: `exec` stays off, and nothing in this daemon names the authed
+# half. There is no `record-deribit`: the recorder has no deribit row
+# (`crates/vike-datahub/src/recording.rs`'s `build_recording_feed`), which is why this venue joins
+# `live-*` and `venue-*` and not the `record-*` pair.
+vike-deribit = { path = "../bridges/deribit", default-features = false, optional = true }
+
+# THE TWO BUNDLED-CATALOG BRIDGES (`catalog-serve`, below). ⚠ They are here for a REASON THE SIX
+# ABOVE DO NOT SHARE: this daemon runs no dukascopy or fxcm LIVE market-data feed — these edges exist
+# so `catalog::real_catalog_table` can name two providers that are BUNDLED STATIC TABLES
+# (`crates/bridges/dukascopy/src/catalog.rs`'s `FX_TABLE`, `crates/bridges/fxcm/src/catalog.rs`'s
+# `FX_TABLE`), and — dukascopy only, since docs/decisions/0094 — so `backfill-serve`'s `TickBars`
+# lane can call `vike_dukascopy::fetch_quotes_range`. The catalog entries make zero venue requests,
+# zero credential reads, zero network: the cheapest possible entries in any provider table, which is
+# exactly what `crates/vike-catalog/src/availability.rs` records for both.
+#
+# ⚠ NO `default-features = false`, unlike the six above, and that is not an oversight — **there is
+# nothing to turn off**. Neither crate declares a `feeds`/`exec` seam: `vike-exec`,
+# `vike-bridge-core` (default `full`) and `vike-catalog` are unconditional normal deps of both.
+# MEASURED against the `catalog-serve` tree in a the CI box lane: fxcm adds NO third-party package at
+# all, dukascopy adds three (`lzma-rs`, `crc`, `crc-catalog`, for the `.bi5` decode its catalog
+# provider never calls and the tick lane does; `chrono`/`iana-time-zone` are already in the tree that ships, via
+# arrow/datafusion).
+#
+# ⚠ **fxcm compiles NO C++ through this edge.** `crates/bridges/fxcm/build.rs` returns immediately
+# when `CARGO_FEATURE_FXCM` is unset, and that feature is reachable only through `vike-tradehub`'s
+# `fxcm`. So a standalone `-p vike-datahub --features catalog-serve` build — which is what the
+# `venue-catalog` CI lane runs — builds no shim, links nothing native, and needs no SDK staged.
+vike-dukascopy = { path = "../bridges/dukascopy", optional = true }
+vike-fxcm = { path = "../bridges/fxcm", optional = true }
+# THE CREDENTIALED HISTORY LANE (`backfill-serve`, below; docs/decisions/0097): `backfill::
+# real_backfill_table`'s one `BackfillLane::CredentialedKlines` row builds `vike_oanda::OandaKlines`
+# around a token provider this crate's root fills from a scoped read of the ONE practice-tier key
+# (`vike_oanda::oanda_history_token_names`), per request. The lane builds that source and nothing
+# else from this crate: no exec client, no live feed, no reconcile client.
+#
+# ⚠ NO `default-features = false`, for dukascopy's reason above — **there is nothing to turn off**:
+# the crate declares no features at all (no feeds/exec seam, its own CLAUDE.md), so the edge is
+# taken whole and the daemon links order code the lane never calls. Its closure — vike-exec,
+# vike-bridge-core (and ureq through it), vike-catalog, vike-data, serde_json, tracing — is already
+# in every `backfill-serve` tree, through dukascopy's edge and this crate's own, so the one new
+# package is `vike-oanda` itself, and none at all in the shipped multicall, which already links it
+# through vike-tradehub's mount.
+vike-oanda = { path = "../bridges/oanda", optional = true }
+
+# THE ARCHIVE IMPORT LANE's confined open (`crate::import::walk`'s `open_no_follow`), unix only, for
+# CONSTANTS and nothing else: `libc::O_NOFOLLOW | libc::O_NONBLOCK` for the open and `libc::ELOOP`
+# to name what a symlink at the last component answers — the design's §2.3, which names exactly this
+# precedent (`crates/bridges/ctrader/Cargo.toml`'s row, for `ctrader_authorize`'s `write_private`).
+# There is no std spelling of either flag: `OpenOptionsExt::custom_flags` takes a raw `i32` whose
+# value is per-platform. No `unsafe` — the identity check is `File::metadata` and `MetadataExt`.
+# ZERO new packages: libc is a direct workspace dependency of vike-core and already in Cargo.lock,
+# so the `cargo deny --all-features` audit surface is unchanged.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+# The DataFusion-free in-memory `HistStore` double (behind vike-data's `test-support` feature) the
+# hermetic roundtrip test drives the server over — no prod store, no network beyond loopback.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# The PR-3 `run_slice_roundtrip` parity test seeds a real `DataFusionHist` over a temp dir (the
+# `MemHistStore` double cannot store bars — its `load_bars`/`append_bars` are inert stubs — so a
+# meaningful bar/tick run needs the concrete store). That test is `#[cfg(feature = "serve-datafusion")]`,
+# which turns `hist-datafusion` ON, making `DataFusionHist` nameable. Workspace-standard test-only
+# dev-dep (same `tempfile = "3"` vike-studio-core/vike-backtest use for their store fixtures).
+tempfile = "3"
+# `tests/archive_import.rs` writes REAL `.bi5` daily files for the import lane to read: an LZMA-alone
+# stream around synthetic records, the format the vendor's archive holds. The encoder of the crate
+# whose decoder the bridge already uses — already in Cargo.lock through vike-dukascopy, so ZERO new
+# packages, and dev-only, so no shipped build compiles it.
+lzma-rs = { workspace = true }
+vike-bridge-core = { path = "../vike-bridge-core" } # tests/poly_taker_hold_live_smoke.rs names its REST transport (docs/decisions/0094 moved the smoke here); dev-only, so the default build stays bridge-core-free
+# `vike_log::capture::captured`, the workspace's ONE scoped `tracing` capture, which the OANDA
+# history lane's tests (`src/datahub_cli_tests.rs`) read the lines a credential read logs with.
+# vike-log is already a NORMAL dependency above; this dev edge only turns its `test-support` on for
+# test builds, so it adds no package and no shipped build compiles the capture.
+vike-log = { path = "../vike-log", features = ["test-support"] }
+
+[features]
+# Compile the BIN's real DataFusion-backed server. Turns on `vike-data/hist-datafusion` so this
+# crate's own source may name `vike_data::DataFusionHist` / `DataFusionHist::open`; the bin's real
+# `main` is `#[cfg(feature = "serve-datafusion")]` and the default (feature-off) build produces an
+# inert stub `main` that prints a rebuild hint and exits.
+#
+# This gate is LOAD-BEARING for DataFusion: this crate has no edge to `vike-backtest` at all (ruling
+# 7 removed it) and never did, so nothing about that crate's own feature shape — trait-only default,
+# `hist-datafusion` behind its own `datafusion-store` — reaches here by unification in an isolated
+# `cargo build -p vike-datahub`. A default build of THIS crate is DataFusion-free and ONLY
+# `serve-datafusion` pulls the DataFusion/Arrow/Parquet tree — which is also exactly what makes the
+# concrete `DataFusionHist` nameable in the bin.
+#
+# ⚠ It no longer enables `vike-studio-core`/`vike-script`: ruling 7 took the compute verbs (and with
+# them `src/wire_run.rs` and the Rhai indicator install) off this daemon, so the only thing this
+# gate still buys is the concrete store backend the bin opens. See the dependency block above.
+serve-datafusion = ["vike-data/hist-datafusion"]
+
+# The backfill-on-demand verb's SERVING half (split-plane REQ-9): compile the real collector table
+# (`backfill::real_backfill_table`, folding this file's own `KLINE_SOURCES`) and have the bin mount
+# it, which is what makes `serve` advertise + answer `Request::Backfill`. REQUIRES `serve-datafusion`
+# twice over: the collectors write a concrete `DataFusionHist` (their signature names it), and a
+# backfill server that could not then SERVE what it fetched would be a contradiction. A default or
+# plain `serve-datafusion` build compiles none of the collector tree and answers `Backfill` with a
+# clean refusal naming this feature (and does not advertise `backfill` in Welcome.features — the
+# verb is capability-negotiated, not version-gated).
+# ⚠ Since docs/decisions/0094 this feature names every kline bridge crate directly
+# (`dep:vike-binance` and five siblings below) — `vike-backfill` no longer names a single one. It
+# stays in this list for `kline_source::backfill_kline_source`, the store-write half every source
+# still shares.
+# ⚠ `dep:vike-dukascopy` joined by the same record: dukascopy's `BackfillLane::
+# TickBars` row (`backfill::real_backfill_table`'s last line) calls `vike_dukascopy::
+# fetch_quotes_range` directly rather than folding `KLINE_SOURCES` — it carries no `KlineSource`
+# impl, so it is not one of the "five siblings" above. The `vike-dukascopy` dependency row (above,
+# with `catalog-serve`'s other reasons for it) already existed for that feature; this one just
+# claims it too.
+# ⚠ `dep:vike-oanda` joined by docs/decisions/0097, for the CREDENTIALED lane's one hand-written
+# row (`backfill::real_backfill_table`'s last line). It is the first collector here that reads a
+# secret, so it is the one `KlineSource` impl that is deliberately NOT a `KLINE_SOURCES` row: a
+# registry row would put it on the chart seed's lane. `xtask/src/ci/tables.rs`'s `backfill-serve`
+# suite names the crate as a trigger for the same reason it names every other bridge this feature
+# turns on: an optional edge contributes no reverse edge to CI's affected-set walk.
+backfill-serve = ["serve-datafusion", "dep:vike-backfill", "dep:vike-binance", "dep:vike-bybit", "dep:vike-okx", "dep:vike-aster", "dep:vike-hyperliquid", "dep:vike-deribit", "dep:vike-dukascopy", "dep:vike-oanda"]
+
+# RULING 10 — compile the RECORDING plane: `crate::recorder` (the retired `vike-recorder` daemon
+# body), its `--record` wiring in `datahub_cli`, and the graceful stop the two need.
+#
+# REQUIRES `serve-datafusion`, and not as tidiness: `RecorderSink` writes a concrete
+# `DataFusionHist` (`vike_data::rec::live_rec`'s signature names it), and a daemon that recorded a tape
+# it could not then SERVE would be the exact contradiction this merge exists to remove.
+#
+# ⚠ `record` ALONE compiles the mount with NO venue in it. That is a real configuration rather than
+# an oversight — it is what a build that only wants the profile validation, the watchdogs and the
+# stop path takes — and a profile naming a venue such a build cannot serve is a startup ERROR
+# naming the missing feature (`crates/vike-datahub/src/recording.rs`'s `missing_feature`), never a
+# silent no-record.
+record = ["serve-datafusion", "dep:vike-recorder", "dep:vike-ops", "dep:vike-alerting"]
+
+# The venues this daemon can record, one feature each: the recording plane plus the broker's client
+# arm for that venue (`src/feeds/venues.rs`'s `build_client`), which is the SAME arm `live-<venue>`
+# links — decision 0092, one venue client per process. The row that turns a profile subscription
+# into a feed is `src/recording.rs`'s `build_recording_feed`.
+#
+# ⚠ THE NAMES CARRY A `record-` PREFIX, deliberately. A bare `polymarket` here would sit beside
+# `vike-polymarket`'s EXEC plane — the k256/keccak signer this daemon must never link — and a
+# feature called `polymarket` on a process that also serves a store write is a name that invites
+# exactly that mistake. The prefix says which plane.
+record-polymarket = ["record", "venue-polymarket"]
+record-binance = ["record", "venue-binance"]
+
+# THE LIVE MARKET-DATA PLANE — the md hub, its sink, its mailbox, its publish tick, its reconciler
+# and the server's `MdSubscribe` arm (the datahub market-data wire design, §4–§8).
+#
+# ⚠ **It gates ONE FUNCTION, not the plane.** `crates/vike-datahub/src/md/` is FEATURE-FREE and
+# compiles on a default build; only `feeds::venues::build_client`'s per-venue ARMS are behind the
+# `venue-<venue>` features below, which each `live-<venue>` implies, and `md::venues::supported`'s
+# rows behind the `live-<venue>` features themselves. §8 item 4 specified `#[cfg]` on `MdHub` itself, and that cannot
+# work: the type appears in `server::serve_authed`'s public signature, so gating it would force a cfg
+# at every call site and on `handle_connection`'s `MdSubscribe` arm — and cfg-ing that arm away
+# breaks leg (3) of `FEATURE_MARKET_DATA`'s contract, under which a build with no plane must still
+# DECODE the verb and refuse it cleanly. It is `BackfillTable`'s rule, re-applied: the TYPE is
+# feature-free, only the constructor naming the venues is gated. Two wins fall out — the hub's own
+# test suite runs on the DEFAULT build (i.e. in the derived roster lane, on every PR, over a scripted
+# `DataClient` double), and "a default build gains nothing" becomes a `cargo tree` property rather
+# than a promise.
+#
+# ⚠ **It does NOT require `serve-datafusion`, and that is the point of the gate.** `record` requires
+# it because `RecorderSink`'s signature NAMES a concrete `DataFusionHist`; the md plane writes
+# NOTHING to the store — it folds venue frames in memory and pushes them to a socket — so the
+# contradiction that justifies `record`'s coupling does not exist here. Keeping them independent is
+# what makes the structural `cargo tree` check in `scripts/ci_feature_suite.sh`'s `live-feeds` arm
+# meaningful.
+#
+# ⚠ `live-feeds` ALONE compiles the plane with NO venue in it. A real configuration, exactly as
+# `record` alone is: `md::venues::market_builder` then errors BY NAME, naming the missing
+# feature and the supported set, and never silently serves nothing.
+live-feeds = []
+
+# ⚠ THE NAMES CARRY A `live-` PREFIX AND THE BRIDGES' DO NOT — the identical argument
+# `record-polymarket` makes above, now doing double duty. On `vike-binance`, `exec` can only mean the
+# order plane. Here a bare `binance` would sit beside `record-binance` AND beside the venue's own
+# EXEC plane this daemon must never link, and a bare venue name on a process that also serves a store
+# write is a name that invites exactly that mistake. The prefix says which plane, inside a process
+# that now has two venue-linking families.
+live-binance = ["live-feeds", "venue-binance"]
+live-bybit = ["live-feeds", "venue-bybit"]
+live-okx = ["live-feeds", "venue-okx"]
+live-aster = ["live-feeds", "venue-aster"]
+live-hyperliquid = ["live-feeds", "venue-hyperliquid"]
+live-polymarket = ["live-feeds", "venue-polymarket"]
+live-deribit = ["live-feeds", "venue-deribit"]
+
+# One VENUE CLIENT per feature — the broker's table (`src/feeds/venues.rs`'s `build_client`). Named
+# apart from `live-`/`record-` because since the feed broker BOTH planes take their client from it: a
+# plane feature says what the process SERVES, a venue feature says what it LINKS. Each `live-<v>`
+# above implies its `venue-<v>`, so every external spelling (`crates/vike/Cargo.toml`, every CI lane)
+# is unchanged and still compiles the same arms.
+venue-binance = ["dep:vike-binance"]
+venue-bybit = ["dep:vike-bybit"]
+venue-okx = ["dep:vike-okx"]
+venue-aster = ["dep:vike-aster"]
+venue-hyperliquid = ["dep:vike-hyperliquid"]
+venue-polymarket = ["dep:vike-polymarket", "vike-polymarket/feeds"]
+venue-deribit = ["dep:vike-deribit"]
+
+# THE VENUE-CATALOG PROVIDER TABLE (`docs/decisions/0062`): compile
+# `catalog::real_catalog_table`, the one function that NAMES the six bridge catalog providers, and
+# have the bin mount it — which is what makes `serve` able to answer `Request::VenueCatalog` with a
+# listing rather than a `NotServed`.
+#
+# ⚠ **Six of the eight are the SAME feeds-half bridge crates `live-feeds` already pulls.** Every one
+# of those declares `pub mod catalog;` UNGATED, so a `default-features = false` (feeds) build
+# already compiles the provider — for those six this feature adds no dependency at all, only the
+# names.
+#
+# ⚠ **dukascopy and fxcm are the two that ARE new edges**, and they are here because they are the
+# cheapest entries in the whole roster rather than in spite of a cost: both catalogs are BUNDLED
+# STATIC tables, zero venue requests, no credential, no rate budget. Their dependency and build
+# cost is MEASURED on the two dep rows above. They were absent from the first cut of this table
+# purely because this crate did not depend on those two bridges, which `real_catalog_table`'s own
+# doc called "the obvious next increment".
+#
+# That leaves exactly ONE publicly-enumerable venue outside the table — deribit — and it is left
+# out deliberately: it is the one venue the DESKTOP still links and routes `Direct`, so a server
+# entry for it would be a dependency nothing asks for. `real_catalog_table`'s doc enumerates all
+# three absence classes.
+#
+# ⚠ It deliberately does NOT require `serve-datafusion`, and the contrast with `backfill-serve` and
+# `record` is the argument: both of those require it because their signatures NAME a concrete
+# `DataFusionHist` — they write the store. This verb writes NOTHING (0062's decision 1), so the
+# coupling that justifies theirs does not exist here. It is `live-feeds`' shape, for `live-feeds`'
+# reason.
+#
+# ⚠ `catalog-serve` FILLS the table; it does not decide whether the lane runs. Since
+# `docs/decisions/0066` the lane is ON BY DEFAULT and the switch is its REFUSAL —
+# `flags.venue_catalog_off` (or `VIKE_DATAHUB_VENUE_CATALOG_OFF=1`), a SETTING rather than a
+# variable. `docs/decisions/0035`'s argument is unchanged and now governs the refusal instead: a
+# build feature cannot be the switch in EITHER direction, because the image ships every feature, so
+# gating on `catalog-serve` alone would be ON by default exactly where it matters most.
+# A build WITHOUT this feature still serves: every venue answers `NotServed` with an empty
+# supported set, which is what tells the operator the build is wrong
+# (`docs/decisions/0013-degrade-vs-refuse.md`).
+catalog-serve = [
+    "dep:vike-binance",
+    "dep:vike-bybit",
+    "dep:vike-okx",
+    "dep:vike-aster",
+    "dep:vike-hyperliquid",
+    "dep:vike-polymarket",
+    "vike-polymarket/feeds",
+    "dep:vike-dukascopy",
+    "dep:vike-fxcm",
+]
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is the
+# sole crate that does NOT inherit this.
+[lints]
+workspace = true

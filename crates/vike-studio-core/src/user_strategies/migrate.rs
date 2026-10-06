@@ -1,0 +1,347 @@
+//! The ONE-TIME migration off `studio_strategies.json` into `user_data/strategies/`.
+//!
+//! # The two entry kinds are not the same kind of thing, and that is the whole design
+//!
+//! The legacy blob holds one row per "saved strategy", but `StrategySource` splits them into two
+//! populations that only look alike (`crates/vike-studio/src/panes/saved.rs`'s `SavedStrategy`):
+//!
+//! * **Rhai** — a row that carries the SCRIPT. It genuinely is a strategy, and it becomes a
+//!   strategy folder: `strategies/rhai/<name>/<name>.rhai`.
+//! * **Native** — a row that carries a `vike_backtest::harness::registry` NAME plus free-form
+//!   param rows. It carries no code and cannot: the strategy is compiled into the binary. What the
+//!   user actually authored is the PARAMETER SET, so the row becomes a preset FOR that registry
+//!   strategy: `strategies/rust/<native>/<entry-name>.toml`. Migrating it as a strategy folder
+//!   would produce an empty folder named after something the user never wrote.
+//!
+//! ⚠ **Consequence, and a future rust-side loader must know it:** a folder under
+//! `strategies/rust/` created by this migration holds presets and NO `<name>.rs` entry file,
+//! because the strategy it presets lives in the binary's registry. That is a legitimate second
+//! shape for that tree, not a broken strategy — a rust loader that copies this module's
+//! `LoadDiagnostic::MissingEntry` rule verbatim would report every migrated native entry as an
+//! error.
+//!
+//! # Free-form text rows into TOML
+//!
+//! The JSON's `params` are `Vec<(String, String)>` — deliberately TEXT, because there is no
+//! `ParamSpec` seam to type them against (`crates/vike-studio-core/src/spec.rs`'s module doc is the
+//! authority). The migration must not invent one either, so it reuses the EXACT function the
+//! Studio uses at run time, `crates/vike-studio-core/src/spec.rs`'s `params_from_rows`, and
+//! serialises its output. That is what makes the migrated preset MEAN the same thing as the JSON
+//! row it came from: `2` stays an integer, `true` stays a bool, and a bare `BTCUSDT` — not valid
+//! TOML on its own — becomes the quoted string the run-time path would have made of it. Anything
+//! else (a value with a quote in it, a leading `#`) is quoted and escaped by the TOML serialiser,
+//! which is the point of going through a `toml::Value` rather than pasting text into a template.
+//!
+//! # Idempotent, and the JSON is never touched
+//!
+//! [`apply_migration`] writes a file only when NOTHING is at that path — a second run writes
+//! nothing and reports every target as [`MigrationSkip::AlreadyPresent`], and a user's later edits
+//! to a migrated file are safe. It never reads, writes, moves or deletes `studio_strategies.json`:
+//! this module does not even take its path. A migration that consumes its source cannot be re-run
+//! and turns a rollback into data loss, and the JSON stays the read-only fallback for a build the
+//! user rolls back to.
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
+use vike_model::paths::state_path::{RHAI_SUBDIR, RUST_SUBDIR, STRATEGIES_SUBDIR};
+
+use crate::spec::params_from_rows;
+
+/// One row of the legacy list, in the shape this migration reads.
+///
+/// Deliberately NOT `vike_studio::panes::saved::SavedStrategy`: that type lives one layer UP, in
+/// the egui crate that owns the JSON schema and its back-compat contract, and this crate cannot
+/// depend on it. Keeping the schema in exactly one place and taking already-parsed rows here also matches
+/// how the rest of this workspace draws the line — the caller owns the I/O and the library takes
+/// data (see `crates/vike-ops/tests/settings/settings_registry.rs`'s rule for the environment twin of it).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LegacyEntry {
+    /// The name the user gave the row in the Studio's Saved pane. Free text — it has never been
+    /// constrained to anything a filesystem accepts, which is what [`slug`] exists for.
+    pub name: String,
+    pub body: LegacyBody,
+}
+
+/// Which population a [`LegacyEntry`] belongs to — see the module doc on why they migrate to
+/// different places.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LegacyBody {
+    /// A Rhai script: the row IS a strategy.
+    Rhai { code: String },
+    /// A registry strategy name plus its free-form `(key, value-text)` param rows: the row is a
+    /// PRESET.
+    Native { native: String, params: Vec<(String, String)> },
+}
+
+/// One file the migration intends to write.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlannedFile {
+    /// RELATIVE to `<project>/user_data`, so the plan is pure and a test can read it without a
+    /// filesystem. [`apply_migration`] joins the root — which is also what confines every write
+    /// under it.
+    pub path: PathBuf,
+    pub contents: String,
+    /// The JSON row this came from, so a skip or collision names something the user recognises
+    /// from the Saved pane rather than a path they have never seen.
+    pub entry: String,
+}
+
+/// What the migration WOULD do — the pure half.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MigrationPlan {
+    pub files: Vec<PlannedFile>,
+    /// Rows that cannot be planned at all. [`apply_migration`] appends its own write-time skips to
+    /// these, so a caller reports ONE list.
+    pub skipped: Vec<MigrationSkip>,
+}
+
+/// What the migration did NOT do, NAMED — one variant per reason.
+///
+/// The first three come from [`plan_migration`] and the last two only from [`apply_migration`];
+/// they share an enum because a caller reports them together and a person reading the report is
+/// asking one question ("where did my saved strategy go?").
+#[derive(Debug, Clone, PartialEq)]
+pub enum MigrationSkip {
+    /// The row's name has no filesystem-safe form at all — it was blank, or made entirely of
+    /// characters a path cannot hold.
+    Unnameable { entry: String },
+
+    /// A native row whose registry name is blank: there is nothing for the preset to belong to.
+    NamelessNative { entry: String },
+
+    /// Two rows plan the SAME file. Reachable because saved names were never unique-constrained,
+    /// and because `slug` maps distinct names onto one stem (`my strat` and `my/strat` both become
+    /// `my-strat`). The first row wins; the second is reported.
+    Collision { entry: String, path: PathBuf, first: String },
+
+    /// Something is already at the target path. THE idempotency arm: a re-run reports every file
+    /// this way and writes nothing, and a user's edits to a migrated file are never overwritten.
+    AlreadyPresent { entry: String, path: PathBuf },
+
+    /// The directory or the file could not be written.
+    WriteFailed { entry: String, path: PathBuf, error: String },
+
+    /// A native row's params could not be serialised to TOML. Nothing is lost: the JSON is still
+    /// there, untouched, and the row can be re-created by hand from the message.
+    PresetNotSerializable { entry: String, error: String },
+}
+
+impl std::fmt::Display for MigrationSkip {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MigrationSkip::Unnameable { entry } => write!(
+                f,
+                "'{entry}': not migrated — the name has no usable filename form; rename it in the \
+                 Saved pane and migrate again"
+            ),
+            MigrationSkip::NamelessNative { entry } => write!(
+                f,
+                "'{entry}': not migrated — a native entry with no registry strategy name has \
+                 nothing to be a preset for"
+            ),
+            MigrationSkip::Collision { entry, path, first } => write!(
+                f,
+                "'{entry}': not migrated — '{first}' already claims {}; rename one of them",
+                path.display()
+            ),
+            MigrationSkip::AlreadyPresent { entry, path } => {
+                write!(f, "'{entry}': already migrated — {} exists, left untouched", path.display())
+            }
+            MigrationSkip::WriteFailed { entry, path, error } => {
+                write!(f, "'{entry}': could not write {} — {error}", path.display())
+            }
+            MigrationSkip::PresetNotSerializable { entry, error } => {
+                write!(
+                    f,
+                    "'{entry}': not migrated — its params are not expressible as TOML: {error}"
+                )
+            }
+        }
+    }
+}
+
+/// What the migration actually did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MigrationOutcome {
+    /// Absolute paths written by THIS run. Empty on a re-run — that is the idempotency contract,
+    /// observable rather than asserted.
+    pub written: Vec<PathBuf>,
+    /// [`MigrationPlan::skipped`] plus everything the writes themselves skipped.
+    pub skipped: Vec<MigrationSkip>,
+}
+
+/// Plan the migration — PURE: no filesystem, no clock, no environment. Every path is relative to
+/// `<project>/user_data`.
+///
+/// Order is the input's order, so a caller's report reads in the order the Saved pane showed.
+pub fn plan_migration(entries: &[LegacyEntry]) -> MigrationPlan {
+    let mut files: Vec<PlannedFile> = Vec::new();
+    let mut skipped: Vec<MigrationSkip> = Vec::new();
+    // Case-FOLDED, because the collision that matters is the one the target filesystem cannot
+    // hold: `Fast` and `fast` are two files on Linux and one on Windows, and a migration that
+    // silently overwrites on one platform and not the other is worse than one that refuses.
+    let mut claimed: BTreeMap<String, String> = BTreeMap::new();
+
+    for entry in entries {
+        let Some(stem) = slug(&entry.name) else {
+            skipped.push(MigrationSkip::Unnameable { entry: entry.name.clone() });
+            continue;
+        };
+        let (path, contents) = match &entry.body {
+            LegacyBody::Rhai { code } => (
+                Path::new(STRATEGIES_SUBDIR)
+                    .join(RHAI_SUBDIR)
+                    .join(&stem)
+                    .join(format!("{stem}.rhai")),
+                // VERBATIM. The user's script is theirs; a migration that reformats or annotates
+                // it has rewritten their work.
+                code.clone(),
+            ),
+            LegacyBody::Native { native, params } => {
+                let Some(folder) = slug(native) else {
+                    skipped.push(MigrationSkip::NamelessNative { entry: entry.name.clone() });
+                    continue;
+                };
+                let contents = match preset_toml(&entry.name, native, params) {
+                    Ok(text) => text,
+                    Err(error) => {
+                        skipped.push(MigrationSkip::PresetNotSerializable {
+                            entry: entry.name.clone(),
+                            error,
+                        });
+                        continue;
+                    }
+                };
+                (
+                    Path::new(STRATEGIES_SUBDIR)
+                        .join(RUST_SUBDIR)
+                        .join(&folder)
+                        .join(format!("{stem}.toml")),
+                    contents,
+                )
+            }
+        };
+
+        let key = path.to_string_lossy().to_lowercase();
+        if let Some(first) = claimed.get(&key) {
+            skipped.push(MigrationSkip::Collision {
+                entry: entry.name.clone(),
+                path,
+                first: first.clone(),
+            });
+            continue;
+        }
+        claimed.insert(key, entry.name.clone());
+        files.push(PlannedFile { path, contents, entry: entry.name.clone() });
+    }
+
+    MigrationPlan { files, skipped }
+}
+
+/// Execute `plan` under `user_data` — `<project>/user_data`, from
+/// `crates/vike-model/src/paths/state_path.rs`'s `project_user_data_dir`.
+///
+/// Writes ONLY where nothing exists, creating parent directories on the way. Every failure is a
+/// [`MigrationSkip`] rather than an `Err`: one unwritable file must not abandon the other
+/// nineteen, and the JSON is still there for anything that did not land.
+pub fn apply_migration(plan: &MigrationPlan, user_data: &Path) -> MigrationOutcome {
+    let mut written: Vec<PathBuf> = Vec::new();
+    let mut skipped = plan.skipped.clone();
+
+    for file in &plan.files {
+        let path = user_data.join(&file.path);
+        // `symlink_metadata`, not `exists()`: a DANGLING symlink reports "nothing there" to
+        // `exists()` and would then be written THROUGH, truncating whatever it points at. Same
+        // reasoning as `crates/vike-model/src/paths/state_path.rs`'s `write_path`.
+        if std::fs::symlink_metadata(&path).is_ok() {
+            skipped.push(MigrationSkip::AlreadyPresent { entry: file.entry.clone(), path });
+            continue;
+        }
+        if let Some(parent) = path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            skipped.push(MigrationSkip::WriteFailed {
+                entry: file.entry.clone(),
+                path,
+                error: e.to_string(),
+            });
+            continue;
+        }
+        match std::fs::write(&path, &file.contents) {
+            Ok(()) => written.push(path),
+            Err(e) => skipped.push(MigrationSkip::WriteFailed {
+                entry: file.entry.clone(),
+                path,
+                error: e.to_string(),
+            }),
+        }
+    }
+
+    MigrationOutcome { written, skipped }
+}
+
+/// The preset file for a native row: a provenance header plus the params table.
+///
+/// The header exists because this file is the only artifact of a row the user saved somewhere
+/// else; six months later "where did this come from" has to be answerable from the file itself.
+/// The table is FLAT (`size = 2`, not `[params]`), which is the shape
+/// `crates/vike-studio-core/src/spec.rs`'s `StrategySpec::native_from_toml_str` parses and the same
+/// shape a Rhai preset has — one preset format for both trees.
+///
+/// The two names are folded onto ONE line before they go in the comment: a name carrying a newline
+/// would end the comment and leave its own tail as a bare line, turning a provenance note into a
+/// TOML parse error in the file it documents.
+fn preset_toml(entry: &str, native: &str, params: &[(String, String)]) -> Result<String, String> {
+    let table = params_from_rows(params);
+    let body = toml::to_string(&table).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "# preset '{}' for the built-in strategy '{}'\n\
+         # migrated from studio_strategies.json\n\
+         {body}",
+        one_line(entry),
+        one_line(native)
+    ))
+}
+
+/// `text` with every control character (newlines included) replaced by a space — see
+/// [`preset_toml`].
+fn one_line(text: &str) -> String {
+    text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect()
+}
+
+/// A filesystem-safe stem for a free-text saved-strategy name.
+///
+/// The Saved pane never constrained the name box, so a row can be called `BTC / ETH pairs (v2)` —
+/// or `../../secrets`. Anything that is not a letter, digit, `-`, `_` or `.` collapses to a single
+/// `-`, which removes every path separator, every Windows-reserved character and every control
+/// character in one rule rather than by enumerating a deny-list that a new platform outgrows.
+/// Leading and trailing `-`/`.` are then stripped, which is what makes traversal structurally
+/// impossible: `..` cannot survive at either end, so no output can be `.` or `..`, and no output
+/// can contain a separator to escape with.
+///
+/// Letters are Unicode, not ASCII: a strategy named in Cyrillic or Japanese is a perfectly good
+/// filename on every filesystem this runs on, and folding it to `Unnameable` would migrate a
+/// user's work into nothing.
+///
+/// `None` when nothing survives — reported as [`MigrationSkip::Unnameable`], never silently
+/// renamed to something the user would not recognise.
+fn slug(name: &str) -> Option<String> {
+    let mut out = String::with_capacity(name.len());
+    let mut last_was_dash = false;
+    for ch in name.trim().chars() {
+        if ch.is_alphanumeric() || matches!(ch, '-' | '_' | '.') {
+            out.push(ch);
+            last_was_dash = ch == '-';
+        } else if !last_was_dash {
+            out.push('-');
+            last_was_dash = true;
+        }
+    }
+    let trimmed = out.trim_matches(|c| c == '-' || c == '.');
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+#[path = "migrate_tests.rs"]
+#[cfg(test)]
+mod migrate_tests;
