@@ -1,0 +1,30 @@
+[package]
+name = "vike-buildinfo"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the BUILD IDENTITY a shipped binary states about itself: the git commit it was built from, whether that tree was dirty, when it was built and with which toolchain. Resolved at COMPILE time by a build script that shells out to git, so nothing is added to the dependency graph. ZERO dependencies at all — no vike-* crate and no external crate — because every top-of-graph binary links it and none of them may pay for it."
+build = "build.rs"
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/arch/layer_gate.rs). Tier `leaf` — a pure leaf with no vike-* dependency of its own.
+# Its "no vike-* dependency" is HELD, not only stated, since 2026-09-28:
+# `crates/vike-ops/tests/arch/layer_gate/vike_free.rs`'s `every_vike_free_crate_names_no_vike_crate`, through
+# this crate's `VIKE_FREE_CRATES` row. The description's stronger claim — no EXTERNAL crate
+# either — is held by nothing.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+# Deliberately EMPTY, and not for tidiness: `crates/vike-buildinfo/src/lib.rs`'s module doc
+# ("Zero dependencies") is the argument (`vergen`/`built` would enter the audited BUILD graph of every
+# binary that signs orders); `crates/vike-secrets/Cargo.toml` is the precedent.
+
+[dev-dependencies]
+# Deliberately EMPTY too: `tests/identity_adoption.rs` walks the real `crates/` tree with `std::fs`,
+# the same text-only shape `crates/vike-ops/tests/settings/settings_registry.rs` uses.
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

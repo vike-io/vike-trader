@@ -1,0 +1,62 @@
+[package]
+name = "vike-alerting"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The alerting primitive: a persisted serde rule model, an alerts.json loader, the rule evaluator, and the delivery seam (in-process buffer + Telegram/generic-webhook POST over the shared ureq+rustls stack). EVERY build has ZERO vike-* dependencies — the evaluator asks its caller for facts through the SnapshotFacts trait rather than naming a CoreSnapshot — so a standalone watchdog binary links no part of the trading core."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/arch/layer_gate.rs). Tier `leaf` — a crate that
+# names at most the floor; this one names no vike-* crate at all, in any build.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+# ⚠ The gate counts an optional normal dep like any other, so one caller's opt-in would set this
+# crate's rank for every consumer — the optional `core` edge once put `vike-recorder` ABOVE the
+# simulator (docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md).
+[package.metadata.vike]
+layer = 15
+
+# WHY THIS CRATE EXISTS (the dependency argument, not a taste argument):
+# the latency box crashed and ~6h of recorded Polymarket L2 tape was lost UNNOTICED. The fix wanted is a
+# small STANDALONE watchdog that pages (Telegram) when an external recorder stops writing. While
+# this tree lived inside `vike-ops`, that binary would have had to link
+# vike-ops -> vike-core -> vike-exec -> vike-model (plus vike-data + vike-bridge-core) just to POST
+# a message. Splitting on the seam that was already there turns the watchdog's dependency set into
+# serde + ureq.
+#
+# The rule this crate is under: EVERY build stays vike-*-free, and there is only one build. An input
+# that would name a vike type is asked for through a type this crate owns (`SnapshotFacts`,
+# `AlertEvent`) and the caller converts — `crates/vike-tradehub/src/alerts.rs`'s `SnapshotView` does
+# it for a `CoreSnapshot`. What keeps the crate honest is
+# `crates/vike-ops/tests/arch/layer_gate/vike_free.rs`'s `VIKE_FREE_CRATES` — a manifest read that
+# fails on ANY `vike-*` normal dependency, optional or target-specific included, which no rank can
+# say (tier 15 still admits the vocabulary floor).
+[dependencies]
+serde = { workspace = true }      # the persisted AlertRuleSet JSON model (`rule`)
+serde_json = { workspace = true } # alerts.json load/save + the webhook POST body
+tracing = { workspace = true }    # off-fold diagnostics (subscriber lives in vike-log)
+ureq = { workspace = true }       # blocking webhook/Telegram POST on the shared rustls stack (no second HTTP client)
+# deterministic per-rule state ordering in `AlertEngine` (repo-wide insertion-order convention).
+# indexmap is not a vike crate, and an external crate cannot depend on a workspace member, so the
+# crate still names none.
+indexmap = { workspace = true }
+
+# --- NO vike-* edge, optional or otherwise --------------------------------------------------------
+# ⚠ There is deliberately NO vike-bridge-core edge. A LIBRARY that opens the workspace credential
+# store itself reads global configuration its caller can neither see nor substitute: the exact class
+# `crates/vike-ops/tests/settings/settings_registry.rs`'s `CREDENTIAL_STORE_PIN` ratchets down, so
+# `delivery::webhook_configs_from_env` takes the map. Do not reintroduce it: a caller that wants
+# targets built from the store loads the store and passes it.
+
+[features]
+# ⚠ **THERE ARE NO FEATURES, and that is the point of this table still existing.** The whole
+# crate — `rule` + `delivery` + `persist` + `eval` + `AlertEngine` — is unconditionally compiled
+# and names no vike-* crate in any configuration. Do not add a `core` feature back: the layer note
+# above says what its optional edge cost.
+default = []
+
+[dev-dependencies]
+tempfile = "3" # the alerts.json disk round-trip in `persist`
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

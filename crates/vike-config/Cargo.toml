@@ -1,0 +1,65 @@
+[package]
+name = "vike-config"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the TYPED settings model and its layered loader (code defaults -> the settings database's rows -> env -> CLI). Four types split by AUTHORITY — Policy / Config / Preferences / Flags — with per-type override power enforced by the type system: Policy has no env or CLI layer at all, so overriding a ceiling is unrepresentable rather than merely discouraged. Depends on vike-model (the shared vocabulary and bounds) and vike-secrets (the settings store's row types and its one-row write primitive), plus serde, serde_json and toml; the loader never opens the database itself."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/arch/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+# The shared vocabulary and bounds this crate must NOT define a second copy of: the venue roster
+# (`VENUES`), `HaltAdmit`, the account-key grammar and `market_slippage`'s `MIN`/`MAX` — a duplicated
+# bound is exactly the split-brain that module's own doc warns about. This crate is a leaf that every
+# layer above (bins, GUI, daemons) can depend on.
+vike-model = { path = "../vike-model" }
+# The settings store's own crate: the row types the loader consumes (`StoredSettings`, `Adoption`,
+# `ArmingRow`, `ProfileRiskRow` — `src/source.rs`, `src/mirror.rs`, `src/profile_risk.rs`), the
+# one-row write primitive the planner calls (`src/write.rs` is its one non-secrets caller), and the
+# stat-only probes of the startup disclosure (`src/boot.rs`). The LOADER never opens the database:
+# the binary reads it and hands the rows over.
+#
+# ⚠ This edge is not free: vike-secrets declares `rusqlite` (bundled) — four packages and a C
+# compilation, decision 0054 — see `crates/vike-boot/tests/dependency_floor.rs`'s
+# `FLOOR_EXCEPTIONS`. This crate is in every composition root's closure, so a new vike-secrets
+# dependency lands in all of them.
+vike-secrets = { path = "../vike-secrets" }
+serde = { workspace = true } # the patch/row model (Deserialize) + `config show`-style dumps (Serialize)
+toml = { workspace = true }  # the value model rows are parsed and rendered through, and a run profile's `[risk]` table — NOT a settings source
+# The settings STORE's value format (`src/mirror.rs`): a `setting` row holds one JSON SCALAR, and
+# the read path PARSES it — `serde_json` decides the type, and the patch type is deserialized from
+# the assembled object. It replaces a TOML rendering that the reader spliced back into a synthetic
+# document and re-parsed. Pinned with `float_roundtrip` at the root, which is what makes an `f64`
+# ceiling bit-exact across the round trip. It was already a DEV-dependency here (one provenance
+# gate needs a format that renders `null`, which TOML cannot), so this adds no package to anything
+# and no row to `crates/vike-boot/tests/dependency_floor.rs` — see the lockfile, unchanged.
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# dev-only: the loader takes its two roots as PARAMETERS, so every test builds a throwaway
+# a throwaway settings dir + project dir, never a real one. Not a workspace dep — matches the
+# vike-data / vike-backfill / vike-backtest / vike-alerting convention.
+tempfile = "3"
+# The row-native writer's own tests (src/write.rs, `docs/decisions/0086`) plant fixture rows
+# straight into the database rather than through a settings file — `plant_settings_rows` is
+# `vike-secrets`'s own test-only fixture, behind this feature so a default build never compiles it.
+vike-secrets = { path = "../vike-secrets", features = ["test-support"] }
+# `vike_model::libm_walk` for the shared scanner in `tests/common/scanner.rs` (both consumption gates,
+# `tests/settings_are_consumed.rs` and `tests/policy_is_consumed.rs`): which `src/` files are test modules
+# living in their own file (`#[cfg(test)] mod NAME;`), and the inline form of a real file its A/B
+# proofs plant into. Same normal edge as above; this only compiles the parser.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# ⚠ `serde_json` used to be declared HERE, dev-only. It is a normal dependency now (see above) and
+# the test that first asked for it still asks for the same property: `tests/provenance.rs`'s
+# completeness gate walks the REAL serialized `Settings` and demands a `provenance::setting_keys`
+# row for every leaf it finds, which needs a format that RENDERS an `Option::None` — TOML has no
+# null, so such a field simply VANISHES from a TOML table, and a field the gate cannot see is
+# exactly the drift it exists to catch.
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

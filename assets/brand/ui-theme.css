@@ -1,0 +1,633 @@
+/* @generated from crates/vike-ui-theme/ui-theme.toml by crates/vike-ui-theme/tests/tokens_gen
+   — do not edit; change the TOML and regenerate (see tests/brand_assets.rs).
+   Graphite, Standard text and Normal density are the defaults; data-theme="midnight|dusk|carbon",
+   data-text-size="small|large", data-density="compact|comfortable" and
+   data-market="tradingview|exchange|colorblind" on any element switch what is beneath it. An HTML mock-up that links this file is drawn with the app's real values. */
+
+:root {
+  --bg: #0d1117;
+  --grad-top: #161b24;
+  --surface: #161b22;
+  --card: #1c2028;
+  --hover: #21252c;
+  --border: #2f343c;
+  --text: #e7ecf4;
+  --text-ui: #e4e9f0;
+  --text2: #9aa4b1;
+  --text3: #858991;
+  --analysis-line: #595e64;
+  --accent: #3ee08a;
+  --status-ok: #3fbf6e;
+  --status-warning: #e6b428;
+  --status-error: #f0524a;
+  --status-info: #57a5ff;
+  --status-muted: #787878;
+  --caption: 11px;
+  --body: 12px;
+  --strong: 13px;
+  --title: 15px;
+  --heading: 19px;
+  --display: 26px;
+  --hero: 40px;
+  --control-h: 24px;
+  --row-h: 18px;
+  --pad: 8px;
+  --gap: 6px;
+  --header-h: 24px;
+  --chrome-title-bar-h: 25px;
+  --chrome-title-inset: 9px;
+  --chrome-window-control: 20px;
+  --chrome-window-control-gap: 4px;
+  --chrome-window-controls-pad: 4px;
+  --chrome-separator-h: 14px;
+  --chrome-slot-to-controls: 15px;
+  --chrome-slot-to-separator: 7px;
+  --up: #40ba50;
+  --down: #f85249;
+  --up-text: #40ba50;
+  --down-text: #f85249;
+  --heat-cool: #35c9f2;
+  --heat-warm: #f2b53a;
+  --heat-alpha-min: 0.15;
+  --heat-alpha-span: 0.45;
+  --brand-orange: #ff6a00;
+  --brand-orange-on-light: #d95400;
+  --space-none: 0px;
+  --space-hair: 1px;
+  --space-xs: 2px;
+  --space-sm: 4px;
+  --space-md: 6px;
+  --space-lg: 8px;
+  --space-xl: 12px;
+  --space-xl2: 16px;
+  --space-xl3: 24px;
+  --stroke-hairline: 1px;
+  --stroke-line: 1.5px;
+  --stroke-edge: 2px;
+  --alpha-lift: 0.12;
+  --alpha-wash: 0.14;
+  /* values: account */
+  --value-account-cell-h: 18px;
+  --value-account-head-cell-h: 16px;
+  --value-account-max-w: 960px;
+  --value-account-orders-max-h: 160px;
+  --value-account-order-w-qty: 78px;
+  --value-account-order-w-side: 36px;
+  --value-account-order-w-status: 74px;
+  --value-account-order-w-type: 46px;
+  --value-account-wm: 24px;
+  --value-account-wn: 66px;
+  --value-account-wv: 66px;
+  /* values: backend_settings */
+  --value-backend-settings-min-col-scale: 0.55;
+  --value-backend-settings-edit-field-w: 220px;
+  --value-backend-settings-header-h: 18px;
+  --value-backend-settings-rows-max-h: 300px;
+  --value-backend-settings-row-h: 17px;
+  --value-backend-settings-w-edit: 44px;
+  --value-backend-settings-w-key: 230px;
+  --value-backend-settings-w-origin: 120px;
+  --value-backend-settings-w-read: 64px;
+  --value-backend-settings-w-value: 150px;
+  /* values: calendar */
+  --value-calendar-card-max-w: 320px;
+  --value-calendar-card-min-h: 64px;
+  --value-calendar-card-min-w: 90px;
+  --value-calendar-col-country-w: 150px;
+  --value-calendar-col-impact-w: 24px;
+  --value-calendar-col-time-w: 52px;
+  --value-calendar-countries-btn-w: 110px;
+  --value-calendar-div-weight-amount: 1;
+  --value-calendar-div-weight-ex-date: 1.1;
+  --value-calendar-div-weight-freq: 0.9;
+  --value-calendar-div-weight-pay-date: 1.1;
+  --value-calendar-div-weight-symbol: 1;
+  --value-calendar-div-weight-yield: 0.9;
+  --value-calendar-earn-weight-eps-act: 1;
+  --value-calendar-earn-weight-eps-est: 1;
+  --value-calendar-earn-weight-surprise: 1;
+  --value-calendar-earn-weight-symbol: 1.3;
+  --value-calendar-earn-weight-time: 1;
+  --value-calendar-equity-right-pad: 16px;
+  --value-calendar-event-min-w: 140px;
+  --value-calendar-flag-eu-dot-r: 2px;
+  --value-calendar-flag-size-w: 20px;
+  --value-calendar-flag-size-h: 14px;
+  --value-calendar-header-h: 20px;
+  --value-calendar-impact-size-w: 18px;
+  --value-calendar-impact-size-h: 14px;
+  --value-calendar-ipo-weight-company: 2.2;
+  --value-calendar-ipo-weight-exchange: 1;
+  --value-calendar-ipo-weight-price: 0.9;
+  --value-calendar-ipo-weight-shares: 1.1;
+  --value-calendar-ipo-weight-status: 0.9;
+  --value-calendar-ipo-weight-symbol: 1;
+  --value-calendar-local-btn-w: 96px;
+  --value-calendar-num-col-frac: 0.14;
+  --value-calendar-num-col-min-w: 90px;
+  --value-calendar-num-col-w: 210px;
+  --value-calendar-num-col-wide-at: 980px;
+  --value-calendar-right-pad: 52px;
+  --value-calendar-row-h: 19px;
+  --value-calendar-flag-cn-red: #de2910;
+  --value-calendar-flag-de-black: #000000;
+  --value-calendar-flag-de-gold: #ffce00;
+  --value-calendar-flag-de-red: #dd0000;
+  --value-calendar-flag-eu-blue: #003399;
+  --value-calendar-flag-eu-gold: #ffcc00;
+  --value-calendar-flag-fr-blue: #002395;
+  --value-calendar-flag-fr-red: #ed2939;
+  --value-calendar-flag-id-red: #e70011;
+  --value-calendar-flag-in-green: #138808;
+  --value-calendar-flag-in-saffron: #ff9933;
+  --value-calendar-flag-it-green: #009246;
+  --value-calendar-flag-it-red: #ce2b37;
+  --value-calendar-flag-jp-red: #bc002d;
+  --value-calendar-flag-mx-green: #006847;
+  --value-calendar-flag-mx-red: #ce1126;
+  --value-calendar-flag-navy: #012169;
+  --value-calendar-flag-red: #cf142b;
+  --value-calendar-flag-ru-blue: #0039a6;
+  --value-calendar-flag-ru-red: #d52b1e;
+  --value-calendar-flag-sa-green: #006c35;
+  --value-calendar-flag-sg-red: #ef3340;
+  --value-calendar-flag-tr-red: #e30a17;
+  --value-calendar-flag-unknown: #3c424a;
+  --value-calendar-flag-white: #ffffff;
+  --value-calendar-flag-za-green: #007a4d;
+  --value-calendar-flag-za-red: #de3831;
+  /* values: caption */
+  --value-caption-palette-left-clear: 190px;
+  --value-caption-palette-right-clear: 280px;
+  --value-caption-caption-h: 32px;
+  --value-caption-control-w: 34px;
+  --value-caption-launcher-box: 26px;
+  --value-caption-mark-size-w: 24px;
+  --value-caption-mark-size-h: 22px;
+  --value-caption-palette-h: 24px;
+  --value-caption-palette-max-w: 360px;
+  --value-caption-palette-min-w: 120px;
+  --value-caption-palette-side-gap: 12px;
+  /* values: chart */
+  --value-chart-nav-row-from-bottom: 44px;
+  --value-chart-price-tag-hidden-strip-h: 26px;
+  --value-chart-scale-hint-from-top: 30px;
+  --value-chart-scale-row-from-bottom: 34px;
+  --value-chart-candle-body-half-w: 0.34;
+  --value-chart-footprint-cell-half-w: 0.45;
+  --value-chart-histogram-bar-w: 0.8;
+  --value-chart-ohlc-tick-w: 0.32;
+  --value-chart-volume-bar-w: 0.8;
+  --value-chart-area-icon-fill: 0.35;
+  --value-chart-area-top-alpha: 55;
+  --value-chart-axis-label-h: 18px;
+  --value-chart-axis-tag-radius: 3px;
+  --value-chart-baseline-wash-alpha: 28;
+  --value-chart-cell-fill-alpha: 40;
+  --value-chart-column-fill-alpha: 150;
+  --value-chart-dot-marker-radius: 2px;
+  --value-chart-ghost-strength: 0.4;
+  --value-chart-hint-alpha: 150;
+  --value-chart-hlc-fill-alpha: 30;
+  --value-chart-icon-dot-radius: 1.5px;
+  --value-chart-line-marker-radius: 2px;
+  --value-chart-min-pane-px: 44px;
+  --value-chart-pane-overlay-row-h: 18px;
+  --value-chart-pane-sep-h: 5px;
+  --value-chart-pattern-marker-radius: 4px;
+  --value-chart-scale-row-max-w: 200px;
+  --value-chart-y-axis-gutter-w: 72px;
+  --value-chart-overbought-fill: #4caf501e;
+  --value-chart-oversold-fill: #ef53501e;
+  --value-chart-poc-amber: #f0b429;
+  --value-chart-profile-alpha: 90;
+  --value-chart-series-1: #57a5ff;
+  --value-chart-series-2: #a855f7;
+  --value-chart-series-3: #26c6da;
+  --value-chart-series-4: #66bb6a;
+  --value-chart-series-5: #ec407a;
+  --value-chart-series-6: #f5a623;
+  --value-chart-value-area-alpha: 18;
+  /* values: chart_dialogs */
+  --value-chart-dialogs-chart-settings-w: 470px;
+  --value-chart-dialogs-indicator-dialog-w: 300px;
+  --value-chart-dialogs-line-dash-combo-w: 78px;
+  --value-chart-dialogs-settings-min-w: 300px;
+  --value-chart-dialogs-source-combo-w: 110px;
+  /* values: cockpit */
+  --value-cockpit-card-w: 118px;
+  --value-cockpit-depth-alpha-floor: 30;
+  --value-cockpit-depth-alpha-span: 120;
+  --value-cockpit-header-min-h: 44px;
+  --value-cockpit-hover-alpha: 8;
+  --value-cockpit-inside-alpha: 30;
+  --value-cockpit-marker-w: 14px;
+  --value-cockpit-rail-h: 92px;
+  --value-cockpit-spread-alpha: 51;
+  --value-cockpit-stale-alpha: 150;
+  /* values: connections */
+  --value-connections-legend-fit-slack: 4px;
+  --value-connections-strip-actions-fit-slack: 2px;
+  --value-connections-alt-label-input-w: 160px;
+  --value-connections-badge-radius: 3px;
+  --value-connections-chip-h: 16px;
+  --value-connections-dot-w: 11px;
+  --value-connections-field-input-w: 240px;
+  --value-connections-field-label-cell-w: 160px;
+  --value-connections-field-label-cell-h: 18px;
+  --value-connections-note-w: 520px;
+  --value-connections-rail-detail-min-w: 820px;
+  --value-connections-rail-header-h: 14px;
+  --value-connections-rail-max-w: 232px;
+  --value-connections-rail-min-w: 190px;
+  --value-connections-remove-confirm-w: 56px;
+  --value-connections-tier-name-cell-w: 46px;
+  --value-connections-tier-name-cell-h: 16px;
+  --value-connections-tier-state-cell-w: 104px;
+  --value-connections-tier-state-cell-h: 16px;
+  --value-connections-badge-outline-strength: 0.6;
+  --value-connections-not-configurable-dim: 0.45;
+  /* values: data */
+  --value-data-rail-separator-reserve: 14px;
+  --value-data-body-min-w: 120px;
+  --value-data-ds-benchmark-field-w: 360px;
+  --value-data-ds-interval-menu-min-w: 116px;
+  --value-data-ds-interval-w: 120px;
+  --value-data-ds-label-w: 92px;
+  --value-data-ds-members-member-min-w: 90px;
+  --value-data-ds-members-member-weight: 2;
+  --value-data-ds-members-stored-min-w: 80px;
+  --value-data-ds-members-stored-weight: 1;
+  --value-data-ds-member-rows: 6;
+  --value-data-ds-name-field-w: 260px;
+  --value-data-ds-provider-menu-min-w: 196px;
+  --value-data-ds-provider-w: 200px;
+  --value-data-ds-tree-frac: 0.26;
+  --value-data-ds-tree-max-w: 290px;
+  --value-data-ds-tree-min-w: 170px;
+  --value-data-feeds-bars-min-w: 56px;
+  --value-data-feeds-bars-weight: 0.8;
+  --value-data-feeds-from-min-w: 118px;
+  --value-data-feeds-from-weight: 1.6;
+  --value-data-feeds-source-min-w: 64px;
+  --value-data-feeds-source-weight: 1;
+  --value-data-feeds-symbol-min-w: 70px;
+  --value-data-feeds-symbol-weight: 1.2;
+  --value-data-feeds-timeframe-min-w: 60px;
+  --value-data-feeds-timeframe-weight: 0.9;
+  --value-data-feeds-to-min-w: 118px;
+  --value-data-feeds-to-weight: 1.6;
+  --value-data-kinds-table-max-w: 480px;
+  --value-data-log-find-w: 180px;
+  --value-data-log-min-h: 54px;
+  --value-data-partial-w-series: 260px;
+  --value-data-partial-w-span: 170px;
+  --value-data-partial-w-summary: 240px;
+  --value-data-rail-max-frac: 0.34;
+  --value-data-rail-w: 178px;
+  --value-data-source-w-name: 116px;
+  --value-data-source-w-serves: 168px;
+  --value-data-store-kind-kind-min-w: 80px;
+  --value-data-store-kind-kind-weight: 1.6;
+  --value-data-store-kind-rows-min-w: 64px;
+  --value-data-store-kind-rows-weight: 1;
+  --value-data-store-kind-series-min-w: 56px;
+  --value-data-store-kind-series-weight: 1;
+  --value-data-store-kind-size-min-w: 64px;
+  --value-data-store-kind-size-weight: 1;
+  --value-data-tile-min-w: 148px;
+  /* values: data_manager */
+  --value-data-manager-bar-h-ratio: 0.5;
+  --value-data-manager-bar-min-w: 1.5px;
+  --value-data-manager-legend-swatch-aspect: 2;
+  --value-data-manager-proxy-box-w: 320px;
+  --value-data-manager-w-symbol: 150px;
+  --value-data-manager-w-kind: 120px;
+  --value-data-manager-w-coverage: 150px;
+  --value-data-manager-w-partial: 26px;
+  --value-data-manager-w-rows: 90px;
+  --value-data-manager-w-size: 80px;
+  --value-data-manager-w-updated: 100px;
+  /* values: desktop */
+  --value-desktop-style-label-x: 30px;
+  --value-desktop-brand-size-w: 22px;
+  --value-desktop-brand-size-h: 18px;
+  --value-desktop-cmp-entry-w: 160px;
+  --value-desktop-cmp-list-h: 240px;
+  --value-desktop-cmp-menu-w: 250px;
+  --value-desktop-interval-menu-w: 70px;
+  --value-desktop-min-rail-max-w: 40px;
+  --value-desktop-min-rail-min-w: 24px;
+  --value-desktop-min-rail-w: 30px;
+  --value-desktop-of-menu-w: 170px;
+  --value-desktop-style-icon-size-w: 18px;
+  --value-desktop-style-icon-size-h: 16px;
+  --value-desktop-style-menu-w: 186px;
+  --value-desktop-style-row-w: 172px;
+  --value-desktop-style-row-h: 22px;
+  --value-desktop-symbol-menu-w: 250px;
+  --value-desktop-window-restored-size-w: 1400px;
+  --value-desktop-window-restored-size-h: 900px;
+  --value-desktop-compare-1: #57a5ff;
+  --value-desktop-compare-2: #f09528;
+  --value-desktop-compare-3: #af7aff;
+  --value-desktop-compare-4: #26c6da;
+  --value-desktop-compare-5: #ec407a;
+  --value-desktop-sync-group-1: #ff0000;
+  --value-desktop-sync-group-2: #0000ff;
+  --value-desktop-sync-group-3: #00ff00;
+  --value-desktop-sync-group-4: #ffff00;
+  /* values: fx_picker */
+  --value-fx-picker-list-max-h: 320px;
+  --value-fx-picker-popup-w: 300px;
+  --value-fx-picker-search-w: 210px;
+  --value-fx-picker-source-list-max-h: 260px;
+  --value-fx-picker-source-menu-min-w: 240px;
+  --value-fx-picker-source-search-w: 224px;
+  /* values: instruments */
+  --value-instruments-status-max-width: 420px;
+  /* values: news */
+  --value-news-card-inner-reserve: 18px;
+  --value-news-reader-width-reserve: 22px;
+  --value-news-avatar-letter-frac: 0.5;
+  --value-news-avatar-radius-frac: 0.28;
+  --value-news-avatar-size: 30px;
+  --value-news-filter-menu-min-w: 170px;
+  --value-news-list-frac: 0.66;
+  --value-news-list-leaves-reader-w: 170px;
+  --value-news-list-min-w: 240px;
+  --value-news-reader-min-w: 150px;
+  --value-news-search-w: 220px;
+  --value-news-split-min-h: 120px;
+  --value-news-toolbar-btn-h: 34px;
+  --value-news-avatar-1: #3fe08a;
+  --value-news-avatar-2: #f0a93f;
+  --value-news-avatar-3: #3f9be0;
+  --value-news-avatar-4: #e0643f;
+  --value-news-avatar-5: #b06fe0;
+  --value-news-avatar-6: #3fe0c8;
+  --value-news-avatar-7: #e03f8a;
+  --value-news-avatar-8: #9be03f;
+  --value-news-logo-plate: #f4f4f4;
+  /* values: options_chain */
+  --value-options-chain-badge-start-offset: 3px;
+  --value-options-chain-hatch-lean: 26px;
+  --value-options-chain-marker-gap: 3px;
+  --value-options-chain-cell-hover-alpha: 28;
+  --value-options-chain-itm-hatch-alpha: 70;
+  --value-options-chain-marker-h: 16px;
+  --value-options-chain-marker-radius: 3px;
+  --value-options-chain-order-fill-alpha: 45;
+  --value-options-chain-order-fill-hot-alpha: 95;
+  --value-options-chain-position-fill-alpha: 55;
+  --value-options-chain-volume-bar-alpha: 120;
+  --value-options-chain-volume-bar-h: 3px;
+  /* values: settings */
+  --value-settings-name-h: 18px;
+  /* values: status */
+  /* values: status_bar */
+  --value-status-bar-status-bar-h: 22px;
+  /* values: stored */
+  --value-stored-inspector-reserve: 10px;
+  --value-stored-grid-min-w: 200px;
+  --value-stored-inspector-frac: 0.3;
+  --value-stored-inspector-key-size-w: 78px;
+  --value-stored-inspector-key-size-h: 14px;
+  --value-stored-inspector-max-w: 330px;
+  --value-stored-inspector-min-w: 120px;
+  /* values: studio */
+  --value-studio-combo-beside-button-reserve: 64px;
+  --value-studio-save-button-w: 64px;
+  --value-studio-backend-addr-w: 160px;
+  --value-studio-builder-addr-w: 140px;
+  --value-studio-chat-diff-max-h: 180px;
+  --value-studio-chat-history-max-h: 220px;
+  --value-studio-compare-scroll-max-h: 280px;
+  --value-studio-data-browser-min-w: 700px;
+  --value-studio-data-slice-combo-w: 230px;
+  --value-studio-editor-default-w: 460px;
+  --value-studio-editor-font-size: 13px;
+  --value-studio-editor-min-w: 28px;
+  --value-studio-extra-symbols-box-w: 140px;
+  --value-studio-extra-symbols-box-h: 20px;
+  --value-studio-grid-name-w: 96px;
+  --value-studio-indicator-list-max-h: 220px;
+  --value-studio-indicator-preview-h: 160px;
+  --value-studio-indicator-slider-min-w: 80px;
+  --value-studio-indicator-slider-reserve: 150px;
+  --value-studio-param-field-h: 18px;
+  --value-studio-param-key-w: 96px;
+  --value-studio-rail-width: 40px;
+  --value-studio-run-list-max-h: 220px;
+  --value-studio-run-row-h: 28px;
+  --value-studio-run-row-max-w: 280px;
+  --value-studio-saved-list-max-h: 200px;
+  --value-studio-sparkline-size-w: 64px;
+  --value-studio-sparkline-size-h: 18px;
+  --value-studio-study-list-max-h: 150px;
+  --value-studio-template-gallery-max-h: 260px;
+  --value-studio-tools-panel-w: 340px;
+  --value-studio-wf-plot-h: 200px;
+  /* values: symbol_picker */
+  --value-symbol-picker-desc-inset: 110px;
+  --value-symbol-picker-list-h: 300px;
+  --value-symbol-picker-picker-w: 470px;
+  --value-symbol-picker-row-h: 22px;
+  --value-symbol-picker-row-min-w: 230px;
+  /* values: title_bar */
+  --value-title-bar-tab-h: 24px;
+  --value-title-bar-title-drop-w: 560px;
+  /* values: trade */
+  --value-trade-cross-glyph-w: 1.3px;
+  --value-trade-drag-ring-w: 1.6px;
+  --value-trade-plus-minus-glyph-w: 1.28px;
+  --value-trade-view-group-gap: 5px;
+  --value-trade-vol-bar-inset: 5px;
+  --value-trade-fit-slack: 1px;
+  --value-trade-spare: 4px;
+  --value-trade-account-picker-w: 356px;
+  --value-trade-beside-size-w: 600px;
+  --value-trade-beside-size-h: 560px;
+  --value-trade-bubble-alpha: 0.7;
+  --value-trade-bubble-max-rows: 0.5;
+  --value-trade-bubble-min-rows: 0.18;
+  --value-trade-chart-w: 301px;
+  --value-trade-col-bid-ask-w: 64px;
+  --value-trade-col-buy-sell-under-w: 48px;
+  --value-trade-col-buy-sell-w: 44px;
+  --value-trade-col-price-w: 76px;
+  --value-trade-col-vol-w: 30px;
+  --value-trade-compact-alone-w: 320px;
+  --value-trade-dash: 3.5px;
+  --value-trade-dash-gap: 1.5px;
+  --value-trade-glyph-cap-radius: 1px;
+  --value-trade-group-num-w: 16px;
+  --value-trade-icon-shrink: 4px;
+  --value-trade-icon-w: 24px;
+  --value-trade-matches-h: 260px;
+  --value-trade-min-chart-w: 160px;
+  --value-trade-min-field-w: 48px;
+  --value-trade-min-ladder-w: 200px;
+  --value-trade-no-book-rise: 46px;
+  --value-trade-pill-edge-alpha: 140;
+  --value-trade-pill-fill-alpha: 56;
+  --value-trade-pill-lift-alpha: 36;
+  --value-trade-pill-radius: 3px;
+  --value-trade-price-label-alpha: 0.9;
+  --value-trade-square-shrink: 6px;
+  --value-trade-status-dot-min: 5px;
+  --value-trade-status-dot-ratio: 0.6;
+  --value-trade-symbol-picker-w: 380px;
+  --value-trade-three-rows-below: 388px;
+  --value-trade-ticket-only-h: 560px;
+  --value-trade-ticket-only-pad: 20px;
+  --value-trade-ticket-w: 260px;
+  --value-trade-two-rows-below: 470px;
+  --value-trade-under-both-less-h: 21px;
+  --value-trade-under-size-w: 320px;
+  --value-trade-under-size-h: 680px;
+  --value-trade-view-button-w: 24px;
+  --value-trade-view-button-h: 20px;
+  --value-trade-vol-bar-alpha: 71;
+  --value-trade-wash-alpha: 13;
+  /* values: workspace */
+  --value-workspace-title-clear: 36px;
+  --value-workspace-arrange-cascade-frac: 0.6;
+  --value-workspace-arrange-cascade-min-h: 180px;
+  --value-workspace-arrange-cascade-min-w: 260px;
+  --value-workspace-arrange-cascade-step: 30px;
+  --value-workspace-cascade-origin-w: 50px;
+  --value-workspace-cascade-origin-h: 40px;
+  --value-workspace-cascade-origin-new-window-w: 40px;
+  --value-workspace-cascade-origin-new-window-h: 30px;
+  --value-workspace-cascade-step: 28px;
+  --value-workspace-chart-window-size-w: 640px;
+  --value-workspace-chart-window-size-h: 420px;
+  --value-workspace-clone-chart-size-w: 620px;
+  --value-workspace-clone-chart-size-h: 380px;
+  --value-workspace-minh: 160px;
+  --value-workspace-minw: 240px;
+  --value-workspace-min-visible-h: 40px;
+  --value-workspace-min-visible-w: 80px;
+  --value-workspace-new-window-chart-size-w: 700px;
+  --value-workspace-new-window-chart-size-h: 440px;
+  --value-workspace-cockpit-window-size-w: 340px;
+  --value-workspace-cockpit-window-size-h: 640px;
+  --value-workspace-rail-tab-max-w: 28px;
+  --value-workspace-rail-tab-min-w: 20px;
+  --value-workspace-rail-tab-pad: 18px;
+  --value-workspace-save-layout-w: 280px;
+  --value-workspace-settings-window-size-w: 640px;
+  --value-workspace-settings-window-size-h: 600px;
+  --value-workspace-stored-chart-size-w: 700px;
+  --value-workspace-stored-chart-size-h: 440px;
+  --value-workspace-test-chart-size-w: 700px;
+  --value-workspace-test-chart-size-h: 440px;
+  --value-workspace-tool-window-size-w: 560px;
+  --value-workspace-tool-window-size-h: 400px;
+  --radius: 4px;
+  --font-words: "Inter", sans-serif;
+  --font-numbers: "JetBrains Mono", monospace;
+}
+
+[data-theme="midnight"] {
+  --bg: #0a1020;
+  --grad-top: #13213d;
+  --surface: #141a2a;
+  --card: #191f2f;
+  --hover: #1e2433;
+  --border: #2c3241;
+  --text: #e4ecf8;
+  --text-ui: #e1e9f5;
+  --text2: #9ca3b1;
+  --text3: #828997;
+  --analysis-line: #565d6c;
+  --accent: #35c9f2;
+}
+
+[data-theme="dusk"] {
+  --bg: #0e0d16;
+  --grad-top: #1c1a2e;
+  --surface: #181720;
+  --card: #1e1c26;
+  --hover: #22212a;
+  --border: #302f39;
+  --text: #eceaf6;
+  --text-ui: #e9e7f3;
+  --text2: #a3a1ac;
+  --text3: #888791;
+  --analysis-line: #5c5a64;
+  --accent: #aa82fa;
+}
+
+[data-theme="carbon"] {
+  --bg: #09090b;
+  --grad-top: #17171b;
+  --surface: #131315;
+  --card: #19191b;
+  --hover: #1e1e20;
+  --border: #2c2c2e;
+  --text: #ededf0;
+  --text-ui: #eaeaed;
+  --text2: #a2a2a4;
+  --text3: #848487;
+  --analysis-line: #59595b;
+  --accent: #f2b53a;
+}
+
+[data-text-size="small"] {
+  --caption: 10px;
+  --body: 11px;
+  --strong: 12px;
+  --title: 14px;
+  --heading: 18px;
+  --display: 24px;
+  --hero: 40px;
+}
+
+[data-text-size="large"] {
+  --caption: 13px;
+  --body: 14px;
+  --strong: 15px;
+  --title: 17px;
+  --heading: 22px;
+  --display: 30px;
+  --hero: 44px;
+}
+
+[data-density="compact"] {
+  --control-h: 20px;
+  --row-h: 16px;
+  --pad: 6px;
+  --gap: 4px;
+  --header-h: 22px;
+}
+
+[data-density="comfortable"] {
+  --control-h: 28px;
+  --row-h: 22px;
+  --pad: 10px;
+  --gap: 8px;
+  --header-h: 28px;
+}
+
+[data-market="tradingview"] {
+  --up: #089981;
+  --down: #f23645;
+  --up-text: #0a9a82;
+  --down-text: #f34a58;
+}
+
+[data-market="exchange"] {
+  --up: #2ebd85;
+  --down: #f6465d;
+  --up-text: #2ebd85;
+  --down-text: #f6465d;
+}
+
+[data-market="colorblind"] {
+  --up: #3b82f6;
+  --down: #f59e0b;
+  --up-text: #4186f6;
+  --down-text: #f59e0b;
+}
