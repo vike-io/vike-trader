@@ -1,0 +1,436 @@
+[package]
+name = "vike-backtest"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike's backtest HARNESS over the vike-sim simulator: config-driven profiles (BacktestProfile), history replay from a HistStore, parameter sweeps and searches (grid/Euler/TPE/genetic) with their trial ledgers, walk-forward, the compute daemon behind `vike-backend backtest --addr`, and the backtest/cheap_np_* bins."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `engine` — one hop
+# over the domain-stacked band: a crate composed over a layer-25 crate.
+# 30 is the ARITHMETIC FLOOR, MEASURED 2026-09-28: the ceiling is THREE edges at 25 — `vike-sim`
+# (the simulator this harness drives), `vike-datahub-client` (`wire_result`'s client) and
+# `vike-user-strategies` (the user-strategy host the registry consults). Everything else it names
+# sits at 20 or lower. The lowest normal consumer is `vike-studio-core` (35).
+# ⚠ At 30 it sits at the SAME rank as `vike-core` again, which is a property rather than a
+# coincidence: `crates/vike-core/src/run_profile.rs`'s module doc says this crate "sits ALONGSIDE
+# this crate, not beneath it, and so cannot depend on it" — false by rank while this crate held 35,
+# enforced by rank again at 30. Both directions are held by name as well
+# (docs/decisions/0090-the-simulator-sits-alongside-the-live-core-by-name.md):
+# `crates/vike-ops/tests/architecture/named_run_closure_gate.rs` refuses `vike-core` anywhere in this crate's
+# normal closure (and `vike-sim`'s), and refuses this crate (and `vike-sim`) anywhere in the
+# normal closure of `vike-core` and of the three light clients below it. This crate's own
+# `vike-datahub-client` edge is allowed by design — the rule is about reaching the live core.
+# ⚠ WAS `engine-stacked` (35) from 2026-09-27 until 2026-09-28: two of its three ceiling edges,
+# `vike-sim` and `vike-datahub-client`, sat at 30 then and dropped to their own floors at 25 in one
+# change.
+# ⚠ WAS `research` (45) until 2026-09-27, and that move was a CORRECTION of the 2026-09-23 one, not
+# a reversal of its reasoning. The 2026-09-23 move measured the ceiling as `vike-user-strategies` at
+# 40 and took 45 as the nearest legal rank — but `vike-user-strategies` itself dropped 40 -> 25 in
+# #2147 (2026-09-23, the SAME day, landing after this manifest's comment was written), so the "40"
+# the 45-move was computed from was already stale by the time it merged. MEASURED on 2026-09-27
+# before the drop to 30, this crate's highest normal `vike-*` edges were `vike-datahub-client` and
+# — since the simulator split out the same day (docs/decisions/0087) — `vike-sim`, both then at
+# 30, giving an arithmetic floor of 31. `research` (45) and every role-specific rank in the 36-44
+# band (`venue`/`venue-stacked`/`collector`) misname this crate, which loads frozen history and
+# evaluates out of sample but is not offline research alone — it also owns `backtest_cli`'s
+# live-datahub `serve`/`data` verbs. `engine-stacked` (35) was the nearest rank that both cleared
+# the floor and claimed no role this crate does not have.
+# ⚠ Dropping below 40 lost a property `research` (45) held for free: 45 sat ABOVE every venue (40),
+# venue-stacked (41) and collector (42) crate, so the down-only rule alone refused a bridge or a
+# collector naming this crate. 35, and 30 since, sit BELOW all three, which the down-only rule
+# alone would ALLOW. `crates/vike-ops/tests/architecture/layer_gate/fences.rs`'s
+# `no_venue_or_collector_names_the_research_harness` names the refusal explicitly instead, because
+# this is exactly the "dragged the whole tree in" shape the gate's own module doc exists for. ⚠ It
+# walks the TRANSITIVE normal closure since 2026-09-28, because `vike-studio-core` (35) names this
+# crate normally and sits below the band too — a direct-edge rule would let a venue reach this
+# crate through it.
+# docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 30
+
+[features]
+# ⚠ `hist-replay`, `strategies` and `bench-hist` DIED HERE on 2026-09-27, the collapse PR the
+# `vike-sim` split (docs/decisions/0087) sequenced after itself. The harness — `harness/`
+# (profile/run/sweep) and `search/`, `hist_replay.rs`, the compute daemon, the trial ledger recorder
+# — is this crate's DEFAULT build now; every dependency those three features gated is a plain
+# (non-optional) line below. What died with them: three features' worth of `#[cfg(feature = …)]`
+# gating (15 code sites) and the standing fact that a `cargo test -p vike-backtest` with no flags
+# compiled almost none of this crate's own reason to exist. What did NOT die: `datafusion-store` and
+# `venue-fetch` below, both off by default for reasons of their own that the harness's own default
+# status does not touch.
+#
+# The concrete DataFusion-backed store backend for the harness/replay path — the harness ITSELF is
+# unconditional now, so this feature's whole job is turning on `vike-data/hist-datafusion` (the
+# concrete `DataFusionHist` type) plus the two light leaves (`vike-secrets`/`vike-config`) the
+# compute daemon's node-key arm and `--addr` config need. CALLERS THAT OPEN A STORE enable THIS —
+# the `backtest`/`cheap_np_*` bins (required-features below) and the store-backed tests. Named per
+# this crate rather than reusing `hist-datafusion` (the vike-data feature it forwards), following
+# the same crate-specific-name convention vike-report (`hist`) and vike-datahub
+# (`serve-datafusion`) use for the same forward. A default `cargo test/clippy -p vike-backtest`
+# proves the harness compiles DataFusion-free; `--features datafusion-store` is the full-coverage
+# lane (bins + store tests).
+datafusion-store = [
+    "vike-data/hist-datafusion",
+    "dep:vike-secrets",
+    "dep:vike-config",
+    # The hist ROUTE (`vike_datahub_client::route`), which this crate DECLARED until 2026-09-23.
+    # `vike-datahub-client` is a plain dependency now (below); this line turns on the ROUTE MODULE,
+    # and it belongs on THIS feature rather than being unconditional because the route's local arm
+    # opens a concrete `DataFusionHist` — exactly what separates this feature from the default
+    # build. `vike-studio` takes this crate at default features, which is what keeps the
+    # `studio-standalone` lane's DataFusion-free tree assertion true.
+    "vike-datahub-client/hist-route",
+]
+# `backtest data fetch-starter` — download the PUBLISHED starter dataset over plain HTTPS
+# (src/starter.rs). ⚠ OFF BY DEFAULT AND IT MUST STAY THAT WAY: `ureq` is a blocking HTTP client and
+# this crate sits UNDER `vike-cli`, whose whole identity is that it is light and DataFusion-free
+# (the `light-consumers` CI lane asserts it), so a non-optional edge here would land that client in
+# the CLI's graph by feature unification. The `vike-backend` multicall's `backtest` feature forwards
+# this, and the release build enables it.
+#
+# ⚠ **THE NAME NO LONGER DESCRIBES THE CONTENTS, and that is left deliberately.** This feature was
+# created for `backtest data fetch`, which called `vike_binance::data::fetch_klines_range` — the one
+# venue call in the COMPUTE plane. That verb and `src/fetch.rs` are DELETED (2026-09-19): history is
+# fetched by the DATA plane, once, into the store, and `vike-cli data hist fetch` asks a datahub for it.
+# What is left behind this flag reaches no exchange at all. The rename to something honest
+# (`starter-fetch`) was raised and DEPRIORITISED by the owner as churn — it moves
+# `crates/vike/Cargo.toml`'s `backtest` row, `crates/vike-ops/tests/container_deploy/multicall_gate.rs`'s
+# `SHIPPED_TOOL_FEATURES` and this line, for no behaviour. Whoever renames it next is holding the
+# argument for it here.
+#
+# ⚠ `dep:vike-binance` left this list with the verb. `dep:ureq` did NOT and could not: `src/starter.rs`
+# needs it for its HTTPS GET, so deleting the venue half does not delete the feature. `dep:sha2` LEFT
+# on 2026-09-27: `sha2` is a plain dependency now (the collapse made it one), so the SHA256 the
+# download is verified against needs no feature to reach it any more — only `ureq` does.
+venue-fetch = ["datafusion-store", "dep:ureq"]
+
+[dependencies]
+# The SHARED node-protocol substrate: the HMAC-SHA256 nonce-challenge handshake generalized over
+# its domain separator (`auth`) and the length-prefixed frame codec (`frame`). ⚠ Both were
+# `vike-datahub-client`'s until 2026-09-23 and moved to the crate BELOW both node protocols, so the
+# two clients could stop being a ladder; that crate's own doc carries the measurement. It names no
+# vike-* crate at all, so this edge adds no package to any graph that did not already carry
+# hmac/sha2/rand transitively.
+vike-node-proto = { path = "../vike-node-proto" }
+vike-model = { path = "../vike-model" }
+# The SIMULATOR this harness drives: `StrategyEngine`/`SimBroker`/`EngineParams`, the vectorized
+# kernel, the impact/latency/queue models, schedule/timeframe and the reference strategies the
+# registry resolves. It was this crate's own `engine`/`vector_engine`/`impact`/… modules until
+# 2026-09-27 and left for its own crate at layer 30
+# (docs/decisions/0087-the-simulator-leaves-the-harness.md); that crate has declared 25
+# (`domain-stacked`, its arithmetic floor) since 2026-09-28, so this edge is 25 under this crate's
+# 30 — the "three edges at 25" the rank note at the top counts. Named `vike_sim::…` everywhere, from
+# inside this crate too — ⚠ nothing here re-exports it, and nothing may: a re-export of a simulator
+# item from this crate is the second name that record's one-name argument rests on NOT existing.
+vike-sim = { path = "../vike-sim" }
+# The pure analytics cluster extracted OUT of this crate: metrics, BacktestResult/BacktestReport,
+# benchmark/excursions/periods/montecarlo/stability/overfit/validation, the sizer registry, the
+# zero-trade diagnoser, and the argv half of binutil. Named `vike_analytics::…` at every call site.
+# ⚠ lib.rs RE-EXPORTED eight of its modules and `BacktestResult` until 2026-09-27, "so every
+# existing path resolves exactly as before"; the root `CLAUDE.md`'s one-name rule retired them with
+# the simulator split (0087). It depends on vike-model alone, so this edge adds no new transitive
+# weight here; it only lets weight leave the crates that don't need it.
+vike-analytics = { path = "../vike-analytics" }
+# The shared FILL cluster: broker_sim (the cost scalars), fill_model (the bar/tick/L2-book tiers),
+# fill_resolution (adverse-first + the SL/TP bracket cap) and staleness (the stale-price wait
+# discipline). Named `vike_fills::…`; lib.rs's re-export of all four went with the rest in 0087.
+# What this crate still calls directly is `src/bin/cheap_np_askgate/main.rs`'s `book_taker_price`
+# — THE taker-price law the simulator's L2 tier applies — so the bin prices a fill identically.
+vike-fills = { path = "../vike-fills" }
+# ⚠ PROMOTED from a dev-dependency (it was one until `[engine.fee] kind = "venue"` landed), and
+# the promotion is what makes that key honest rather than a second table. `vike_catalog::fee_lane`
+# owns the `(venue, symbol)` → fee-LANE split (`.P` → the perp row, and aster's per-settlement
+# sub-key), and it is the SAME function `crates/vike-mount/src/engine.rs`'s `make_engine` calls for
+# its own `static_default` — so a `BTCUSDT.P` backtest and the paper mount of that instrument
+# resolve one `vike_model::fee_schedule_for` row by construction, instead of by two hand tables
+# happening to agree. Re-deriving the split inside `harness/profile/fee_cfg.rs` was the
+# alternative and is exactly the copy this promotion avoids.
+#
+# Down-only and free: layer 20 against this crate's 30, vike-catalog depends on vike-model ALONE,
+# and it was already in this crate's graph (and in Cargo.lock's row for it) as a dev-dependency —
+# so no crate joins the workspace and the lockfile does not move. Plain (non-optional) for the
+# same reason `toml` below is: `harness/` is feature-gated in lib.rs, and the workspace runs no
+# `unused_crate_dependencies` lint.
+#
+# tests/laws/session_law.rs used to reach it too (`session_calendar_for(venue, asset_class)`, the
+# (venue, asset-class) keying proved end-to-end over alpaca crypto vs equity in one run). That test
+# left with the simulator and is `crates/vike-sim/tests/laws/session_law.rs` now; vike-sim's own
+# manifest declares the `vike-catalog` edge it needs.
+vike-catalog = { path = "../vike-catalog" }
+serde = { workspace = true }
+indexmap = { workspace = true }   # harness (profile/registry/tpe) — Python dict insertion order
+# ⚠ CORRECTED 2026-08-28. This line used to read, in full: "rand + libm left WITH the analytics
+# cluster: montecarlo.rs (seeded resampling) and overfit.rs (normal_cdf/normal_inv_cdf) were their
+# only users in this crate, and both moved to vike-analytics." The RAND half still holds and no rand
+# dep has come back. The LIBM half is now false, and the way it was false is the instructive part:
+# those two modules were libm's only users AT THE TIME, so the survey that wrote the sentence was
+# right about who called `libm` and blind to who called the same functions through `f64`'s inherent
+# methods — which is where all four of this crate's transcendental sites were sitting.
+#
+# ⚠ Not a preference, and NOT a precision improvement (neither platform is "right"; they are
+# differently wrong at the last bit): IEEE 754 requires `+ - * /` and `sqrt` to be correctly rounded
+# and requires NOTHING of `ln`/`exp`/`cos`/`pow`, so `f64::ln` and friends resolve to the PLATFORM's
+# libm — MSVC's CRT on the Windows dev box, glibc on the the CI box Linux boxes — and the two disagree.
+# The `libm` CRATE is one pure-Rust implementation compiled INTO the binary, so both boxes run the
+# same code. The four converted sites, and what each one's last bit actually decides — ⚠ the FIRST
+# TWO left this crate with the simulator on 2026-09-27 (docs/decisions/0087): they live in
+# `vike-sim` now, whose manifest carries their `libm` line and whose `tests/libm_platform_probe.rs`
+# carries their pin. The argument is kept here whole because it is the same one:
+#   * `crates/vike-sim/src/impact.rs`'s `AlmgrenChriss::impact_frac` — `pow(nu*T, alpha)` +
+#     `pow(nu, beta)` with the paper's 0.891 / 0.600. Runtime base AND runtime exponent, the worst
+#     case under the record's classify-a-power-by-its-BASE rule, and the result is added to the
+#     flat slippage and multiplied into a FILL PRICE, so it lands on the equity curve of every
+#     bar-mode backtest opting it in.
+#   * `crates/vike-sim/src/queue_model.rs`'s `ProbFunc::f` — `pow(x, n)` / `log(1 + x)` over queue
+#     quantities. It moves the estimated front of the queue, i.e. whether a resting maker FILLS at
+#     all. (The bare
+#     `"prob_power"` spelling is `pow(x, 1.0)`, an IEEE special case returning `x` exactly, so the
+#     unconditional divergence is the `prob_log` arm and `prob_power:N` for N != 1 — the site's own
+#     doc says so rather than letting an accidental portability read as a designed one.)
+#   * `src/search/tpe.rs`'s `SplitMix64::gaussian` (Box–Muller `log` + `cos`) and `gaussian_pdf`
+#     (`exp`). The SplitMix64 integer stream was always identical on both boxes; these two float
+#     transforms on top of it were not, and one perturbed draw re-routes the entire subsequent
+#     proposal sequence rather than nudging one number — so the module's own "byte-for-byte" claim
+#     held only WITHIN a box. Its `same_seed_same_proposals` test never covered this: it runs one
+#     closure twice in ONE process, which any single platform satisfies.
+#   * `src/search/objective.rs`'s `shape`/`shape_max` — `log(1 + profit_factor)`. Stated at its true
+#     size: `multi_metric` is OPT-IN (`--rank-by multi`), the sweep default is `RankMetric::Sharpe`
+#     and never reaches it, so this is a RESEARCH exposure — two boxes crowning a different winning
+#     config off the same grid — not a live-order one.
+# `.sqrt()` stays an `f64` method at every site: IEEE 754 already requires it correctly rounded.
+# `docs/decisions/0032-transcendentals-come-from-the-libm-crate-not-the-platform.md` is the accepted
+# verdict and carries the cross-platform measurement, including the 2026-08-26 amendment (a power is
+# classified by its BASE — a literal 10 or 2 needs nothing; an arbitrary runtime f64 base needs
+# `libm::pow`) that is what puts impact.rs and queue_model.rs in scope at all.
+# ⚠ THIS PARAGRAPH IS HISTORY NOW, and is kept rather than deleted because it records why one site
+# was skipped by the libm conversion. It read: `src/fair_value.rs`'s module doc claimed this crate
+# "no longer depends on `libm` directly", which the conversion made false; that file was excluded
+# outright because its `trailing_sigma` is an oracle stop, compared `to_bits()`-for-`to_bits()`
+# against committed `sigma_bits` constants by `tests/cheap_np_parity.rs`, so it was never opened.
+#
+# BOTH files it names have since left for `vike-strategy` with the Polymarket takers, and that
+# crate carries the `libm` dependency and its own `tests/libm_platform_probe.rs` now. The
+# follow-up this paragraph deferred therefore travelled with the code rather than being done here.
+# Already workspace-pinned and shared with vike-model / -indicators / -analytics / -mm / -options /
+# -orderflow: no new external crate and no new lockfile entry enters the tree.
+libm = { workspace = true }
+# `ProfileRisk` (a profile's `[risk]` section, the SAME converter paper/live use) and `RiskLimits`.
+# No cycle: exec -> model only.
+vike-exec = { path = "../vike-exec" }
+# ⚠ THE COMPUTE DAEMON'S EDGES (ruling 7 of
+# `docs/superpowers/specs/2026-09-09-datahub-market-data-wire-design.md`): `vike-backend backtest
+# --addr` serves the seven compute verbs, so this crate now owns a socket as well as an engine.
+#
+# The WIRE — `Request`/`Response`, the framing, the shared plane/scope tables and the bind guard both
+# daemons enforce. Layer 25 against this crate's 30, so it is downward like any other edge, and it is
+# DataFusion-FREE by construction (its `vike-data` edge takes DEFAULT features — the `HistStore` trait
+# only), which is why a plain (non-optional) edge here — since 2026-09-27's feature collapse — still
+# does not drag the Arrow tree into a default build. It carries no transport crate either: the server
+# is bare `std::net` + `serde_json`, exactly as `vike-datahub`'s is, because `deny.toml` bans a second
+# HTTP/WS/RPC stack.
+vike-datahub-client = { path = "../vike-datahub-client" }
+# The ask/tell Bayesian sampler `search::tpe` drives. It USED to be in this crate, and its own
+# module doc already drew the line: "the ask/tell core is store-free and pure; only `run_tpe` (the
+# driver) touches a `HistStore`". The pure half went DOWN to vike-ml (layer 15), which is below the
+# user-study host at 25 — a study could run one backtest through `StudySim` and therefore sweep a
+# grid and nothing cleverer, while the only adaptive sampler in the tree sat above it. Plain
+# (non-optional) since the harness that names it is the crate's default build now.
+vike-ml = { path = "../vike-ml" }
+# The datahub NODE KEYS the daemon arm reads, and `config.backtest_addr`. ⚠ `vike-secrets`, NOT
+# `vike_bridge_core::credentials`: the canonical wrapper drags the ureq/tungstenite/rustls transport
+# stack, which must not join this crate's graph to read a `.env` — the same weight decision
+# `vike-datahub`'s bin already documents. Both are light leaves (layers 15 and 20) and both are
+# needed only by the DAEMON ARM, so both stay OPTIONAL, behind `datafusion-store` beside the
+# `DataFusionHist` it opens — the one feature-gated shape the 2026-09-27 collapse left alone, because
+# a default build never opens a store at all.
+vike-secrets = { path = "../vike-secrets", optional = true }
+vike-config = { path = "../vike-config", optional = true }
+# Plain, DEFAULT features (the `HistStore` TRAIT only — NO hist-datafusion on this line): the
+# harness/loader compile against the trait unconditionally now. The concrete DataFusion backend is
+# opted into by `datafusion-store` alone, which adds `vike-data/hist-datafusion` EXPLICITLY — so a
+# default `cargo test/clippy -p vike-backtest` never touches the Arrow tree (see the [features]
+# block above).
+vike-data = { path = "../vike-data" }
+# ⚠ `vike-binance` stood HERE, and its removal is the point of the change that deleted it: it was
+# the only venue bridge the COMPUTE plane linked, and the only historical venue fetch anywhere
+# outside the data plane. Nothing in this crate reaches an exchange now. Do not re-add a bridge to
+# run a backtest — the store is filled by the data plane (`vike-cli data hist fetch` → a datahub →
+# `vike_datahub::backfill::KLINE_SOURCES`), and a compute crate that dials a venue is the
+# layering mistake this removal paid for.
+# `data fetch-starter`'s HTTPS download. Optional and behind `venue-fetch` for the
+# same reason the bridge was: this crate sits under vike-cli, which stays light. Already
+# workspace-pinned and already in the tree (the blessed blocking REST client), so it widens no
+# audit surface `deny.toml` covers.
+ureq = { workspace = true, optional = true }
+# `src/run_fingerprint.rs`'s INPUT ADDRESS over (resolved config text, data fingerprint) — a plain
+# dependency since 2026-09-27, when the feature that gated it (`hist-replay`) died. No new crate
+# joins the workspace for it: `vike-datahub-client` declares `sha2` NON-optionally already, so this
+# is a direct declaration of something the graph carried anyway. Also the checksum `src/starter.rs`
+# verifies its download against, which is why `venue-fetch` above no longer needs to forward it.
+# ⚠ NOT a hand-rolled 64-bit mixer: `src/search/genetic.rs` records `DefaultHasher` as rejected
+# because std leaves its algorithm unspecified, and a false equality in a content address says "your
+# engine edit changed nothing" when it did.
+sha2 = { workspace = true }
+vike-log = { path = "../vike-log" }
+tracing = { workspace = true }
+# The harness `rhai`/script registry arm: compiles an inline Rhai `src` into a `RhaiStrategy<SimBroker>`
+# so an AUTHORED strategy backtests headlessly through the SAME `strategy_by_name` path a compiled
+# reference strategy does (the create->backtest keystone). Plain since the registry that calls it is
+# the crate's default build now. (Its old dev-dep twin, for `tests/parity/rhai_parity.rs`, left with
+# that gate for `vike-sim` — 0087.)
+vike-script = { path = "../vike-script" }
+# The harness strategy registry: resolves — from vike-strategy — the `ControllerHarness`-wrapped
+# controllers (`momentum`/`funding_carry`) PLUS the portable reference strategies (`grid`/
+# `dca_accumulate`/`trailing_scalper`/`funding_capture`/`pairs_zscore`), which live there because
+# each is a generic `impl<B: Broker> Strategy<B>` authored against vike-model's traits rather than
+# against this simulator. `harness::registry` monomorphises them at `SimBroker`, which keeps the
+# edge one-way. Plain since the registry that calls it is the crate's default build now, mirroring
+# the `vike-script` line above. It still has a dev-dep TWIN below — `harness/registry.rs`'s
+# `#[cfg(test)] mod tests` also mounts the vike-mm `SpreadMaker` through the registry, and THAT edge
+# stays a dev-only one: nothing outside a test names `vike-mm` here, so it never joins
+# `[dependencies]` at all. Down-only, no cycle: vike-strategy depends on vike-model + vike-indicators
+# (which itself depends on vike-model alone and pulls in NO external crate).
+vike-strategy = { path = "../vike-strategy" }
+# The compiled USER-strategy host (user_data/strategies/rust — empty registry in any checkout
+# without one): the harness registry consults it AFTER every built-in arm, so a profile can name a
+# drop-in strategy with no framework change. Plain since the registry that calls it is unconditional.
+vike-user-strategies = { path = "../vike-user-strategies" }
+# The harness sweep/euler runners: data-parallel evaluation of the INDEPENDENT single-run points a
+# parameter sweep expands to. Plain since 2026-09-27 (the sweep/euler runners are the crate's
+# default build now) — and the feature-free pure cores (`search`, `objective`) stay rayon-free by
+# construction regardless, since neither names this crate. Order-preserving collect keeps ranking
+# byte-identical to the sequential path, and the pool is BOUNDED (`sweep::threads::install_bounded`,
+# `VIKE_SWEEP_THREADS`) because each concurrent point materializes its own data slice — see the
+# root Cargo.toml rationale and `harness::sweep`'s module doc.
+rayon = { workspace = true }
+# harness module (BacktestProfile TOML config) — a plain dep since `harness/` compiles
+# unconditionally now (it was already plain before the 2026-09-27 collapse, for the reason still
+# stated: the workspace has no `unused_crate_dependencies` lint).
+toml = { workspace = true }
+# harness::report + the backtest bin's --json path. A plain (non-optional) dep for the
+# same reason toml is: the bin target (unlike the lib) only ever sees [dependencies] — a
+# dev-dependency would compile under `cargo test` but not `cargo build --bin backtest`.
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# ⚠ SIX dev edges LEFT this manifest on 2026-09-27 with the tests that needed them, when the
+# simulator split into `vike-sim` (docs/decisions/0087): `vike-paper`, `vike-core` and `arc-swap`
+# (the r7 backtest == paper == live gate and its siblings), `vike-script` and `vike-indicators`
+# (`parity/rhai_parity.rs`), and `proptest` (`riskgate_simbroker_parity.rs`). Every one of those
+# tests drives the SIMULATOR, so they run from `crates/vike-sim/tests/` now, and
+# `crates/vike-sim/Cargo.toml` declares the edges.
+#
+# The real history SERVER, for the tests that drive the shipped `backtest` binary over a scratch
+# store (`tests/optimizer_cli.rs`, `tests/search_persist_cli.rs`, through `tests/support/
+# local_datahub.rs`). Since the owner closed the local READ door on 2026-09-25 (decision 0084) the
+# binary refuses `--store DIR` and reads every byte of history through a datahub, so those tests
+# serve their store with `vike_datahub::serve` on a loopback port — the production route in
+# miniature, not a double. An UPWARD edge (vike-datahub is layer 65), legal only because it is a
+# dev-dependency; there is no cycle, because ruling 7 removed vike-datahub's own `vike-backtest`
+# edge. DEFAULT features: the server module is ungated, and the concrete `DataFusionHist` it is
+# handed comes from this crate's own `datafusion-store` feature, which those test files require.
+vike-datahub = { path = "../vike-datahub" }
+# The shared libm walk (decision 0074): `vike_model::libm_walk` holds the text parser this crate's
+# `libm_platform_probe` used to keep a private copy of. A DEV edge with the feature, never a normal
+# one — `test-support` is gated `#[cfg(any(test, feature = "test-support"))]` and a normal edge
+# would compile it into shipped builds. `cargo package` strips a dev-dependency carrying no
+# version, so a published closure is untouched.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# The in-memory `HistStore` double, `vike_data::MemHistStore`. The unit tests in
+# `src/compute_server.rs`, `src/named_run_tests.rs` and `src/walkforward/runner_tests.rs` and the
+# `tests/compute_plane.rs`, `tests/walkforward_optimize.rs` and `tests/walkforward_windows.rs`
+# integration tests hand it to the harness in place of a store, so a test that needs a `HistStore`
+# needs no DataFusion fixture in its path. (It was added for the guard tests of `src/fetch.rs`,
+# which is deleted — see `venue-fetch` above.)
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# The shared market-data test builders (`vike_marketdata::test_support::{flat_bar_zero_volume,
+# flat_bar_unit_volume, quote}`), which the harness unit tests (`src/harness/*`) and the
+# `tests/funding_*.rs`, `tests/hist_replay.rs` and `tests/walkforward_optimize.rs` integration tests
+# each used to re-type. A DEV edge with the feature, never a normal one: `test-support` is gated
+# `#[cfg(any(test, feature = "test-support"))]` and a normal edge would compile the builders into
+# shipped builds. vike-marketdata is layer 5 and names no vike crate, so there is no cycle; the
+# library already reaches it through vike-model, and this adds one `vike-backtest` line to
+# `Cargo.lock`'s dependency list. An importing site that sits behind `datafusion-store` gates its
+# import with it, so the default build's test targets import nothing they do not use.
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+# `harness/registry.rs`'s `mod tests` mounts the vike-mm `SpreadMaker` through the registry — the
+# ONLY site in this crate that names `vike-mm`, and it is `#[cfg(test)]`, so a dev-only edge is the
+# whole of what it needs; promoting it to `[dependencies]` in the 2026-09-27 feature collapse would
+# have added a crate the default build never calls. Dev-dep only (down-only: vike-mm depends on
+# vike-model alone). ⚠ It also named `tests/maker_backtest.rs` until that gate left for `vike-sim`
+# with the simulator it exercises.
+vike-mm = { path = "../vike-mm" }
+# ⚠ `vike-strategy` LEFT this section on 2026-09-27: the 2026-09-27 feature collapse promoted the
+# optional `[dependencies]` edge above to plain, which a dev-dependency on the same crate would only
+# have duplicated — this line's own last test caller
+# (`tests/controller_harness.rs`) had already left for `vike-sim` the same day, so nothing here
+# needed it kept for its own sake either.
+# tests/hist_replay.rs (datafusion-store feature only) builds a temp-dir DataFusionHist fixture
+# store — same ad hoc (non-workspace-pinned) declaration vike-data's own dev-dependency uses.
+tempfile = "3"
+# ⚠ vike-catalog MOVED to [dependencies] — `harness::profile`'s `[engine.fee] kind = "venue"`
+# reaches `fee_lane` from the library now, so it is no longer a test-only edge. The comment there
+# carries the argument.
+
+[[bench]]
+name = "engines"
+harness = false                     # it's a main() that prints a report, not a libtest bench
+# ⚠ WAS `bench-hist` until the 2026-09-27 feature collapse deleted it. This bench opens a concrete
+# DataFusion+Parquet store, which is the one thing about it a default build still must not compile —
+# `datafusion-store` is the feature that turns that store on, so it is the right gate now that the
+# harness itself needs none. Run: cargo bench -p vike-backtest --features datafusion-store --bench engines
+required-features = ["datafusion-store"]
+
+[[bench]]
+# Tick-replay per-tick baseline (perf-program measurement scaffolding): times the REAL
+# replay_ticks loader (scan -> merge -> run_ticks) against the isolated run_ticks/merge_ticks
+# halves over an in-memory HistStore defined in the bench itself (MemHistStore's tick scans are
+# inert stubs — see the bench's module doc). TRAIT-ONLY, NO DataFusion — and needs no feature at all
+# since the 2026-09-27 collapse made the trait-only loader this crate's default build.
+# Run: cargo bench -p vike-backtest --bench tick_replay
+name = "tick_replay"
+harness = false                     # same hand-rolled main()-that-prints pattern as engines
+
+[[bin]]
+name = "backtest"
+required-features = ["datafusion-store"] # BacktestNode-lite CLI (Task 4) — opens a concrete DataFusionHist
+
+[[bin]]
+# Store-driven `cheap_np` runner: drives the REAL StrategyEngine over the ingested Polymarket tape
+# + spot series, window by window. Opens a concrete DataFusionHist, so it needs the
+# `datafusion-store` backend feature (which pulls in `vike-data/hist-datafusion`) — a default build
+# compiles none of it.
+name = "cheap_np_run"
+required-features = ["datafusion-store"]
+
+[[bin]]
+# Resting-depth measurement for `cheap_np`: rebuilds the recorded L2 book (the pmxt archive,
+# ingested by `pmxt_backfill`) at each entry moment and turns the ask side into a size → PnL
+# curve — the CAPACITY question the per-share reference numbers cannot answer. Same hist-store
+# dependency as `cheap_np_run`, so the same feature gate.
+name = "cheap_np_depth"
+required-features = ["datafusion-store"]
+
+[[bin]]
+# Ask-gate measurement for `cheap_np`: re-gates and re-prices every fired signal on the RESTING
+# ASK a taker could actually lift (the engine's own `book_taker_price` law over the same
+# reconstructed book `cheap_np_depth` uses), and applies Polymarket's venue-enforced 250 ms taker
+# delay — reporting fills, rests and misses separately. Same hist-store dependency, same gate.
+name = "cheap_np_askgate"
+required-features = ["datafusion-store"]
+
+[[bin]]
+# ⚠ It carried `required-features = ["strategies"]` until the 2026-09-27 feature collapse deleted
+# that feature — `vike-strategy`, the only crate this bin needs, is a plain dependency now, so the
+# `[[bin]]` block stays (naming it explicitly rather than falling back to AUTO-DISCOVERY of
+# `src/bin/*.rs`) but gates nothing: this runner is compiled by a DEFAULT build, same as every other
+# always-on part of the harness. It opens NO store (it reads the tape from files) and uses no
+# harness module, unlike its `datafusion-store`-gated siblings above.
+name = "sport_taker_run"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true
