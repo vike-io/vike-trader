@@ -1,0 +1,49 @@
+[package]
+name = "vike-strategy-plugin"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io
+description = "The quarantined FFI surface for runtime-loaded user Rust strategies: the C-ABI types, both sides' wrappers, and the dlopen loader. One of the few crates outside the workspace unsafe_code forbid, so that nothing above it has to be."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs): tier `leaf`, the
+# floor its only normal vike-* dependencies (vike-model, vike-marketdata) allow.
+[package.metadata.vike]
+layer = 15
+
+# NO [lints] table: this crate IS the quarantined FFI surface, exactly as crates/bridges/fxcm is,
+# and the workspace `unsafe_code = "forbid"` is a level a local `#[allow(unsafe_code)]` cannot lift.
+
+[dependencies]
+# Exactly what a plugin and the loader/host wrappers around one need. The builder service's own
+# tree lives in the sibling `vike-strategy-builder` (`src/lib.rs`'s module doc).
+vike-model = { path = "../vike-model" }
+vike-marketdata = { path = "../vike-marketdata" }
+# `Strategy::on_params_updated`'s `StrategyParams` crosses the ABI as JSON TEXT, never TOML:
+# `toml`'s serializer refuses a `None`, and the bag carries `Option` fields with no
+# `skip_serializing_if`. The argument is on `guest.rs`'s `strategy_params_from_json`. It adds an
+# edge, not a crate, to a plugin's link: `vike-model` already depends on `serde_json`.
+serde_json = { workspace = true }
+
+# ⚠ EVERY entry below is a DEV-dependency for ONE test binary, `tests/equivalence.rs` (mechanism
+# equivalence: one fixture compiled in vs. loaded as a plugin), and none reaches a compiled plugin
+# (`cargo tree -p vike-strategy-plugin -e normal` is unchanged by them). They point UP or level,
+# which `crates/vike-ops/tests/architecture/layer_gate.rs` exempts for dev-dependencies alone: proving two
+# mechanisms agree requires reaching both.
+[dev-dependencies]
+# The real engine both halves run through (`StrategyEngine`/`SimBroker`). The spy-roster probe
+# also READS `crates/vike-sim/src/engine.rs` as text, by a `CARGO_MANIFEST_DIR`-relative path.
+vike-sim = { path = "../vike-sim" }
+# `BacktestResult` and the `metrics` catalog the comparison scores both halves with.
+vike-analytics = { path = "../vike-analytics" }
+# The real builder (`build_plugin`), so the plugin half is the PRODUCTION pipeline. This edge
+# closes a dev-dependency CYCLE (builder -> plugin is a normal edge), which cargo supports.
+vike-strategy-builder = { path = "../vike-strategy-builder" }
+# The build-time tier's scan/render, so the compiled-in half is checked against the real registry.
+vike-user-strategies = { path = "../vike-user-strategies" }
+# The `params: &toml::Value` the fixture's `build` reads, then the rest of the user-facing API
+# surface (`crates/vike-user-strategies/Cargo.toml`): the compiled-in half resolves the fixture's
+# imports against this table, the plugin half against the rendered template.
+toml = { workspace = true }
+vike-strategy = { path = "../vike-strategy" }
+vike-indicators = { path = "../vike-indicators" }

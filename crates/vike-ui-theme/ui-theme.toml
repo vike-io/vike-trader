@@ -1,0 +1,5018 @@
+# ui-theme.toml — THE source of every design value in the desktop GUI (the brand book).
+#
+# Edit a value HERE, then regenerate and look at the result:
+#
+#     VIKE_REGEN_BRAND_ASSETS=1 cargo test -p vike-ui-theme --test brand_assets
+#
+# Everything below is read by `crates/vike-ui-theme/tests/tokens_gen/`, which writes
+#
+#   * the Rust constants the app compiles (the `*_tokens.rs` files in `crates/vike-ui-theme/src/`, each
+#     included by the module that always owned its constants: theme.rs, type_scale.rs, metrics.rs, status.rs,
+#     chrome.rs, market.rs, heat.rs, brand.rs, value.rs and roles.rs),
+#   * `assets/brand/ui-theme.css`, the same values as CSS variables, so an HTML mock-up is drawn with
+#     the real numbers and not a hand copy of them, and
+#   * `assets/brand/brand-book.html`, the page that shows them all.
+#
+# `crates/vike-ui-theme/tests/brand_assets.rs` derives each of those again and fails when a
+# committed file differs from this one. Do not edit a generated file by hand.
+#
+# This file holds the product's VALUES. What a trader CHOOSES among them (theme, density, text size,
+# market colours, header gradient) stays a `preferences.*` row in the settings database.
+#
+# Colours are `#rrggbb`. Sizes are points (1 pt = 1 CSS px in the brand book).
+
+[meta]
+name = "Vike design tokens"
+schema = 1
+
+[themes.graphite]
+label = "Graphite"
+bg = "#0d1117"
+grad_top = "#161b24"
+surface = "#161b22"
+card = "#1c2028"
+hover = "#21252c"
+border = "#2f343c"
+text = "#e7ecf4"
+text_ui = "#e4e9f0"
+text2 = "#9aa4b1"
+text3 = "#858991"
+analysis_line = "#595e64"
+accent = "#3ee08a"
+
+[themes.midnight]
+label = "Midnight"
+bg = "#0a1020"
+grad_top = "#13213d"
+surface = "#141a2a"
+card = "#191f2f"
+hover = "#1e2433"
+border = "#2c3241"
+text = "#e4ecf8"
+text_ui = "#e1e9f5"
+text2 = "#9ca3b1"
+text3 = "#828997"
+analysis_line = "#565d6c"
+accent = "#35c9f2"
+
+[themes.dusk]
+label = "Dusk"
+bg = "#0e0d16"
+grad_top = "#1c1a2e"
+surface = "#181720"
+card = "#1e1c26"
+hover = "#22212a"
+border = "#302f39"
+text = "#eceaf6"
+text_ui = "#e9e7f3"
+text2 = "#a3a1ac"
+text3 = "#888791"
+analysis_line = "#5c5a64"
+accent = "#aa82fa"
+
+[themes.carbon]
+label = "Carbon"
+bg = "#09090b"
+grad_top = "#17171b"
+surface = "#131315"
+card = "#19191b"
+hover = "#1e1e20"
+border = "#2c2c2e"
+text = "#ededf0"
+text_ui = "#eaeaed"
+text2 = "#a2a2a4"
+text3 = "#848487"
+analysis_line = "#59595b"
+accent = "#f2b53a"
+
+[type]
+roles = ["caption", "body", "strong", "title", "heading", "display", "hero"]
+
+# Three scales. Small is what Standard was before 2026-10-05, Standard is what Large was (and is the default),
+# and Large is new: the owner found both old scales too small on a 2560 x 1600 screen.
+[type.small]
+caption = 10.0
+body = 11.0
+strong = 12.0
+title = 14.0
+heading = 18.0
+display = 24.0
+hero = 40.0
+
+[type.standard]
+caption = 11.0
+body = 12.0
+strong = 13.0
+title = 15.0
+heading = 19.0
+display = 26.0
+hero = 40.0
+
+[type.large]
+caption = 13.0
+body = 14.0
+strong = 15.0
+title = 17.0
+heading = 22.0
+display = 30.0
+hero = 44.0
+
+[density.compact]
+control_h = 20.0
+row_h = 16.0
+pad = 6.0
+gap = 4.0
+header_h = 22.0
+
+[density.normal]
+control_h = 24.0
+row_h = 18.0
+pad = 8.0
+gap = 6.0
+header_h = 24.0
+
+[density.comfortable]
+control_h = 28.0
+row_h = 22.0
+pad = 10.0
+gap = 8.0
+header_h = 28.0
+
+[[status]]
+name = "OK"
+hex = "#3fbf6e"
+doc = "A healthy state — a live link, a configured credential, a saved write."
+
+[[status]]
+name = "WARNING"
+hex = "#e6b428"
+doc = "Not settled yet — a link dialling or reconnecting, an armed remote-control segment, an account named but not yet saved, a store nobody could open."
+
+[[status]]
+name = "ERROR"
+hex = "#f0524a"
+doc = "A fault — a failed link, a refused write, an inline error."
+
+[[status]]
+name = "INFO"
+hex = "#57a5ff"
+doc = "Information — egui's hyperlink colour."
+
+[[status]]
+name = "MUTED"
+hex = "#787878"
+doc = "Nothing live to show — `Disconnected` and `Unknown` alike (only a label tells them apart), an unset credential. Grey 120 is a MARK's colour and sits below the 4.5:1 floor for text."
+
+# ---- Account modes (crates/vike-ui-theme/src/roles.rs, components/chip.rs, components/venue_chip.rs) -------------
+# Where an account trades, and which colour each part of its chip wears. A part is named by a ROLE, never by a hex,
+# so the row says "DEMO is outlined in the info blue" and the colour stays where it is defined: the theme's own
+# fields, or the `[[status]]` table above. A role is resolved at run time against the theme the trader chose.
+#
+#   name         the label the chip prints, and the Rust constant that carries the row (`roles::modes::DEMO`).
+#                The kit's `chip::Mode` has one variant per row, and a test fails when either side has none.
+#   fill         the chip's fill: a role, or `none` for an outlined chip.
+#   stroke       the chip's outline: a role, or `none` for a filled chip.
+#   text         the chip's label: a role (never `none`).
+#   mark         the venue chip's mark: `filled` (a disc) or `ring`.
+#   mark_colour  the mark's colour: a role (never `none`).
+#   doc          ONE line: what the mode is and why it wears these colours.
+#
+# The roles are `vike_ui_theme::roles::ColourRole`, the one list: accent border text text2 text3 bg surface card hover
+# text_ui grad_top analysis_line (the theme's own), up down up_text down_text (the market set's), ok warning error info
+# muted (the status colours, the same in every theme), on_fill (the label on a filled control) and none. The generator refuses any other word, and the brand book prints the list.
+#
+# TO CHANGE A MODE'S COLOUR: edit its row here, regenerate (`VIKE_REGEN_BRAND_ASSETS=1 cargo test -p vike-ui-theme
+# --test brand_assets`) and look at the "Account modes" section of the brand book. The tests that PIN the owner's
+# present ruling (`live_is_the_accent_demo_the_info_paper_the_border` in `components/chip.rs`,
+# `a_mode_is_a_dot_whose_shape_carries_it` in `components/venue_chip.rs`) will then fail by name: that is the
+# ruling being changed, so change what they assert in the same PR.
+[[mode]]
+name = "LIVE"
+fill = "accent"
+stroke = "none"
+text = "on_fill"
+mark = "filled"
+mark_colour = "accent"
+doc = "Real money, and one of the accent's six shapes (spec §2): a fill in the theme's accent with the on-fill label, and no other mode is filled in the accent (the owner's ruling B of 2026-10-03, over the danger red the Trade window's build had filled it in). The venue chip's mark is a filled disc in the accent."
+
+[[mode]]
+name = "DEMO"
+fill = "none"
+stroke = "info"
+text = "info"
+mark = "ring"
+mark_colour = "info"
+doc = "A real venue, play money: outlined in the info blue with its label in the same blue, which is the v3 design's own colour (the owner, 2026-10-05: let it be as in design, over the warning amber ruling B had given it). LIVE is told from DEMO by shape, filled against outlined, and on Carbon, whose amber accent sat 4 degrees of hue from that amber, by colour as well. The venue chip's mark is a ring in the info blue."
+
+[[mode]]
+name = "PAPER"
+fill = "none"
+stroke = "border"
+text = "text2"
+mark = "ring"
+mark_colour = "text3"
+doc = "Nothing leaves the box: outlined in the theme's border grey with its label in the secondary text. The venue chip's mark is a ring in the caption grey."
+
+# ---- Maps (crates/vike-ui-theme/src/maps.rs) ---------------------------------------------------------------------
+# "Which colour, word or icon does this state or kind use": one row per state or kind, grouped by the MAPPING it belongs
+# to. The state is a Rust enum the code already has; the code binds each of its variants to a row with an exhaustive
+# `match` (`fn row(self) -> &'static MapRow { match self { State::A => &maps::<map>::A, ... } }`), so a variant without a
+# row does not compile and a row without a variant is a test failure. Each row becomes `vike_ui_theme::maps::<map>::<KEY>`
+# (a `MapRow`), and a table of the brand book's "Maps" section.
+#
+#   map     snake_case: the mapping this row belongs to (`connection`, `strip`). A map exists when it has a sentinel line
+#           below; a new one is a new sentinel plus a blank line, nothing else.
+#   key     UPPER_SNAKE: the state or kind (`DISCONNECTED`), the Rust constant. Unique within its map. `ALL` is taken.
+#   colour  optional: a colour ROLE, the row's main colour (a dot, a mark, a glyph).
+#   fill    optional: a colour role: a fill behind the label.
+#   stroke  optional: a colour role: an outline.
+#   text    optional: a colour role: the label.
+#           The roles are the vocabulary of the Account modes table above (`vike_ui_theme::roles::ColourRole`): accent border
+#           text text2 text3 bg surface card hover text_ui grad_top analysis_line up down up_text down_text ok warning error
+#           info muted on_fill none. A part is a role, never a hex. A part
+#           the row leaves out is `none`. Which of the four a map uses for what is the MAP's own: its comment says.
+#   word    optional: a string, the label shown to the user. One line, no space at either end.
+#   icon    optional: the KEY of an icon of the kit's registry: the constant's name in `registry!` of
+#           `crates/vike-ui-theme/src/icons.rs`, UPPER_SNAKE (`CONNECTIONS`, `WARNING`), never the Phosphor name. The
+#           generator refuses a key the registry does not have.
+#   count   optional: a whole number 0..=255 (the bars lit, the steps).
+#   flag    optional: true or false (dashed, drawn).
+#   doc     ONE line: what the row is on screen. Required.
+#
+# ADDING ROWS (many people do this at once, so the layout is what keeps the merges clean):
+#   1. Put your rows directly UNDER your map's sentinel line (below the blank line that follows it), each row followed by a
+#      blank line, in the order the code lists its states. Never between another map's rows, never at the end of the file.
+#   2. Regenerate on a lane and look: `VIKE_REGEN_BRAND_ASSETS=1 cargo test -p vike-ui-theme --test brand_assets`. The
+#      generated files (map_tokens.rs, brand-book.html) hold the maps alphabetically, whatever order they are written in
+#      here, and each map has a frame of its own even while it has no rows.
+#   3. Bind your enum to the rows with an exhaustive `match`, and delete the Rust colour match it replaces.
+# A row under the wrong sentinel, a map with no sentinel, a duplicate key, an unknown field, role or icon, a key that is not
+# UPPER_SNAKE, a doc over more than one line or a count that does not fit u8 stops the generator and names the row.
+
+# connection: a feed's state as the status strip's dot and the Connections tool's Status (live feed) cell show it (the Trade window's FEED badge is its own map, feed_badge): `colour` is the dot's and the cell's colour, `word` the cell's words.
+# ==== map: connection ====
+
+[[map]]
+map = "connection"
+key = "CONNECTED"
+colour = "ok"
+word = "Connected"
+doc = "A live feed: the status strip's dot and the Connections tool's Status cell in the status green, the cell reading Connected."
+
+[[map]]
+map = "connection"
+key = "CONNECTING"
+colour = "warning"
+word = "Connecting"
+doc = "A feed that is dialling: the dot and the cell in the status amber, the cell reading Connecting."
+
+[[map]]
+map = "connection"
+key = "DISCONNECTED"
+colour = "muted"
+word = "Disconnected"
+doc = "A feed that is down or idle: the dot and the cell in the status grey, the cell reading Disconnected (the Trade window's FEED badge paints this same state red, in the feed_badge map)."
+
+[[map]]
+map = "connection"
+key = "ERROR"
+colour = "error"
+word = "Error"
+doc = "A feed that reported a fault: the dot and the cell in the status red, the cell reading Error."
+
+[[map]]
+map = "connection"
+key = "UNKNOWN"
+colour = "muted"
+word = "Unknown (producer has not reported)"
+doc = "A feed whose producer has not said anything yet: the dot and the cell in the status grey, the cell saying the producer has not reported."
+
+[[map]]
+map = "connection"
+key = "NO_PRODUCER"
+colour = "muted"
+word = "no feed producer in this build"
+doc = "A venue that nothing in this build produces a feed status for (the Connections tool's cell only, never a state the strip's dot has): the cell in the status grey, saying so."
+
+# presence: the kit's credential-presence marks (components::chip::Presence), which no screen draws today: `colour` is the mark's colour and `word` the word its legend gives it. The mark's text glyph (the filled dot, the ring, the middle dot, the question mark) is not a row field and stays in code.
+# ==== map: presence ====
+
+[[map]]
+map = "presence"
+key = "CONFIGURED"
+colour = "ok"
+word = "configured"
+doc = "Every key of the tier is in the store: the mark in the status green, its legend word configured."
+
+[[map]]
+map = "presence"
+key = "NOT_SET"
+colour = "muted"
+word = "not set"
+doc = "The tier exists and nothing is stored for it: the mark in the status grey, its legend word not set."
+
+[[map]]
+map = "presence"
+key = "NO_SUCH_TIER"
+colour = "text3"
+word = "no such tier"
+doc = "The venue has no such tier: the mark in the theme's caption grey (the Connections tool dims the status grey instead, in the tier_state map), its legend word no such tier."
+
+[[map]]
+map = "presence"
+key = "UNKNOWN"
+colour = "warning"
+word = "not measured"
+doc = "The store could not be opened, so nothing was measured: the mark in the status amber, its legend word not measured."
+
+# empty_pane: a pane with nothing to show (components::state::Load): `colour` is the spinner's or the icon's colour, `icon` the glyph (none for the spinner), `text` the colour of the pane's words, `word` the icon's accessible name where a screen reader hears it (the bookless ladder's tray and cloud, which read these rows too).
+# ==== map: empty_pane ====
+
+[[map]]
+map = "empty_pane"
+key = "LOADING"
+colour = "text3"
+text = "text3"
+doc = "Still asking: a spinner in the caption grey and the pane's words in the caption grey (a spinner is no icon of the registry)."
+
+[[map]]
+map = "empty_pane"
+key = "EMPTY"
+colour = "text3"
+text = "text2"
+icon = "EMPTY"
+word = "empty"
+doc = "Asked and got nothing: the empty tray in the caption grey and the pane's words in the secondary text; a bookless ladder whose link is up or not known shows the same tray, named empty."
+
+[[map]]
+map = "empty_pane"
+key = "UNREACHABLE"
+colour = "warning"
+text = "text"
+icon = "UNREACHABLE"
+word = "unreachable"
+doc = "Could not ask: the unreachable cloud in the status amber and the pane's words in the primary text; a bookless ladder whose link is down shows the same cloud, named unreachable."
+
+# button: a button's kind (the kit's five, and the Trade window's chosen look): `fill` the button's fill, `stroke` its outline, `text` its label, `colour` the fill under the pointer (`none`: a filled kind is lifted in code a step toward the text colour).
+# ==== map: button ====
+
+[[map]]
+map = "button"
+key = "PRIMARY"
+fill = "accent"
+text = "on_fill"
+doc = "The one action a view exists for (Save, Apply, Run; the strip's Place): the fill in the theme's accent, no outline, the label in the on-fill black; under the pointer the fill is lifted in code a step toward the text colour."
+
+[[map]]
+map = "button"
+key = "SECONDARY"
+colour = "hover"
+fill = "surface"
+stroke = "border"
+text = "text_ui"
+doc = "Everything else (Refresh, Cancel), and the Trade window's plain button: the surface fill, an outline in the border grey, the label in the UI text; under the pointer the fill is the theme's hover fill."
+
+[[map]]
+map = "button"
+key = "BUY"
+fill = "up"
+text = "on_fill"
+doc = "Buy, also the Trade window's tall Buy: the fill in the market set's up colour, no outline, the label in the on-fill black; under the pointer the fill is lifted in code a step toward the text colour."
+
+[[map]]
+map = "button"
+key = "SELL"
+fill = "down"
+text = "on_fill"
+doc = "Sell, also the Trade window's tall Sell: the fill in the market set's down colour, no outline, the label in the on-fill black; under the pointer the fill is lifted in code a step toward the text colour."
+
+[[map]]
+map = "button"
+key = "DANGER"
+fill = "error"
+text = "on_fill"
+doc = "An action that destroys something (Delete): the fill in the status red, no outline, the label in the on-fill black; under the pointer the fill is lifted in code a step toward the text colour."
+
+[[map]]
+map = "button"
+key = "CHOSEN"
+fill = "card"
+stroke = "accent"
+text = "text"
+doc = "The Trade window's chosen button (a chosen order type, Reduce only while on, the one-click padlock while one-click is on): the card fill ringed in the theme's accent, the label in the full text colour; it does not change under the pointer."
+
+# coverage: the parts of the Data Manager's coverage bar and its legend: `colour` is the part's colour, `word` the legend's word, `icon` the partial-day mark's glyph.
+# ==== map: coverage ====
+
+[[map]]
+map = "coverage"
+key = "TRACK"
+colour = "bg"
+doc = "The empty track behind a series' span: the theme's background."
+
+[[map]]
+map = "coverage"
+key = "COVERED"
+colour = "info"
+word = "covered"
+doc = "The span a series covers: the status blue, its legend word covered."
+
+[[map]]
+map = "coverage"
+key = "STALE"
+colour = "warning"
+word = "stale"
+doc = "A span whose last row lags past the stale threshold: the status amber, its legend word stale; the Updated column's date takes the same amber."
+
+[[map]]
+map = "coverage"
+key = "GAP"
+colour = "bg"
+doc = "A missing-day range cut out of a span: the track's own colour, the theme's background, so it reads as a hole."
+
+[[map]]
+map = "coverage"
+key = "PARTIAL_DAY"
+colour = "warning"
+icon = "WARNING"
+word = "partial day"
+doc = "An instrument with a partial day in some other kind of data: the warning icon in the status amber, in the grid's Partial column and in the legend, which says partial day."
+
+# side: a side or a sign, one row per MEANING that is dealt one of the market set's two colours; `colour` is the graphic (a fill, a line, a marker, a bar) and `text` the words and numbers, each the set's up or down. Which side applies (`o.side > 0`, `pnl >= 0.0`) stays in code: `vike_ui_theme::side::Pair` picks between a pair of rows.
+# ==== map: side ====
+
+[[map]]
+map = "side"
+key = "BUY"
+colour = "up"
+text = "up_text"
+doc = "A buy: an order or a print on the buying side (a resting buy's marker and pill, a print's bubble, the side word of a working order): the graphic in the market's up, the word in its up text."
+
+[[map]]
+map = "side"
+key = "SELL"
+colour = "down"
+text = "down_text"
+doc = "A sell: an order or a print on the selling side (a resting sell's marker and pill, a print's bubble, the side word of a working order): the graphic in the market's down, the word in its down text."
+
+[[map]]
+map = "side"
+key = "LONG"
+colour = "up"
+text = "up_text"
+doc = "A long position: the Trade ticket's LONG word, a backtest trade's long side, the options chain's badge for a net long position: the word and the badge in the market's up."
+
+[[map]]
+map = "side"
+key = "SHORT"
+colour = "down"
+text = "down_text"
+doc = "A short position: the Trade ticket's SHORT word, a backtest trade's short side, the options chain's badge for a net short position: the word and the badge in the market's down."
+
+[[map]]
+map = "side"
+key = "BID"
+colour = "up"
+text = "up_text"
+doc = "The bid side of a book: a bid's depth size, the bid bar and the inside-bid wash on a ladder, the Bid button, the bid step line, an options chain's bid cells and their hover wash: the graphic in the market's up, the numbers in its up text."
+
+[[map]]
+map = "side"
+key = "ASK"
+colour = "down"
+text = "down_text"
+doc = "The ask side of a book: an ask's depth size, the ask bar and the inside-ask wash on a ladder, the Ask button, the ask step line, an options chain's ask cells and their hover wash: the graphic in the market's down, the numbers in its down text."
+
+[[map]]
+map = "side"
+key = "GAIN"
+colour = "up"
+text = "up_text"
+doc = "Money made: a P&L, a realized, unrealized or funding figure, a trade's profit, a curve that ends above where it began: the number in the market's up text, the curve in its up."
+
+[[map]]
+map = "side"
+key = "LOSS"
+colour = "down"
+text = "down_text"
+doc = "Money lost: a P&L, a realized, unrealized or funding figure, a trade's loss, a drawdown, a curve that ends below where it began: the number in the market's down text, the curve in its down."
+
+[[map]]
+map = "side"
+key = "POSITIVE"
+colour = "up"
+text = "up_text"
+doc = "A number above zero that is not money (a Greek, a tearsheet metric, a Sharpe, the move off the price to beat, an earnings surprise): the number in the market's up text."
+
+[[map]]
+map = "side"
+key = "NEGATIVE"
+colour = "down"
+text = "down_text"
+doc = "A number below zero that is not money (a Greek, a tearsheet metric, a Sharpe, the move off the price to beat, an earnings surprise): the number in the market's down text."
+
+[[map]]
+map = "side"
+key = "TAKE_PROFIT"
+colour = "up"
+text = "up_text"
+doc = "A take-profit exit: the ladder's T marker and the ticket's TP words: the marker in the market's up, the words in its up text."
+
+[[map]]
+map = "side"
+key = "STOP_LOSS"
+colour = "down"
+text = "down_text"
+doc = "A stop-loss exit: the ladder's S marker and the ticket's SL words: the marker in the market's down, the words in its down text."
+
+[[map]]
+map = "side"
+key = "RISE"
+colour = "up"
+text = "up_text"
+doc = "A rising candle as the chart-style icons draw their examples: the candle in the market's up."
+
+[[map]]
+map = "side"
+key = "FALL"
+colour = "down"
+text = "down_text"
+doc = "A falling candle as the chart-style icons draw their examples: the candle in the market's down."
+
+[[map]]
+map = "side"
+key = "ABOVE_FORECAST"
+colour = "up"
+text = "up_text"
+doc = "A released figure above its forecast, in the Calendar's Actual column: the figure in the market's up text."
+
+[[map]]
+map = "side"
+key = "BELOW_FORECAST"
+colour = "down"
+text = "down_text"
+doc = "A released figure below its forecast, in the Calendar's Actual column: the figure in the market's down text."
+
+[[map]]
+map = "side"
+key = "OUTCOME_UP"
+colour = "up"
+text = "up_text"
+doc = "The Up outcome of a Polymarket up/down market (its odds on the chain cards and in the header, its payout preview on the ticket): the words in the market's up text."
+
+[[map]]
+map = "side"
+key = "OUTCOME_DOWN"
+colour = "down"
+text = "down_text"
+doc = "The Down outcome of a Polymarket up/down market (its odds on the chain cards and in the header, its payout preview on the ticket): the words in the market's down text."
+
+# callput: a call or a put on the options board; `colour` is the graphic (a volume bar, the working-order marker) and `text` the header word, each the leg's colour.
+# ==== map: callput ====
+
+[[map]]
+map = "callput"
+key = "CALL"
+colour = "info"
+text = "info"
+doc = "A call on the options board: the CALLS header, the call volume bars and the working-order marker, in the series blue, which is #57A5FF, exactly the info status's value (a series colour, not a status)."
+
+[[map]]
+map = "callput"
+key = "PUT"
+colour = "down"
+text = "down_text"
+doc = "A put on the options board: the PUTS header in the market's down text and the put volume bars in its down."
+
+# order_pill: the tag of a resting order on the ladder, one row per side and type. The roles are the pill's BASE colours, tinted in code: a pill with a fill is drawn at `trade::PILL_FILL_ALPHA` of its `fill` role with its edge at `trade::PILL_EDGE_ALPHA` of its `stroke` role; a hollow pill (`fill` none) keeps its edge whole. `fill` the pill's fill, `stroke` its one-point edge, `text` its words, `flag` an edge that is dashed. NOT_DRAGGABLE is not a pill but the edge any pill wears when its venue cannot reprice it.
+# ==== map: order_pill ====
+
+[[map]]
+map = "order_pill"
+key = "BUY_LIMIT"
+fill = "up"
+stroke = "up"
+text = "up_text"
+flag = false
+doc = "A resting Buy limit order: the fill in the market set's up colour at PILL_FILL_ALPHA, a solid one-point edge in the same at PILL_EDGE_ALPHA, the words in the up text colour."
+
+[[map]]
+map = "order_pill"
+key = "BUY_STOP"
+stroke = "up"
+text = "up_text"
+flag = true
+doc = "A resting Buy stop order: hollow, a DASHED one-point edge in the market set's up colour at full strength (the v3 design's stop pill), the words in the up text colour."
+
+[[map]]
+map = "order_pill"
+key = "SELL_LIMIT"
+fill = "down"
+stroke = "down"
+text = "down_text"
+flag = false
+doc = "A resting Sell limit order: the fill in the market set's down colour at PILL_FILL_ALPHA, a solid one-point edge in the same at PILL_EDGE_ALPHA, the words in the down text colour."
+
+[[map]]
+map = "order_pill"
+key = "SELL_STOP"
+stroke = "down"
+text = "down_text"
+flag = true
+doc = "A resting Sell stop order: hollow, a DASHED one-point edge in the market set's down colour at full strength (the v3 design's stop pill), the words in the down text colour."
+
+[[map]]
+map = "order_pill"
+key = "NOT_DRAGGABLE"
+stroke = "text3"
+doc = "The edge of a pill, either side and either type, on a venue that cannot reprice an order by dragging: the caption grey in place of the side's colour (its fill, its words and whether it is dashed stay the pill's own)."
+
+# importance: a calendar event's importance as the 3-bar glyph draws it; `colour` is the lit bars, `fill` the unlit bars, `count` how many bars are lit (the bars' heights stay in code).
+# ==== map: importance ====
+
+[[map]]
+map = "importance"
+key = "HIGH"
+colour = "error"
+fill = "border"
+count = 3
+doc = "A high-importance calendar event: all three bars lit, in the status red, the glyph's unlit part in the theme's border."
+
+[[map]]
+map = "importance"
+key = "MEDIUM"
+colour = "warning"
+fill = "border"
+count = 2
+doc = "A medium-importance calendar event: two bars lit, in the status amber, the third in the theme's border."
+
+[[map]]
+map = "importance"
+key = "OTHER"
+colour = "text3"
+fill = "border"
+count = 1
+doc = "Any other calendar event (low, holiday, no rating): one bar lit, in the theme's caption grey, the other two in its border."
+
+# strip: the Trade window's status strip, one row per thing it can say. `colour` is the status dot and `text` the words.
+# ==== map: strip ====
+
+[[map]]
+map = "strip"
+key = "INFO"
+colour = "text3"
+text = "text2"
+doc = "A note from the app that asks nothing of the trader (\"Not sent.\", \"Waiting for the node.\", an order status that is neither a fill nor a failure): the dot in the caption grey, the words in the secondary text."
+
+[[map]]
+map = "strip"
+key = "OK"
+colour = "ok"
+text = "ok"
+doc = "An order the venue filled: the dot and the words in the status green."
+
+[[map]]
+map = "strip"
+key = "ERROR"
+colour = "error"
+text = "error"
+doc = "A failure or a refusal (an order the venue rejected, denied or let expire; a stopped or halted node; a click the window refused): the dot and the words in the status red."
+
+[[map]]
+map = "strip"
+key = "REFUSAL"
+colour = "warning"
+text = "text2"
+doc = "The ticket's own standing refusal, said where \"Ready\" would be because Buy and Sell send nothing (the window takes no order, a TP/SL ticked where it cannot be used, an instrument with no lot size, a TP/SL leg that is not a percentage): the dot in the status amber, the words in the secondary text."
+
+[[map]]
+map = "strip"
+key = "READY"
+colour = "text3"
+text = "text2"
+doc = "Nothing waits and the ticket can send (\"Ready · every order asks first\", \"Ready · one-click trading is on\"): the dot in the caption grey, the words in the secondary text."
+
+# window_kind: a window's kind (one row per WinKind); `word` is the window's name in its title bar and `icon` the glyph the bar shows in its place where the name does not fit; no colour.
+# ==== map: window_kind ====
+
+[[map]]
+map = "window_kind"
+key = "CHART"
+word = "Chart"
+icon = "CHART"
+doc = "The chart window: its name, Chart, and the line-chart glyph the title bar shows in its place where the name does not fit."
+
+[[map]]
+map = "window_kind"
+key = "TRADE"
+word = "Trade"
+icon = "DOM"
+doc = "The Trade window: its name, Trade, and the price-ladder glyph (the ladder is what the window is) the title bar shows in its place where the name does not fit."
+
+[[map]]
+map = "window_kind"
+key = "ACCOUNT"
+word = "Account"
+icon = "ACCOUNT"
+doc = "The Account window (equity, accounts, working orders): its name, Account, and the wallet glyph the title bar shows in its place where the name does not fit."
+
+[[map]]
+map = "window_kind"
+key = "OPTIONS"
+word = "Options"
+icon = "OPTIONS"
+doc = "The options-chain window: its name, Options, and the target glyph the title bar shows in its place where the name does not fit."
+
+[[map]]
+map = "window_kind"
+key = "GREEKS"
+word = "Greeks"
+icon = "GREEKS"
+doc = "The Greeks window: its name, Greeks, and the math-operations glyph the title bar shows in its place where the name does not fit."
+
+[[map]]
+map = "window_kind"
+key = "NEWS"
+word = "News"
+icon = "NEWS"
+doc = "The News window: its name, News, and the newspaper glyph the title bar shows in its place where the name does not fit."
+
+[[map]]
+map = "window_kind"
+key = "CALENDAR"
+word = "Calendar"
+icon = "CALENDAR"
+doc = "The economic-calendar window: its name, Calendar, and the calendar glyph the title bar shows in its place where the name does not fit."
+
+[[map]]
+map = "window_kind"
+key = "DATA"
+word = "Data Manager"
+icon = "DATA"
+doc = "The Data Manager window: its name, Data Manager, and the database glyph the title bar shows in its place where the name does not fit."
+
+[[map]]
+map = "window_kind"
+key = "STUDIO"
+word = "Studio"
+icon = "STUDIO"
+doc = "The Studio window: its name, Studio, and the flask glyph the title bar shows in its place where the name does not fit."
+
+[[map]]
+map = "window_kind"
+key = "TEARSHEET"
+word = "Tearsheet"
+icon = "TEARSHEET"
+doc = "The Tearsheet window: its name, Tearsheet, and the bar-chart glyph the title bar shows in its place where the name does not fit."
+
+[[map]]
+map = "window_kind"
+key = "POLYMARKET"
+word = "Polymarket"
+icon = "POLYMARKET"
+doc = "The Polymarket scalp-cockpit window: its name, Polymarket, and the dice glyph the title bar shows in its place where the name does not fit."
+
+[[map]]
+map = "window_kind"
+key = "SETTINGS"
+word = "Settings"
+icon = "SETTINGS"
+doc = "The Settings window: its name, Settings, and the gear glyph the title bar shows in its place where the name does not fit."
+
+# data_dest: a destination of the Data Manager's left rail; `word` is its label and `icon` the glyph beside it; no colour. Which group a destination sits under (DataDest::group) and whether it reads the credential store (reads_arming) are logic and stay in code.
+# ==== map: data_dest ====
+
+[[map]]
+map = "data_dest"
+key = "OVERVIEW"
+word = "Overview"
+icon = "OVERVIEW"
+doc = "What needs attention, the window's landing screen: the label Overview and the four-squares glyph beside it in the rail."
+
+[[map]]
+map = "data_dest"
+key = "ALL_SERIES"
+word = "All series"
+icon = "ALL_SERIES"
+doc = "The stored inventory grid: the label All series and the table glyph beside it in the rail."
+
+[[map]]
+map = "data_dest"
+key = "HAS_GAPS"
+word = "Has gaps"
+icon = "HAS_GAPS"
+doc = "The stored grid filtered to series with a hole in their timeline: the label Has gaps and the crossed-calendar glyph beside it in the rail (the same glyph leads the foot line's gap count)."
+
+[[map]]
+map = "data_dest"
+key = "STALE"
+word = "Stale"
+icon = "STALE"
+doc = "The stored grid filtered to series that stopped updating: the label Stale and the hourglass glyph beside it in the rail."
+
+[[map]]
+map = "data_dest"
+key = "BY_VENUE"
+word = "By venue"
+icon = "BY_VENUE"
+doc = "One row per venue, rollups only: the label By venue and the buildings glyph beside it in the rail."
+
+[[map]]
+map = "data_dest"
+key = "CACHED_FEEDS"
+word = "Cached feeds"
+icon = "CACHED_FEEDS"
+doc = "The live bar feeds held in memory: the label Cached feeds and the broadcast glyph beside it in the rail."
+
+[[map]]
+map = "data_dest"
+key = "PROVIDERS"
+word = "Providers"
+icon = "PROVIDERS"
+doc = "Where backfilled data can come from: the label Providers and the cloud-download glyph beside it in the rail."
+
+[[map]]
+map = "data_dest"
+key = "ACTIVITY_LOG"
+word = "Activity log"
+icon = "ACTIVITY_LOG"
+doc = "What the Data Manager did this session, newest first: the label Activity log and the scroll glyph beside it in the rail."
+
+[[map]]
+map = "data_dest"
+key = "DATA_SETS"
+word = "DataSets"
+icon = "DATASETS"
+doc = "The editor of saved symbol universes: the label DataSets and the stack glyph beside it in the rail."
+
+[[map]]
+map = "data_dest"
+key = "CREDENTIALS"
+word = "Credentials"
+icon = "CREDENTIALS"
+doc = "Per-venue credential presence, the ceiling and what the mount did — folded in from the standalone Connections window's Credentials tab and the old Venues destination it replaces: the label Credentials and the key glyph beside it in the rail."
+
+[[map]]
+map = "data_dest"
+key = "BACKEND"
+word = "Backend"
+icon = "BACKEND"
+doc = "Which backend box this app observes, and its connection state — folded in from the standalone Connections window's Backend tab: the label Backend and the plug glyph beside it in the rail."
+
+[[map]]
+map = "data_dest"
+key = "INSTRUMENTS"
+word = "Instruments"
+icon = "INSTRUMENTS"
+doc = "The cross-venue instrument catalogue the symbol picker searches: the label Instruments and the list-search glyph beside it in the rail."
+
+[[map]]
+map = "data_dest"
+key = "STORE"
+word = "Store"
+icon = "STORE"
+doc = "Which stores are mounted, what each can do and the layout on disk: the label Store and the hard-drives glyph beside it in the rail."
+
+# studio_tab: a tool of the Studio's right-hand rail (one row per RightTab); `word` is its label (the tab's caption, the rail's accessible name and tooltip) and `icon` its glyph; no colour.
+# ==== map: studio_tab ====
+
+[[map]]
+map = "studio_tab"
+key = "SWEEP"
+word = "Sweep"
+icon = "SWEEP"
+doc = "The Sweep and Validate tool, the Studio's first tab: the label Sweep and the grid glyph on the rail."
+
+[[map]]
+map = "studio_tab"
+key = "STRATEGY"
+word = "Strategy"
+icon = "STRATEGY"
+doc = "The strategy source (the Rhai editor, or a native strategy and its params): the label Strategy and the puzzle-piece glyph on the rail."
+
+[[map]]
+map = "studio_tab"
+key = "DATA"
+word = "Data"
+icon = "DATA"
+doc = "The stored data the Studio runs over: the label Data and the database glyph on the rail."
+
+[[map]]
+map = "studio_tab"
+key = "INDICATORS"
+word = "Indicators"
+icon = "INDICATORS"
+doc = "The indicators tool: the label Indicators and the function glyph on the rail."
+
+[[map]]
+map = "studio_tab"
+key = "SAVED"
+word = "Saved"
+icon = "SAVED"
+doc = "The saved strategies: the label Saved and the bookmarks glyph on the rail."
+
+[[map]]
+map = "studio_tab"
+key = "RESEARCH"
+word = "Research"
+icon = "RESEARCH"
+doc = "The user's own studies and the runs they left behind: the label Research and the binoculars glyph on the rail."
+
+[[map]]
+map = "studio_tab"
+key = "CHAT"
+word = "AI Chat"
+icon = "CHAT"
+doc = "The AI copilot: the label AI Chat and the chat glyph on the rail."
+
+# chart_role: one row per field of the chart canvas's colours (`ChartColors`); `colour` is the role it is painted in unless the user picked one for this chart (that pick, and the volume fade, are applied in code on top of the row).
+# ==== map: chart_role ====
+
+[[map]]
+map = "chart_role"
+key = "UP"
+colour = "up"
+doc = "Candle bodies, and every mark a bar's direction colours (bars, columns, Kagi, PnF): the market set's up, unless the user picked one for this chart."
+
+[[map]]
+map = "chart_role"
+key = "DOWN"
+colour = "down"
+doc = "The same marks going down: the market set's down, unless the user picked one for this chart."
+
+[[map]]
+map = "chart_role"
+key = "BORDER_UP"
+colour = "up"
+doc = "A rising candle's body border: the market set's up, unless the user picked a border colour or edited the body (the border then follows the body)."
+
+[[map]]
+map = "chart_role"
+key = "BORDER_DOWN"
+colour = "down"
+doc = "A falling candle's body border: the market set's down, unless the user picked a border colour or edited the body (the border then follows the body)."
+
+[[map]]
+map = "chart_role"
+key = "WICK_UP"
+colour = "up"
+doc = "A rising candle's wick: the market set's up, unless the user picked a wick colour or edited the body (the wick then follows the body)."
+
+[[map]]
+map = "chart_role"
+key = "WICK_DOWN"
+colour = "down"
+doc = "A falling candle's wick: the market set's down, unless the user picked a wick colour or edited the body (the wick then follows the body)."
+
+[[map]]
+map = "chart_role"
+key = "UP_S"
+colour = "up"
+doc = "Up as a graphic away from the candles (histograms, markers, the baseline style, the last-price line, footprint tints): the market set's up, unless the user picked one."
+
+[[map]]
+map = "chart_role"
+key = "DOWN_S"
+colour = "down"
+doc = "Down as a graphic away from the candles: the market set's down, unless the user picked one."
+
+[[map]]
+map = "chart_role"
+key = "UP_TEXT"
+colour = "up_text"
+doc = "Up as text (the OHLC legend's numbers and change): the market set's up-as-text, unless the user picked a semantic up."
+
+[[map]]
+map = "chart_role"
+key = "DOWN_TEXT"
+colour = "down_text"
+doc = "Down as text (the OHLC legend's numbers and change): the market set's down-as-text, unless the user picked a semantic down."
+
+[[map]]
+map = "chart_role"
+key = "UP_VOLUME"
+colour = "up"
+doc = "Up volume bars: the market set's up faded to the volume pane's strength (the fade stays in code), or the user's semantic up faded the same way."
+
+[[map]]
+map = "chart_role"
+key = "DOWN_VOLUME"
+colour = "down"
+doc = "Down volume bars: the market set's down faded to the volume pane's strength (the fade stays in code), or the user's semantic down faded the same way."
+
+[[map]]
+map = "chart_role"
+key = "LINE"
+colour = "up"
+doc = "Line, area and step series: the market set's up, unless the user picked one."
+
+[[map]]
+map = "chart_role"
+key = "GRID"
+colour = "hover"
+doc = "The chart's grid lines: the theme's hover grey, unless the user picked one."
+
+[[map]]
+map = "chart_role"
+key = "CROSS"
+colour = "text2"
+doc = "The crosshair's lines: the theme's secondary text, unless the user picked one."
+
+[[map]]
+map = "chart_role"
+key = "BG"
+colour = "bg"
+doc = "The canvas: the theme's background, unless the user picked one."
+
+[[map]]
+map = "chart_role"
+key = "BG_TOP"
+colour = "grad_top"
+doc = "The top of the canvas's gradient, when the gradient is on: the theme's gradient top, unless the user picked one."
+
+[[map]]
+map = "chart_role"
+key = "TEXT"
+colour = "text"
+doc = "Words on the canvas (the OHLC legend's letters, the crosshair tags' text): the theme's primary text."
+
+[[map]]
+map = "chart_role"
+key = "TEXT2"
+colour = "text2"
+doc = "Pane names: the theme's secondary text."
+
+[[map]]
+map = "chart_role"
+key = "AXIS"
+colour = "text3"
+doc = "Axis labels: the theme's caption grey."
+
+[[map]]
+map = "chart_role"
+key = "TAG_BG"
+colour = "border"
+doc = "The crosshair tags' fill: the theme's border grey."
+
+[[map]]
+map = "chart_role"
+key = "DIVIDER"
+colour = "border"
+doc = "The line between two panes: the theme's border grey."
+
+[[map]]
+map = "chart_role"
+key = "DIVIDER_HOVER"
+colour = "analysis_line"
+doc = "That line under the pointer: the theme's analysis line."
+
+[[map]]
+map = "chart_role"
+key = "ZERO_LINE"
+colour = "analysis_line"
+doc = "The line between plus and minus (the CVD zero line, the baseline style's anchor): the theme's analysis line."
+
+[[map]]
+map = "chart_role"
+key = "LEVEL_LINE"
+colour = "analysis_line"
+doc = "An oscillator's reference level (RSI 30/50/70, Stoch 20/80) the user has not coloured: the theme's analysis line."
+
+[[map]]
+map = "chart_role"
+key = "ON_FILL"
+colour = "on_fill"
+doc = "Text on a chip filled with a market or series colour: the kit's black, which every design fill takes (a fill a user picked darker takes the theme's text instead, in code)."
+
+# visuals: one row per colour slot of egui's `Visuals` (key = the field in UPPER_SNAKE, nested fields joined: `SELECTION_BG_FILL`, `NONINTERACTIVE_FG_STROKE`); `colour` is the theme or status colour that slot is set to (a stroke's width stays in code, as `stroke::HAIRLINE`).
+# ==== map: visuals ====
+
+[[map]]
+map = "visuals"
+key = "PANEL_FILL"
+colour = "bg"
+doc = "The fill of a central panel or side panel: the theme's background."
+
+[[map]]
+map = "visuals"
+key = "WINDOW_FILL"
+colour = "bg"
+doc = "The fill of a window, a title bar, the rail and a dialog: the theme's background, the same dark as the plot (only the 1 px border sets them apart)."
+
+[[map]]
+map = "visuals"
+key = "EXTREME_BG_COLOR"
+colour = "bg"
+doc = "The fill of a text field, a slider's track and the plot canvas: the theme's background."
+
+[[map]]
+map = "visuals"
+key = "FAINT_BG_COLOR"
+colour = "surface"
+doc = "The stripe of an alternating row and other faint backgrounds: the theme's surface."
+
+[[map]]
+map = "visuals"
+key = "CODE_BG_COLOR"
+colour = "surface"
+doc = "The background of a code span: the theme's surface."
+
+[[map]]
+map = "visuals"
+key = "WINDOW_STROKE"
+colour = "border"
+doc = "The 1 px border round a window: the theme's border grey."
+
+[[map]]
+map = "visuals"
+key = "SELECTION_BG_FILL"
+colour = "hover"
+doc = "The fill behind selected text and a selected row: the theme's hover fill."
+
+[[map]]
+map = "visuals"
+key = "SELECTION_STROKE"
+colour = "text_ui"
+doc = "The outline of a selection: the theme's UI text."
+
+[[map]]
+map = "visuals"
+key = "HYPERLINK_COLOR"
+colour = "info"
+doc = "A hyperlink: the status blue."
+
+[[map]]
+map = "visuals"
+key = "WARN_FG_COLOR"
+colour = "warning"
+doc = "Text egui draws as a warning: the status amber."
+
+[[map]]
+map = "visuals"
+key = "ERROR_FG_COLOR"
+colour = "error"
+doc = "Text egui draws as an error: the status red."
+
+[[map]]
+map = "visuals"
+key = "TEXT_CURSOR_STROKE"
+colour = "text_ui"
+doc = "The caret of a text field: the theme's UI text."
+
+[[map]]
+map = "visuals"
+key = "IME_COMPOSITION_ACTIVE_UNDERLINE_STROKE"
+colour = "text_ui"
+doc = "The underline of the text being composed by an input method, in its active clause: the theme's UI text."
+
+[[map]]
+map = "visuals"
+key = "IME_COMPOSITION_INACTIVE_UNDERLINE_STROKE"
+colour = "text3"
+doc = "The underline of the text being composed by an input method, in its inactive clauses: the theme's caption grey."
+
+[[map]]
+map = "visuals"
+key = "NONINTERACTIVE_BG_FILL"
+colour = "surface"
+doc = "The fill of a widget that cannot be interacted with (a label, a separator, a frame): the theme's surface."
+
+[[map]]
+map = "visuals"
+key = "NONINTERACTIVE_WEAK_BG_FILL"
+colour = "surface"
+doc = "The fill of a widget that cannot be interacted with (a label, a separator, a frame) when it is drawn weakly (a button's frame): the theme's surface."
+
+[[map]]
+map = "visuals"
+key = "NONINTERACTIVE_BG_STROKE"
+colour = "border"
+doc = "The outline of a widget that cannot be interacted with (a label, a separator, a frame): the theme's border grey."
+
+[[map]]
+map = "visuals"
+key = "NONINTERACTIVE_FG_STROKE"
+colour = "text2"
+doc = "The glyphs and text of a widget that cannot be interacted with (a label, a separator, a frame): the theme's secondary text."
+
+[[map]]
+map = "visuals"
+key = "INACTIVE_BG_FILL"
+colour = "surface"
+doc = "The fill of a widget at rest (a button, a checkbox, a text field): the theme's surface."
+
+[[map]]
+map = "visuals"
+key = "INACTIVE_WEAK_BG_FILL"
+colour = "surface"
+doc = "The fill of a widget at rest (a button, a checkbox, a text field) when it is drawn weakly (a button's frame): the theme's surface."
+
+[[map]]
+map = "visuals"
+key = "INACTIVE_BG_STROKE"
+colour = "border"
+doc = "The outline of a widget at rest (a button, a checkbox, a text field): the theme's border grey."
+
+[[map]]
+map = "visuals"
+key = "INACTIVE_FG_STROKE"
+colour = "text2"
+doc = "The glyphs and text of a widget at rest (a button, a checkbox, a text field): the theme's secondary text."
+
+[[map]]
+map = "visuals"
+key = "HOVERED_BG_FILL"
+colour = "hover"
+doc = "The fill of a widget under the pointer: the theme's hover fill."
+
+[[map]]
+map = "visuals"
+key = "HOVERED_WEAK_BG_FILL"
+colour = "hover"
+doc = "The fill of a widget under the pointer when it is drawn weakly (a button's frame): the theme's hover fill."
+
+[[map]]
+map = "visuals"
+key = "HOVERED_BG_STROKE"
+colour = "border"
+doc = "The outline of a widget under the pointer: the theme's border grey."
+
+[[map]]
+map = "visuals"
+key = "HOVERED_FG_STROKE"
+colour = "text_ui"
+doc = "The glyphs and text of a widget under the pointer: the theme's UI text."
+
+[[map]]
+map = "visuals"
+key = "ACTIVE_BG_FILL"
+colour = "hover"
+doc = "The fill of a widget being pressed or dragged: the theme's hover fill."
+
+[[map]]
+map = "visuals"
+key = "ACTIVE_WEAK_BG_FILL"
+colour = "hover"
+doc = "The fill of a widget being pressed or dragged when it is drawn weakly (a button's frame): the theme's hover fill."
+
+[[map]]
+map = "visuals"
+key = "ACTIVE_BG_STROKE"
+colour = "border"
+doc = "The outline of a widget being pressed or dragged: the theme's border grey."
+
+[[map]]
+map = "visuals"
+key = "ACTIVE_FG_STROKE"
+colour = "text_ui"
+doc = "The glyphs and text of a widget being pressed or dragged: the theme's UI text."
+
+[[map]]
+map = "visuals"
+key = "OPEN_BG_FILL"
+colour = "hover"
+doc = "The fill of a widget whose menu or popup is open: the theme's hover fill."
+
+[[map]]
+map = "visuals"
+key = "OPEN_WEAK_BG_FILL"
+colour = "hover"
+doc = "The fill of a widget whose menu or popup is open when it is drawn weakly (a button's frame): the theme's hover fill."
+
+[[map]]
+map = "visuals"
+key = "OPEN_BG_STROKE"
+colour = "border"
+doc = "The outline of a widget whose menu or popup is open: the theme's border grey."
+
+[[map]]
+map = "visuals"
+key = "OPEN_FG_STROKE"
+colour = "text_ui"
+doc = "The glyphs and text of a widget whose menu or popup is open: the theme's UI text."
+
+# control_link: the remote write channel's link in the status strip's right segment (a bool, connected or not): `colour` is the dot's and the words' colour, `icon` the glyph that leads the words.
+# ==== map: control_link ====
+
+[[map]]
+map = "control_link"
+key = "CONNECTED"
+colour = "warning"
+icon = "WARNING"
+doc = "The write channel is up: the segment's dot and words in the loud status amber and the words led by the warning icon, because this observer can place real orders on the daemon."
+
+[[map]]
+map = "control_link"
+key = "DISCONNECTED"
+colour = "error"
+doc = "The write channel is down: the segment's dot and words in the status red, with no icon."
+
+# feed_badge: the Trade window's FEED badge, one row per state of its depth link: `stroke` is the badge's outline, `text` the ink of its words, `word` the words. A link that is down is red here, where the status dot paints it grey.
+# ==== map: feed_badge ====
+
+[[map]]
+map = "feed_badge"
+key = "CONNECTED"
+stroke = "ok"
+text = "ok"
+word = "FEED UP"
+doc = "The depth link is live: the badge outlined in the status green with its words in the same green."
+
+[[map]]
+map = "feed_badge"
+key = "CONNECTING"
+stroke = "warning"
+text = "warning"
+word = "FEED DIALLING"
+doc = "The depth link is dialling: the badge outlined in the status amber with its words in the same amber."
+
+[[map]]
+map = "feed_badge"
+key = "DISCONNECTED"
+stroke = "error"
+text = "error"
+word = "FEED DOWN"
+doc = "The depth link is down: the badge outlined in the status red with its words in the same red (owner decision 4, 2026-09-29: a dead link is the alarm, where the status strip's wordless dot is grey)."
+
+[[map]]
+map = "feed_badge"
+key = "ERROR"
+stroke = "error"
+text = "error"
+word = "FEED FAULT"
+doc = "The depth link reported a fault: the badge outlined in the status red with its words in the same red."
+
+[[map]]
+map = "feed_badge"
+key = "UNKNOWN"
+stroke = "muted"
+text = "text3"
+word = "FEED ?"
+doc = "Nobody reported on the depth link: the badge outlined in the status grey with its words in the caption grey, because the status grey is under the 4.5:1 text floor as ink."
+
+# key_presence: the backend editor's check of a typed key NAME against the credential store: `icon` and `word` are the badge beside the field. It is drawn in egui's weak text colour, which is not a colour role, so that stays in code. The blank row draws nothing.
+# ==== map: key_presence ====
+
+[[map]]
+map = "key_presence"
+key = "BLANK"
+doc = "No name typed yet: nothing is drawn beside the field."
+
+[[map]]
+map = "key_presence"
+key = "PRESENT"
+icon = "CHECK"
+word = "in store"
+doc = "The typed key name is in the credential store: the check icon and in store, in the weak text colour."
+
+[[map]]
+map = "key_presence"
+key = "ABSENT"
+icon = "WARNING"
+word = "not in store"
+doc = "The typed key name is not in the credential store, which is likely a typo: the warning icon and not in store, in the weak text colour."
+
+# rail_group: a heading over a group of the Data Manager's rail; `word` is the heading as printed; no colour. Which destinations sit under which heading (DataDest::group) stays in code.
+# ==== map: rail_group ====
+
+[[map]]
+map = "rail_group"
+key = "BROWSE"
+word = "BROWSE"
+doc = "The heading over the rail's destinations that look at what is stored: the word BROWSE."
+
+[[map]]
+map = "rail_group"
+key = "LIVE"
+word = "LIVE"
+doc = "The heading over the rail's destinations that look at what is running and where it comes from: the word LIVE."
+
+[[map]]
+map = "rail_group"
+key = "CONFIGURE"
+word = "CONFIGURE"
+doc = "The heading over the rail's destinations that change something: the word CONFIGURE."
+
+# tier_state: a credential tier cell of the Connections tool (the rail's dot, the detail pane's tier row and the legend all read it): `colour` is the mark's colour, `flag` is true when the mark is dimmed (by value connections NOT_CONFIGURABLE_DIM, which stays a number), `word` the detail pane's words. The mark's text glyph is not a row field and stays in code.
+# ==== map: tier_state ====
+
+[[map]]
+map = "tier_state"
+key = "CONFIGURED"
+colour = "ok"
+word = "configured"
+doc = "Every key of the tier is in the store: the mark in the status green, the detail pane reading configured."
+
+[[map]]
+map = "tier_state"
+key = "NOT_SET"
+colour = "muted"
+word = "not set"
+doc = "The tier exists and nothing is stored for it: the mark in the status grey, the detail pane reading not set."
+
+[[map]]
+map = "tier_state"
+key = "NOT_CONFIGURABLE"
+colour = "muted"
+flag = true
+word = "not configurable"
+doc = "The venue has no such tier: the mark in the status grey DIMMED (flag), the detail pane reading not configurable. The kit's presence map paints the same state in the caption grey instead."
+
+[[map]]
+map = "tier_state"
+key = "UNKNOWN"
+colour = "warning"
+word = "unknown — store unreadable"
+doc = "The credential store exists and could not be opened, so nothing was measured: the mark in the status amber, the detail pane reading unknown — store unreadable."
+
+
+# What each role is FOR — read by the brand book and by the type tests. The sizes are above.
+[type.use]
+caption = "Axis labels, column headers, units, timestamps."
+body = "Tables, ladders, most text, and every window's name and controls."
+strong = "Buttons, tabs, menus."
+title = "Section and panel headings."
+heading = "Dialog titles."
+display = "Balance, day PnL."
+hero = "The Polymarket cockpit countdown."
+
+# The faces. Only these weights are bundled (assets/fonts): there is NO weight lighter than regular.
+[fonts.words]
+family = "Inter"
+weights = [400, 600, 700]
+use = "Words: labels, menus, buttons, headings, prose."
+
+[fonts.numbers]
+family = "JetBrains Mono"
+weights = [400, 600]
+use = "Anything read character by character: prices, sizes, counts, axis labels, key names, addresses, account numbers."
+
+[fonts.icons]
+family = "Phosphor Regular 2.1.2"
+weights = [400]
+use = "Icons: one glyph per meaning."
+
+# The rules of use. A value says WHAT; a rule says WHERE. Each rule NAMES the tests that fail when the code
+# breaks it, as `repo-relative path::test fn`; `crates/vike-ui-theme/tests/rules_of_use_gate.rs` opens every
+# one and fails when a name no longer resolves. A rule with an empty `checked_by` is words only — the
+# brand book says so on its own line, so a rule nothing can fail is never mistaken for one that is
+# enforced.
+[[rule]]
+id = "words-are-inter"
+text = "Words are Inter. A venue name, an account NAME (`main`), a label, a button, a menu item."
+checked_by = ["crates/vike-ui-theme/src/components/account_menu.rs::the_venue_is_regular_and_the_account_is_dim_and_smaller"]
+
+[[rule]]
+id = "numbers-are-mono"
+text = "Anything read character by character is JetBrains Mono: prices, sizes, counts, addresses, account NUMBERS (`3709890`)."
+checked_by = ["crates/vike-ui-theme/src/components/account_menu.rs::the_venue_is_regular_and_the_account_is_dim_and_smaller"]
+
+[[rule]]
+id = "menus-are-regular"
+text = "Menu items, buttons and tabs are the Strong role at regular weight (400). Semibold (600) is ruled only where the design draws it — the places listed under `weight_use` below — and is never a venue or a label."
+checked_by = ["crates/vike-ui-theme/src/components/account_menu.rs::the_venue_is_regular_and_the_account_is_dim_and_smaller", "crates/vike-ops/tests/gui/ui_literal_ratchet.rs::no_file_gains_a_heavy_weight"]
+
+[[rule]]
+id = "two-things-by-size-and-ink"
+text = "Two things on one line (a venue and its account) are told apart by size and ink — the primary ink for the first, the dim ink and the Body size for the second — not by weight."
+checked_by = ["crates/vike-ui-theme/src/components/account_menu.rs::the_venue_is_regular_and_the_account_is_dim_and_smaller"]
+
+[[rule]]
+id = "accent-is-a-shape"
+text = "The accent is a shape (an underline, a fill, a ring, an edge), never the colour of a number or a word."
+checked_by = ["crates/vike-ui-theme/src/components/input.rs::selected_text_is_never_drawn_in_the_accent"]
+
+[[rule]]
+id = "status-colours-do-not-move"
+text = "The status colours are the same in every theme. \"Connected\" is the status green, never the accent."
+checked_by = ["crates/vike-ui-theme/src/components/mod.rs::status_colours_are_fixed_and_never_the_accent", "crates/vike-ui-theme/src/status.rs::no_status_colour_is_a_theme_or_market_colour"]
+
+[[rule]]
+id = "one-title-bar"
+text = "Every window has the same 25 pt title bar at every density. Density scales the controls inside a window, never the bar around it."
+checked_by = []
+
+[[rule]]
+id = "text-size-reaches-everything"
+text = "A size is a ROLE. A literal font size anywhere in a GUI crate fails a gate: the Text size setting must reach every window."
+checked_by = ["crates/vike-ops/tests/gui/ui_literal_ratchet.rs::no_file_gains_a_literal_text_size"]
+
+# Where a weight HEAVIER than regular is ruled. A call that draws semibold or bold sits in a file that
+# `crates/vike-ops/tests/gui/ui_literal_ratchet/scanner.rs`'s `WEIGHT_PIN` pins under one of these ids, or under
+# `debt` (a use no row here rules yet: its author argues a row for it, or removes it); every id here is claimed by at least
+# one pinned file, so a row cannot outlive the use it rules.
+[[weight_use]]
+id = "trade-bar"
+weight = 600
+where = "The Trade window's bar: the instrument symbol and the window price (the v3 design draws both at 600)."
+
+[[weight_use]]
+id = "ladder"
+weight = 600
+where = "The Trade ladder's last-price row, in mono (the v3 design draws it at 600)."
+
+[[weight_use]]
+id = "ticket"
+weight = 600
+where = "The Trade ticket: Buy and Sell's words and quantity, and the LONG / SHORT word of the position line (the v3 design draws them at 600)."
+
+[[weight_use]]
+id = "reading-heading"
+weight = 600
+where = "The heading a reading window opens with: the Calendar's week range, its day cards' titles and its day-group headings, and the News reader's headline. (700 folds into 600.)"
+
+[[weight_use]]
+id = "chart-furniture"
+weight = 600
+where = "The chart's own labels that name a thing: a sub-pane's name and the options chain's header rows. (700 folds into 600.)"
+
+[[weight_use]]
+id = "cockpit-numbers"
+weight = 600
+where = "The Polymarket cockpit's Display and Hero numbers: the countdown and the price to beat, in JetBrains Mono (the design session's type-scale page)."
+
+# The window chrome: one title bar for every window (crates/vike-ui-theme/src/chrome.rs).
+[[chrome]]
+name = "TITLE_BAR_H"
+value = 25.0
+doc = "The bar's height."
+
+[[chrome]]
+name = "TITLE_INSET"
+value = 9.0
+doc = "The window's name, or the first thing on the bar, from its left edge."
+
+[[chrome]]
+name = "WINDOW_CONTROL"
+value = 20.0
+doc = "One window control (`─ □ ✕`): a square, so its hover fill reads as a button."
+
+[[chrome]]
+name = "WINDOW_CONTROL_GAP"
+value = 4.0
+doc = "The gap between two controls."
+
+[[chrome]]
+name = "WINDOW_CONTROLS_PAD"
+value = 4.0
+doc = "The pad after the last control."
+
+[[chrome]]
+name = "SEPARATOR_H"
+value = 14.0
+doc = "The hairline that parts a tabbed window's segments from the controls: its height."
+
+[[chrome]]
+name = "SLOT_TO_CONTROLS"
+value = 15.0
+doc = "Between the last segment and the first control: seven points, the hairline, seven more."
+
+[[chrome]]
+name = "SLOT_TO_SEPARATOR"
+value = 7.0
+doc = "Where the hairline sits, from the last segment."
+
+# ---- Market colours (crates/vike-ui-theme/src/market.rs) ----------------------------------------------
+# What "up" and "down" look like on a candle, a depth bar and a P&L, in each of the four sets
+# `preferences.market_colors` chooses among. `up`/`down` are graphics (held to 3:1 on every background by
+# the tests in market.rs); `up_text`/`down_text` are the same colours as small text (held to 4.5:1 on every
+# card, lifted toward white only where the rule needs it). The keys are the stored values.
+[market]
+depth_up_alpha = 48
+depth_down_alpha = 46
+volume_factor = 0.7
+depth_up_doc = "Depth-bar alpha for \"up\". The DOM window (deleted) drew bid bars at 48 and ask bars at 46 before it read these tokens. Why the two differ is not recorded, so the token does not decide it."
+depth_down_doc = "Depth-bar alpha for \"down\". See `DEPTH_UP_ALPHA`."
+volume_doc = "Volume-bar strength: the chart's volume pane fills with `up_volume`/`down_volume`, or with a colour the user picked at this strength."
+
+[market.classic]
+label = "Classic"
+up = "#40ba50"
+down = "#f85249"
+up_text = "#40ba50"
+down_text = "#f85249"
+
+[market.tradingview]
+label = "TradingView"
+up = "#089981"
+down = "#f23645"
+up_text = "#0a9a82"
+down_text = "#f34a58"
+doc = "TradingView's CURRENT chart default; the older `#26A69A`/`#EF5350` is what Lightweight Charts still ships. Both text colours are lifted: down measured 4.19:1 on Graphite's card, and up 4.57:1, inside the rule's margin."
+
+[market.exchange]
+label = "Exchange"
+up = "#2ebd85"
+down = "#f6465d"
+up_text = "#2ebd85"
+down_text = "#f6465d"
+
+[market.colorblind]
+label = "Colour-blind"
+up = "#3b82f6"
+down = "#f59e0b"
+up_text = "#4186f6"
+down_text = "#f59e0b"
+doc = "Up measured 4.44:1 on Graphite's card."
+
+# ---- The heat ramp (crates/vike-ui-theme/src/heat.rs) -------------------------------------------------
+# ONE ramp, the same in every theme and every market-colour set: it says how MUCH resting liquidity a cell
+# held, which is neither up nor down. Cyan below the middle, amber above it, more opaque the fuller the cell.
+[heat]
+cool = "#35c9f2"
+warm = "#f2b53a"
+alpha_min = 0.15
+alpha_span = 0.45
+cool_doc = "The cool end of the ramp: the owner's v3 design draws the lighter half of its heatmap in this cyan."
+warm_doc = "The warm end: the design's amber, for the heavier half."
+alpha_doc = "The opacity of the emptiest cell and the added opacity of the fullest, as the design's measured (cyan from 0.16, amber to 0.56 and past it)."
+
+# ---- The brand marks' colours (crates/vike-ui-theme/src/brand.rs) -------------------------------------
+# The orange is the mark's, never a UI accent (decision 0093).
+[[brand]]
+name = "ORANGE"
+hex = "#ff6a00"
+doc = "The brand orange, vike.io's `--color-brand`. The site's PNG is painted `#FF751F`; that one is not used (refinement 2)."
+
+[[brand]]
+name = "ORANGE_ON_LIGHT"
+hex = "#d95400"
+doc = "The orange on a LIGHT background: `ORANGE` on white is under the 3:1 a graphic needs (refinement 4)."
+
+# ---- Shape (crates/vike-ui-theme/src/metrics.rs) ------------------------------------------------------
+[shape]
+radius = 4
+radius_doc = "Every rounded corner in the app."
+
+# ---- Spacing, strokes and strengths (crates/vike-ui-theme/src/metrics.rs) ---------------------------------
+# The steps the kit and the windows draw with, so a gap, a line or a mix is a NAME and not a number typed at the
+# call site. Each table becomes a `pub mod` of consts in `vike_ui_theme::metrics` (`space::SM`, `stroke::HAIRLINE`,
+# `alpha::LIFT`). The spacing steps are the values the GUI's literal `add_space` calls already use most
+# (measured 2026-10-05 across the GUI crates: 4.0 x55, 6.0 x45, 8.0 x38, 2.0 x22, 12.0 x7), plus the four the owner asked
+# for the same day so that NO typed gap is left: NONE (0), HAIR (1), XL2 (16) and XL3 (24). The off-scale values snap to
+# the nearest step, a tie going up, and `crates/vike-ops/tests/gui/ui_literal_ratchet.rs` pins what is still typed.
+
+[[space]]
+name = "NONE"
+value = 0.0
+doc = "No gap: rows, cells and bars that must touch (a table whose row height IS its pitch, columns that land on computed widths)."
+
+[[space]]
+name = "HAIR"
+value = 1.0
+doc = "One point: two lines of text in one cell, a badge's top and bottom padding."
+
+[[space]]
+name = "XS"
+value = 2.0
+doc = "The finest step: the padding an icon button leaves round its glyph, and how far the focus ring stands off its widget."
+
+[[space]]
+name = "SM"
+value = 4.0
+doc = "A small gap and the vertical padding of a button; the most-used step."
+
+[[space]]
+name = "MD"
+value = 6.0
+doc = "A medium gap; Normal density's gap between controls."
+
+[[space]]
+name = "LG"
+value = 8.0
+doc = "A large gap; Normal density's cell padding."
+
+[[space]]
+name = "XL"
+value = 12.0
+doc = "A section gap: the largest step the windows used before the scale grew."
+
+[[space]]
+name = "XL2"
+value = 16.0
+doc = "A block gap: between a window's sections, and the inset of a framed region."
+
+[[space]]
+name = "XL3"
+value = 24.0
+doc = "The widest gap: the breathing room above a screen's first block."
+
+[[stroke]]
+name = "HAIRLINE"
+value = 1.0
+doc = "A control's edge, a card's border, a rule: every kit widget draws its outline at this width."
+
+[[stroke]]
+name = "LINE"
+value = 1.5
+doc = "A mark that must read at a glance, such as the venue chip's ring."
+
+[[stroke]]
+name = "EDGE"
+value = 2.0
+doc = "The selected edge: the underline of the chosen tab."
+
+[[alpha]]
+name = "LIFT"
+value = 0.12
+doc = "How far a filled button moves toward the text colour while it is hovered or pressed."
+
+[[alpha]]
+name = "WASH"
+value = 0.14
+doc = "How far a chip's fill is mixed into the ground behind it (`Mode::wash`): enough to read as a coloured band on every theme's near-black background, and little enough that what is written on it still reads. On LIVE's accent wash the least of the three inks is the accent itself as text on Dusk, 5.58:1; the theme text clears 12.21:1 and the warning amber 7.53:1 on every theme, Carbon's amber wash included (8.25:1)."
+
+# ---- Window values (crates/vike-ui-theme/src/value.rs) ------------------------------------------------
+# Every design value that is NOT a step of the three scales above and that one window owns: a column's width, a
+# marker's inset, the strength of a hover wash, a series' colour. Each `[[value]]` row becomes
+# `vike_ui_theme::value::<group>::<NAME>` (a constant of the row's kind), a `--value-<group>-<name>` CSS variable and a
+# row of the brand book's "Window values" section, and the code reads the constant instead of a local `const`.
+#
+#   group  the window or area that owns the value (`trade`, `data_manager`, ...). A group exists when it has a sentinel
+#          line below; a new one is a new sentinel plus a blank line, nothing else.
+#   name   UPPER_SNAKE: the Rust constant. Unique within its group. `ENTRIES` is taken.
+#   kind   f32 | f64 | u8 | i8 | u16 | vec2 (a pair `[width, height]`, an egui::Vec2) | colour ("#rrggbb" or "#rrggbbaa").
+#          The kind is the constant's Rust type: use the type the code needs (egui's Margin and CornerRadius take i8 and u8;
+#          f64 is for a number the code works with in f64, such as a width in egui_plot's bar-width x-units).
+#   unit   what the number MEANS, so the page can draw it. Required for every kind but colour:
+#          px (a length in points) | ratio (a unitless factor) | alpha (an opacity, 0..=255) | count (a whole number).
+#          f32 and f64: px, ratio or alpha. u8: px, alpha or count. i8 and vec2: px. u16: px or count.
+#   value  a number (a whole number for u8, i8 and u16), a pair, or a hex string. Today's value EXACTLY.
+#   doc    ONE line: what it is on screen.
+#
+# ADDING ROWS (many people do this at once, so the layout is what keeps the merges clean):
+#   1. Put your rows directly UNDER your group's sentinel line (below the blank line that follows it), each row followed
+#      by a blank line. Never between another group's rows, never at the end of the file.
+#   2. Regenerate on a lane and look: `VIKE_REGEN_BRAND_ASSETS=1 cargo test -p vike-ui-theme --test brand_assets`.
+#      The generated files (value_tokens.rs, ui-theme.css, brand-book.html) hold the groups alphabetically, whatever
+#      order they are written in here, and each group has a frame of its own even while it has no rows.
+#   3. Delete the local `const` and make the call sites read `vike_ui_theme::value::<group>::<NAME>`.
+# A row under the wrong sentinel, a group with no sentinel, a duplicate name, an unknown kind or a value that does not
+# fit its kind stops the generator and names the row.
+
+# ==== value: account ====
+
+[[value]]
+group = "account"
+name = "CELL_H"
+kind = "f32"
+unit = "px"
+value = 18.0
+doc = "The height of one cell in the Account window's tables (venue rows and working-order rows)."
+
+[[value]]
+group = "account"
+name = "HEAD_CELL_H"
+kind = "f32"
+unit = "px"
+value = 16.0
+doc = "The height of a numeric column header cell in the Account window's per-venue table."
+
+[[value]]
+group = "account"
+name = "MAX_W"
+kind = "f32"
+unit = "px"
+value = 960.0
+doc = "The widest the Account window's content grows; wider windows leave the rest empty."
+
+[[value]]
+group = "account"
+name = "ORDERS_MAX_H"
+kind = "f32"
+unit = "px"
+value = 160.0
+doc = "How tall the Account window's working-orders list grows before it scrolls."
+
+[[value]]
+group = "account"
+name = "ORDER_W_QTY"
+kind = "f32"
+unit = "px"
+value = 78.0
+doc = "The working-orders list: the quantity column's width."
+
+[[value]]
+group = "account"
+name = "ORDER_W_SIDE"
+kind = "f32"
+unit = "px"
+value = 36.0
+doc = "The working-orders list: the BUY or SELL column's width."
+
+[[value]]
+group = "account"
+name = "ORDER_W_STATUS"
+kind = "f32"
+unit = "px"
+value = 74.0
+doc = "The working-orders list: the status column's width."
+
+[[value]]
+group = "account"
+name = "ORDER_W_TYPE"
+kind = "f32"
+unit = "px"
+value = 46.0
+doc = "The working-orders list: the order-type column's width."
+
+[[value]]
+group = "account"
+name = "WM"
+kind = "f32"
+unit = "px"
+value = 24.0
+doc = "The Account window's per-venue table: the mode tag (paper, demo, live) column's width."
+
+[[value]]
+group = "account"
+name = "WN"
+kind = "f32"
+unit = "px"
+value = 66.0
+doc = "The Account window's per-venue table: each numeric column's width (equity, unrealised PnL, fees, funding)."
+
+[[value]]
+group = "account"
+name = "WV"
+kind = "f32"
+unit = "px"
+value = 66.0
+doc = "The Account window's per-venue table: the venue-name column's width."
+
+# ==== value: calendar ====
+
+[[value]]
+group = "calendar"
+name = "CARD_MAX_W"
+kind = "f32"
+unit = "px"
+value = 320.0
+doc = "A Calendar day-strip card: its widest width."
+
+[[value]]
+group = "calendar"
+name = "CARD_MIN_H"
+kind = "f32"
+unit = "px"
+value = 64.0
+doc = "A Calendar day-strip card: its least height."
+
+[[value]]
+group = "calendar"
+name = "CARD_MIN_W"
+kind = "f32"
+unit = "px"
+value = 90.0
+doc = "A Calendar day-strip card (Mon to Sun): its narrowest width."
+
+[[value]]
+group = "calendar"
+name = "COL_COUNTRY_W"
+kind = "f32"
+unit = "px"
+value = 150.0
+doc = "The Calendar economic table's Country column (flag and name): its width."
+
+[[value]]
+group = "calendar"
+name = "COL_IMPACT_W"
+kind = "f32"
+unit = "px"
+value = 24.0
+doc = "The Calendar economic table's impact glyph column: its width."
+
+[[value]]
+group = "calendar"
+name = "COL_TIME_W"
+kind = "f32"
+unit = "px"
+value = 52.0
+doc = "The Calendar economic table's Time column: its width."
+
+[[value]]
+group = "calendar"
+name = "COUNTRIES_BTN_W"
+kind = "f32"
+unit = "px"
+value = 110.0
+doc = "The Calendar toolbar's Countries button: its least width."
+
+[[value]]
+group = "calendar"
+name = "DIV_WEIGHT_AMOUNT"
+kind = "f32"
+unit = "ratio"
+value = 1.0
+doc = "The Calendar's Dividends table Amount column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "DIV_WEIGHT_EX_DATE"
+kind = "f32"
+unit = "ratio"
+value = 1.1
+doc = "The Calendar's Dividends table Ex-date column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "DIV_WEIGHT_FREQ"
+kind = "f32"
+unit = "ratio"
+value = 0.9
+doc = "The Calendar's Dividends table Freq column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "DIV_WEIGHT_PAY_DATE"
+kind = "f32"
+unit = "ratio"
+value = 1.1
+doc = "The Calendar's Dividends table Pay date column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "DIV_WEIGHT_SYMBOL"
+kind = "f32"
+unit = "ratio"
+value = 1.0
+doc = "The Calendar's Dividends table Symbol column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "DIV_WEIGHT_YIELD"
+kind = "f32"
+unit = "ratio"
+value = 0.9
+doc = "The Calendar's Dividends table Yield column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "EARN_WEIGHT_EPS_ACT"
+kind = "f32"
+unit = "ratio"
+value = 1.0
+doc = "The Calendar's Earnings table EPS act. column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "EARN_WEIGHT_EPS_EST"
+kind = "f32"
+unit = "ratio"
+value = 1.0
+doc = "The Calendar's Earnings table EPS est. column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "EARN_WEIGHT_SURPRISE"
+kind = "f32"
+unit = "ratio"
+value = 1.0
+doc = "The Calendar's Earnings table Surprise column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "EARN_WEIGHT_SYMBOL"
+kind = "f32"
+unit = "ratio"
+value = 1.3
+doc = "The Calendar's Earnings table Symbol column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "EARN_WEIGHT_TIME"
+kind = "f32"
+unit = "ratio"
+value = 1.0
+doc = "The Calendar's Earnings table Time column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "EQUITY_RIGHT_PAD"
+kind = "f32"
+unit = "px"
+value = 16.0
+doc = "The Earnings, Dividends and IPO tables' right margin, taken off the panel width before the columns share it."
+
+[[value]]
+group = "calendar"
+name = "EVENT_MIN_W"
+kind = "f32"
+unit = "px"
+value = 140.0
+doc = "The Calendar economic table's Event column: its narrowest width, however narrow the panel."
+
+[[value]]
+group = "calendar"
+name = "FLAG_EU_DOT_R"
+kind = "f32"
+unit = "px"
+value = 2.0
+doc = "The drawn EU flag's centre dot: its radius."
+
+[[value]]
+group = "calendar"
+name = "FLAG_SIZE"
+kind = "vec2"
+unit = "px"
+value = [20.0, 14.0]
+doc = "A country flag in the Calendar economic table: its size."
+
+[[value]]
+group = "calendar"
+name = "HEADER_H"
+kind = "f32"
+unit = "px"
+value = 20.0
+doc = "The height of a Calendar table's header row."
+
+[[value]]
+group = "calendar"
+name = "IMPACT_SIZE"
+kind = "vec2"
+unit = "px"
+value = [18.0, 14.0]
+doc = "The three-bar impact glyph in the Calendar economic table: its box."
+
+[[value]]
+group = "calendar"
+name = "IPO_WEIGHT_COMPANY"
+kind = "f32"
+unit = "ratio"
+value = 2.2
+doc = "The Calendar's IPO table Company column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "IPO_WEIGHT_EXCHANGE"
+kind = "f32"
+unit = "ratio"
+value = 1.0
+doc = "The Calendar's IPO table Exchange column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "IPO_WEIGHT_PRICE"
+kind = "f32"
+unit = "ratio"
+value = 0.9
+doc = "The Calendar's IPO table Price column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "IPO_WEIGHT_SHARES"
+kind = "f32"
+unit = "ratio"
+value = 1.1
+doc = "The Calendar's IPO table Shares column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "IPO_WEIGHT_STATUS"
+kind = "f32"
+unit = "ratio"
+value = 0.9
+doc = "The Calendar's IPO table Status column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "IPO_WEIGHT_SYMBOL"
+kind = "f32"
+unit = "ratio"
+value = 1.0
+doc = "The Calendar's IPO table Symbol column: its share of the table's width against the other columns."
+
+[[value]]
+group = "calendar"
+name = "LOCAL_BTN_W"
+kind = "f32"
+unit = "px"
+value = 96.0
+doc = "The Calendar toolbar's Local (time zone) button: its least width."
+
+[[value]]
+group = "calendar"
+name = "NUM_COL_FRAC"
+kind = "f32"
+unit = "ratio"
+value = 0.14
+doc = "Below the wide breakpoint, each of the Actual, Forecast and Prior columns takes this share of the panel's width."
+
+[[value]]
+group = "calendar"
+name = "NUM_COL_MIN_W"
+kind = "f32"
+unit = "px"
+value = 90.0
+doc = "The narrowest the Actual, Forecast and Prior columns get on a narrow panel."
+
+[[value]]
+group = "calendar"
+name = "NUM_COL_W"
+kind = "f32"
+unit = "px"
+value = 210.0
+doc = "The Calendar economic table's Actual, Forecast and Prior columns: each one's width on a wide panel, and the most one gets on a narrow one."
+
+[[value]]
+group = "calendar"
+name = "NUM_COL_WIDE_AT"
+kind = "f32"
+unit = "px"
+value = 980.0
+doc = "The Calendar panel width from which the economic table's Actual, Forecast and Prior columns take their full width."
+
+[[value]]
+group = "calendar"
+name = "RIGHT_PAD"
+kind = "f32"
+unit = "px"
+value = 52.0
+doc = "The economic table's right margin: the panel's own padding plus scrollbar clearance, so the Prior column does not collide with the window edge."
+
+[[value]]
+group = "calendar"
+name = "ROW_H"
+kind = "f32"
+unit = "px"
+value = 19.0
+doc = "The height of a Calendar table's data row."
+
+[[value]]
+group = "calendar"
+name = "FLAG_CN_RED"
+kind = "colour"
+value = "#de2910"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): the red field of the China and Hong Kong flags."
+
+[[value]]
+group = "calendar"
+name = "FLAG_DE_BLACK"
+kind = "colour"
+value = "#000000"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): Germany's black band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_DE_GOLD"
+kind = "colour"
+value = "#ffce00"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): Germany's gold band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_DE_RED"
+kind = "colour"
+value = "#dd0000"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): Germany's red band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_EU_BLUE"
+kind = "colour"
+value = "#003399"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): the European Union's blue field."
+
+[[value]]
+group = "calendar"
+name = "FLAG_EU_GOLD"
+kind = "colour"
+value = "#ffcc00"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): the European Union's gold dot."
+
+[[value]]
+group = "calendar"
+name = "FLAG_FR_BLUE"
+kind = "colour"
+value = "#002395"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): France's blue band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_FR_RED"
+kind = "colour"
+value = "#ed2939"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): France's red band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_ID_RED"
+kind = "colour"
+value = "#e70011"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): Indonesia's red band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_IN_GREEN"
+kind = "colour"
+value = "#138808"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): India's green band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_IN_SAFFRON"
+kind = "colour"
+value = "#ff9933"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): India's saffron band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_IT_GREEN"
+kind = "colour"
+value = "#009246"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): Italy's green band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_IT_RED"
+kind = "colour"
+value = "#ce2b37"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): Italy's red band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_JP_RED"
+kind = "colour"
+value = "#bc002d"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): Japan's red disc."
+
+[[value]]
+group = "calendar"
+name = "FLAG_MX_GREEN"
+kind = "colour"
+value = "#006847"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): Mexico's green band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_MX_RED"
+kind = "colour"
+value = "#ce1126"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): Mexico's red band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_NAVY"
+kind = "colour"
+value = "#012169"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): the navy blue field of the AU, NZ, US and GB flags."
+
+[[value]]
+group = "calendar"
+name = "FLAG_RED"
+kind = "colour"
+value = "#cf142b"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): the red of the CA, US, GB and CH flags."
+
+[[value]]
+group = "calendar"
+name = "FLAG_RU_BLUE"
+kind = "colour"
+value = "#0039a6"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): Russia's blue band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_RU_RED"
+kind = "colour"
+value = "#d52b1e"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): Russia's red band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_SA_GREEN"
+kind = "colour"
+value = "#006c35"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): Saudi Arabia's green field."
+
+[[value]]
+group = "calendar"
+name = "FLAG_SG_RED"
+kind = "colour"
+value = "#ef3340"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): Singapore's red band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_TR_RED"
+kind = "colour"
+value = "#e30a17"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): Turkey's red field."
+
+[[value]]
+group = "calendar"
+name = "FLAG_UNKNOWN"
+kind = "colour"
+value = "#3c424a"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): the placeholder grey block drawn for a country that has no drawn flag."
+
+[[value]]
+group = "calendar"
+name = "FLAG_WHITE"
+kind = "colour"
+value = "#ffffff"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): the white band or field of the FR, IT, IN, RU, MX, CA, ID, SG, ZA, US, JP and CH flags."
+
+[[value]]
+group = "calendar"
+name = "FLAG_ZA_GREEN"
+kind = "colour"
+value = "#007a4d"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): South Africa's green band."
+
+[[value]]
+group = "calendar"
+name = "FLAG_ZA_RED"
+kind = "colour"
+value = "#de3831"
+doc = "Drawn-flag fallback in the economic table's Country cell (shown until the flag image has loaded, or offline): South Africa's red band."
+
+# ==== value: chart ====
+
+[[value]]
+group = "chart"
+name = "NAV_ROW_FROM_BOTTOM"
+kind = "f32"
+unit = "px"
+value = 44.0
+doc = "How far above the price frame's bottom edge the top of the navigation row (zoom, pan, reset view, settings) sits."
+
+[[value]]
+group = "chart"
+name = "PRICE_TAG_HIDDEN_STRIP_H"
+kind = "f32"
+unit = "px"
+value = 26.0
+doc = "The height of the strip along the top of a chart pane where the crosshair price tag is not drawn, because the window's title-bar controls sit there."
+
+[[value]]
+group = "chart"
+name = "SCALE_HINT_FROM_TOP"
+kind = "f32"
+unit = "px"
+value = 30.0
+doc = "How far below the price frame's top edge the scale-fallback hint is drawn."
+
+[[value]]
+group = "chart"
+name = "SCALE_ROW_FROM_BOTTOM"
+kind = "f32"
+unit = "px"
+value = 34.0
+doc = "How far above the price frame's bottom edge the top of the Lin/Log/% scale row sits."
+
+[[value]]
+group = "chart"
+name = "CANDLE_BODY_HALF_W"
+kind = "f64"
+unit = "ratio"
+value = 0.34
+doc = "A candle's body: how far it reaches either side of its bar's centre, in bar widths (the body is twice this wide, so neighbouring candles keep a gutter)."
+
+[[value]]
+group = "chart"
+name = "FOOTPRINT_CELL_HALF_W"
+kind = "f64"
+unit = "ratio"
+value = 0.45
+doc = "A footprint cell: how far it reaches either side of its bar's centre, in bar widths; wider than a candle body so the cells read as a near-contiguous grid, shy of 0.5 so neighbouring bars keep a thin gutter."
+
+[[value]]
+group = "chart"
+name = "HISTOGRAM_BAR_W"
+kind = "f64"
+unit = "ratio"
+value = 0.8
+doc = "A histogram output in an indicator or study pane (the MACD histogram and the like): the width of one bar, in bar widths."
+
+[[value]]
+group = "chart"
+name = "OHLC_TICK_W"
+kind = "f64"
+unit = "ratio"
+value = 0.32
+doc = "An OHLC bar's open tick (left of its stem) and close tick (right of it), and an HLC bar's close tick: how far each reaches from the stem, in bar widths."
+
+[[value]]
+group = "chart"
+name = "VOLUME_BAR_W"
+kind = "f64"
+unit = "ratio"
+value = 0.8
+doc = "The volume pane's bars: the width of one bar, in bar widths, so a thin gap is left between neighbours."
+
+[[value]]
+group = "chart"
+name = "AREA_ICON_FILL"
+kind = "f32"
+unit = "ratio"
+value = 0.35
+doc = "The fill of the Area and HLC-area style icons: the up colour at this strength of itself."
+
+[[value]]
+group = "chart"
+name = "AREA_TOP_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 55
+doc = "The Area style's gradient fill at the line: the opacity of the topmost band, fading to transparent at the floor."
+
+[[value]]
+group = "chart"
+name = "AXIS_LABEL_H"
+kind = "f32"
+unit = "px"
+value = 18.0
+doc = "The strip of time labels under the bottom chart pane, and the height of the drag-to-zoom strip laid over it."
+
+[[value]]
+group = "chart"
+name = "AXIS_TAG_RADIUS"
+kind = "f32"
+unit = "px"
+value = 3.0
+doc = "The corner radius of the tags on the chart's axes: last price, crosshair price, indicator value and crosshair time."
+
+[[value]]
+group = "chart"
+name = "BASELINE_WASH_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 28
+doc = "The Baseline style's wash above and below the anchor line: the up and down colours at this opacity."
+
+[[value]]
+group = "chart"
+name = "CELL_FILL_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 40
+doc = "The footprint cell's tint behind its buy and sell numbers, a faint imbalance wash; a neutral cell takes half of it."
+
+[[value]]
+group = "chart"
+name = "COLUMN_FILL_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 150
+doc = "The Columns style's column fill: the bar's direction colour at this opacity."
+
+[[value]]
+group = "chart"
+name = "DOT_MARKER_RADIUS"
+kind = "f32"
+unit = "px"
+value = 2.0
+doc = "The dot radius of an indicator that draws as dots."
+
+[[value]]
+group = "chart"
+name = "GHOST_STRENGTH"
+kind = "f32"
+unit = "ratio"
+value = 0.4
+doc = "How strongly the ghost crosshair (a synced chart's pointer) is drawn: this share of the crosshair colour."
+
+[[value]]
+group = "chart"
+name = "HINT_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 150
+doc = "The opacity of the scale-fallback hint: the secondary text colour, present but under the data."
+
+[[value]]
+group = "chart"
+name = "HLC_FILL_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 30
+doc = "The HLC-area style's fill between high and low: the line colour at this opacity."
+
+[[value]]
+group = "chart"
+name = "ICON_DOT_RADIUS"
+kind = "f32"
+unit = "px"
+value = 1.5
+doc = "The radius of the dots in the Line-with-markers style's menu icon."
+
+[[value]]
+group = "chart"
+name = "LINE_MARKER_RADIUS"
+kind = "f32"
+unit = "px"
+value = 2.0
+doc = "The dot radius of the Line-with-markers chart style."
+
+[[value]]
+group = "chart"
+name = "MIN_PANE_PX"
+kind = "f32"
+unit = "px"
+value = 44.0
+doc = "The least plot height a chart pane (price or indicator) can be dragged down to."
+
+[[value]]
+group = "chart"
+name = "PANE_OVERLAY_ROW_H"
+kind = "f32"
+unit = "px"
+value = 18.0
+doc = "The vertical pitch of the indicator legends stacked over a merged pane's plot."
+
+[[value]]
+group = "chart"
+name = "PANE_SEP_H"
+kind = "f32"
+unit = "px"
+value = 5.0
+doc = "The thickness of the draggable strip between two stacked chart panes."
+
+[[value]]
+group = "chart"
+name = "PATTERN_MARKER_RADIUS"
+kind = "f32"
+unit = "px"
+value = 4.0
+doc = "The radius of the up or down glyph an indicator anchors to a flagged candlestick pattern."
+
+[[value]]
+group = "chart"
+name = "SCALE_ROW_MAX_W"
+kind = "f32"
+unit = "px"
+value = 200.0
+doc = "The room kept at the price frame's bottom-right for the Lin/Log/% scale control and the Auto button."
+
+[[value]]
+group = "chart"
+name = "Y_AXIS_GUTTER_W"
+kind = "f32"
+unit = "px"
+value = 72.0
+doc = "The price chart's right price-axis gutter: the same width on every pane, and the width of the drag-to-zoom strip laid over it."
+
+[[value]]
+group = "chart"
+name = "OVERBOUGHT_FILL"
+kind = "colour"
+value = "#4caf501e"
+doc = "The default overbought zone wash in an oscillator pane (RSI and the like) when its fill is on: green at alpha 30; the user can recolour it."
+
+[[value]]
+group = "chart"
+name = "OVERSOLD_FILL"
+kind = "colour"
+value = "#ef53501e"
+doc = "The default oversold zone wash in an oscillator pane when its fill is on: red at alpha 30; the user can recolour it."
+
+[[value]]
+group = "chart"
+name = "POC_AMBER"
+kind = "colour"
+value = "#f0b429"
+doc = "The point of control, amber: the volume-profile line and the 1 px outline of each footprint bar's maximum-volume cell."
+
+[[value]]
+group = "chart"
+name = "PROFILE_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 90
+doc = "The volume-profile histogram's opacity: series colour 1 at this alpha (the bar fill and outline derive from it)."
+
+[[value]]
+group = "chart"
+name = "SERIES_1"
+kind = "colour"
+value = "#57a5ff"
+doc = "Series colour 1, blue: an indicator's first output line; also the CVD pane line, a microstructure study's line and the volume-profile bars."
+
+[[value]]
+group = "chart"
+name = "SERIES_2"
+kind = "colour"
+value = "#a855f7"
+doc = "Series colour 2, purple: an indicator's second output line."
+
+[[value]]
+group = "chart"
+name = "SERIES_3"
+kind = "colour"
+value = "#26c6da"
+doc = "Series colour 3, cyan: an indicator's third output line."
+
+[[value]]
+group = "chart"
+name = "SERIES_4"
+kind = "colour"
+value = "#66bb6a"
+doc = "Series colour 4, green: an indicator's fourth output line."
+
+[[value]]
+group = "chart"
+name = "SERIES_5"
+kind = "colour"
+value = "#ec407a"
+doc = "Series colour 5, pink: an indicator's fifth output line."
+
+[[value]]
+group = "chart"
+name = "SERIES_6"
+kind = "colour"
+value = "#f5a623"
+doc = "Series colour 6, amber: an indicator's sixth output line (the smoothing-average default)."
+
+[[value]]
+group = "chart"
+name = "VALUE_AREA_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 18
+doc = "The value-area band behind price in the volume profile: series colour 1 at this alpha, a near-invisible wash."
+
+# ==== value: cockpit ====
+
+[[value]]
+group = "cockpit"
+name = "CARD_W"
+kind = "f32"
+unit = "px"
+value = 118.0
+doc = "The width of one window card in the Cockpit's strip."
+
+[[value]]
+group = "cockpit"
+name = "DEPTH_ALPHA_FLOOR"
+kind = "f32"
+unit = "alpha"
+value = 30.0
+doc = "The faintest fill of a ladder depth bar: even a sliver of resting size paints this much."
+
+[[value]]
+group = "cockpit"
+name = "DEPTH_ALPHA_SPAN"
+kind = "f32"
+unit = "alpha"
+value = 120.0
+doc = "How much opacity a ladder depth bar gains from the floor to the largest resting size, so the size label on top stays legible."
+
+[[value]]
+group = "cockpit"
+name = "HEADER_MIN_H"
+kind = "f32"
+unit = "px"
+value = 44.0
+doc = "The Cockpit header strip's least height; it grows only when the Hero countdown needs more."
+
+[[value]]
+group = "cockpit"
+name = "HOVER_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 8
+doc = "The wash over the ladder rung under the pointer: the text colour at this opacity."
+
+[[value]]
+group = "cockpit"
+name = "INSIDE_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 30
+doc = "The tint of the inside-market rungs in the probability ladder: the up or down colour at this opacity."
+
+[[value]]
+group = "cockpit"
+name = "MARKER_W"
+kind = "f32"
+unit = "px"
+value = 14.0
+doc = "The width of a resting-order marker in the ladder; it sits in from the column edge."
+
+[[value]]
+group = "cockpit"
+name = "RAIL_H"
+kind = "f32"
+unit = "px"
+value = 92.0
+doc = "The height of the Cockpit's strip of window cards."
+
+[[value]]
+group = "cockpit"
+name = "SPREAD_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 51
+doc = "The spread band in the probability ladder: the analysis line colour at this opacity, about a fifth."
+
+[[value]]
+group = "cockpit"
+name = "STALE_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 150
+doc = "The dim laid over the whole ladder when its data is stale: the background colour at this opacity."
+
+# ==== value: connections ====
+
+[[value]]
+group = "connections"
+name = "LEGEND_FIT_SLACK"
+kind = "f32"
+unit = "px"
+value = 4.0
+doc = "The room the right-aligned legend of Data Manager's Credentials destination's account strip leaves for rounding before it wraps."
+
+[[value]]
+group = "connections"
+name = "STRIP_ACTIONS_FIT_SLACK"
+kind = "f32"
+unit = "px"
+value = 2.0
+doc = "The room the right-aligned action buttons of the ambient backend strip (drawn on Data Manager's Credentials AND Backend destinations) leave for rounding before they wrap."
+
+[[value]]
+group = "connections"
+name = "ALT_LABEL_INPUT_W"
+kind = "f32"
+unit = "px"
+value = 160.0
+doc = "The width of the new-account label box (the one with the ALT hint)."
+
+[[value]]
+group = "connections"
+name = "BADGE_RADIUS"
+kind = "f32"
+unit = "px"
+value = 3.0
+doc = "The corner radius of a detail-pane badge (the Venue and feed-producer chips)."
+
+[[value]]
+group = "connections"
+name = "CHIP_H"
+kind = "f32"
+unit = "px"
+value = 16.0
+doc = "The height of one rail row: a chip, a venue-name cell and a status dot are all this tall."
+
+[[value]]
+group = "connections"
+name = "DOT_W"
+kind = "f32"
+unit = "px"
+value = 11.0
+doc = "The width of one rail status dot cell and of one S, D or L header letter: one value so the header and the dots line up."
+
+[[value]]
+group = "connections"
+name = "FIELD_INPUT_W"
+kind = "f32"
+unit = "px"
+value = 240.0
+doc = "The width of a credential value box in the account editor."
+
+[[value]]
+group = "connections"
+name = "FIELD_LABEL_CELL"
+kind = "vec2"
+unit = "px"
+value = [160.0, 18.0]
+doc = "The key-name cell beside each credential input in the account editor."
+
+[[value]]
+group = "connections"
+name = "NOTE_W"
+kind = "f32"
+unit = "px"
+value = 520.0
+doc = "The widest a paragraph of prose is set in Data Manager's Credentials destination: a measure for words, never for a pane."
+
+[[value]]
+group = "connections"
+name = "RAIL_DETAIL_MIN_W"
+kind = "f32"
+unit = "px"
+value = 820.0
+doc = "Data Manager's Credentials destination's own width from which the venue rail and the detail pane sit side by side; narrower, the rail is a wrapped row of chips."
+
+[[value]]
+group = "connections"
+name = "RAIL_HEADER_H"
+kind = "f32"
+unit = "px"
+value = 14.0
+doc = "The height of the rail header's cells: the Venue label and the S, D and L letters."
+
+[[value]]
+group = "connections"
+name = "RAIL_MAX_W"
+kind = "f32"
+unit = "px"
+value = 232.0
+doc = "The venue rail's widest width in the two-column Connections layout (the design's minmax(190px, 232px))."
+
+[[value]]
+group = "connections"
+name = "RAIL_MIN_W"
+kind = "f32"
+unit = "px"
+value = 190.0
+doc = "The venue rail's narrowest width in the two-column Connections layout (the design's minmax(190px, 232px))."
+
+[[value]]
+group = "connections"
+name = "REMOVE_CONFIRM_W"
+kind = "f32"
+unit = "px"
+value = 56.0
+doc = "The width of the box where an account row's id is typed to confirm removing it."
+
+[[value]]
+group = "connections"
+name = "TIER_NAME_CELL"
+kind = "vec2"
+unit = "px"
+value = [46.0, 16.0]
+doc = "The name cell of a credential tier row (Sim, Demo, Live) in a venue's detail pane."
+
+[[value]]
+group = "connections"
+name = "TIER_STATE_CELL"
+kind = "vec2"
+unit = "px"
+value = [104.0, 16.0]
+doc = "The state cell of a credential tier row: the mark and its word (configured, not set)."
+
+[[value]]
+group = "connections"
+name = "BADGE_OUTLINE_STRENGTH"
+kind = "f32"
+unit = "ratio"
+value = 0.6
+doc = "The outline of the detail pane's `Venue` and `feed producer` badges: the badge's own ink at this strength."
+
+[[value]]
+group = "connections"
+name = "NOT_CONFIGURABLE_DIM"
+kind = "f32"
+unit = "ratio"
+value = 0.45
+doc = "The strength of the muted grey on the marks that are not a measurement: the rail's middle dot and the detail pane's em dash for a tier the venue does not have, and the legend's `no such tier` entry."
+
+# ==== value: data_manager ====
+
+[[value]]
+group = "data_manager"
+name = "BAR_H_RATIO"
+kind = "f32"
+unit = "ratio"
+value = 0.5
+doc = "A coverage bar's height as a share of a table row's height."
+
+[[value]]
+group = "data_manager"
+name = "BAR_MIN_W"
+kind = "f32"
+unit = "px"
+value = 1.5
+doc = "The least width a series' coverage span is drawn at, so a very short span still shows."
+
+[[value]]
+group = "data_manager"
+name = "LEGEND_SWATCH_ASPECT"
+kind = "f32"
+unit = "ratio"
+value = 2.0
+doc = "A coverage-legend swatch's width as a multiple of the bar's height."
+
+[[value]]
+group = "data_manager"
+name = "PROXY_BOX_W"
+kind = "f32"
+unit = "px"
+value = 320.0
+doc = "The Polymarket proxy box's width: a whole `socks5h://user:pass@host:port` without scrolling."
+
+[[value]]
+group = "data_manager"
+name = "W_SYMBOL"
+kind = "f32"
+unit = "px"
+value = 150.0
+doc = "The stored-series grid's Symbol column: its width, in the header and in every row."
+
+[[value]]
+group = "data_manager"
+name = "W_KIND"
+kind = "f32"
+unit = "px"
+value = 120.0
+doc = "The grid's Kind column: its width."
+
+[[value]]
+group = "data_manager"
+name = "W_COVERAGE"
+kind = "f32"
+unit = "px"
+value = 150.0
+doc = "The grid's Coverage column: its width, and the coverage bar inside it is this wide less 8."
+
+[[value]]
+group = "data_manager"
+name = "W_PARTIAL"
+kind = "f32"
+unit = "px"
+value = 26.0
+doc = "The cross-kind Partial column — a glyph, not text, so it stays narrow; the count and the missing kinds are in the tooltip. Shown by the rich grid only."
+
+[[value]]
+group = "data_manager"
+name = "W_ROWS"
+kind = "f32"
+unit = "px"
+value = 90.0
+doc = "The grid's Rows column: its width."
+
+[[value]]
+group = "data_manager"
+name = "W_SIZE"
+kind = "f32"
+unit = "px"
+value = 80.0
+doc = "The grid's Size column: its width."
+
+[[value]]
+group = "data_manager"
+name = "W_UPDATED"
+kind = "f32"
+unit = "px"
+value = 100.0
+doc = "The grid's Updated column: its width."
+
+# ==== value: desktop ====
+
+[[value]]
+group = "desktop"
+name = "STYLE_LABEL_X"
+kind = "f32"
+unit = "px"
+value = 30.0
+doc = "How far in from the left edge of a chart-style menu row its label starts, after the mini chart icon."
+
+[[value]]
+group = "desktop"
+name = "BRAND_SIZE"
+kind = "vec2"
+unit = "px"
+value = [22.0, 18.0]
+doc = "The chart-style brand icon in a chart window's title bar; clicking it opens the style menu."
+
+[[value]]
+group = "desktop"
+name = "CMP_ENTRY_W"
+kind = "f32"
+unit = "px"
+value = 160.0
+doc = "The width of the symbol entry box in the Compare popup."
+
+[[value]]
+group = "desktop"
+name = "CMP_LIST_H"
+kind = "f32"
+unit = "px"
+value = 240.0
+doc = "The tallest the Compare popup's search results get before they scroll."
+
+[[value]]
+group = "desktop"
+name = "CMP_MENU_W"
+kind = "f32"
+unit = "px"
+value = 250.0
+doc = "The minimum width of the Compare (Cmp) popup."
+
+[[value]]
+group = "desktop"
+name = "INTERVAL_MENU_W"
+kind = "f32"
+unit = "px"
+value = 70.0
+doc = "The minimum width of the interval menu in a chart window's title bar."
+
+[[value]]
+group = "desktop"
+name = "MIN_RAIL_MAX_W"
+kind = "f32"
+unit = "px"
+value = 40.0
+doc = "The widest the minimized-window rail can be dragged to."
+
+[[value]]
+group = "desktop"
+name = "MIN_RAIL_MIN_W"
+kind = "f32"
+unit = "px"
+value = 24.0
+doc = "The narrowest the minimized-window rail can be dragged to."
+
+[[value]]
+group = "desktop"
+name = "MIN_RAIL_W"
+kind = "f32"
+unit = "px"
+value = 30.0
+doc = "The opening width of the left rail of minimized-window tabs."
+
+[[value]]
+group = "desktop"
+name = "OF_MENU_W"
+kind = "f32"
+unit = "px"
+value = 170.0
+doc = "The minimum width of the Orderflow (OF) popup: the CVD and Volume Profile toggles and the tick size."
+
+[[value]]
+group = "desktop"
+name = "STYLE_ICON_SIZE"
+kind = "vec2"
+unit = "px"
+value = [18.0, 16.0]
+doc = "The mini chart icon at the left of each chart-style menu row."
+
+[[value]]
+group = "desktop"
+name = "STYLE_MENU_W"
+kind = "f32"
+unit = "px"
+value = 186.0
+doc = "The chart-style menu's minimum width."
+
+[[value]]
+group = "desktop"
+name = "STYLE_ROW"
+kind = "vec2"
+unit = "px"
+value = [172.0, 22.0]
+doc = "A chart-style menu row: its least width (it takes the menu's full width above that) and its height."
+
+[[value]]
+group = "desktop"
+name = "SYMBOL_MENU_W"
+kind = "f32"
+unit = "px"
+value = 250.0
+doc = "The minimum width of the symbol quick-pick menu in a chart window's title bar."
+
+[[value]]
+group = "desktop"
+name = "WINDOW_RESTORED_SIZE"
+kind = "vec2"
+unit = "px"
+value = [1400.0, 900.0]
+doc = "The app window's size when it is restored down from maximized; it opens maximized."
+
+[[value]]
+group = "desktop"
+name = "COMPARE_1"
+kind = "colour"
+value = "#57a5ff"
+doc = "Compare overlay 1, blue: the overlay's line on the chart and its chip dot in the title-bar popup."
+
+[[value]]
+group = "desktop"
+name = "COMPARE_2"
+kind = "colour"
+value = "#f09528"
+doc = "Compare overlay 2, orange: the overlay's line on the chart and its chip dot."
+
+[[value]]
+group = "desktop"
+name = "COMPARE_3"
+kind = "colour"
+value = "#af7aff"
+doc = "Compare overlay 3, violet: the overlay's line on the chart and its chip dot."
+
+[[value]]
+group = "desktop"
+name = "COMPARE_4"
+kind = "colour"
+value = "#26c6da"
+doc = "Compare overlay 4, cyan: the overlay's line on the chart and its chip dot."
+
+[[value]]
+group = "desktop"
+name = "COMPARE_5"
+kind = "colour"
+value = "#ec407a"
+doc = "Compare overlay 5, pink: the overlay's line on the chart and its chip dot."
+
+[[value]]
+group = "desktop"
+name = "SYNC_GROUP_1"
+kind = "colour"
+value = "#ff0000"
+doc = "The chart title bar's sync-group dot for group 1, red: charts in one group share their crosshair and range."
+
+[[value]]
+group = "desktop"
+name = "SYNC_GROUP_2"
+kind = "colour"
+value = "#0000ff"
+doc = "The chart title bar's sync-group dot for group 2, blue."
+
+[[value]]
+group = "desktop"
+name = "SYNC_GROUP_3"
+kind = "colour"
+value = "#00ff00"
+doc = "The chart title bar's sync-group dot for group 3, green."
+
+[[value]]
+group = "desktop"
+name = "SYNC_GROUP_4"
+kind = "colour"
+value = "#ffff00"
+doc = "The chart title bar's sync-group dot for group 4, yellow."
+
+# ==== value: news ====
+
+[[value]]
+group = "news"
+name = "CARD_INNER_RESERVE"
+kind = "f32"
+unit = "px"
+value = 18.0
+doc = "The width a headline card's content gives up inside its frame: the list width less this is the room for the card's text."
+
+[[value]]
+group = "news"
+name = "READER_WIDTH_RESERVE"
+kind = "f32"
+unit = "px"
+value = 22.0
+doc = "The width kept free between the headline list and the reader pane, so the two sit side by side without overflowing the window."
+
+[[value]]
+group = "news"
+name = "AVATAR_LETTER_FRAC"
+kind = "f32"
+unit = "ratio"
+value = 0.5
+doc = "The News window: the size of the letter in a fallback source avatar, as a share of the avatar's size."
+
+[[value]]
+group = "news"
+name = "AVATAR_RADIUS_FRAC"
+kind = "f32"
+unit = "ratio"
+value = 0.28
+doc = "The News window: a source avatar's corner radius as a share of its size."
+
+[[value]]
+group = "news"
+name = "AVATAR_SIZE"
+kind = "f32"
+unit = "px"
+value = 30.0
+doc = "The News window: the square of a headline's source avatar, in the list and in the reader."
+
+[[value]]
+group = "news"
+name = "FILTER_MENU_MIN_W"
+kind = "f32"
+unit = "px"
+value = 170.0
+doc = "The News toolbar's filter pill menus (Market, Category, Provider): their narrowest width."
+
+[[value]]
+group = "news"
+name = "LIST_FRAC"
+kind = "f32"
+unit = "ratio"
+value = 0.66
+doc = "The News window with the reader open: the headline list's share of the window's width."
+
+[[value]]
+group = "news"
+name = "LIST_LEAVES_READER_W"
+kind = "f32"
+unit = "px"
+value = 170.0
+doc = "The News window with the reader open: the headline list never takes the last this-much of the width, which the reader keeps."
+
+[[value]]
+group = "news"
+name = "LIST_MIN_W"
+kind = "f32"
+unit = "px"
+value = 240.0
+doc = "The News window with the reader open: the headline list's narrowest width."
+
+[[value]]
+group = "news"
+name = "READER_MIN_W"
+kind = "f32"
+unit = "px"
+value = 150.0
+doc = "The News reader pane: its narrowest width."
+
+[[value]]
+group = "news"
+name = "SEARCH_W"
+kind = "f32"
+unit = "px"
+value = 220.0
+doc = "The News toolbar's Search headlines field: its width."
+
+[[value]]
+group = "news"
+name = "SPLIT_MIN_H"
+kind = "f32"
+unit = "px"
+value = 120.0
+doc = "The News window: the least height of the headline list and reader panes."
+
+[[value]]
+group = "news"
+name = "TOOLBAR_BTN_H"
+kind = "f32"
+unit = "px"
+value = 34.0
+doc = "The News toolbar's filter pills and Follow chart button: their least height."
+
+[[value]]
+group = "news"
+name = "AVATAR_1"
+kind = "colour"
+value = "#3fe08a"
+doc = "Fallback avatar of a news source with no favicon: background colour 1 of 8 (green); the colour is picked by hashing the source name, so the order of the eight is the contract."
+
+[[value]]
+group = "news"
+name = "AVATAR_2"
+kind = "colour"
+value = "#f0a93f"
+doc = "Fallback avatar of a news source with no favicon: background colour 2 of 8 (amber), in hash order."
+
+[[value]]
+group = "news"
+name = "AVATAR_3"
+kind = "colour"
+value = "#3f9be0"
+doc = "Fallback avatar of a news source with no favicon: background colour 3 of 8 (blue), in hash order."
+
+[[value]]
+group = "news"
+name = "AVATAR_4"
+kind = "colour"
+value = "#e0643f"
+doc = "Fallback avatar of a news source with no favicon: background colour 4 of 8 (orange), in hash order."
+
+[[value]]
+group = "news"
+name = "AVATAR_5"
+kind = "colour"
+value = "#b06fe0"
+doc = "Fallback avatar of a news source with no favicon: background colour 5 of 8 (violet), in hash order."
+
+[[value]]
+group = "news"
+name = "AVATAR_6"
+kind = "colour"
+value = "#3fe0c8"
+doc = "Fallback avatar of a news source with no favicon: background colour 6 of 8 (teal), in hash order."
+
+[[value]]
+group = "news"
+name = "AVATAR_7"
+kind = "colour"
+value = "#e03f8a"
+doc = "Fallback avatar of a news source with no favicon: background colour 7 of 8 (pink), in hash order."
+
+[[value]]
+group = "news"
+name = "AVATAR_8"
+kind = "colour"
+value = "#9be03f"
+doc = "Fallback avatar of a news source with no favicon: background colour 8 of 8 (lime), in hash order."
+
+[[value]]
+group = "news"
+name = "LOGO_PLATE"
+kind = "colour"
+value = "#f4f4f4"
+doc = "The near-white rounded plate behind a source's real favicon in the News list, so a dark or transparent logo stays legible in every theme."
+
+# ==== value: status ====
+
+# ==== value: studio ====
+
+[[value]]
+group = "studio"
+name = "COMBO_BESIDE_BUTTON_RESERVE"
+kind = "f32"
+unit = "px"
+value = 64.0
+doc = "The width the Sweep template drop-down leaves free on its row for the button beside it."
+
+[[value]]
+group = "studio"
+name = "SAVE_BUTTON_W"
+kind = "f32"
+unit = "px"
+value = 64.0
+doc = "The width reserved for the Save button on the Saved strategies name row; the name field takes whatever is left."
+
+[[value]]
+group = "studio"
+name = "BACKEND_ADDR_W"
+kind = "f32"
+unit = "px"
+value = 160.0
+doc = "The width of the compute daemon address box (host:port) for the Remote and Named backends."
+
+[[value]]
+group = "studio"
+name = "BUILDER_ADDR_W"
+kind = "f32"
+unit = "px"
+value = 140.0
+doc = "The width of the Builder service address box."
+
+[[value]]
+group = "studio"
+name = "CHAT_DIFF_MAX_H"
+kind = "f32"
+unit = "px"
+value = 180.0
+doc = "The tallest the assistant's Review changes diff gets before it scrolls."
+
+[[value]]
+group = "studio"
+name = "CHAT_HISTORY_MAX_H"
+kind = "f32"
+unit = "px"
+value = 220.0
+doc = "The tallest the assistant chat history gets before it scrolls."
+
+[[value]]
+group = "studio"
+name = "COMPARE_SCROLL_MAX_H"
+kind = "f32"
+unit = "px"
+value = 280.0
+doc = "The tallest the strategy compare table gets before it scrolls."
+
+[[value]]
+group = "studio"
+name = "DATA_BROWSER_MIN_W"
+kind = "f32"
+unit = "px"
+value = 700.0
+doc = "The Data pane's minimum content width: narrower, the catalog grid scrolls sideways instead of squeezing its cells."
+
+[[value]]
+group = "studio"
+name = "DATA_SLICE_COMBO_W"
+kind = "f32"
+unit = "px"
+value = 230.0
+doc = "The width of the data-slice selector in the Studio's data picker."
+
+[[value]]
+group = "studio"
+name = "EDITOR_DEFAULT_W"
+kind = "f32"
+unit = "px"
+value = 460.0
+doc = "The expanded editor panel's opening width; the user can drag it."
+
+[[value]]
+group = "studio"
+name = "EDITOR_FONT_SIZE"
+kind = "f32"
+unit = "px"
+value = 13.0
+doc = "The Studio code editor's font size, which also sets how many rows fill its panel."
+
+[[value]]
+group = "studio"
+name = "EDITOR_MIN_W"
+kind = "f32"
+unit = "px"
+value = 28.0
+doc = "The width of the collapsed editor panel: just the expand button."
+
+[[value]]
+group = "studio"
+name = "EXTRA_SYMBOLS_BOX"
+kind = "vec2"
+unit = "px"
+value = [140.0, 20.0]
+doc = "The box for extra tick symbols to replay alongside the selected one, shown beside a tick data pick."
+
+[[value]]
+group = "studio"
+name = "GRID_NAME_W"
+kind = "f32"
+unit = "px"
+value = 96.0
+doc = "The name column of the sweep grid's script parameters; it truncates, so a long name cannot push the value field out."
+
+[[value]]
+group = "studio"
+name = "INDICATOR_LIST_MAX_H"
+kind = "f32"
+unit = "px"
+value = 220.0
+doc = "The tallest the indicator list gets before it scrolls."
+
+[[value]]
+group = "studio"
+name = "INDICATOR_PREVIEW_H"
+kind = "f32"
+unit = "px"
+value = 160.0
+doc = "The height of the indicator preview plot."
+
+[[value]]
+group = "studio"
+name = "INDICATOR_SLIDER_MIN_W"
+kind = "f32"
+unit = "px"
+value = 80.0
+doc = "The narrowest an indicator parameter slider gets."
+
+[[value]]
+group = "studio"
+name = "INDICATOR_SLIDER_RESERVE"
+kind = "f32"
+unit = "px"
+value = 150.0
+doc = "The room kept free beside each indicator parameter slider for its trailing label."
+
+[[value]]
+group = "studio"
+name = "PARAM_FIELD_H"
+kind = "f32"
+unit = "px"
+value = 18.0
+doc = "The height of a native strategy parameter's key and value boxes."
+
+[[value]]
+group = "studio"
+name = "PARAM_KEY_W"
+kind = "f32"
+unit = "px"
+value = 96.0
+doc = "The key box of a native strategy parameter row."
+
+[[value]]
+group = "studio"
+name = "RAIL_WIDTH"
+kind = "f32"
+unit = "px"
+value = 40.0
+doc = "The width of the Studio tool rail down the window's right edge; its buttons are this less 8."
+
+[[value]]
+group = "studio"
+name = "RUN_LIST_MAX_H"
+kind = "f32"
+unit = "px"
+value = 220.0
+doc = "The tallest the research runs list gets before it scrolls."
+
+[[value]]
+group = "studio"
+name = "RUN_ROW_H"
+kind = "f32"
+unit = "px"
+value = 28.0
+doc = "The height of the Run backtest row in the Studio's centre panel."
+
+[[value]]
+group = "studio"
+name = "RUN_ROW_MAX_W"
+kind = "f32"
+unit = "px"
+value = 280.0
+doc = "The widest the Run backtest row is laid out; a wider panel leaves the rest empty."
+
+[[value]]
+group = "studio"
+name = "SAVED_LIST_MAX_H"
+kind = "f32"
+unit = "px"
+value = 200.0
+doc = "The tallest the saved-strategies list gets before it scrolls."
+
+[[value]]
+group = "studio"
+name = "SPARKLINE_SIZE"
+kind = "vec2"
+unit = "px"
+value = [64.0, 18.0]
+doc = "The equity sparkline in each row of the strategy compare table."
+
+[[value]]
+group = "studio"
+name = "STUDY_LIST_MAX_H"
+kind = "f32"
+unit = "px"
+value = 150.0
+doc = "The tallest the research studies list gets before it scrolls."
+
+[[value]]
+group = "studio"
+name = "TEMPLATE_GALLERY_MAX_H"
+kind = "f32"
+unit = "px"
+value = 260.0
+doc = "The tallest the template gallery gets before it scrolls."
+
+[[value]]
+group = "studio"
+name = "TOOLS_PANEL_W"
+kind = "f32"
+unit = "px"
+value = 340.0
+doc = "The width of the Studio tools panel beside the tool rail."
+
+[[value]]
+group = "studio"
+name = "WF_PLOT_H"
+kind = "f32"
+unit = "px"
+value = 200.0
+doc = "The height of the walk-forward out-of-sample equity plot."
+
+# ==== value: trade ====
+
+[[value]]
+group = "trade"
+name = "CROSS_GLYPH_W"
+kind = "f32"
+unit = "px"
+value = 1.3
+doc = "The line width of the ladder toolbar's crosshair glyph (its circle and four ticks): 1.3 pt, the v3 design's own."
+
+[[value]]
+group = "trade"
+name = "DRAG_RING_W"
+kind = "f32"
+unit = "px"
+value = 1.6
+doc = "The line width of the accent ring round an order marker while it is dragged: 1.6 pt, the v3 design's own (not a step of the stroke scale; the ring still stands off the marker by one LINE)."
+
+[[value]]
+group = "trade"
+name = "PLUS_MINUS_GLYPH_W"
+kind = "f32"
+unit = "px"
+value = 1.28
+doc = "The line width of the ladder toolbar's minus and plus glyphs (Group - and +): 1.28 pt, the v3 design's own."
+
+[[value]]
+group = "trade"
+name = "VIEW_GROUP_GAP"
+kind = "f32"
+unit = "px"
+value = 5.0
+doc = "The room each side of the hairline that sets the two pane toggles apart from the two layout toggles in the title bar (the design's `.tsep`): 5 pt, the v3 design's own number (not a step of the scale)."
+
+[[value]]
+group = "trade"
+name = "VOL_BAR_INSET"
+kind = "f32"
+unit = "px"
+value = 5.0
+doc = "How far a Vol bar sits inside its row, at the top and the bottom, in the ladder's Vol column: 5 pt, the v3 design's own number (not a step of the scale)."
+
+[[value]]
+group = "trade"
+name = "FIT_SLACK"
+kind = "f32"
+unit = "px"
+value = 1.0
+doc = "How far a size may run past its column in the Trade window's ladder before it is printed to fewer decimals."
+
+[[value]]
+group = "trade"
+name = "SPARE"
+kind = "f32"
+unit = "px"
+value = 4.0
+doc = "What the Trade window's instrument bar leaves unspent when it measures how many rows its pickers and chip need."
+
+[[value]]
+group = "trade"
+name = "ACCOUNT_PICKER_W"
+kind = "f32"
+unit = "px"
+value = 356.0
+doc = "The account picker popup's narrowest width."
+
+[[value]]
+group = "trade"
+name = "BESIDE_SIZE"
+kind = "vec2"
+unit = "px"
+value = [600.0, 560.0]
+doc = "The Trade window with the ticket beside the ladder (spec 3.9): 600 x 560."
+
+[[value]]
+group = "trade"
+name = "BUBBLE_ALPHA"
+kind = "f32"
+unit = "ratio"
+value = 0.7
+doc = "How opaque a Trades bubble is (0 to 1), so two prints on one row both read."
+
+[[value]]
+group = "trade"
+name = "BUBBLE_MAX_ROWS"
+kind = "f32"
+unit = "ratio"
+value = 0.5
+doc = "The radius of the largest bubble on the tick chart's Trades layer, in multiples of the row height."
+
+[[value]]
+group = "trade"
+name = "BUBBLE_MIN_ROWS"
+kind = "f32"
+unit = "ratio"
+value = 0.18
+doc = "The radius of the smallest bubble on the tick chart's Trades layer, in multiples of the row height."
+
+[[value]]
+group = "trade"
+name = "CHART_W"
+kind = "f32"
+unit = "px"
+value = 301.0
+doc = "The tick-chart pane's width beside the ladder (the v3 design's: its window is 301 wider with the chart on); a window made wider gives the extra to the ladder, one too narrow for both gives the chart up first."
+
+[[value]]
+group = "trade"
+name = "COL_BID_ASK_W"
+kind = "f32"
+unit = "px"
+value = 64.0
+doc = "The design's width of the ladder's Bid column and of its Ask column, in every layout."
+
+[[value]]
+group = "trade"
+name = "COL_BUY_SELL_UNDER_W"
+kind = "f32"
+unit = "px"
+value = 48.0
+doc = "The design's width of the ladder's Buy column and of its Sell column with the ticket under the ladder, where there is no Vol column and they are wider."
+
+[[value]]
+group = "trade"
+name = "COL_BUY_SELL_W"
+kind = "f32"
+unit = "px"
+value = 44.0
+doc = "The design's width of the ladder's Buy column and of its Sell column beside the ticket (the columns scale to the width the ladder has)."
+
+[[value]]
+group = "trade"
+name = "COL_PRICE_W"
+kind = "f32"
+unit = "px"
+value = 76.0
+doc = "The design's width of the ladder's Price column; with the Vol column off it takes Vol's width as well."
+
+[[value]]
+group = "trade"
+name = "COL_VOL_W"
+kind = "f32"
+unit = "px"
+value = 30.0
+doc = "The design's width of the ladder's Vol column (shown only beside the ticket, when the toolbar's first button turns it on)."
+
+[[value]]
+group = "trade"
+name = "COMPACT_ALONE_W"
+kind = "f32"
+unit = "px"
+value = 320.0
+doc = "The window holding only the compact ticket (panel under, no ladder, no chart): the design's 320 pt column; its height is counted from the ticket's rows."
+
+[[value]]
+group = "trade"
+name = "DASH"
+kind = "f32"
+unit = "px"
+value = 3.5
+doc = "The dash of a stop order's pill edge: 3.5 pt on, as the design's browser draws a one-point dashed border."
+
+[[value]]
+group = "trade"
+name = "DASH_GAP"
+kind = "f32"
+unit = "px"
+value = 1.5
+doc = "The gap between two dashes of a stop order's pill edge: 1.5 pt off."
+
+[[value]]
+group = "trade"
+name = "GLYPH_CAP_RADIUS"
+kind = "u8"
+unit = "px"
+value = 1
+doc = "The round cap of a ladder toolbar glyph's strokes: the corner radius of the thin rounded rectangle that stands in for a round-capped line."
+
+[[value]]
+group = "trade"
+name = "GROUP_NUM_W"
+kind = "f32"
+unit = "px"
+value = 16.0
+doc = "The least width of the box holding the grouping's number, so 1 and 10 do not move the buttons beside it."
+
+[[value]]
+group = "trade"
+name = "ICON_SHRINK"
+kind = "f32"
+unit = "px"
+value = 4.0
+doc = "How much shorter than a control the ladder toolbar's icon buttons are drawn (24 x 20 at Normal density)."
+
+[[value]]
+group = "trade"
+name = "ICON_W"
+kind = "f32"
+unit = "px"
+value = 24.0
+doc = "The width a ladder toolbar icon button (Vol, Recenter) is drawn; the click target keeps the whole control height."
+
+[[value]]
+group = "trade"
+name = "MATCHES_H"
+kind = "f32"
+unit = "px"
+value = 260.0
+doc = "How tall the symbol picker's list of matches grows before it scrolls."
+
+[[value]]
+group = "trade"
+name = "MIN_CHART_W"
+kind = "f32"
+unit = "px"
+value = 160.0
+doc = "The narrowest tick-chart pane drawn; any narrower and the chart is left out, like a ladder under its own minimum."
+
+[[value]]
+group = "trade"
+name = "MIN_FIELD_W"
+kind = "f32"
+unit = "px"
+value = 48.0
+doc = "The narrowest a number field in the order ticket is drawn, however crowded its row."
+
+[[value]]
+group = "trade"
+name = "MIN_LADDER_W"
+kind = "f32"
+unit = "px"
+value = 200.0
+doc = "The narrowest ladder drawn beside the ticket; any narrower and the ticket takes the whole body."
+
+[[value]]
+group = "trade"
+name = "NO_BOOK_RISE"
+kind = "f32"
+unit = "px"
+value = 46.0
+doc = "Where the bookless ladder's message block starts: this far above the middle of its rect, about half the block's own height, so it reads centred."
+
+[[value]]
+group = "trade"
+name = "PILL_EDGE_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 140
+doc = "The one-point edge of a limit order's pill that the venue can reprice: its side's colour at 140 / 255 (the design's .55)."
+
+[[value]]
+group = "trade"
+name = "PILL_FILL_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 56
+doc = "The fill of a limit order's pill on the ladder: its side's colour at 56 / 255 (the design's rgba(..., .22))."
+
+[[value]]
+group = "trade"
+name = "PILL_LIFT_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 36
+doc = "The wash a pill takes under the pointer: the text colour at 36 / 255 (the design's brightness(1.25))."
+
+[[value]]
+group = "trade"
+name = "PILL_RADIUS"
+kind = "u8"
+unit = "px"
+value = 3
+doc = "The corner radius of an own-order pill on the ladder: the design's 3 px, tighter than the kit's 4."
+
+[[value]]
+group = "trade"
+name = "PRICE_LABEL_ALPHA"
+kind = "f32"
+unit = "ratio"
+value = 0.9
+doc = "How opaque the price labels down the tick chart's right edge are (0 to 1): the muted text colour at this strength."
+
+[[value]]
+group = "trade"
+name = "SQUARE_SHRINK"
+kind = "f32"
+unit = "px"
+value = 6.0
+doc = "How much smaller than a control the grouping's minus and plus squares are drawn."
+
+[[value]]
+group = "trade"
+name = "STATUS_DOT_MIN"
+kind = "f32"
+unit = "px"
+value = 5.0
+doc = "The least diameter of the status strip's dot, at any text size."
+
+[[value]]
+group = "trade"
+name = "STATUS_DOT_RATIO"
+kind = "f32"
+unit = "ratio"
+value = 0.6
+doc = "The status strip's dot diameter as a share of the Caption text size (a little over half), rounded to whole points."
+
+[[value]]
+group = "trade"
+name = "SYMBOL_PICKER_W"
+kind = "f32"
+unit = "px"
+value = 380.0
+doc = "The symbol picker popup's width: its search field and its lines (a chip for every venue) take all of it; wider than the window can be."
+
+[[value]]
+group = "trade"
+name = "THREE_ROWS_BELOW"
+kind = "f32"
+unit = "px"
+value = 388.0
+doc = "Below this width the instrument bar takes three rows (symbol picker and chip, account picker, price group), measured at Normal density and Small text; a looser or larger look grows it."
+
+[[value]]
+group = "trade"
+name = "TICKET_ONLY_H"
+kind = "f32"
+unit = "px"
+value = 560.0
+doc = "The height of the window holding only the ticket (the design's 280 x 560)."
+
+[[value]]
+group = "trade"
+name = "TICKET_ONLY_PAD"
+kind = "f32"
+unit = "px"
+value = 20.0
+doc = "How much wider than the ticket the window holding only the ticket is: the pad round it (the design's 280 x 560 over a 260 ticket)."
+
+[[value]]
+group = "trade"
+name = "TICKET_W"
+kind = "f32"
+unit = "px"
+value = 260.0
+doc = "The order ticket's width beside the ladder at Small text, the design's own; the ticket grows it with the text size (286 at Standard, 338 at Large)."
+
+[[value]]
+group = "trade"
+name = "TWO_ROWS_BELOW"
+kind = "f32"
+unit = "px"
+value = 470.0
+doc = "Below this width the instrument bar takes two rows (the pickers and the chip, then the price group), measured at Normal density and Small text; a looser or larger look grows it."
+
+[[value]]
+group = "trade"
+name = "UNDER_BOTH_LESS_H"
+kind = "f32"
+unit = "px"
+value = 21.0
+doc = "How much shorter the ticket-under window is with the chart and the ladder side by side over the ticket than the plain 680: the design's 621 x 659."
+
+[[value]]
+group = "trade"
+name = "UNDER_SIZE"
+kind = "vec2"
+unit = "px"
+value = [320.0, 680.0]
+doc = "The Trade window with the ticket under the ladder (spec 3.9): 320 x 680."
+
+[[value]]
+group = "trade"
+name = "VIEW_BUTTON"
+kind = "vec2"
+unit = "px"
+value = [24.0, 20.0]
+doc = "One of the four view toggles in the Trade window's title bar (the design's `.ib`): 24 x 20 at every density."
+
+[[value]]
+group = "trade"
+name = "VOL_BAR_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 71
+doc = "The traded-volume bar in the ladder's Vol column: the grey text colour at 71 / 255 (the design's rgba(..., .28))."
+
+[[value]]
+group = "trade"
+name = "WASH_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 13
+doc = "The wash the ladder cell under the pointer takes: the text colour at 13 / 255 (the design's .05)."
+
+# ==== value: workspace ====
+
+[[value]]
+group = "workspace"
+name = "TITLE_CLEAR"
+kind = "f32"
+unit = "px"
+value = 36.0
+doc = "How far below a window's top the resize bands on its left and right edges start, clearing the title-bar controls."
+
+[[value]]
+group = "workspace"
+name = "ARRANGE_CASCADE_FRAC"
+kind = "f32"
+unit = "ratio"
+value = 0.6
+doc = "Window > Arrange > Cascade: each window's width and height as a share of the desktop area."
+
+[[value]]
+group = "workspace"
+name = "ARRANGE_CASCADE_MIN_H"
+kind = "f32"
+unit = "px"
+value = 180.0
+doc = "Window > Arrange > Cascade: the shortest a cascaded window is made."
+
+[[value]]
+group = "workspace"
+name = "ARRANGE_CASCADE_MIN_W"
+kind = "f32"
+unit = "px"
+value = 260.0
+doc = "Window > Arrange > Cascade: the narrowest a cascaded window is made."
+
+[[value]]
+group = "workspace"
+name = "ARRANGE_CASCADE_STEP"
+kind = "f32"
+unit = "px"
+value = 30.0
+doc = "Window > Arrange > Cascade: how far each window steps down and right from the one before it."
+
+[[value]]
+group = "workspace"
+name = "CASCADE_ORIGIN"
+kind = "vec2"
+unit = "px"
+value = [50.0, 40.0]
+doc = "Where the first new tool or chart window opens: its offset from the desktop's top-left corner."
+
+[[value]]
+group = "workspace"
+name = "CASCADE_ORIGIN_NEW_WINDOW"
+kind = "vec2"
+unit = "px"
+value = [40.0, 30.0]
+doc = "Where the first window opened from Window > New window lands: its offset from the desktop's top-left corner."
+
+[[value]]
+group = "workspace"
+name = "CASCADE_STEP"
+kind = "f32"
+unit = "px"
+value = 28.0
+doc = "How far each successive new window steps down and right from the previous one."
+
+[[value]]
+group = "workspace"
+name = "CHART_WINDOW_SIZE"
+kind = "vec2"
+unit = "px"
+value = [640.0, 420.0]
+doc = "The size a chart window opens at from the command palette or the Chart launcher."
+
+[[value]]
+group = "workspace"
+name = "CLONE_CHART_SIZE"
+kind = "vec2"
+unit = "px"
+value = [620.0, 380.0]
+doc = "The size a cloned chart window opens at."
+
+[[value]]
+group = "workspace"
+name = "MINH"
+kind = "f32"
+unit = "px"
+value = 160.0
+doc = "The shortest a window can be dragged or arranged to; also the floor when the arena is smaller."
+
+[[value]]
+group = "workspace"
+name = "MINW"
+kind = "f32"
+unit = "px"
+value = 240.0
+doc = "The narrowest a window can be dragged or arranged to; also the floor when the arena is smaller."
+
+[[value]]
+group = "workspace"
+name = "MIN_VISIBLE_H"
+kind = "f32"
+unit = "px"
+value = 40.0
+doc = "How much of a window's height must stay reachable inside the desktop when it is dragged toward the bottom edge."
+
+[[value]]
+group = "workspace"
+name = "MIN_VISIBLE_W"
+kind = "f32"
+unit = "px"
+value = 80.0
+doc = "How much of a window's width must stay reachable inside the desktop when it is dragged toward the right edge."
+
+[[value]]
+group = "workspace"
+name = "NEW_WINDOW_CHART_SIZE"
+kind = "vec2"
+unit = "px"
+value = [700.0, 440.0]
+doc = "The size a chart window opens at from Window > New window."
+
+[[value]]
+group = "workspace"
+name = "COCKPIT_WINDOW_SIZE"
+kind = "vec2"
+unit = "px"
+value = [340.0, 640.0]
+doc = "The size the Polymarket cockpit window opens at: narrow and tall."
+
+[[value]]
+group = "workspace"
+name = "RAIL_TAB_MAX_W"
+kind = "f32"
+unit = "px"
+value = 28.0
+doc = "The left rail's vertical tabs: the widest a tab is."
+
+[[value]]
+group = "workspace"
+name = "RAIL_TAB_MIN_W"
+kind = "f32"
+unit = "px"
+value = 20.0
+doc = "The left rail's vertical tabs (one per minimized window): the narrowest a tab is."
+
+[[value]]
+group = "workspace"
+name = "RAIL_TAB_PAD"
+kind = "f32"
+unit = "px"
+value = 18.0
+doc = "The left rail's vertical tabs: the room added to the rotated label's length to make the tab's height."
+
+[[value]]
+group = "workspace"
+name = "SAVE_LAYOUT_W"
+kind = "f32"
+unit = "px"
+value = 280.0
+doc = "The Save layout as dialog's width."
+
+[[value]]
+group = "workspace"
+name = "SETTINGS_WINDOW_SIZE"
+kind = "vec2"
+unit = "px"
+value = [640.0, 600.0]
+doc = "The size the Settings window opens at: a row of four previews and room below them."
+
+[[value]]
+group = "workspace"
+name = "STORED_CHART_SIZE"
+kind = "vec2"
+unit = "px"
+value = [700.0, 440.0]
+doc = "The size a chart window opened from a stored series opens at."
+
+[[value]]
+group = "workspace"
+name = "TEST_CHART_SIZE"
+kind = "vec2"
+unit = "px"
+value = [700.0, 440.0]
+doc = "The size the test-symbol chart window opens at."
+
+[[value]]
+group = "workspace"
+name = "TOOL_WINDOW_SIZE"
+kind = "vec2"
+unit = "px"
+value = [560.0, 400.0]
+doc = "The size a plain tool window (Account, Options, Greeks, News, Calendar, Data, Studio, Connections, Tearsheet) opens at."
+
+# ==== value: backend_settings ====
+
+[[value]]
+group = "backend_settings"
+name = "MIN_COL_SCALE"
+kind = "f32"
+unit = "ratio"
+value = 0.55
+doc = "How far the Backend settings table's columns shrink together before they stop shrinking and the row scrolls instead."
+
+[[value]]
+group = "backend_settings"
+name = "EDIT_FIELD_W"
+kind = "f32"
+unit = "px"
+value = 220.0
+doc = "The Backend settings editor's New value text field: its width."
+
+[[value]]
+group = "backend_settings"
+name = "HEADER_H"
+kind = "f32"
+unit = "px"
+value = 18.0
+doc = "The Backend settings table's sticky header row: its height."
+
+[[value]]
+group = "backend_settings"
+name = "ROWS_MAX_H"
+kind = "f32"
+unit = "px"
+value = 300.0
+doc = "How tall the Backend settings table's rows grow before they scroll."
+
+[[value]]
+group = "backend_settings"
+name = "ROW_H"
+kind = "f32"
+unit = "px"
+value = 17.0
+doc = "The Backend settings table's data rows: the height of one row."
+
+[[value]]
+group = "backend_settings"
+name = "W_EDIT"
+kind = "f32"
+unit = "px"
+value = 44.0
+doc = "The Backend settings table's edit-button column: its width at full size."
+
+[[value]]
+group = "backend_settings"
+name = "W_KEY"
+kind = "f32"
+unit = "px"
+value = 230.0
+doc = "The Backend settings table's Key column: its width at full size (the columns shrink together on a narrow window)."
+
+[[value]]
+group = "backend_settings"
+name = "W_ORIGIN"
+kind = "f32"
+unit = "px"
+value = 120.0
+doc = "The Backend settings table's Origin column (where the value comes from): its width at full size."
+
+[[value]]
+group = "backend_settings"
+name = "W_READ"
+kind = "f32"
+unit = "px"
+value = 64.0
+doc = "The Backend settings table's Read column (whether the daemon reads the key): its width at full size."
+
+[[value]]
+group = "backend_settings"
+name = "W_VALUE"
+kind = "f32"
+unit = "px"
+value = 150.0
+doc = "The Backend settings table's Value column: its width at full size."
+
+# ==== value: caption ====
+
+[[value]]
+group = "caption"
+name = "PALETTE_LEFT_CLEAR"
+kind = "f32"
+unit = "px"
+value = 190.0
+doc = "How far from the caption's left edge the command palette field may start, clearing the mark, the menus and the GPU toggle."
+
+[[value]]
+group = "caption"
+name = "PALETTE_RIGHT_CLEAR"
+kind = "f32"
+unit = "px"
+value = 280.0
+doc = "How far from the caption's right edge the command palette field may end, clearing the tool launchers and the window controls."
+
+[[value]]
+group = "caption"
+name = "CAPTION_H"
+kind = "f32"
+unit = "px"
+value = 32.0
+doc = "The window caption bar's height: the frameless strip across the top of the main window (the Python app's TITLEBAR_H)."
+
+[[value]]
+group = "caption"
+name = "CONTROL_W"
+kind = "f32"
+unit = "px"
+value = 34.0
+doc = "One window control's width in the caption: minimise, maximise, close."
+
+[[value]]
+group = "caption"
+name = "LAUNCHER_BOX"
+kind = "f32"
+unit = "px"
+value = 26.0
+doc = "A tool launcher's square in the caption; its icon sits 4 px inside it, which leaves the PNGs' 18 px design size."
+
+[[value]]
+group = "caption"
+name = "MARK_SIZE"
+kind = "vec2"
+unit = "px"
+value = [24.0, 22.0]
+doc = "The Vike mark's footprint at the caption's left, in the old V tile's size so nothing beside it moves."
+
+[[value]]
+group = "caption"
+name = "PALETTE_H"
+kind = "f32"
+unit = "px"
+value = 24.0
+doc = "The command palette field's height in the caption (fixed chrome, it does not follow density)."
+
+[[value]]
+group = "caption"
+name = "PALETTE_MAX_W"
+kind = "f32"
+unit = "px"
+value = 360.0
+doc = "The command palette field's widest width in the caption."
+
+[[value]]
+group = "caption"
+name = "PALETTE_MIN_W"
+kind = "f32"
+unit = "px"
+value = 120.0
+doc = "The command palette field's narrowest width when the caption is squeezed."
+
+[[value]]
+group = "caption"
+name = "PALETTE_SIDE_GAP"
+kind = "f32"
+unit = "px"
+value = 12.0
+doc = "The command palette field is the gap between the launcher cluster and the window controls less this much, shared by its two sides."
+
+# ==== value: chart_dialogs ====
+
+[[value]]
+group = "chart_dialogs"
+name = "CHART_SETTINGS_W"
+kind = "f32"
+unit = "px"
+value = 470.0
+doc = "The Chart settings window's opening width."
+
+[[value]]
+group = "chart_dialogs"
+name = "INDICATOR_DIALOG_W"
+kind = "f32"
+unit = "px"
+value = 300.0
+doc = "The indicator settings window's opening width."
+
+[[value]]
+group = "chart_dialogs"
+name = "LINE_DASH_COMBO_W"
+kind = "f32"
+unit = "px"
+value = 78.0
+doc = "The width of the dash-style selector beside each line on an indicator's Style tab."
+
+[[value]]
+group = "chart_dialogs"
+name = "SETTINGS_MIN_W"
+kind = "f32"
+unit = "px"
+value = 300.0
+doc = "The Chart settings dialog's minimum content width."
+
+[[value]]
+group = "chart_dialogs"
+name = "SOURCE_COMBO_W"
+kind = "f32"
+unit = "px"
+value = 110.0
+doc = "The Source selector's width on an indicator's Inputs tab."
+
+# ==== value: data ====
+
+[[value]]
+group = "data"
+name = "RAIL_SEPARATOR_RESERVE"
+kind = "f32"
+unit = "px"
+value = 14.0
+doc = "The width kept back beside the Data window's category rail for the separator line, taken off the body so rail and body fit side by side."
+
+[[value]]
+group = "data"
+name = "BODY_MIN_W"
+kind = "f32"
+unit = "px"
+value = 120.0
+doc = "The Data window's body (right of the rail): its narrowest width, however narrow the window."
+
+[[value]]
+group = "data"
+name = "DS_BENCHMARK_FIELD_W"
+kind = "f32"
+unit = "px"
+value = 360.0
+doc = "The DataSets editor's Benchmark field: its width."
+
+[[value]]
+group = "data"
+name = "DS_INTERVAL_MENU_MIN_W"
+kind = "f32"
+unit = "px"
+value = 116.0
+doc = "The DataSets editor's Interval dropdown menu: its narrowest width."
+
+[[value]]
+group = "data"
+name = "DS_INTERVAL_W"
+kind = "f32"
+unit = "px"
+value = 120.0
+doc = "The DataSets editor's Interval dropdown button: its width."
+
+[[value]]
+group = "data"
+name = "DS_LABEL_W"
+kind = "f32"
+unit = "px"
+value = 92.0
+doc = "The DataSets editor form: the width of the label column (Name, Provider, Interval, Benchmark)."
+
+[[value]]
+group = "data"
+name = "DS_MEMBERS_MEMBER_MIN_W"
+kind = "f32"
+unit = "px"
+value = 90.0
+doc = "The DataSet members table's Member column: it never gets narrower than this."
+
+[[value]]
+group = "data"
+name = "DS_MEMBERS_MEMBER_WEIGHT"
+kind = "f32"
+unit = "ratio"
+value = 2.0
+doc = "The DataSet members table's Member column: its share of the width against the other column."
+
+[[value]]
+group = "data"
+name = "DS_MEMBERS_STORED_MIN_W"
+kind = "f32"
+unit = "px"
+value = 80.0
+doc = "The DataSet members table's In this store column: it never gets narrower than this."
+
+[[value]]
+group = "data"
+name = "DS_MEMBERS_STORED_WEIGHT"
+kind = "f32"
+unit = "ratio"
+value = 1.0
+doc = "The DataSet members table's In this store column: its share of the width against the other column."
+
+[[value]]
+group = "data"
+name = "DS_MEMBER_ROWS"
+kind = "u8"
+unit = "count"
+value = 6
+doc = "How many rows tall the DataSets members table is: its header and five member rows."
+
+[[value]]
+group = "data"
+name = "DS_NAME_FIELD_W"
+kind = "f32"
+unit = "px"
+value = 260.0
+doc = "The DataSets editor's Name field: its width."
+
+[[value]]
+group = "data"
+name = "DS_PROVIDER_MENU_MIN_W"
+kind = "f32"
+unit = "px"
+value = 196.0
+doc = "The DataSets editor's Provider dropdown menu: its narrowest width."
+
+[[value]]
+group = "data"
+name = "DS_PROVIDER_W"
+kind = "f32"
+unit = "px"
+value = 200.0
+doc = "The DataSets editor's Provider dropdown button: its width."
+
+[[value]]
+group = "data"
+name = "DS_TREE_FRAC"
+kind = "f32"
+unit = "ratio"
+value = 0.26
+doc = "The DataSets screen's grouped tree (left column): its share of the screen's width, between its narrowest and widest."
+
+[[value]]
+group = "data"
+name = "DS_TREE_MAX_W"
+kind = "f32"
+unit = "px"
+value = 290.0
+doc = "The DataSets screen's grouped tree: its widest width."
+
+[[value]]
+group = "data"
+name = "DS_TREE_MIN_W"
+kind = "f32"
+unit = "px"
+value = 170.0
+doc = "The DataSets screen's grouped tree: its narrowest width."
+
+[[value]]
+group = "data"
+name = "FEEDS_BARS_MIN_W"
+kind = "f32"
+unit = "px"
+value = 56.0
+doc = "The Cached feeds table's Bars column: it never gets narrower than this."
+
+[[value]]
+group = "data"
+name = "FEEDS_BARS_WEIGHT"
+kind = "f32"
+unit = "ratio"
+value = 0.8
+doc = "The Cached feeds table's Bars column: its share of the width against the other columns."
+
+[[value]]
+group = "data"
+name = "FEEDS_FROM_MIN_W"
+kind = "f32"
+unit = "px"
+value = 118.0
+doc = "The Cached feeds table's From column: it never gets narrower than this."
+
+[[value]]
+group = "data"
+name = "FEEDS_FROM_WEIGHT"
+kind = "f32"
+unit = "ratio"
+value = 1.6
+doc = "The Cached feeds table's From column: its share of the width against the other columns."
+
+[[value]]
+group = "data"
+name = "FEEDS_SOURCE_MIN_W"
+kind = "f32"
+unit = "px"
+value = 64.0
+doc = "The Cached feeds table's Source column: it never gets narrower than this."
+
+[[value]]
+group = "data"
+name = "FEEDS_SOURCE_WEIGHT"
+kind = "f32"
+unit = "ratio"
+value = 1.0
+doc = "The Cached feeds table's Source column: its share of the width against the other columns."
+
+[[value]]
+group = "data"
+name = "FEEDS_SYMBOL_MIN_W"
+kind = "f32"
+unit = "px"
+value = 70.0
+doc = "The Cached feeds table's Symbol column: it never gets narrower than this."
+
+[[value]]
+group = "data"
+name = "FEEDS_SYMBOL_WEIGHT"
+kind = "f32"
+unit = "ratio"
+value = 1.2
+doc = "The Cached feeds table's Symbol column: its share of the width against the other columns."
+
+[[value]]
+group = "data"
+name = "FEEDS_TIMEFRAME_MIN_W"
+kind = "f32"
+unit = "px"
+value = 60.0
+doc = "The Cached feeds table's Timeframe column: it never gets narrower than this."
+
+[[value]]
+group = "data"
+name = "FEEDS_TIMEFRAME_WEIGHT"
+kind = "f32"
+unit = "ratio"
+value = 0.9
+doc = "The Cached feeds table's Timeframe column: its share of the width against the other columns."
+
+[[value]]
+group = "data"
+name = "FEEDS_TO_MIN_W"
+kind = "f32"
+unit = "px"
+value = 118.0
+doc = "The Cached feeds table's To column: it never gets narrower than this."
+
+[[value]]
+group = "data"
+name = "FEEDS_TO_WEIGHT"
+kind = "f32"
+unit = "ratio"
+value = 1.6
+doc = "The Cached feeds table's To column: its share of the width against the other columns."
+
+[[value]]
+group = "data"
+name = "KINDS_TABLE_MAX_W"
+kind = "f32"
+unit = "px"
+value = 480.0
+doc = "The Store screen's layout-by-kind table: its widest width, so four columns do not stretch across the whole body."
+
+[[value]]
+group = "data"
+name = "LOG_FIND_W"
+kind = "f32"
+unit = "px"
+value = 180.0
+doc = "The Activity log screen's Find field: its width."
+
+[[value]]
+group = "data"
+name = "LOG_MIN_H"
+kind = "f32"
+unit = "px"
+value = 54.0
+doc = "The Activity log's least height inside its scroll area, so an empty log still reads as a panel."
+
+[[value]]
+group = "data"
+name = "PARTIAL_W_SERIES"
+kind = "f32"
+unit = "px"
+value = 260.0
+doc = "The cross-kind partial-days list: the series name column's width."
+
+[[value]]
+group = "data"
+name = "PARTIAL_W_SPAN"
+kind = "f32"
+unit = "px"
+value = 170.0
+doc = "The cross-kind partial-days list: the date-span column's width."
+
+[[value]]
+group = "data"
+name = "PARTIAL_W_SUMMARY"
+kind = "f32"
+unit = "px"
+value = 240.0
+doc = "The cross-kind partial-days list: the partial-days summary column's width."
+
+[[value]]
+group = "data"
+name = "RAIL_MAX_FRAC"
+kind = "f32"
+unit = "ratio"
+value = 0.34
+doc = "The most of the Data window's width the left rail may take; a narrow window shrinks the rail below its full width."
+
+[[value]]
+group = "data"
+name = "RAIL_W"
+kind = "f32"
+unit = "px"
+value = 178.0
+doc = "The Data window's left rail: its width. Wide enough for Cached feeds plus a three-digit count without eliding, and no wider: the shared grid's fixed columns already sum to about 690 px, so every pixel the rail takes is one the grid clips."
+
+[[value]]
+group = "data"
+name = "SOURCE_W_NAME"
+kind = "f32"
+unit = "px"
+value = 116.0
+doc = "The Providers screen's source rows: the source name column's width."
+
+[[value]]
+group = "data"
+name = "SOURCE_W_SERVES"
+kind = "f32"
+unit = "px"
+value = 168.0
+doc = "The Providers screen's source rows: the what-it-serves column's width."
+
+[[value]]
+group = "data"
+name = "STORE_KIND_KIND_MIN_W"
+kind = "f32"
+unit = "px"
+value = 80.0
+doc = "The Store screen's layout-by-kind table, KIND column: it never gets narrower than this."
+
+[[value]]
+group = "data"
+name = "STORE_KIND_KIND_WEIGHT"
+kind = "f32"
+unit = "ratio"
+value = 1.6
+doc = "The Store screen's layout-by-kind table, KIND column: its share of the width against the other columns."
+
+[[value]]
+group = "data"
+name = "STORE_KIND_ROWS_MIN_W"
+kind = "f32"
+unit = "px"
+value = 64.0
+doc = "The Store screen's layout-by-kind table, ROWS column: it never gets narrower than this."
+
+[[value]]
+group = "data"
+name = "STORE_KIND_ROWS_WEIGHT"
+kind = "f32"
+unit = "ratio"
+value = 1.0
+doc = "The Store screen's layout-by-kind table, ROWS column: its share of the width against the other columns."
+
+[[value]]
+group = "data"
+name = "STORE_KIND_SERIES_MIN_W"
+kind = "f32"
+unit = "px"
+value = 56.0
+doc = "The Store screen's layout-by-kind table, SERIES column: it never gets narrower than this."
+
+[[value]]
+group = "data"
+name = "STORE_KIND_SERIES_WEIGHT"
+kind = "f32"
+unit = "ratio"
+value = 1.0
+doc = "The Store screen's layout-by-kind table, SERIES column: its share of the width against the other columns."
+
+[[value]]
+group = "data"
+name = "STORE_KIND_SIZE_MIN_W"
+kind = "f32"
+unit = "px"
+value = 64.0
+doc = "The Store screen's layout-by-kind table, SIZE column: it never gets narrower than this."
+
+[[value]]
+group = "data"
+name = "STORE_KIND_SIZE_WEIGHT"
+kind = "f32"
+unit = "ratio"
+value = 1.0
+doc = "The Store screen's layout-by-kind table, SIZE column: its share of the width against the other columns."
+
+[[value]]
+group = "data"
+name = "TILE_MIN_W"
+kind = "f32"
+unit = "px"
+value = 148.0
+doc = "A big-number tile on the Data window's overview screens: its narrowest width."
+
+# ==== value: fx_picker ====
+
+[[value]]
+group = "fx_picker"
+name = "LIST_MAX_H"
+kind = "f32"
+unit = "px"
+value = 320.0
+doc = "The Indicators picker's indicator list: how tall it grows before it scrolls."
+
+[[value]]
+group = "fx_picker"
+name = "POPUP_W"
+kind = "f32"
+unit = "px"
+value = 300.0
+doc = "The Indicators picker window (the fx picker): its width."
+
+[[value]]
+group = "fx_picker"
+name = "SEARCH_W"
+kind = "f32"
+unit = "px"
+value = 210.0
+doc = "The Indicators picker's search field: its width."
+
+[[value]]
+group = "fx_picker"
+name = "SOURCE_LIST_MAX_H"
+kind = "f32"
+unit = "px"
+value = 260.0
+doc = "The per-study source symbol menu's result list: how tall it grows before it scrolls."
+
+[[value]]
+group = "fx_picker"
+name = "SOURCE_MENU_MIN_W"
+kind = "f32"
+unit = "px"
+value = 240.0
+doc = "The per-study source symbol menu in the Indicators picker: its narrowest width."
+
+[[value]]
+group = "fx_picker"
+name = "SOURCE_SEARCH_W"
+kind = "f32"
+unit = "px"
+value = 224.0
+doc = "The per-study source symbol menu's Search symbol field: its width."
+
+# ==== value: options_chain ====
+
+[[value]]
+group = "options_chain"
+name = "BADGE_START_OFFSET"
+kind = "f32"
+unit = "px"
+value = 3.0
+doc = "How far in from the left edge of its side's first column a chain row's position and working-order badges start."
+
+[[value]]
+group = "options_chain"
+name = "HATCH_LEAN"
+kind = "f32"
+unit = "px"
+value = 26.0
+doc = "How far each diagonal of the in-the-money hatch leans sideways while it climbs a row; the first stroke starts this far left of the cell so its top end reaches the cell's edge."
+
+[[value]]
+group = "options_chain"
+name = "MARKER_GAP"
+kind = "f32"
+unit = "px"
+value = 3.0
+doc = "The gap between a chain row's position badge and its working-order badge."
+
+[[value]]
+group = "options_chain"
+name = "CELL_HOVER_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 28
+doc = "The side-tinted fill under the pointer on a tradeable bid or ask cell."
+
+[[value]]
+group = "options_chain"
+name = "ITM_HATCH_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 70
+doc = "The dimmed diagonal hatch on an in-the-money cell that has a quote."
+
+[[value]]
+group = "options_chain"
+name = "MARKER_H"
+kind = "f32"
+unit = "px"
+value = 16.0
+doc = "The height of a position badge and of a working-order marker, centred on the row."
+
+[[value]]
+group = "options_chain"
+name = "MARKER_RADIUS"
+kind = "f32"
+unit = "px"
+value = 3.0
+doc = "The corner radius of a position badge and of a working-order marker."
+
+[[value]]
+group = "options_chain"
+name = "ORDER_FILL_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 45
+doc = "A working-order marker's fill while the pointer is not on it."
+
+[[value]]
+group = "options_chain"
+name = "ORDER_FILL_HOT_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 95
+doc = "A working-order marker's fill while the pointer is on it."
+
+[[value]]
+group = "options_chain"
+name = "POSITION_FILL_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 55
+doc = "A position badge's fill, behind its own outline."
+
+[[value]]
+group = "options_chain"
+name = "VOLUME_BAR_ALPHA"
+kind = "u8"
+unit = "alpha"
+value = 120
+doc = "The volume magnitude bar under a row's Volume cell."
+
+[[value]]
+group = "options_chain"
+name = "VOLUME_BAR_H"
+kind = "f32"
+unit = "px"
+value = 3.0
+doc = "The height of the volume magnitude bar in a row's Volume cell."
+
+# ==== value: settings ====
+
+[[value]]
+group = "settings"
+name = "NAME_H"
+kind = "f32"
+unit = "px"
+value = 18.0
+doc = "The Settings window: the height of the theme or market name under each preview."
+
+# ==== value: status_bar ====
+
+[[value]]
+group = "status_bar"
+name = "STATUS_BAR_H"
+kind = "f32"
+unit = "px"
+value = 22.0
+doc = "The bottom status bar strip's height; it does not follow density."
+
+# ==== value: stored ====
+
+[[value]]
+group = "stored"
+name = "INSPECTOR_RESERVE"
+kind = "f32"
+unit = "px"
+value = 10.0
+doc = "The width kept free beside the stored-data inspector, taken off the grid so grid and inspector sit side by side without overflowing."
+
+[[value]]
+group = "stored"
+name = "GRID_MIN_W"
+kind = "f32"
+unit = "px"
+value = 200.0
+doc = "The Stored window's series grid: its narrowest width beside the inspector."
+
+[[value]]
+group = "stored"
+name = "INSPECTOR_FRAC"
+kind = "f32"
+unit = "ratio"
+value = 0.30
+doc = "The Stored window's series inspector (right pane): its share of the window's width, up to its widest."
+
+[[value]]
+group = "stored"
+name = "INSPECTOR_KEY_SIZE"
+kind = "vec2"
+unit = "px"
+value = [78.0, 14.0]
+doc = "The Stored window's inspector: the box each label (COVERS, ROWS, SIZE, PARTS) sits in, left of its value."
+
+[[value]]
+group = "stored"
+name = "INSPECTOR_MAX_W"
+kind = "f32"
+unit = "px"
+value = 330.0
+doc = "The Stored window's series inspector: its widest width."
+
+[[value]]
+group = "stored"
+name = "INSPECTOR_MIN_W"
+kind = "f32"
+unit = "px"
+value = 120.0
+doc = "The Stored window's series inspector: a window too narrow to give it this much hides it."
+
+# ==== value: symbol_picker ====
+
+[[value]]
+group = "symbol_picker"
+name = "DESC_INSET"
+kind = "f32"
+unit = "px"
+value = 110.0
+doc = "How far from the row's left edge an instrument search-result row's description column starts."
+
+[[value]]
+group = "symbol_picker"
+name = "LIST_H"
+kind = "f32"
+unit = "px"
+value = 300.0
+doc = "How tall the symbol picker's result list grows before it scrolls."
+
+[[value]]
+group = "symbol_picker"
+name = "PICKER_W"
+kind = "f32"
+unit = "px"
+value = 470.0
+doc = "The symbol picker's width: its search field and its result lines take all of it."
+
+[[value]]
+group = "symbol_picker"
+name = "ROW_H"
+kind = "f32"
+unit = "px"
+value = 22.0
+doc = "The height of one instrument search-result row."
+
+[[value]]
+group = "symbol_picker"
+name = "ROW_MIN_W"
+kind = "f32"
+unit = "px"
+value = 230.0
+doc = "The narrowest an instrument search-result row is allowed to be (it otherwise takes the full available width)."
+
+# ==== value: title_bar ====
+
+[[value]]
+group = "title_bar"
+name = "TAB_H"
+kind = "f32"
+unit = "px"
+value = 24.0
+doc = "The tab chips' height in a tool window's title bar, seated on the bar's bottom edge so the selected one's missing fourth edge is the break in the hairline under the bar."
+
+[[value]]
+group = "title_bar"
+name = "TITLE_DROP_W"
+kind = "f32"
+unit = "px"
+value = 560.0
+doc = "Below this title bar width a tabbed window's title drops and its segments tighten; a tool window also opens at this width, so the narrow shape is the ordinary one."
+
+# ==== value: instruments ====
+
+[[value]]
+group = "instruments"
+name = "STATUS_MAX_WIDTH"
+kind = "f32"
+unit = "px"
+value = 420.0
+doc = "How wide the Status cell of the Data Manager's Instruments table grows before its text wraps."
+

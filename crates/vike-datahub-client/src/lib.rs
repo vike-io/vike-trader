@@ -1,0 +1,129 @@
+//! vike-datahub-client — the LIGHT client half of the vike-datahub data-service (Phase 2 of the
+//! "thin-client GUI" architecture).
+//!
+//! # What this crate is
+//!
+//! The DataFusion-free half of vike-datahub: the wire [`proto`]col, the blocking [`DatahubClient`],
+//! and [`RemoteHistStore`] — a [`vike_data::HistStore`] whose GUI-relevant READ verbs are answered
+//! by a remote `vike-datahub` server over RPC. It was split out of `vike-datahub` (Phase 1) so the
+//! GUI can talk to the data-service WITHOUT linking the Arrow/DataFusion engine.
+//!
+//! # Why it stays light (the whole point)
+//!
+//! This crate depends on `vike-data` with **DEFAULT features** — the `HistStore` TRAIT only, NOT
+//! `hist-datafusion` — plus `vike-model` + serde. It names NO concrete backend, no `vike-backtest`,
+//! no DataFusion/Arrow/Parquet. `RemoteHistStore` implements the trait purely by RPC, so a consumer
+//! that links this crate (the GUI, in Phase 3) inherits none of that weight. The heavy engine lives
+//! only in `vike-datahub` (the server) and behind its `serve-datafusion` feature.
+//!
+//! # Phased plan
+//!
+//! - Phase 1 (`vike-datahub`): the compute-to-data backtest SERVER over localhost TCP.
+//! - Phase 2 (this crate): split the proto + client out, and add [`RemoteHistStore`] so an EXISTING
+//!   local `HistStore` consumer can point at remote data.
+//! - Phase 3 (future): the GUI thin-client drops its DataFusion link and reads through this seam.
+//!
+//! # The handshake and the frame codec live in `vike-node-proto`
+//!
+//! Both moved to the crate BELOW both node protocols on 2026-09-23, so this crate and
+//! `vike-tradehub-client` are peers; `docs/decisions/0107-the-node-protocol-substrate-is-a-crate-below-both-clients.md`
+//! carries the argument, and `docs/decisions/0025-datahub-remote-posture.md` the verdict on the
+//! shape of the borrow (one scheme generalized over its domain constant, never a second one).
+
+// The ARCHIVE-IMPORT vocabulary — the request, the plan-and-outcome answer, and the dataset
+// validator both ends of `Request::ImportArchive` call. Declared UNGATED for the reason `catalog`
+// below is: a default `vike-datahub` build must DECODE the verb in order to refuse it cleanly.
+//
+// ⚠ Deliberately NOT re-exported at the crate root: its names are reached as
+// `vike_datahub_client::archive::…`, one spelling, so no caller can split between two.
+pub mod archive;
+pub mod bind;
+// The VENUE-CATALOG vocabulary — the bounds and the outcome enum both ends of
+// `Request::VenueCatalog` need. Declared UNGATED for the identical reason `market` below is: a
+// default `vike-datahub` build must DECODE the verb in order to refuse it cleanly, and this crate
+// has no `[features]` table to gate it with.
+pub mod catalog;
+pub mod client;
+// The FLAG VOCABULARY the `backtest` verb's two argv parsers share — one row per flag spelling, its
+// arity, its value roster, and which route accepts it. It lives HERE for the reason
+// [`proto::SEARCH_METHODS`] already argues in its own doc: this crate is a normal dependency of both
+// `vike-cli` (which spelling-checks before a dial or a spawn) and `vike-backtest` (which implements
+// what the flags select), so it is the one place below both where a roster can sit. Declared UNGATED
+// and dependency-free on exactly the terms `market` states below: `const` data plus pure functions
+// over `&str`, no environment, no I/O, nothing heavy for a feature to gate.
+//
+// ⚠ Deliberately NOT re-exported at the crate root, unlike every module above and below it. Its
+// names — `spec`, `accept_value`, `Arity`, `Route` — read as nothing without the `flag_vocab::`
+// qualifier, and a bare `spec` at the root of a WIRE-PROTOCOL crate would actively mislead. The
+// root re-exports elsewhere in this file all name a type or a const that survives losing its
+// module (`BookSnapshot`, `NodeKeys`, `SEARCH_METHODS`); these do not.
+pub mod flag_vocab;
+// The HISTORY-CHANNELS answer shape — the rows of `vike_catalog::history_channels_for` as the wire
+// carries them, the server's overlay, the client's own compiled fallback and the default-lookback
+// clamp. Declared UNGATED for the reason `catalog` above is: a default `vike-datahub` build must
+// DECODE the verb in order to answer it. Not re-exported at the root: its names are reached as
+// `vike_datahub_client::history::…`, one spelling.
+pub mod history;
+// The MARKET-DATA vocabulary (the datahub market-data wire design, §4.4). Declared UNGATED and
+// dependency-free: this crate has no `[features]` table and must not grow one — three functions in
+// `proto` are shared by TWO daemons, a default `vike-datahub` build must DECODE the verbs in order
+// to refuse them cleanly, and `xtask/tests/feature_lane_coverage.rs` would demand a whole
+// CI lane for a feature that gates nothing heavy.
+pub mod market;
+// The NAMED-RUN vocabulary — the bounds, the request DTO and the outcome enum both ends of
+// `Request::RunNamed` need (`docs/decisions/0064-a-named-run-carries-no-source.md`). Declared
+// UNGATED for the same reason `catalog` and `market` above are: a default build must DECODE the
+// verb in order to refuse it cleanly.
+//
+// ⚠ That reason used to end *"and this crate has no `[features]` table to gate it with"*, which
+// stopped being true on 2026-09-23 when `route` below arrived with one. The argument survives
+// the table intact — a verb a default build cannot decode is a verb it cannot REFUSE cleanly,
+// which is a property of the protocol rather than of how many knobs the manifest has. The
+// absence was never the reason; it was an extra sentence that happened to be true.
+pub mod named_run;
+pub mod proto;
+pub mod remote;
+// WHERE a reader gets history from — this crate's own wire client, the ONE answer since the local
+// arm closed on 2026-09-25. Behind `hist-route` because it names `vike-secrets` and `vike-config`,
+// and nine crates take this one: the module's own doc carries why it lives here.
+#[cfg(feature = "hist-route")]
+pub mod route;
+pub mod seed;
+pub mod wire_studio;
+
+pub use bind::{BindDecision, BindExposure, ServerAuth, bind_decision, bind_exposure};
+pub use client::{DatahubClient, MdSubscribedInfo, MdUpdatedInfo};
+pub use market::{
+    BookSnapshot, MD_DEPTH_LEVELS_CEILING, MD_DEPTH_LEVELS_DEFAULT, MD_HEARTBEAT, MdBye,
+};
+pub use named_run::{
+    NAMED_RUN_INTERVALS, NAMED_RUN_MAX_BARS, NAMED_RUN_MAX_PARAMS, NamedParam, NamedRoster,
+    NamedRunOutcome, NamedRunRefusal, NamedRunSpec, named_run_bars, validate_named_run,
+};
+// ⚠ `pub use node_auth::{NodeKeys, Scope};` stood here and is DELETED rather than re-pointed at
+// `vike_node_proto`. Re-exporting it would be a second name for a symbol that now lives in another
+// crate — the alias shim the 2026-09-18 ruling forbids, and the "the consumer cannot name the
+// canonical crate" exemption does not apply: `vike-node-proto` is layer 15 and every consumer of
+// this one clears it by thirty rungs or more. The ten files that used the short spelling say
+// `vike_node_proto::auth::NodeKeys` now.
+pub use proto::{
+    BackfillDone, COMPUTE_PLANE_SENTINEL, DATA_PLANE_SENTINEL, DEFAULT_SEARCH_METHOD, DeleteDone,
+    FEATURE_AUTH, FEATURE_BACKFILL, FEATURE_BACKFILL_FUNDING, FEATURE_COVERAGE,
+    FEATURE_DELETE_SERIES, FEATURE_MARKET_DATA, FEATURE_MD_VENUE_PREFIX, FEATURE_NAMED_RUN,
+    FEATURE_SCAN_BOOK_UPDATES, FEATURE_SCAN_COHORT, FEATURE_SCAN_DEPTH, FEATURE_SCAN_EQUITY,
+    FEATURE_SCAN_EXEC_FILLS, FEATURE_SCAN_LIMIT, FEATURE_SCAN_PERP_METRICS, FEATURE_SEARCH_METHOD,
+    FEATURE_SEED_CLASS, FEATURE_SEED_SERIES, FEATURE_SERIES_FACTS, FEATURE_STUDY,
+    FEATURE_VENUE_CATALOG, FEATURE_WALKFORWARD_SEARCH, PROTO_VERSION, Request, Response,
+    SEARCH_METHODS, STUDIO_RUNNER_SENTINEL, SeedDone, VerbScope, WireSearch, WireStudy,
+    advertised_md_venues, md_venue_feature, read_frame, read_frame_raw_capped, request_kind,
+    scope_admits, welcome_plane, wrong_plane_message,
+};
+pub use remote::RemoteHistStore;
+pub use seed::{
+    SEED_BARS, SEED_INTERVALS, SEED_MAX_SYMBOL_BYTES, seed_range, validate_seed_interval,
+    validate_seed_symbol,
+};
+pub use wire_studio::{
+    NO_WINDOW_SEARCH, WireCostModel, WireEngineParams, WireParamscanEntry, WireRunError, WireTrade,
+    WireWfWindow,
+};
