@@ -1,0 +1,38 @@
+[package]
+name = "vike-node-proto"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The substrate BOTH node protocols share: the HMAC-SHA256 nonce-challenge handshake generalized over its domain separator (auth), and the length-prefixed frame codec (frame). No vike-* dependency of any kind — it is the crate below vike-datahub-client and vike-tradehub-client, which speak the two protocols and depend on it rather than on each other."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `leaf` — a crate that
+# names AT MOST the floor. This one names NOTHING: no vike-* dependency at all, which is the
+# property that lets both node protocols sit above it as PEERS rather than as a ladder.
+#
+# Why this is a crate of its own rather than a module of either client:
+# docs/decisions/0107-the-node-protocol-substrate-is-a-crate-below-both-clients.md.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+# The HMAC-SHA256 the handshake signs with — the EXACT crates
+# `crates/vike-bridge-core/src/signer.rs` already links, so this adds ZERO new external packages to
+# the workspace audit surface (deny.toml bans a second crypto crate).
+hmac = { workspace = true }
+sha2 = { workspace = true }
+# The per-connection auth NONCE (`auth::fresh_nonce`) — 32 bytes from the OS-backed default
+# generator, which is what makes a captured handshake transcript unreplayable against a later
+# connection.
+#
+# ⚠ It lives in THIS crate rather than in either server because
+# `crates/vike-ops/tests/architecture/clock_pin/ratchet.rs`'s `no_scoped_crate_declares_an_rng_dependency`
+# forbids `vike-backtest` — one of the daemons speaking this protocol — from naming an RNG at all.
+rand = { workspace = true }
+# `Scope`/`NodeKeys` derive on the auth side; the frame codec serializes and deserializes whatever
+# its caller hands it, which is what keeps this crate ignorant of BOTH protocols' schemas.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

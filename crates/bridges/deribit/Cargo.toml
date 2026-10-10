@@ -1,0 +1,107 @@
+[package]
+name = "vike-deribit"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "Deribit venue bridge — options exec (JSON-RPC-over-WS order transport + private fill stream, no REST/HMAC) plus the keyless public options-chain provider (chain.rs, ports data/options/deribit.py). Moved into crates/bridges/deribit (crate-reorg Phase 3, PR F)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+# NOT behind `exec`, although the order plane is its main consumer: the FEEDS half names it too —
+# market_feed.rs's `Feeds::new` pins its feed threads through `vike_exec::affinity`, the edge every
+# other seamed bridge keeps for the same reason — and vike-bridge-core's `full`, which the feeds
+# half needs for its sockets, names it anyway.
+vike-exec = { path = "../../vike-exec" }
+# shared venue-bridge plumbing (credentials, signer, transport, http, user_data, format, json,
+# ws/rest/klines fragments) — crate-reorg Phase 3 (D4); the direct-path style survives every
+# later venue move unchanged.
+vike-bridge-core = { path = "../../vike-bridge-core" }
+# deribit's read-side chain provider (chain.rs) consumes the venue-free options model/greeks —
+# the layering twin of Python options/deribit.py importing options/{model,greeks}. Deribit is
+# the ONLY crate-reorg bridge that carries a data/options/*.py port (D6 of the vike-options
+# extraction plan): it moved here wholesale as part of the venue's own crate-reorg move.
+vike-options = { path = "../../vike-options" }
+# PIT recording (opt-in): `DeribitRest::with_properties_recorder` records the parsed instrument
+# grid into the PropertiesRecorder store, and `DeribitOptionsProvider::with_chain_recorder`
+# records fetched option chains into the ChainRecorder `kind=chain` store (chain.rs). Default
+# features only — the DataFusion tree stays behind hist-datafusion and must NOT enable.
+vike-data = { path = "../../vike-data" }
+# venue catalog contribution (catalog.rs): keyless public get_instruments → Instrument for the
+# chart's cross-venue Symbol picker — mirrors binance/bybit/okx's catalog.rs.
+vike-catalog = { path = "../../vike-catalog" }
+serde_json = { workspace = true }
+# Named by BOTH planes, so not behind `exec`: the option-instrument map keyed by instrument name
+# (client.rs, exec) and the keyless chain's per-strike row map (chain.rs, feeds).
+indexmap = { workspace = true }
+ureq = { workspace = true }         # blocking REST (rustls, no OpenSSL) — chain.rs book-summary fetch
+# EXEC-plane only — the authed order transport (transport.rs) and the private fill pump
+# (user_data.rs), both behind the default-on `exec` feature; every PUBLIC socket in this crate dials
+# through vike-bridge-core's shared market pump instead. Declared optional so the manifest says
+# which plane names it. ⚠ It still RESOLVES into a feeds-only tree through that crate's `full`
+# feature, so no `cargo tree` grep can assert its absence — see the [features] block below.
+tungstenite = { workspace = true, optional = true }
+tracing = { workspace = true }      # adapter diagnostics
+
+[dev-dependencies]
+# `vike_exec::testing`'s doubles for this crate's tests — compiled only under vike-exec's
+# `test-support`, which a DEV edge may turn on and the normal edge above may not.
+vike-exec = { path = "../../vike-exec", features = ["test-support"] }
+arc-swap = { workspace = true }   # smoke test reads the CoreSnapshot cell
+vike-log = { path = "../../vike-log", features = ["test-support"] }  # dev-only: test_init() for smoke/dev diagnostics; `capture` for log assertions
+# dev-only: smoke tests spawn a real core; the library itself must never depend on vike-core
+# (crate-reorg D3 — bridges depend on exec, not core).
+vike-core = { path = "../../vike-core" }
+# dev-only, test-support feature: the DataFusion-free MemHistStore + PropertiesRecorder test double for
+# the PIT filter-recording wiring test — the normal [dependencies] vike-data entry above stays
+# default-features so the venue's DEFAULT build never pulls DataFusion in.
+vike-data = { path = "../../vike-data", features = ["test-support"] }
+# dev-only, `capture` feature: `deribit_identity_probe.rs` sanitizes a live JSON-RPC result through
+# `vike_bridge_core::capture::capture_frame` before printing it, so a real account identifier never
+# reaches a terminal or a CI log — only `redacted_paths` names the field. Adds no PACKAGE to the
+# graph (vike-bridge-core is already a normal dependency here), so the lockfile is unchanged; the
+# binance, bybit and okx manifests carry the same entry for the same reason. `test-support` adds
+# `venue_mount_fixture`, the owned inputs `src/mount_tests.rs` borrows the mount contract's
+# `MountInputs`/`MountRequest` from — likewise no new package.
+vike-bridge-core = { path = "../../vike-bridge-core", features = ["capture", "test-support"] }
+
+# dev-only: the decoder totality harness (tests/decoder_never_panics.rs) — arbitrary + structured
+# JSON/text through every wire decoder; no panic, no event flood.
+proptest = { workspace = true }
+
+[features]
+# The exec/feeds seam — the shape vike-bybit/vike-okx took under ruling 8 of
+# docs/superpowers/specs/2026-09-09-datahub-market-data-wire-design.md, given to the one kline
+# bridge still without it as a follow-up to docs/decisions/0094. DEFAULT-ON, so every consumer that
+# takes default features (vike-tradehub, vike-app-core, vike-desktop and
+# vike-bridge-core's conformance dev-dep) builds byte-identically. The feeds-only consumer is
+# vike-datahub's `backfill-serve` edge (`default-features = false`), which reaches nothing but
+# data.rs's keyless `DeribitKlines`. `exec` gates the AUTHED half and everything built on it:
+# transport.rs (the authed order socket), ws_auth.rs, client.rs, combo.rs (the order-entry wire
+# model), user_data.rs (the private fill pump), event_mapper.rs and history.rs (the private-wire
+# mappers), reconcile.rs, recon_client.rs and exec.rs. The keyless half — catalog/chain/data/dvol/
+# market_data/market_feed/options_feed, plus the pure rpc.rs and ratelimit.rs helpers — compiles
+# without it.
+#
+# ⚠ WHAT THIS SPLIT DOES NOT DO — ARGUED from the manifests, not measured on a box. Like bybit's and
+# okx's, and unlike hyperliquid's and aster's, it removes NO CRATE from the dependency tree. Deribit
+# signs nothing: `public/auth` is a client_credentials grant carried over TLS (ws_auth.rs), so there
+# is no signer crate to shed. The one dependency only `exec` names, tungstenite, rides
+# vike-bridge-core's `full` (the shared market pump), which the feeds half needs; vike-exec is named
+# by the feeds half itself (the affinity pin above) as well as by `full`. So the default and the
+# `--no-default-features` trees carry the same crate SET, and the `bridges-feeds` arm of
+# scripts/ci_feature_suite.sh gates this crate with a compile check and no `cargo tree` grep.
+# What the seam buys is the COMPILE surface: a data daemon linking this crate compiles no authed
+# order transport, no private fill pump and no reconcile client.
+default = ["exec"]
+exec = ["dep:tungstenite"]
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

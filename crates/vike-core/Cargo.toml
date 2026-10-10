@@ -1,0 +1,155 @@
+[package]
+name = "vike-core"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the single-writer live core: the vt-core runtime thread, the snapshot builder (the CoreSnapshot type is vike-exec's read model), and the R7 live-strategy mount. Extracted from vike-exec (crate-reorg Phase 2, spec D3)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `engine` — one hop
+# over the domain-stacked band: a crate composed over a layer-25 crate, here `vike-journal` (25),
+# which sets the floor.
+# ⚠ The tier read "a runtime / simulation / transport core over the domain crates" until
+# 2026-09-28, and this crate — the live runtime — is the one occupant that wording still fits. The
+# transport, simulation and client crates it described (`vike-bridge-core`, `vike-sim`,
+# `vike-datahub-client`, `vike-tradehub-client`) dropped to their floors at 25 that day, so the equal
+# rank that kept this crate and them from naming each other is gone: the down-only rule still
+# refuses them naming this crate (25 -> 30 points up), and no longer refuses this crate naming any
+# of them. The one pair that was load-bearing is held BY NAME instead, in both directions —
+# `crates/vike-ops/tests/architecture/named_run_closure_gate.rs` refuses `vike-sim` and `vike-backtest` anywhere
+# in this crate's transitive normal closure, and refuses this crate anywhere in theirs (where rank
+# refuses it too: the down-only rule for `vike-sim` at 25, equal rank for `vike-backtest` at 30).
+# That is the property docs/decisions/0087-the-simulator-leaves-the-harness.md had held the
+# simulator at 30 for, moved to the name by
+# docs/decisions/0090-the-simulator-sits-alongside-the-live-core-by-name.md. This crate naming
+# `vike-bridge-core`, `vike-datahub-client` or `vike-tradehub-client` is refused by name alone, by
+# the same gate's live-core row, `LIVE_CORE_FENCE`
+# (docs/decisions/0091-the-live-core-names-no-transport-and-no-node-client.md): this crate names no
+# transport and no node client, and what it needs from them reaches it as a trait object its host
+# builds. ⚠ This said "refused by neither rank nor name" until that row landed. The same row also
+# refuses the credential store `vike-secrets`, the startup sequence `vike-boot` and `vike-alerting`,
+# which carries a blocking HTTP client — three crates BELOW this one (15, 25 and 15), so the
+# down-only rule permits each edge and the name is the only fence there is. ⚠ This named only the
+# first three until 2026-09-28: the owner widened the row to six the day it landed.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 30
+
+[dependencies]
+# The durable command JOURNAL and its single-writer directory lock. ⚠ Both were this crate's own
+# `journal`/`journal_lock` modules until 2026-09-23; `crates/vike-journal/src/lib.rs` carries why
+# they left. Layer 25 to this crate's 30, so the edge is down-only.
+vike-journal = { path = "../vike-journal" }
+vike-model = { path = "../vike-model" }
+# the producer-side ingest lanes (Command/Ingest + the fire-and-forget senders) this core drains
+vike-exec = { path = "../vike-exec" }
+# CoreLaneSink (core_sink.rs) implements vike_data::LiveDataSink — the shared feed→core-lane bridge
+# the app/run mount adapters delegate to. DEFAULT features only (no hist-datafusion → no DataFusion
+# in the core's tree); vike-data depends only on vike-model, so this edge stays down-only.
+vike-data = { path = "../vike-data" }
+tokio = { workspace = true }    # ingest mpsc (core does blocking_recv off-runtime)
+arc-swap = { workspace = true } # vike_exec::CoreSnapshot publish (lossy reader cell)
+indexmap = { workspace = true } # bar cache + strategy tag registry (insertion order)
+tracing = { workspace = true }  # fault-transition + watchdog events (NOT in the hot fold)
+# serde / serde_json: the RunProfile schema (run_profile.rs), the mount topology
+# (mount_topology.rs), the strategy-state sidecar (strategy_state.rs) and replay (replay.rs).
+# memmap2 backs the opt-in counter mirror (counters.rs) — see the audited unsafe sites in
+# [lints.rust]. ⚠ Until 2026-09-28 this said all three were for the write-ahead command journal
+# (journal.rs: serde derived the JournalRecord wire shape, serde_json framed the payload, memmap2
+# backed the segments). The journal left for `vike-journal` on 2026-09-23 and each of the three
+# kept a consumer here.
+serde = { workspace = true }
+serde_json = { workspace = true } # the uses above + (dev) r5 fixtures / order-request literals
+memmap2 = { workspace = true }
+# RunProfile config schema/loader (run_profile.rs): parse the TOML run-profile artifact; the
+# converters return the real vike_exec RiskLimits/MarginCallConfig so the mapping is
+# compile-checked. ⚠ This said "Schema-only scope (audit co14) — not yet wired into any binary or
+# CoreConfig" until 2026-09-28: `[risk]` was wired in #816 (2026-07-28) and `[guards]`/`[sinks]` in
+# #1487 (2026-08-23), and `vike-tradehub` resolves and applies a profile today (run_profile.rs's
+# module doc carries the scope).
+toml = { workspace = true }
+# recent.rs: the recent-events ring stores an UN-RENDERED note (perf audit finding #2), so it
+# holds the event's already-interned venue/symbol (`Ustr`, 8-byte Copy) and its coid in a
+# `CompactString` (inline ≤24 B ⇒ no fold-path malloc). Both crates are already in this build
+# graph through vike-model's `Event` schema — no new supply-chain surface — but a direct `use`
+# needs a direct dep. Versions match vike-model's own pins (see crates/vike-model/Cargo.toml).
+ustr = "1.1"
+compact_str = "0.10"
+
+# ⚠ NOTHING in this crate calls it since 2026-09-23. It was here for `posix_fallocate` alone
+# (journal.rs's `reserve_blocks` — std exposes no fallocate, and a SPARSE segment pushes ext4 block
+# allocation onto the append hot path), and that code left with the journal:
+# `crates/vike-journal/src/segment.rs`'s `reserve_blocks` makes the call now. MEASURED 2026-09-28:
+# no `libc::` anywhere under this crate, so the edge is dead weight — removing it is a manifest
+# change this comment does not make. Unix-only target table, as it was. See the root Cargo.toml
+# rationale.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[dev-dependencies]
+tracing-test = { workspace = true } # assert on emitted events (#[traced_test]) — fault visibility
+# `vike_exec::testing::{RecordingClient, TestExecutionClient}` and `recon::FakeReconClient`, which
+# the runtime's unit and integration suites mount as venues — compiled only under vike-exec's
+# `test-support`, which a DEV edge may turn on and the normal edge above may not.
+vike-exec = { path = "../vike-exec", features = ["test-support"] }
+# dev-only: the live-parameter-plane (live_params.rs) + runtime-smoke tests mount the `SpreadMaker`
+# (which moved to vike-mm in the vike-mm extraction) to drive the runtime end-to-end. This is a
+# TEST-only edge — vike-core's LIBRARY never depends on vike-mm, so the down-only layering holds; it
+# pairs with vike-mm's own dev-dep on vike-core (LiveBroker in its white-box tests), a legal
+# test-only cycle Cargo permits because neither library depends on the other.
+vike-mm = { path = "../vike-mm" }
+# dev-only: controller_live_params.rs mounts the vike-strategy ControllerHarness to exercise the
+# live-parameter plane end-to-end. TEST-only edge — vike-core's LIBRARY never depends on
+# vike-strategy (down-only holds; the runtime mounts it via a Box<dyn Strategy<LiveBroker>>).
+vike-strategy = { path = "../vike-strategy" }
+# dev-only: rhai_live_mount.rs proves RhaiStrategy<LiveBroker> boxes as the live mount's
+# Box<dyn Strategy<LiveBroker> + Send> type and buffers orders through a real LiveBroker.
+# TEST-only edge — vike-core's LIBRARY never depends on vike-script (down-only holds).
+vike-script = { path = "../vike-script" }
+# dev-only: the owned scratch guard in `src/scratch.rs` that every journal/replay/restore suite
+# allocates its working directory through. The hand-rolled helpers it replaced returned a bare
+# `PathBuf` and removed nothing, leaking 27,471 directories / 211 GB onto the the CI box CI box's `/tmp`
+# (a journal segment is `posix_fallocate`d to its full 64 MiB, so each one is real). Per-crate
+# rather than a workspace dep, matching the convention noted in
+# `crates/bridges/polymarket/Cargo.toml` and the 20 other crates already on `tempfile = "3"`.
+tempfile = "3"
+# vike-data is a NORMAL dep above (default features); re-listed here ONLY to turn on `test-support`
+# for this crate's test builds — the `vike-app-core`/`vike-cli`/`vike-datahub` idiom. That feature is
+# what compiles `MemHistStore`, the DataFusion-free in-memory `HistStore` double that
+# `tests/recon/recon_journal_view.rs` drives every branch of `journal_view_from_store` through.
+# It adds nothing to a shipped build: the module it enables is `#[cfg(feature = "test-support")]`,
+# and no non-dev resolution of this crate's graph turns the feature on.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# The shared flat-bar builder (`vike_marketdata::test_support::flat_bar_unit_volume`), which
+# `src/runtime/tests/safe_state.rs` and seven of the `tests/wiring/` modules each used to re-type.
+# A DEV edge with the feature, never a normal one: `test-support` is gated
+# `#[cfg(any(test, feature = "test-support"))]` and a normal edge would compile the builders into
+# shipped builds. vike-marketdata is layer 5 and names no vike crate, so there is no cycle; the
+# library already reaches it through vike-model, and this adds one `vike-core` line to
+# `Cargo.lock`'s dependency list.
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+# `vike_model::scan::imported_spellings`, which `tests/wiring/held_divergence_is_visible_gate.rs` uses to
+# follow every spelling of the held-divergence emitter. vike-model is a NORMAL dependency above with its
+# default features; this DEV edge only turns on `test-support` for this crate's test builds, so the
+# shipped graph is unchanged (`vike-model` adds no dependency under the feature: `test-support = []`).
+# ⚠ It does reach `cargo test -p vike-core --test runtime_latency`: that binary now links a vike-model
+# built WITH the feature (it adds the modules `libm_walk`, `test_support` and `scan`, no dependency and
+# no change to an existing item), and cargo unifies the feature across the whole test graph.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+
+# Workspace policy forbids unsafe_code; vike-core carves out a small, audited set of exceptions —
+# all OS mmap entry points (no safe wrapper exists): counters.rs's `MmapMut::map_mut` (writer) +
+# read-only `Mmap::map` (reader). (journal.rs's `MmapMut::map_mut` stood first in this list until
+# 2026-09-28; it left with the journal on 2026-09-23, and `vike-journal` carries its own `deny`
+# carve-out for it.) deny (not the workspace's forbid) so a
+# per-site `#[allow(unsafe_code)]` can override it; every OTHER unsafe in this crate stays denied. Same
+# spirit as vike-fxcm's carve-out (which omits lints entirely; this is deliberately stricter — vike-core
+# stays unsafe-denied except the audited mmap sites).
+#
+# ⚠ The LEVEL below is pinned as `Exemption::Level("deny")` in
+# `crates/vike-ops/tests/hygiene/unsafe_and_toolchain_gate/pins.rs`'s `UNSAFE_EXEMPT`, and this crate's whole tree
+# (tests and benches included, not just `src/`) is scanned there because a `deny` is liftable per
+# site. Until that pin existed the ratchet compared crate NAMES only, so writing `allow` on the next
+# line was a green-CI edit that silently turned four audited carve-outs into a blanket permission.
+[lints.rust]
+unsafe_code = "deny"

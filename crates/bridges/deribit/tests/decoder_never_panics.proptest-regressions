@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 940d04041e659763a3e519409320dc9b1fbca6ab4b0b75a01076b42777e358fd # shrinks to days = [31], months = [1], years = [0], now = 0
+cc 5af751c1eb1f89190fdaa4945943eea689244572c5070ac9fa800c37a7b3aec5 # shrinks to positions = Array [], orders = Array [Object {"amount": String("NaN"), "label": String("0"), "order_state": String("open")}]

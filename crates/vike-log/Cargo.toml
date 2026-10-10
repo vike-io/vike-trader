@@ -1,0 +1,42 @@
+[package]
+name = "vike-log"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "Workspace logging init: layered tracing subscriber (pretty console + non-blocking JSON rolling file). No domain deps."
+
+# ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs): a pure leaf with no vike-*
+# dependency of its own; any normal vike-* dependency must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+# BUILD-GRAPH EDGE ONLY, not an API (root Cargo.toml has the `idna_adapter` rationale): it binds the
+# workspace requirement into resolution. ⚠ That requirement is `~1.2` (ICU4X), not the `~1.0` stub.
+idna_adapter = { workspace = true }
+
+[features]
+# The scoped `tracing` capture (`src/capture.rs`). Only dev-dependency edges enable it (plus
+# `vike-bridge-core`'s dev-only `test-support`), so it never reaches a shipped binary.
+test-support = []
+
+[dev-dependencies]
+# Self dev-dep: turns `test-support` on for this crate's own `tests/`. A dev edge, so the
+# `VIKE_FREE_CRATES` row (it reads `[dependencies]` alone) is untouched.
+vike-log = { path = ".", features = ["test-support"] }
+log = { workspace = true }
+tracing-log = { workspace = true }
+# Repeated from [dependencies]: an integration test does not inherit normal deps, and
+# `tests/log_retention.rs` builds the appender exactly as `init` does.
+tracing-appender = { workspace = true }
+# Self-cleaning scratch dirs for `tests/`. Not a workspace dep, per the per-crate convention
+# (`crates/bridges/polymarket/Cargo.toml`'s note); dev-only and third-party: the leaf stays a leaf.
+tempfile = "3"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

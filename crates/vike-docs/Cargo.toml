@@ -1,0 +1,53 @@
+[package]
+name = "vike-docs"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The docs-data exporter: renders the CI-gated per-venue capability tables, the indicator and strategy registries and the remaining CI-gated rosters into the venues/stats/indicators/templates/rosters JSON release assets the documentation site consumes. A renderer over compile-time tables — no network, no settings, no environment reads; the `docs_data` bin is its file-writing shell."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain-stacked` — a
+# crate composed of layer-20 pieces.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+#
+# 25 is the ARITHMETIC FLOOR: `vike-strategy`/`vike-data`/`vike-exec`/`vike-catalog` at 20 are the
+# ceiling, `vike-indicators` at 15 and `vike-model` at 10 sit under it. And nothing depends on this
+# crate — its one consumer is `.github/workflows/release.yml`, which RUNS the `docs_data` bin — so
+# there is no ceiling above it to fit under.
+[package.metadata.vike]
+layer = 25
+
+[dependencies]
+# The domain vocabulary every record is rendered from: `VENUES`, `caps_for`, `venue_margin_support`,
+# `fee_schedule_for`, `amend_semantics`, `attribution_for`, `AssetClass`, the `Event` table's
+# authority, and `venue_tif::venue_tif`, the TIF authority the exporter renders.
+vike-model = { path = "../vike-model" }
+# The JSON the exporter writes (workspace-pinned).
+serde_json = { workspace = true }
+# The built-in indicator + pair registries `indicators.json` renders (layer 15).
+vike-indicators = { path = "../vike-indicators" }
+# PORTABLE_STRATEGIES / PARAM_KEYS / LIVE_CAPABLE / SIMULATOR_ONLY / SCRIPT_ONLY for
+# `templates.json` (layer 20).
+vike-strategy = { path = "../vike-strategy" }
+# `rosters.json`: the hist store's layout contract (`vike_data::store::store_kind::STORE_KINDS`). DEFAULT
+# features on purpose — the `HistStore` trait side only, no `hist-datafusion`, so this crate never
+# pulls the Arrow/DataFusion tree.
+vike-data = { path = "../vike-data" }
+# `rosters.json`: `vike_exec::recon`'s `DivergenceKind` plus the `mode_applies` each reconcile
+# policy's verdict is COMPUTED through.
+vike-exec = { path = "../vike-exec" }
+# `rosters.json`: the per-class Symbol-picker TAB (`vike_catalog::tab_for`) — the one part of the
+# asset-class roster that is a GUI judgement rather than an instrument fact, so it stayed in the
+# catalog when `AssetClass` moved down to `vike-model`. Layer 20.
+vike-catalog = { path = "../vike-catalog" }
+
+# The file-writing shell `.github/workflows/release.yml`'s "Render the docs-data assets" step runs.
+# Declared rather than left to auto-discovery so the NAME the release step spells is written down
+# beside the crate that owns it.
+[[bin]]
+name = "docs_data"
+path = "src/bin/docs_data.rs"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

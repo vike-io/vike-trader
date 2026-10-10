@@ -1,0 +1,157 @@
+//! The `SettingsShow` verb end-to-end (split-plane REQ-7, read half): a real PAPER node
+//! ([`vike_mount::build_paper_maker_core`]) + the real [`vike_tradehub::server`] with a
+//! [`vike_tradehub::server::settings::SettingsShowSource`] over a REAL settings directory, driven through
+//! the REAL client verb ([`vike_tradehub_client::settings_show`]) under [`Scope::Read`].
+//!
+//! What is proven:
+//! - **Advertisement:** `Welcome.features` carries `"settings-show"`, so the client verb sends.
+//! - **Real effective rows:** the daemon's answer is the SAME rows `vike-cli config show`'s
+//!   settings table renders — a row-set key reports `db` as its origin (with its value and its
+//!   `READ` cell), an env-overridden flag names its variable, an untouched key reports `default`.
+//! - **Redaction over the wire:** a secret planted in the source's env map under a
+//!   credential-shaped name never reaches any byte of the serialized payload — the shared
+//!   `vike_config::show` builder redacts ON CONSTRUCTION, so the wire cannot leak what the CLI
+//!   table hides.
+//! - **The no-source shape:** a server started without a [`SettingsShowSource`] answers an honest
+//!   error, never a fabricated empty table.
+//!
+//! Grouped into the `daemon` binary: plain tests, no `#[ignore]`, no crate-level `#![cfg]`, and no
+//! process-global mutation — the "environment" here is a local `HashMap` handed to the source, and
+//! the settings directory is a `tempfile::TempDir`, so nothing touches `std::env` or the CWD.
+
+use std::collections::HashMap;
+
+use vike_tradehub::server;
+use vike_tradehub_client::proto::{
+    FEATURE_SETTINGS_SHOW, NODE_PROTO_VERSION, Request, Response, Scope, read_frame, write_frame,
+};
+use vike_tradehub_client::{auth, settings_show};
+
+use crate::support::{settings_rows, spawn_maker_node};
+
+const TOKEN: &str = "SETTINGS_SHOW_TOKEN";
+const OBSERVE_KEY: &[u8] = b"settings-show-observe-key";
+/// The secret planted in the source's env map — the wire payload must never carry a byte of it.
+const PLANTED_SECRET: &str = "sk-planted-secret-never-on-the-wire";
+
+/// A real settings directory: a `config.tradehub_addr` row is planted, everything else is
+/// untouched.
+fn settings_dir_with_config() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("temp settings dir");
+    vike_secrets::plant_settings_rows(
+        dir.path(),
+        &settings_rows("config", &[("tradehub_addr", "\"127.0.0.1:7979\"")]),
+    )
+    .expect("plant the fixture's tradehub_addr row");
+    dir
+}
+
+/// The source's env map: one env-layer override (`VIKE_RECONCILE`, so a row can prove the env
+/// layer resolves) and one PLANTED credential-shaped secret (which must never reach the wire —
+/// no settings key maps from it, and even a credential-shaped settings key would be redacted).
+fn source_env() -> HashMap<String, String> {
+    HashMap::from([
+        ("VIKE_RECONCILE".to_string(), "1".to_string()),
+        ("ACME_API_KEY".to_string(), PLANTED_SECRET.to_string()),
+    ])
+}
+
+/// The whole read half on one connection, through the REAL client verb: advertisement, the
+/// boot-dir header, a row-set row (value + origin + READ cell), an env-overridden row naming its
+/// variable, a defaulted row — and the planted-secret redaction pin over the ENTIRE payload.
+#[test]
+fn the_daemons_real_effective_rows_cross_the_wire() {
+    let dir = settings_dir_with_config();
+    let settings = server::settings::SettingsShowSource {
+        settings_dir: Some(dir.path().to_path_buf()),
+        env: source_env(),
+        // The REQ-7 v2 hot-apply seam: absent here — this file tests the READ half, and a
+        // source without a seam keeps the pre-v2 restart-to-apply answer for every key.
+        hot: None,
+        journal: None,
+    };
+    let (_mount, addr) = spawn_maker_node(TOKEN, OBSERVE_KEY, None, Some(settings));
+
+    let show = settings_show(addr, OBSERVE_KEY).expect("advertised ⇒ served");
+
+    // The header: the node answers from the directory it was booted with.
+    let reported = show.settings_dir.as_deref().expect("a settings dir was resolved");
+    assert_eq!(reported, dir.path().display().to_string());
+
+    // The row-set row: `config` is the section, the value is the row's, and the READ cell
+    // names the one binary that reads it (`config.tradehub_addr` → vike-tradehub's main.rs).
+    let addr_row = show
+        .rows
+        .iter()
+        .find(|r| r.key == "config.tradehub_addr")
+        .expect("the tradehub_addr row exists");
+    assert_eq!(addr_row.section, "config");
+    assert_eq!(addr_row.value, "127.0.0.1:7979");
+    assert_eq!(addr_row.origin, "db");
+    assert_eq!(addr_row.read_by, "tradehub");
+
+    // The env-overridden row names its variable — the CLI's exact ORIGIN cell.
+    let recon = show.rows.iter().find(|r| r.key == "flags.reconcile").expect("the reconcile row");
+    assert_eq!(recon.value, "true");
+    assert_eq!(recon.origin, "env:VIKE_RECONCILE");
+
+    // An untouched key honestly reports the compiled-in default.
+    let policy = show
+        .rows
+        .iter()
+        .find(|r| r.key == "policy.max_notional_per_order")
+        .expect("the policy ceiling row");
+    assert_eq!(policy.origin, "default");
+    assert_eq!(policy.section, "policy");
+
+    // ⚠ THE REDACTION PIN: no byte of the planted credential-shaped value reaches the payload —
+    // asserted over the whole serialized document, so no field can smuggle it.
+    let doc = serde_json::to_string(&show).expect("serialize the payload");
+    assert!(!doc.contains(PLANTED_SECRET), "a planted secret crossed the wire: {doc}");
+}
+
+/// The feature is advertised in the REAL server's `Welcome` — driven at the frame level so the
+/// assertion is on the advertisement itself, not on the client verb's behaviour above it.
+#[test]
+fn the_welcome_advertises_settings_show() {
+    let (_mount, addr) = spawn_maker_node(TOKEN, OBSERVE_KEY, None, None);
+    let mut stream = std::net::TcpStream::connect(addr).expect("connect");
+    write_frame(&mut stream, &Request::Hello { proto_version: NODE_PROTO_VERSION }).expect("hello");
+    match read_frame::<_, Response>(&mut stream).expect("welcome") {
+        Response::Welcome { features, .. } => {
+            assert!(
+                features.iter().any(|f| f == FEATURE_SETTINGS_SHOW),
+                "the node must advertise {FEATURE_SETTINGS_SHOW}, got {features:?}"
+            );
+        }
+        other => panic!("expected Welcome, got {other:?}"),
+    }
+}
+
+/// A server constructed WITHOUT a settings source answers an honest error under Observe — never a
+/// fabricated empty table (the `StrategyStatus` identity-less shape). Driven at the frame level
+/// because the client verb folds `Response::Error` into an `io::Error`, and this pin is about the
+/// server's own words.
+#[test]
+fn a_node_without_a_source_answers_an_honest_error() {
+    let (_mount, addr) = spawn_maker_node(TOKEN, OBSERVE_KEY, None, None);
+    let mut stream = std::net::TcpStream::connect(addr).expect("connect");
+    write_frame(&mut stream, &Request::Hello { proto_version: NODE_PROTO_VERSION }).expect("hello");
+    let nonce = match read_frame::<_, Response>(&mut stream).expect("welcome") {
+        Response::Welcome { nonce, .. } => nonce,
+        other => panic!("expected Welcome, got {other:?}"),
+    };
+    let mac = auth::sign(OBSERVE_KEY, &nonce, NODE_PROTO_VERSION, Scope::Read);
+    write_frame(&mut stream, &Request::Auth { scope: Scope::Read, mac }).expect("auth");
+    match read_frame::<_, Response>(&mut stream).expect("auth reply") {
+        Response::AuthOk { .. } => {}
+        other => panic!("expected AuthOk, got {other:?}"),
+    }
+    write_frame(&mut stream, &Request::SettingsShow).expect("settings request");
+    match read_frame::<_, Response>(&mut stream).expect("settings reply") {
+        Response::Error(msg) => {
+            assert!(msg.contains("settings source"), "the error names the missing source: {msg}");
+        }
+        other => panic!("a source-less node must answer Error, got {other:?}"),
+    }
+}

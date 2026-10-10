@@ -1,0 +1,35 @@
+# Pre-generation recipe for vike-ctrader's committed protobuf bindings
+# (../src/generated/openapi.rs). This is the drift gate's source-of-truth "how to build" — the
+# exact analog of the jforex-bridge Gradle subproject: a committed, standalone project, sibling of
+# the crate's src/, that CI (.github/workflows/ctrader-proto.yml) runs to regenerate the artifact
+# from the vendored ../proto/ schema and byte-compare it against the committed file.
+#
+# It is a SEPARATE workspace (own [workspace] table below) and is in the parent workspace's
+# `exclude` list, so it is NEVER part of the normal build: `cargo build --workspace`,
+# `cargo build -p vike-ctrader`, and `cargo tree -p vike-ctrader` do not touch prost-build/protoc.
+# prost-build/protoc live ONLY here, invoked only by the drift gate.
+#
+# REPRODUCIBILITY: versions are `=`-pinned AND a Cargo.lock is committed here — CI runs with
+# `--locked`, so the whole codegen tree (prost-build + prettyplease, whose formatting output must
+# match byte-for-byte) is frozen. Bump these pins ONLY together with a re-commit of
+# ../src/generated/openapi.rs (same rule as the jforex JDK pin ↔ the jar that pin reproduces).
+[package]
+name = "vike-ctrader-protogen"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "ctrader-protogen"
+path = "src/main.rs"
+
+[dependencies]
+# `=`-pinned to the exact versions that produced the committed openapi.rs. prost-build formats its
+# output through prettyplease; the committed Cargo.lock freezes prettyplease too (0.2.37) so the
+# regen is byte-stable across time even as newer compatible releases appear.
+prost-build = "=0.14.4"
+protoc-bin-vendored = "=3.2.0"
+
+# Own workspace root: keeps this project out of the parent virtual workspace entirely (it is also
+# listed in the parent's `exclude`), so prost-build never enters the main build graph.
+[workspace]

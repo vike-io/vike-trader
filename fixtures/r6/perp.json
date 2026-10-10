@@ -1,0 +1,743 @@
+{
+ "manifest": {
+  "exporter": "scripts/export_r6_fixtures.py",
+  "oracle": "vike-trader-app origin/main worktree",
+  "source_sha": "023d6e87ced0b495d8575fd247914e14522ccd2d",
+  "generated": "2026-07-03T22:58:50Z",
+  "float_encoding": "ieee754-f64-hex-bits (inputs plain JSON numbers)"
+ },
+ "exchange_info": {
+  "symbols": [
+   {
+    "symbol": "BTCUSDT",
+    "baseAsset": "BTC",
+    "filters": [
+     {
+      "filterType": "PRICE_FILTER",
+      "tickSize": "0.10"
+     },
+     {
+      "filterType": "LOT_SIZE",
+      "stepSize": "0.001",
+      "minQty": "0.001",
+      "maxQty": "1000"
+     },
+     {
+      "filterType": "MARKET_LOT_SIZE",
+      "maxQty": "120"
+     },
+     {
+      "filterType": "MIN_NOTIONAL",
+      "notional": "100"
+     }
+    ]
+   },
+   {
+    "symbol": "ETHUSDT",
+    "baseAsset": "ETH",
+    "filters": [
+     {
+      "filterType": "LOT_SIZE",
+      "stepSize": "0.01"
+     }
+    ]
+   }
+  ]
+ },
+ "instruments": {
+  "BTCUSDT": {
+   "tick_size": "3fb999999999999a",
+   "step_size": "3f50624dd2f1a9fc",
+   "min_qty": "3f50624dd2f1a9fc",
+   "max_qty": "405e000000000000",
+   "min_notional": "4059000000000000",
+   "base_asset": "BTC"
+  },
+  "ETHUSDT": {
+   "tick_size": "0000000000000000",
+   "step_size": "3f847ae147ae147b",
+   "min_qty": "0000000000000000",
+   "max_qty": "0000000000000000",
+   "min_notional": "0000000000000000",
+   "base_asset": "ETH"
+  }
+ },
+ "balance_resp": [
+  {
+   "asset": "BNB",
+   "balance": "1.5",
+   "availableBalance": "1.5"
+  },
+  {
+   "asset": "USDT",
+   "balance": "14895.30000000",
+   "availableBalance": "14000.1"
+  }
+ ],
+ "mapper": [
+  {
+   "frame": {
+    "e": "ORDER_TRADE_UPDATE",
+    "T": 1751600000456,
+    "o": {
+     "s": "BTCUSDT",
+     "c": "vtr6perp1",
+     "i": 555666777,
+     "ps": "BOTH",
+     "x": "NEW"
+    }
+   },
+   "events": [
+    {
+     "client_order_id": "vtr6perp1",
+     "venue_order_id": "555666777",
+     "ts": 1751600000456,
+     "type": "OrderAccepted"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "e": "ORDER_TRADE_UPDATE",
+    "T": 1751600000456,
+    "o": {
+     "s": "BTCUSDT",
+     "c": "vtr6perp1",
+     "i": 555666777,
+     "ps": "BOTH",
+     "x": "CANCELED"
+    }
+   },
+   "events": [
+    {
+     "client_order_id": "vtr6perp1",
+     "reason": "",
+     "ts": 1751600000456,
+     "type": "OrderCanceled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "e": "ORDER_TRADE_UPDATE",
+    "T": 1751600000456,
+    "o": {
+     "s": "BTCUSDT",
+     "c": "vtr6perp1",
+     "i": 555666777,
+     "ps": "BOTH",
+     "x": "EXPIRED"
+    }
+   },
+   "events": [
+    {
+     "client_order_id": "vtr6perp1",
+     "ts": 1751600000456,
+     "type": "OrderExpired"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "e": "ORDER_TRADE_UPDATE",
+    "T": 1751600000456,
+    "o": {
+     "s": "BTCUSDT",
+     "c": "vtr6perp1",
+     "i": 555666777,
+     "ps": "BOTH",
+     "x": "TRADE",
+     "X": "PARTIALLY_FILLED",
+     "S": "BUY",
+     "l": "0.002",
+     "L": "62584.5",
+     "n": "0.05",
+     "t": 998877,
+     "m": false
+    }
+   },
+   "events": [
+    {
+     "trade_id": "998877",
+     "client_order_id": "vtr6perp1",
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "side": 1,
+     "last_qty": 0.002,
+     "last_px": 62584.5,
+     "commission": 0.05,
+     "liquidity_side": "taker",
+     "ts": 1751600000456,
+     "mark_price": null,
+     "position_side": "BOTH",
+     "type": "FillEvent"
+    },
+    {
+     "client_order_id": "vtr6perp1",
+     "fill": {
+      "trade_id": "998877",
+      "client_order_id": "vtr6perp1",
+      "venue": "binance",
+      "symbol": "BTCUSDT",
+      "side": 1,
+      "last_qty": 0.002,
+      "last_px": 62584.5,
+      "commission": 0.05,
+      "liquidity_side": "taker",
+      "ts": 1751600000456,
+      "mark_price": null,
+      "position_side": "BOTH"
+     },
+     "ts": 1751600000456,
+     "type": "OrderPartiallyFilled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "e": "ORDER_TRADE_UPDATE",
+    "T": 1751600000456,
+    "o": {
+     "s": "BTCUSDT",
+     "c": "vtr6perp1",
+     "i": 555666777,
+     "ps": "SHORT",
+     "x": "TRADE",
+     "X": "FILLED",
+     "S": "SELL",
+     "l": "0.004",
+     "L": "62590.1",
+     "n": "0.10",
+     "t": 998878,
+     "m": true
+    }
+   },
+   "events": [
+    {
+     "trade_id": "998878",
+     "client_order_id": "vtr6perp1",
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "side": -1,
+     "last_qty": 0.004,
+     "last_px": 62590.1,
+     "commission": 0.1,
+     "liquidity_side": "maker",
+     "ts": 1751600000456,
+     "mark_price": null,
+     "position_side": "SHORT",
+     "type": "FillEvent"
+    },
+    {
+     "client_order_id": "vtr6perp1",
+     "fill": {
+      "trade_id": "998878",
+      "client_order_id": "vtr6perp1",
+      "venue": "binance",
+      "symbol": "BTCUSDT",
+      "side": -1,
+      "last_qty": 0.004,
+      "last_px": 62590.1,
+      "commission": 0.1,
+      "liquidity_side": "maker",
+      "ts": 1751600000456,
+      "mark_price": null,
+      "position_side": "SHORT"
+     },
+     "ts": 1751600000456,
+     "type": "OrderFilled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "e": "ORDER_TRADE_UPDATE",
+    "T": 1751600000456,
+    "o": {
+     "s": "BTCUSDT",
+     "c": "autoclose-12345",
+     "i": 555666777,
+     "ps": "LONG",
+     "x": "TRADE",
+     "X": "FILLED",
+     "S": "SELL",
+     "l": "0.5",
+     "L": "58000.0",
+     "n": "2.5",
+     "t": 998879
+    }
+   },
+   "events": [
+    {
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "position_side": "LONG",
+     "qty": 0.5,
+     "liq_price": 58000.0,
+     "fee": 2.5,
+     "ts": 1751600000456,
+     "trade_id": "998879",
+     "type": "PositionLiquidated"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "e": "ORDER_TRADE_UPDATE",
+    "T": 1751600000456,
+    "o": {
+     "s": "BTCUSDT",
+     "c": "adl_autoclose99",
+     "i": 555666777,
+     "ps": "BOTH",
+     "x": "TRADE",
+     "X": "FILLED",
+     "S": "BUY",
+     "l": "0.1",
+     "L": "60000.0",
+     "n": "0",
+     "t": 998880
+    }
+   },
+   "events": [
+    {
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "position_side": "BOTH",
+     "qty": 0.1,
+     "liq_price": 60000.0,
+     "fee": 0.0,
+     "ts": 1751600000456,
+     "trade_id": "998880",
+     "type": "PositionLiquidated"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "e": "ORDER_TRADE_UPDATE",
+    "T": 1751600000456,
+    "o": {
+     "s": "BTCUSDT",
+     "c": "vtr6perp1",
+     "i": 555666777,
+     "ps": "BOTH",
+     "x": "CALCULATED"
+    }
+   },
+   "events": []
+  },
+  {
+   "frame": {
+    "e": "ORDER_TRADE_UPDATE",
+    "T": 5,
+    "o": "not-a-dict"
+   },
+   "events": []
+  },
+  {
+   "frame": {
+    "e": "ACCOUNT_UPDATE",
+    "T": 1751600002000,
+    "a": {
+     "m": "FUNDING_FEE",
+     "B": [
+      {
+       "a": "USDT",
+       "bc": "-1.25",
+       "wb": "14894.05"
+      },
+      {
+       "a": "BNB",
+       "bc": "0"
+      },
+      {
+       "a": "USDC",
+       "bc": "0.5"
+      }
+     ]
+    }
+   },
+   "events": [
+    {
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "position_side": "BOTH",
+     "funding_rate": 0.0,
+     "amount": -1.25,
+     "mark_price": null,
+     "ts": 1751600002000,
+     "type": "FundingEvent"
+    },
+    {
+     "venue": "binance",
+     "symbol": "BTCUSDT",
+     "position_side": "BOTH",
+     "funding_rate": 0.0,
+     "amount": 0.5,
+     "mark_price": null,
+     "ts": 1751600002000,
+     "type": "FundingEvent"
+    },
+    {
+     "venue": "binance",
+     "balances": [
+      [
+       "USDT",
+       14894.05
+      ]
+     ],
+     "ts": 1751600002000,
+     "type": "AccountState"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "e": "ACCOUNT_UPDATE",
+    "T": 1751600003000,
+    "a": {
+     "m": "ORDER",
+     "B": [
+      {
+       "a": "USDT",
+       "wb": "14890.0"
+      },
+      {
+       "a": "BNB",
+       "bc": "-0.01"
+      },
+      {
+       "a": "",
+       "wb": "9"
+      },
+      {
+       "a": "ETH",
+       "wb": "bad"
+      }
+     ]
+    }
+   },
+   "events": [
+    {
+     "venue": "binance",
+     "balances": [
+      [
+       "USDT",
+       14890.0
+      ]
+     ],
+     "ts": 1751600003000,
+     "type": "AccountState"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "e": "ACCOUNT_UPDATE",
+    "T": 7,
+    "a": {
+     "m": "FUNDING_FEE",
+     "B": []
+    }
+   },
+   "events": []
+  },
+  {
+   "frame": {
+    "e": "listenKeyExpired"
+   },
+   "events": []
+  },
+  {
+   "frame": [
+    "not",
+    "a",
+    "dict"
+   ],
+   "events": []
+  }
+ ],
+ "order_params": {
+  "limit": [
+   [
+    "symbol",
+    "BTCUSDT"
+   ],
+   [
+    "side",
+    "SELL"
+   ],
+   [
+    "type",
+    "LIMIT"
+   ],
+   [
+    "quantity",
+    "0.003"
+   ],
+   [
+    "newClientOrderId",
+    "vtr6perpL"
+   ],
+   [
+    "newOrderRespType",
+    "ACK"
+   ],
+   [
+    "positionSide",
+    "BOTH"
+   ],
+   [
+    "reduceOnly",
+    "false"
+   ],
+   [
+    "timeInForce",
+    "GTC"
+   ],
+   [
+    "price",
+    "62584.5"
+   ]
+  ],
+  "market": [
+   [
+    "symbol",
+    "BTCUSDT"
+   ],
+   [
+    "side",
+    "BUY"
+   ],
+   [
+    "type",
+    "MARKET"
+   ],
+   [
+    "quantity",
+    "0.002"
+   ],
+   [
+    "newClientOrderId",
+    "vtr6perpM"
+   ],
+   [
+    "newOrderRespType",
+    "ACK"
+   ],
+   [
+    "positionSide",
+    "BOTH"
+   ],
+   [
+    "reduceOnly",
+    "true"
+   ]
+  ]
+ },
+ "reconcile": [
+  {
+   "name": "net_long",
+   "position_rows": [
+    {
+     "positionSide": "BOTH",
+     "positionAmt": "0.004",
+     "entryPrice": "62584.5",
+     "markPrice": "62600.1"
+    }
+   ],
+   "balance_fails": false,
+   "snapshot": {
+    "positions": [
+     [
+      "BTCUSDT",
+      "3f70624dd2f1a9fc"
+     ]
+    ],
+    "position_avg_px": [
+     [
+      "BTCUSDT",
+      "40ee8f1000000000"
+     ]
+    ],
+    "position_mark_px": [
+     [
+      "BTCUSDT",
+      "40ee910333333333"
+     ]
+    ],
+    "position_sides": [],
+    "balance": "40cd17a666666666"
+   }
+  },
+  {
+   "name": "net_short",
+   "position_rows": [
+    {
+     "positionSide": "BOTH",
+     "positionAmt": "-0.006",
+     "entryPrice": "62590.0",
+     "markPrice": "62550.5"
+    }
+   ],
+   "balance_fails": false,
+   "snapshot": {
+    "positions": [
+     [
+      "BTCUSDT",
+      "bf789374bc6a7efa"
+     ]
+    ],
+    "position_avg_px": [
+     [
+      "BTCUSDT",
+      "40ee8fc000000000"
+     ]
+    ],
+    "position_mark_px": [
+     [
+      "BTCUSDT",
+      "40ee8ad000000000"
+     ]
+    ],
+    "position_sides": [],
+    "balance": "40cd17a666666666"
+   }
+  },
+  {
+   "name": "hedge_both_legs",
+   "position_rows": [
+    {
+     "positionSide": "LONG",
+     "positionAmt": "0.010",
+     "entryPrice": "62000.0",
+     "markPrice": "62600.0"
+    },
+    {
+     "positionSide": "SHORT",
+     "positionAmt": "-0.003",
+     "entryPrice": "63000.0",
+     "markPrice": "62600.0"
+    },
+    {
+     "positionSide": "BOTH",
+     "positionAmt": "0",
+     "entryPrice": "0"
+    }
+   ],
+   "balance_fails": false,
+   "snapshot": {
+    "positions": [
+     [
+      "BTCUSDT",
+      "3f847ae147ae147b"
+     ],
+     [
+      "BTCUSDT",
+      "bf689374bc6a7efa"
+     ]
+    ],
+    "position_avg_px": [
+     [
+      "BTCUSDT",
+      "40ee460000000000"
+     ],
+     [
+      "BTCUSDT",
+      "40eec30000000000"
+     ]
+    ],
+    "position_mark_px": [
+     [
+      "BTCUSDT",
+      "40ee910000000000"
+     ],
+     [
+      "BTCUSDT",
+      "40ee910000000000"
+     ]
+    ],
+    "position_sides": [
+     [
+      "BTCUSDT",
+      "LONG"
+     ],
+     [
+      "BTCUSDT",
+      "SHORT"
+     ]
+    ],
+    "balance": "40cd17a666666666"
+   }
+  },
+  {
+   "name": "flat",
+   "position_rows": [
+    {
+     "positionSide": "BOTH",
+     "positionAmt": "0.000",
+     "entryPrice": "0.0",
+     "markPrice": "62600.0"
+    }
+   ],
+   "balance_fails": false,
+   "snapshot": {
+    "positions": [
+     [
+      "BTCUSDT",
+      "0000000000000000"
+     ]
+    ],
+    "position_avg_px": [
+     [
+      "BTCUSDT",
+      "0000000000000000"
+     ]
+    ],
+    "position_mark_px": [
+     [
+      "BTCUSDT",
+      "0000000000000000"
+     ]
+    ],
+    "position_sides": [],
+    "balance": "40cd17a666666666"
+   }
+  },
+  {
+   "name": "balance_fetch_fails",
+   "position_rows": [
+    {
+     "positionSide": "BOTH",
+     "positionAmt": "-0.001",
+     "entryPrice": "62500.0",
+     "markPrice": "62450.0"
+    }
+   ],
+   "balance_fails": true,
+   "snapshot": {
+    "positions": [
+     [
+      "BTCUSDT",
+      "bf50624dd2f1a9fc"
+     ]
+    ],
+    "position_avg_px": [
+     [
+      "BTCUSDT",
+      "40ee848000000000"
+     ]
+    ],
+    "position_mark_px": [
+     [
+      "BTCUSDT",
+      "40ee7e4000000000"
+     ]
+    ],
+    "position_sides": [],
+    "balance": "0000000000000000"
+   }
+  }
+ ]
+}
