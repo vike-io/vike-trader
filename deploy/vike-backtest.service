@@ -1,0 +1,250 @@
+# systemd unit for the vike COMPUTE daemon — `vike-backend backtest --addr`, the server for the
+# seven verbs that RUN something (RunBacktest, RunSlice, RunSweep, RunWalkforward, RunSweepProfile,
+# RunWalkforwardProfile, ListStrategies). Ruling 7 of
+# docs/superpowers/specs/2026-09-09-datahub-market-data-wire-design.md split one served surface into
+# two daemons; this is the half that computes, and deploy/vike-datahub.service is the half that
+# serves the store. See docs/ops/backtest-daemon.md for the runbook.
+#
+# ⚠ THE TWO DAEMONS ARE A PAIR AND BOTH RUN ON THIS BOX. This one opens NO store: every byte of
+# history it computes over is ASKED of the datahub unit, over a loopback socket on the same box,
+# because the hist store has exactly one reader (docs/decisions/0084-only-the-datahub-touches-the-store.md)
+# and this daemon refuses `--store` by name. So what pairs the two units is not a store path any
+# more but the DATAHUB this one dials and the node keys it presents there — the "where this
+# daemon's history comes from" block below is the whole of it. What the split buys is isolation: a
+# runaway sweep is OOM-killed inside THIS unit's MemoryMax and cannot take the market-data reads
+# with it, which was the objection co-hosting could not answer.
+#
+# ⚠ EVERY PATH BELOW IS THE PLACEHOLDER PROJECT ROOT /srv/vike-<unit>. It is an example, not a
+# requirement — the server works from ANY absolute path. Choose your own root by ONE rule: a single
+# directory owned by the user the service runs as, holding bin/ and settings/ (with state/ and
+# state/logs/). Then substitute it everywhere in the installed copy and check nothing was missed:
+#
+#   R=/your/project/root
+#   sed "s,/srv/vike-<unit>,$R,g" deploy/vike-backtest.service > /tmp/vike-backtest.service
+#   grep -n /srv/vike-<unit> /tmp/vike-backtest.service    # must print NOTHING
+#   install -Dm644 /tmp/vike-backtest.service ~/.config/systemd/user/vike-backtest.service
+#   systemctl --user daemon-reload && systemctl --user enable --now vike-backtest
+#
+# (For a system-wide install use /etc/systemd/system/, add `User=`, and drop the --user flags. Read
+# the hardening block at the bottom first: under a --user manager the sandbox directives are applied
+# as NO-OPS on a stock Ubuntu box — measured, docs/ops/tradehub-the CI box.md.)
+#
+# ⚠⚠ **ONE UNIT PER DAEMON, AND THIS IS THE COMPUTE DAEMON'S.** Until 2026-09-16 this directory
+# also carried a `-project` twin with the CI box's real root filled in, installed under THIS file's
+# name. The owner ruled that shape out: a daemon has ONE unit file, named without a suffix, and the
+# project root is a substitutable parameter rather than a second file — the `sed` above is what
+# produced the twin, so a tracked copy of its output was a second spelling of one fact. WHAT PROD2
+# SUBSTITUTES: the root; `User=`/`Group=`, which are deliberately not shipped here because this
+# file is published to the public source mirror whose redaction rewrites a box's user name into
+# something that is not a legal systemd user name; and `WantedBy=multi-user.target` for a SYSTEM
+# install. `docs/ops/backtest-daemon.md` is the runbook. (It also substituted a store spelling,
+# `data/hist`, until 2026-09-26 — the line that carried it is gone, see the history block below.)
+#
+# The shape is MACHINE-CHECKED: crates/vike-ops/tests/container_deploy/deploy_layout_gate.rs reads every unit in this
+# directory and fails if one names a second location, spreads its write grant over more than one
+# ReadWritePaths= LINE, grants a path that covers a binary it runs or its own settings directory,
+# sets VIKE_LOG_DIR, points EnvironmentFile= at the credential store, or runs an ExecStartPre=
+# binary from outside the project folder (or behind a `-`, which would make the pre-check
+# non-fatal), and it holds the address this daemon dials to the one the datahub binds
+# (`the_compute_unit_dials_where_the_data_unit_binds`). ⚠ A unit setting any retired variable is
+# refused beside the table that names them: `crates/vike-config/tests/removed.rs`'s
+# `no_shipped_unit_sets_a_retired_variable`.
+
+[Unit]
+Description=vike backtest daemon — the compute plane of the node protocol
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# The multicall binary, dispatching on the `backtest` SUBCOMMAND — no symlink, so no `203/EXEC`
+# class to inherit from a dangling one. The release attaches `vike-backend` and `vike-cli` and
+# nothing else, so this is the same binary deploy/vike-datahub.service runs; the two units differ
+# only in the verb and the address.
+#
+# ⚠ `--addr` WITH NO VALUE is deliberate and is the whole point of the flag taking an optional one.
+# The FLAG is what says "become a daemon"; the VALUE is the box's `config.backtest_addr` row, else
+# 127.0.0.1:7880 (see the address block below). Writing the address here as well would put it in
+# two places on one box, which is the state the owner refused when they
+# asked to "SET THIS SOMEWHERE AND NOT MENTION IT ALL THE TIME".
+#
+# Building it yourself:
+#   cargo build --release -p vike-backend --bin vike-backend --features full
+#
+# WorkingDirectory IS the project root: the settings walk and the rolling log resolve off it.
+WorkingDirectory=/srv/vike-<unit>
+ExecStart=/srv/vike-<unit>/bin/vike-backend backtest --addr
+
+# --- PRE-FLIGHT: refuse a broken configuration instead of starting degraded ----------------------
+# The same check deploy/vike-datahub.service runs, for the same reason: `vike-cli config check`
+# resolves the SAME settings directory through the SAME loader and makes the EXIT CODE the product,
+# so a settings file that does not parse fails the unit BEFORE ExecStart runs.
+# ⚠ NO leading `-`: that would make a failed pre-check non-fatal, i.e. delete this line while
+# appearing to have it. And NOT `--strict`, which promotes a 0644 credential-store warning into a
+# refusal the workspace argues must never be one.
+# ⚠ It needs a second binary in bin/, or systemd fails the unit with status=203/EXEC:
+#   cargo build --release -p vike-cli --bin vike-cli
+#   install -m755 target/release/vike-cli /srv/vike-<unit>/bin/vike-cli
+ExecStartPre=/srv/vike-<unit>/bin/vike-cli config check
+
+# --- the listen address --------------------------------------------------------------------------
+# A bare `--addr` serves on the `config.backtest_addr` row of this box's settings database, else
+# the compiled default 7880 — which this template relies on. 7879 is `vike-cli backend setup`'s
+# DEFAULT TRADEHUB BIND — the live order-signing daemon's control server — so if this box runs that
+# node on its default, a compute daemon on 7879 would collide and whichever started second would
+# exit with AddrInUse. That is loud rather than silent (the two speak different protocols and
+# neither answers the other's handshake), but a CLIENT dialling 7879 by default is NOT loud, which
+# is why `vike_config::DEFAULT_BACKTEST_ADDR` is 7880.
+# What holds the posture is the BINARY — a non-loopback address is REFUSED at startup unless the
+# `flags.datahub_allow_public_bind` row is on AND node keys are configured
+# (crates/vike-datahub-client/src/bind.rs's `bind_decision`, the guard both daemons share). That
+# matters more here than on the data plane: what an unauthenticated public bind would expose on this
+# daemon is a RHAI COMPILER running source the client supplied.
+# Do not restate the bind as a property in Description= — see
+# crates/vike-ops/tests/container_deploy/deploy_layout_gate.rs's
+# `no_unit_description_claims_what_an_environment_file_can_falsify`.
+# ⚠ The NAMED-RUN lane (docs/decisions/0064-a-named-run-carries-no-source.md) is OFF here; arming
+# it is `--named-run` appended to ExecStart= above.
+
+# --- where this daemon's history comes from: the DATAHUB, over the wire --------------------------
+# ⚠⚠ **THIS DAEMON OPENS NO STORE, AND THERE IS DELIBERATELY NO STORE LINE IN THIS FILE.** Every
+# served verb reads history through ONE client built at startup
+# (`crates/vike-backtest/src/backtest_cli/serve.rs`'s `run_serve`): a read-only `RemoteHistStore` that
+# dials the `config.datahub_addr` row of the settings database, else 127.0.0.1:7878. Building it
+# connects nothing;
+# the first read does. The hist store has ONE reader, the datahub (decision 0084), and since
+# 2026-09-25 this daemon REFUSES `--store` by name, so no flag and no setting points it at files.
+#
+# So the pairing with deploy/vike-datahub.service is TWO facts, and they are what an installer has
+# to get right now:
+#   * the ADDRESS. As shipped the two meet default-to-default: the data daemon binds 127.0.0.1:7878
+#     when its `config.datahub_bind_addr` row is absent, and this one dials the same compiled
+#     default when its `config.datahub_addr` row is. Move one row and move the other with it, or
+#     every run fails at its first read, naming the address it could not reach.
+#     `crates/vike-ops/tests/container_deploy/deploy_layout_gate/store_roots.rs`'s
+#     `the_compute_unit_dials_where_the_data_unit_binds` holds the two compiled defaults together.
+#   * the KEYS. This daemon presents the datahub node pair from ITS OWN settings directory — the
+#     same read that authenticates its listener — and a KEYED datahub refuses a client without it.
+#     The `sed` at the top of each template substitutes the SAME $R, which gives both daemons one
+#     `settings/` and therefore one pair; install them under two roots and the pair can differ,
+#     and every run is refused at the datahub's handshake.
+#
+# ⚠ The availability coupling is the point, not a side effect: a datahub that is down fails every
+# compute run, by name, with the address it dialled — there is no local fallback to degrade to. The
+# daemon names its choice at startup: `backtest --addr: listening on <addr>, history over the wire
+# from the datahub at <addr>`.
+#
+# ⚠ An INSTALLED copy that still sets a store variable from before decision 0084 now REFUSES to
+# start (the variable is retired, decision 0111) — delete the line; this daemon reads no store.
+
+# --- the plugin artifacts this daemon dlopens, which it resolves and does NOT read a variable for -
+# ⚠⚠ **THE READ HALF OF A HAND-OFF WHOSE WRITE HALF IS `deploy/vike-strategy-builder.service`, and
+# there is NO `Environment=` line for it — which is exactly why it needs a comment.** A Studio Run
+# carrying `WireSpec::Plugin { name, sha }` makes this daemon `dlopen`
+# `<WorkingDirectory>/user_data/plugins/<name>-<sha>.so`: `crates/vike-studio-core/src/run.rs`'s
+# `plugins_dir` walks for the project from the working directory, exactly as the settings walk
+# does, and joins `crates/vike-model/src/paths/state_path.rs`'s `PROJECT_USER_DATA_DIR` +
+# `PLUGINS_SUBDIR`. Nothing here can point it somewhere else, so the only way the two daemons meet
+# is for the builder's `--out-dir` to resolve to that same directory.
+#
+# ⚠ **SUBSTITUTE THE SAME $R INTO BOTH UNITS** — the rule the history block above states for this
+# daemon and `deploy/vike-datahub.service` (one root, so one `settings/` and one key pair), and here
+# for a LEAF: different placeholder roots, one shared leaf, one box, one project root. Two roots
+# means every Run after a green Build answers `plugin artifact not found`, which names the path it
+# looked at and is therefore legible — but only AFTER a user has written a strategy, built it and
+# pressed Run.
+#
+# This daemon needs only to READ the directory. `ProtectSystem=strict` makes the filesystem
+# read-only rather than invisible, and `ReadWritePaths=` below already covers `user_data` anyway;
+# `MemoryDenyWriteExecute=yes` at the bottom does NOT block the `dlopen` (measured on the CI box with a
+# negative control proving the sandbox was live — the design's "sandbox constraint" section).
+# `crates/vike-ops/tests/container_deploy/deploy_layout_gate/plugin_and_profile.rs`'s
+# `every_shipped_plugin_artifact_dir_is_one_spelling` holds the two halves equal.
+
+# --- turn the trace FILE log DOWN ---------------------------------------------------------------
+# RUST_LOG and the log_level row filter the CONSOLE only; the file layer defaults to `trace` and captures the
+# log->tracing bridge from DataFusion/arrow. A long run once wrote 341 GB and nearly filled the disk
+# hosting a live trading node.
+Environment=VIKE_LOG_FILE_LEVEL=warn
+# ⚠ Deliberately NO VIKE_LOG_DIR. Unset, the project layer resolves the rolling log to
+# <project>/settings/state/logs — inside the FIRST of the two write grants at the bottom.
+
+# --- WHERE SETTINGS AND CREDENTIALS LIVE ---------------------------------------------------------
+# `<project>/settings/` holds the settings database and state/; no settings file is read (decision 0086). A DEPLOYED box has a BINARY, not a source
+# checkout, so the walk needs the `settings/` marker to exist:
+#   install -d -m700 /srv/vike-<unit>/settings /srv/vike-<unit>/settings/state
+# ...and the RUN directory, which is a sibling of `settings/` rather than a child of it and is the
+# second write grant at the bottom. `vike-cli init` creates the whole `user_data/` tree; on a box
+# that has not run it, `install -d -m755 /srv/vike-<unit>/user_data/runs` is the minimum this
+# daemon needs, because a run it cannot write is a verb it cannot answer.
+# The line below makes the answer EXPLICIT and independent of WorkingDirectory.
+Environment=VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings
+
+# Operator tunables (NOT credentials) from a plain env file at the PROJECT ROOT; harmless if absent.
+# ⚠ It MUST NOT name anything under settings/ — the credential store is deliberately never an
+# environment source, and an EnvironmentFile= at it would export every key into /proc/<pid>/environ.
+# ⚠ Whatever it sets beats every Environment= line above. A `.env` written for another daemon on a
+# shared root reaches this one too — and a retired variable in it refuses this daemon's start.
+EnvironmentFile=-/srv/vike-<unit>/.env
+
+# --- keep a runaway sweep from starving the box -------------------------------------------------
+# A concurrent sweep is an N_threads x slice MEMORY multiplier. This ceiling is the ISOLATION ruling
+# 7 bought: it can OOM-kill this daemon without touching the market-data reads next door, where
+# co-hosting would have taken both. Tune to the box's headroom.
+MemoryMax=8G
+Restart=on-failure
+RestartSec=5
+
+# ⚠ Deliberately NO TimeoutStopSec=, like its datahub sibling: this server has no teardown to bound
+# — it answers RPCs and holds nothing that must be flushed. A number here would advertise a stop
+# budget nobody measured.
+
+# Hardening: the server needs only to bind localhost, dial the datahub beside it and write its runs.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+# TWO grants, and SUB-directories rather than the project root: granting the root would hand this
+# server write access to the store the datahub serves out of the same root, and to the binary it
+# runs. Both paths must EXIST — the install recipe creates them.
+#
+# ⚠ This was ONE grant until 2026-09-20, and the missing half made every RunBacktest fail: the
+# comment here claimed `settings/state` held "its run manifests' parent", and it does not. A run
+# lands in `<project>/user_data/runs/<id>/` — `crates/vike-model/src/paths/state_path.rs`'s
+# `user_runs_dir` is the authority, and its layout block says so — so under `ProtectSystem=strict`
+# the one directory this daemon exists to fill was READ-ONLY in its own namespace. MEASURED on
+# the CI box the day the unit was first installed, by probing the RUNNING daemon's mount namespace
+# rather than by reading this file: with both grants `user_data/runs` and `settings/state/logs`
+# are writable while `bin` and the hist store stay read-only, which is the split this block was
+# always meant to describe.
+ReadWritePaths=/srv/vike-<unit>/settings/state /srv/vike-<unit>/user_data
+
+# --- syscall / capability hardening --------------------------------------------------------------
+# The same measured set every other daemon unit here carries (the CI box 2026-08-17, systemd 255):
+# an ordinary-user process that acquires no capability, creates no namespace, takes no realtime
+# priority and executes one ABI. PrivateNetwork= is deliberately absent — this daemon binds a socket,
+# and every byte of history it reads arrives over one (the datahub's).
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @module @reboot @swap @raw-io @debug @clock @cpu-emulation
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0077
+
+[Install]
+WantedBy=default.target

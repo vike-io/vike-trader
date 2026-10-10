@@ -1,0 +1,118 @@
+[package]
+name = "vike-user-research"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The compiled user-STUDY HOST: build.rs scans <workspace>/user_data/research/studies/rust/<name>/<name>.rs (VIKE_USER_DATA_DIR overrides the root at BUILD time) and generates a name->entry registry a study engine consults. User code stays in gitignored user_data — it compiles into the operator's own binary and never enters the repo — and compiles against the platform's PUBLIC API only: a separate compilation unit, so an internals refactor can never break a user study and user studies can never freeze framework internals (the strategy tier's v2/v3 argument, docs/superpowers/specs/2026-08-11-user-native-strategies-design.md). No user_data (every CI checkout) => an EMPTY registry, byte-identical behavior everywhere."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier
+# `domain-stacked`: a build.rs host compiling user-authored studies against the PUBLIC API.
+#
+# ⚠ This rank is a PERMISSION rather than a position: whatever this crate declares as a normal
+# dependency is exactly what a user's study may `use`, and the layer gate refuses an edge at this
+# rank or above. 25, and the window is narrow at BOTH ends:
+#   * strictly ABOVE 20, where vike-data, the highest crate re-exported to a study, sits
+#     (vike-indicators, vike-ml and vike-analytics sit at 15);
+#   * strictly BELOW the registry's consumer,
+#     `crates/vike-studio-core/src/study_run.rs`'s `run_study` at 35 — the mirror of
+#     `vike-user-strategies` (25) under vike-backtest (30) and vike-tradehub (65).
+# 25 removes no present capability (the edges already stopped at vike-data); it is a ratchet
+# against widening: `vike-core` here is a red gate, not a reviewer's catch. `vike-bridge-core` and
+# `vike-paper` sit at 25 themselves, where equal rank still refuses them, and the fence that holds
+# all three is `crates/vike-ops/tests/architecture/named_run_closure_gate.rs`, BY NAME anywhere in
+# this crate's transitive normal closure
+# (docs/decisions/0089-the-user-code-fence-is-held-by-name-not-by-rank.md).
+# docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 25
+
+[lints]
+workspace = true
+
+[dependencies]
+# ⚠ THIS TABLE IS THE USER-STUDY API SURFACE. A user file resolves `use vike_ml::…` against THIS
+# manifest, so adding a crate here (with a root-Cargo.toml rationale) is how a user study gains a
+# dependency; the framework crates never change for it. Every entry is argued; what is deliberately
+# ABSENT is argued in `src/lib.rs`'s "The dependency set" section.
+#
+# The shared domain vocabulary: `Bar`, `QuoteTick`, `TradeTick`, `py_sum`, the scalar helpers.
+vike-model = { path = "../vike-model" }
+# `feature::ColumnFeature`, the STUDY↔STRATEGY seam (write the batch kernel, get the per-bar stream
+# by construction, so a live strategy cannot compute a different number than the model trained on),
+# and the `window` kernels under it, above all `window::per_group` (never walks across an
+# instrument boundary in a stacked panel). Feature-free; depends only on vike-model.
+vike-indicators = { path = "../vike-indicators" }
+# The learner seam (`Learner`/`ProbaModel`/`TrainData`/`GridPoint`/`Capture`), the PURE-RUST
+# inference half (`infer`/`parse_model_text`) and `importance_from_model_text`. Feature-free;
+# depends only on vike-model, and NOTHING here needs a LightGBM binary at BUILD time.
+vike-ml = { path = "../vike-ml" }
+# What a study exists to produce: `signal`/`signal_backtest`, `stats` (block bootstrap, Newey-West,
+# two-sided p) and `validation` (the purged walk-forward fold splitters). Feature-free.
+vike-analytics = { path = "../vike-analytics" }
+# The hist store, DEFAULT build = the TRAIT ONLY (`HistStore`, `TsRange`, `DataError`, the row
+# types); the engine is behind `hist-datafusion`, deliberately NOT enabled. That makes ADR 0029
+# structural: a study can NAME the store seam but never CONSTRUCT one, so the only store it touches
+# is the one its caller handed it.
+vike-data = { path = "../vike-data" }
+# The `params: &toml::Value` recipe every entry function reads (the strategy tier's convention).
+toml = { workspace = true }
+#
+# ---------------------------------------------------------------------------------------------
+# The three below arrived TOGETHER for the cohort study (now in gitignored
+# `user_data/research/studies/rust/cohort/`), meeting the condition `src/lib.rs` once set for rayon:
+# arrive "when a real study measures that it needs it".
+# ⚠ Two are CORRECTNESS and one is SPEED: never defend a performance dependency with a determinism
+# argument.
+#
+# CORRECTNESS. An insertion-ordered map wherever order decides f64 sum order (the root Cargo.toml's
+# pin); std ships none, so without it every bit-reproducible study hand-rolls one. Consumer: the
+# cohort study's `run.rs` (`RunResult::per_token`).
+indexmap = { workspace = true }
+# CORRECTNESS. `--search tpe` promises "same seed, same winner", which needs a PORTABLE stream:
+# ChaCha8 is byte-stable across the measured versions (the study's `search.rs` records
+# 0.9.0/0.10.0), while `rand`'s default generator may change. Without it the sampled search cannot
+# be ported.
+rand_chacha = { workspace = true }
+# SPEED, and only that: a grid is 243 independent fits per fold, hours serially. It changes NOTHING
+# a study computes (scores are collected and argmin'd deterministically; rayon and serial agree bit
+# for bit). ⚠ Two costs: (1) TIER-ASYMMETRIC — the Rhai tier cannot express it (accepted in
+# `src/lib.rs`); (2) it is rayon's GLOBAL pool, unlike `vike-backtest`'s sweep and
+# `vike-backfill`'s archive, so a study wanting isolation builds its own `ThreadPool`.
+rayon = { workspace = true }
+
+[build-dependencies]
+# build.rs spells the scanned path through `vike_model::paths::state_path`'s RESEARCH_SUBDIR /
+# STUDIES_SUBDIR / RUST_SUBDIR / RHAI_SUBDIR, never literals: ONE layout authority, shared with
+# `user_studies_dir` and `crates/vike-studio-core/src/listing.rs`'s `list_studies`. Layer 10 — a
+# build-dependency is a normal edge to `layer_gate.rs`, and this one goes down.
+vike-model = { path = "../vike-model" }
+
+[dev-dependencies]
+# The shared doubles that prove the FULL pipeline with no LightGBM binary and no DataFusion (every
+# CI runner, every Windows box). One feature each, so neither reaches a normal build; both ride the
+# DEFAULT roster lane through this edge (resolver-2), so no `scripts/ci_feature_suite.sh` arm.
+vike-data = { path = "../vike-data", features = ["test-support"] } # MemHistStore
+vike-ml = { path = "../vike-ml", features = ["test-support"] }     # ScriptedLearner
+# The STUDY↔STRATEGY parity harness (`assert_feature_parity`): a library module so the external
+# study repo can reach it; the fixture study's own `ColumnFeature` is pushed through it here.
+vike-indicators = { path = "../vike-indicators", features = ["test-support"] }
+# ⚠ DEV-only on purpose: the cohort study's one chrono use is a `#[cfg(test)]` CROSS-CHECK of its
+# hour-of-week / day-of-week / weekend arithmetic against an INDEPENDENT civil calendar. Non-test
+# user code cannot name a dev-dependency, so the `[dependencies]` API surface is unchanged. Using
+# `vike_model::time` instead was refused: it is the law under test, so the check would be a
+# tautology.
+chrono = { workspace = true }
+# ⚠ The cohort study's ORACLE PARITY GATES (carried from the dissolved research crate's
+# `tests/parity_*.rs` and property suites), DEV-only for chrono's reason: `src/lib.rs`'s "no
+# `serde`/`serde_json`" absence still holds for everything a study ships. The Python oracle is
+# retired (decision 0021), so the committed `fixtures/hl_cohort/` BYTES are the only oracle left.
+#
+# serde_json: the fixtures ARE JSON and travel as bytes (regenerating one would compare the study
+# with itself). The workspace pin's `float_roundtrip` is load-bearing: every fixture float is an
+# IEEE-754 hex bit pattern compared with `to_bits()`.
+serde_json = { workspace = true }
+# proptest: two carried suites are PROPERTIES (`cohort_leakage_props`, `divergence_ratio_props`).
+# Commit any failure-persistence seed a CI run produces.
+proptest = { workspace = true }

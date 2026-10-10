@@ -1,0 +1,91 @@
+[package]
+name = "vike-datahub-client"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the LIGHT client half of the vike-datahub data-service: the wire protocol (proto), the blocking DatahubClient, and RemoteHistStore — a vike_data::HistStore answered by a remote datahub server over RPC. DataFusion-FREE in every build (vike-data DEFAULT features = the HistStore TRAIT only); the off-by-default `hist-route` feature adds the history route, over vike-secrets + vike-config."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain-stacked` — one
+# hop over the domain band: a crate composed of layer-20 pieces.
+# 25 is the ARITHMETIC FLOOR: `vike-data` and `vike-catalog` (20) are the ceiling in every build,
+# and the `hist-route` feature's `vike-config` (20) meets it; `vike-node-proto` and `vike-secrets`
+# (15) and `vike-model` (10) sit under it
+# (docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md). The two node-protocol
+# clients sit at the SAME rank over `vike-node-proto`. Every consumer sits above it — the lowest
+# are `vike-backtest`, `vike-report` and `vike-cli` (30). The user-code hosts at 25 may not name it
+# (equal rank), and `crates/vike-ops/tests/architecture/named_run_closure_gate.rs` refuses it by
+# name there, as it refuses this crate reaching `vike-sim` or `vike-backtest` and `vike-core`
+# naming it (docs/decisions/0091-the-live-core-names-no-transport-and-no-node-client.md).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 25
+
+[features]
+# **The ROUTE half** (`src/route.rs`): where a reader gets history from — the datahub, the ONE
+# answer `docs/decisions/0084-only-the-datahub-touches-the-store.md` leaves — plus the one call
+# that opens it.
+#
+# A FEATURE rather than an ungated module because it names `vike-secrets` (node keys from the
+# credential store) and `vike-config` (the compiled default address), and this crate is the light
+# one nine others take. It forwards NO `vike-data/hist-datafusion` (that forward left with the
+# route's local arm on 2026-09-25), so routing links no Arrow/DataFusion tree.
+#
+# ONE feature rather than three: the three arrive together and leave together, because
+# `open_routed_history` names all of them in one function.
+hist-route = ["dep:vike-secrets", "dep:vike-config"]
+
+[dependencies]
+# The SHARED node-protocol substrate: the HMAC-SHA256 nonce-challenge handshake generalized over
+# its domain separator (`auth`) and the length-prefixed frame codec (`frame`), in the crate BELOW
+# both node protocols. It names no vike-* crate, so this edge adds no package any graph did not
+# already carry.
+vike-node-proto = { path = "../vike-node-proto" }
+# The `HistStore` TRAIT (+ its query/error/row types) — DEFAULT features, so NO hist-datafusion:
+# `RemoteHistStore` IMPLEMENTS the trait purely by RPC, and keeping this edge DataFusion-free is
+# the WHOLE POINT of the crate. Nothing forwards `hist-datafusion` onto it, so it is DataFusion-free
+# in EVERY build of this crate. (The concrete engine lives only in vike-datahub, behind its
+# `serve-datafusion` feature.)
+# What protects the GUI is also that `vike-studio` and `vike-studio-core` take this crate and
+# `vike-backtest` at DEFAULT features, which forward nothing DataFusion-shaped. The
+# `studio-standalone` lane (`scripts/ci_feature_suite.sh`) asserts that STRUCTURALLY with a
+# `cargo tree` that must print no datafusion crate.
+vike-data = { path = "../vike-data" }
+# The domain value types the wire carries (Bar / QuoteTick / TradeTick / SymbolProperties) — already
+# serde in vike-model, so the proto reuses those derives rather than growing its own mirror types.
+vike-model = { path = "../vike-model" }
+# The `Instrument` the venue-catalog verb carries (`catalog.rs`), and the `CatalogProvider` /
+# `CatalogSource::ServerBacked` seam its client-side consumer implements
+# (`docs/decisions/0062-a-venue-catalog-fetch-is-an-observe-verb-and-not-a-write.md`).
+# ⚠ Taken rather than mirrored: vike-catalog's whole dependency set (vike-model + serde +
+# serde_json) is already here, and a second `Instrument`-shaped DTO in `proto.rs` would be a
+# parallel type nothing holds equal to the one the picker stores.
+vike-catalog = { path = "../vike-catalog" }
+serde = { workspace = true }        # derive on the Request/Response wire enums (proto.rs)
+serde_json = { workspace = true }   # the length-prefixed frame payload codec (proto.rs)
+# The 16-byte `MdSessionId::fresh` mint (market.rs) — `fill_bytes` from the OS-backed default
+# generator, the call `vike_node_proto::auth::fresh_nonce` makes. Already a workspace dep: no new
+# package, no transport and no I/O.
+rand = { workspace = true }
+# ROUTE-ONLY (`hist-route`). The node keys the route signs with come from the credential STORE
+# rather than the environment: the datahub pair is a settings-database row, so an env read would
+# resolve `None` and connect unauthenticated. Layer 15; its only vike-* edge is vike-model.
+vike-secrets = { path = "../vike-secrets", optional = true }
+# ROUTE-ONLY (`hist-route`). `DEFAULT_DATAHUB_ADDR` — the compiled peer an unconfigured reader
+# dials when no `config.datahub_addr` row names one, and the ONE place this workspace spells it.
+vike-config = { path = "../vike-config", optional = true }
+
+[dev-dependencies]
+# End-to-end loopback test: drive the REAL vike-datahub `serve` over a `MemHistStore` and read it
+# back through `RemoteHistStore`. A DEV-dependency only (the upward-dev-dep pattern), so the
+# down-only lib graph stays clean; `vike-datahub` names no DataFusion-shaped crate at DEFAULT
+# features (its `serve-datafusion` is off here), so even the test build pulls no Arrow/DataFusion.
+vike-datahub = { path = "../vike-datahub" }
+# The DataFusion-free in-memory `HistStore` double the loopback server runs over (behind vike-data's
+# `test-support` feature; unified onto the default-features dep above only for the test/bench build).
+vike-data = { path = "../vike-data", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is the sole
+# crate that does NOT inherit this.
+[lints]
+workspace = true
