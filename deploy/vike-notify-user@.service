@@ -1,0 +1,38 @@
+# vike-notify-user@.service — USER-scope OnFailure= notifier template.
+# Install to ~/.config/systemd/user/vike-notify@.service (note: WITHOUT the `-user` infix — the
+# filename in this repo is disambiguated only so the two templates can sit side by side under
+# deploy/), then `systemctl --user daemon-reload`.
+#
+# WHY A SECOND COPY: a systemd USER manager cannot start a unit owned by the SYSTEM manager, so
+# `OnFailure=vike-notify@%n.service` inside a user unit resolves against the user manager and needs
+# this template to exist there. Production work is split across both scopes on these boxes —
+# poly-l2-monitor, poly-export, poly-http, quality-gate and the gh-runners are user units on the latency box;
+# vike-recorder and vike-ci-poll are user units on the CI box — so covering only /etc/systemd/system
+# would leave exactly the recorder-side units unwatched.
+#
+# Same script, same contract, same anti-storm limiters as the system twin; only the credential file
+# and the state directory differ (both land under the user's own home).
+
+[Unit]
+Description=vike-notify — report failure of %i to Telegram (user scope)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vike-notify %i
+SyslogIdentifier=vike-notify
+
+# ⚠ 0600, owned by the user running this manager. Same two keys as the system twin.
+EnvironmentFile=%h/.config/vike-notify/telegram.env
+
+Environment=VIKE_NOTIFY_COOLDOWN=3600
+Environment=VIKE_NOTIFY_MAX_PER_HOUR=12
+
+# Resolves to $XDG_STATE_HOME/vike-notify (~/.local/state/vike-notify) in user scope.
+StateDirectory=vike-notify
+StateDirectoryMode=0700
+
+TimeoutStartSec=30
+
+# User-manager units cannot use the system hardening set (no privileges to drop), but these apply.
+NoNewPrivileges=true
+PrivateTmp=true

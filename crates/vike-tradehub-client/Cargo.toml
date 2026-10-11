@@ -1,0 +1,48 @@
+[package]
+name = "vike-tradehub-client"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the CLIENT half of the headless live-core (\"tradehub\") node protocol, begun as PR-10's Layer-2 auth+proto primitive. The node wire protocol (proto: Hello/Auth/Subscribe/Snapshot/Command over the shared length-prefixed serde_json framing), the HMAC-SHA256 nonce-challenge auth handshake (auth: sign/verify + scoped NodeKeys), the standalone serde wire mirrors of the core snapshot + order-command types (wire), and the thin-client side that DIALS a node over std TCP (remote_handle: the read-only RemoteCoreHandle and one-shot reads; remote_control: the order-write RemoteControlHandle and one-shot writes). DataFusion-FREE and SERVER-free — the node's listener lives in vike-tradehub, and this crate's only network I/O is the std::net connection its client side opens, with no async runtime and no bridge transport stack. Rides the FAST CI lane."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain-stacked`.
+# ⚠ **25, not the arithmetic 20, and the rung is HELD on purpose.** The one vike-* edge is
+# `vike-node-proto` (15), so the floor is 20; at 20 the user-code hosts (`vike-user-strategies`,
+# `vike-user-research`, both 25) could name this crate by rank. At 25 equal rank refuses it, and
+# `crates/vike-ops/tests/architecture/named_run_closure_gate.rs` refuses it by name
+# (docs/decisions/0089-the-user-code-fence-is-held-by-name-not-by-rank.md), the same gate that keeps
+# this crate away from `vike-sim` and `vike-backtest`. The live core (`vike-core`, 30) is kept off it
+# by that gate's live-core row, not by rank
+# (docs/decisions/0091-the-live-core-names-no-transport-and-no-node-client.md). The rung is free (the
+# lowest consumer is `vike-cli`, 30) and it keeps the two node-protocol clients at the SAME rank.
+# Why the rank follows the declaration: docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md;
+# why the shared floor is a crate of its own: docs/decisions/0107-the-node-protocol-substrate-is-a-crate-below-both-clients.md.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 25
+
+[dependencies]
+# ONE framing and ONE handshake across both localhost services, from the crate BELOW both clients.
+# `vike-node-proto` names no vike-* crate, so the edge carries no HistStore, no DataFusion and no
+# venue vocabulary into this graph.
+vike-node-proto = { path = "../vike-node-proto" }
+serde = { workspace = true }        # derive on the Request/Response wire enums + the wire mirrors
+serde_json = { workspace = true }   # (transitively) the frame payload codec re-exported from proto
+# ⚠ No `hmac`/`sha2` here: the auth primitive lives in `vike-node-proto` and `src/auth.rs` is only this
+# service's binding of it (its own DOMAIN and key names), so the crypto crates arrive transitively.
+# deny.toml bans a second crypto crate; these are the ones vike-bridge-core/src/signer.rs links.
+# The receive thread's latest-wins snapshot cell (`RemoteCoreHandle`): the same lossy arc-swap
+# primitive vike-core publishes CoreSnapshots through. Already a workspace dep, not a new external
+# crate, and it keeps this crate DataFusion-free.
+arc-swap = { workspace = true }
+# NOTE: no key-store / credentials dep on purpose. `auth::from_vars` takes an already-loaded var MAP,
+# so the CALLER owns the I/O (the daemon hands it the node store `vike_secrets::resolve_node_keys`
+# answers, the settings database's `node_key` table). The crate reads no key store and drags no bridge
+# stack (ureq/tungstenite/rustls) into a LIGHT client that a thin GUI/CLI links. Its only I/O is the
+# `std::net` TCP connection its client side opens to a node, in
+# `crates/vike-tradehub-client/src/handshake.rs`'s `node_handshake`.
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

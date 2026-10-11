@@ -1,0 +1,622 @@
+# systemd unit for the vike-tradehub headless trading DAEMON (headless two-layer plan, Layer 2,
+# PR-9), in the ONE-PROJECT-FOLDER shape.
+#
+# ⚠ EVERY PATH BELOW IS THE PLACEHOLDER PROJECT ROOT /srv/vike-<unit>. It is an example, not a
+# requirement — the daemon works from ANY absolute path, and the CI box uses /var/lib/vike,
+# which it SHARES with the tape recorder (one folder, two daemons, each with its own write grant).
+# Choose your own root by ONE rule: a single directory on a disk with room, owned by the user the
+# service runs as, holding bin/ settings/ (with state/ and state/logs/) and data/. Then substitute
+# it everywhere in the installed copy and check nothing was missed:
+#
+#   R=/your/project/root
+#   sed "s,/srv/vike-<unit>,$R,g" deploy/vike-tradehub.service > /tmp/vike-tradehub.service
+#   grep -n /srv/vike-<unit> /tmp/vike-tradehub.service    # must print NOTHING
+#   sudo install -Dm644 /tmp/vike-tradehub.service /etc/systemd/system/vike-tradehub.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vike-tradehub
+#
+# For a --user install put it in ~/.config/systemd/user/ and drop the sudo/`User=`; read the
+# hardening block at the bottom first, because under a --user manager the sandbox directives are
+# applied as NO-OPS on a stock Ubuntu box (measured — docs/ops/tradehub-the CI box.md).
+#
+# ⚠ /opt/vike is GONE. This unit used to install a binary into /opt/vike, its log into
+# /var/log/vike-tradehub and its state into a third place, and the runbook walked an operator into
+# `install -d /opt/vike/settings`. Three locations meant three things to grant, three to back up and
+# three to get wrong — and the settings walk, the log destination and the HALT sentinel default all
+# key off the PROJECT ROOT, so splitting them bought nothing and cost a class of "the daemon started
+# with no settings at all" bugs. One folder, like Freqtrade and OctoBot: nothing in /opt, nothing in
+# /var/log. See docs/ops/tradehub-the CI box.md.
+#
+# ⚠⚠ **ONE UNIT PER DAEMON, AND THIS IS THE TRADING DAEMON'S.** Until 2026-09-16 this directory
+# also carried `deploy/vike-tradehub-project.service` — the same shape with the CI box's real root
+# filled in, installed under THIS file's name. The owner ruled that shape out: a daemon has ONE
+# unit file, named without a suffix, and the project root is a substitutable parameter rather than
+# a second file. The `sed` recipe above is what produced the second file, so a tracked copy of its
+# output was a second spelling of one fact.
+#
+# ⚠⚠ **WHAT PROD2 SUBSTITUTES, AND WHAT IT ADDS AND OMITS.** Kept here because the file that
+# carried it is gone and because every line of it is a decision somebody made once. MEASURED
+# 2026-09-16. `docs/ops/tradehub-the CI box.md` is the operator authority for that box.
+#
+#   the root        `/srv/vike-<unit>` -> the box's own project folder, SHARED with the data
+#                   daemon. One folder, two daemons, each with its own write grant.
+#   User=/Group=    ADDED. Deliberately NOT shipped here: this file is published to the public
+#                   source mirror, whose redaction rewrites a box's user name to a phrase that is
+#                   not a legal systemd user name — so a `User=` line here would publish a unit
+#                   nobody can install. Add yours in the installed copy.
+#   WantedBy=       `default.target` -> `multi-user.target`. This file ships the `--user`-friendly
+#                   spelling; a SYSTEM install wants `multi-user.target`, and the CI box has run both
+#                   daemons as SYSTEM units since 2026-08-17 (which is when this file's sandbox
+#                   directives stopped being no-ops there).
+#   OnFailure=      ADDED inline, as `OnFailure=vike-notify@%n.service`. This file instead points
+#                   at `deploy/attach-onfailure.sh`, which attaches the same hook as a DROP-IN.
+#                   ⚠ Do not do both — `OnFailure=` is a LIST directive and the notifier would
+#                   fire twice. Pick the inline line or the drop-in, per box.
+#   ExecStartPre=   OMITTED there, and this file KEEPS it. The omission is a declared partial, not
+#                   an oversight: adding the pre-flight ARMS a new refusal on the next redeploy of
+#                   a daemon that has been up for days, and that is an operator act to sequence
+#                   rather than a side effect of copying a file. A box that wants the refusal adds
+#                   the line and restarts once, deliberately, having first run
+#                   `bin/vike-cli config check` by hand.
+#   VIKE_HALT_FILE= OMITTED there, and — since decision 0099 — here too: the variable is retired
+#                   and the daemon refuses to start with it set. What that box exercises is rung 2
+#                   of `crates/vike-bridge-core/src/halt.rs`'s path ladder, the built-in
+#                   `<project>/settings/state/HALT`. ⚠ That rung lands inside the write grant below
+#                   because the daemon DECLARES its state directory from the settings directory it
+#                   resolved; a box that repoints `VIKE_SETTINGS_DIR=` moves its kill switch with it.
+#
+# ⚠⚠ **AND THAT DEPLOYMENT IS LIVE, NOT PAPER.** Kept from the deleted file because it is the one
+# claim about that box a reader most needs and the one that rotted fastest. MEASURED read-only
+# 2026-08-16 on a daemon up 7 days (pre-migration, hence --user; after the SYSTEM switch the same
+# question is `journalctl -u vike-tradehub` and the answer was the same string):
+#   journalctl --user -u vike-tradehub | grep '"kind":"ready"'  ->  "mode":"LIVE (venue=bybit)"
+#   tr '\0' '\n' < /proc/<MainPID>/environ                      ->  VIKE_TRADEHUB_LIVE=1
+#   <root>/settings/secrets.env  (key NAMES only)               ->  BYBIT_DEMO_API_KEY/_API_SECRET
+#   <root>/settings/policy.toml                                 ->  max_notional_per_order = 100
+# The venue is bybit's DEMO account, so no mainnet money is at stake — but a REAL venue adapter is
+# mounted, orders go on a real wire, and `vike_mount::build_paper_maker_core` is not what runs.
+#
+# ⚠ THE BANNER ABOVE IS A TRANSCRIPT, AND ITS `venue=` NO LONGER MEANS WHAT IT MEANT. That string
+# was rendered from the PROFILE's mount set; today it names the set that actually ARMED
+# (`build_node`'s own `live_venues` record — one entry per venue that got a real
+# `ExecutionClient`), which the CREDENTIAL STORE decides rather than the daemon profile's mount
+# set (the tradehub.toml of the day, a stored profile row now). A later
+# measurement on that box logged NINE venues in that record under this same one-venue banner, which
+# is what got it changed. So do not diff a today's banner against the line above and read the
+# difference as a redeploy — re-measure, and see docs/ops/tradehub-the CI box.md's "What `mode` names".
+# **`LIVE (venue=none)` is a valid answer there: gate on, nothing armed.**
+#
+# ⚠ NONE OF THAT IS CONFIGURED IN THIS FILE, which is why the claim rotted unnoticed for a week.
+# The escalation arrives through settings ROWS in <root>/settings/db/vike.db and nowhere else: no
+# settings file is read (decision 0086) and no setting is read from the process environment
+# (decision 0111 — a retired variable in this unit or its `.env` REFUSES startup, naming the row
+# that replaced it). Every escalation is still a separate explicit gate, each documented in the runbook; the
+# lesson is that **a unit cannot state its own paper-vs-live mode**, because one write to a store
+# it merely REFERENCES flips it with nothing here changing. The live master gate is the
+# `flags.tradehub_live` row, and each account is armed by its own `account` row — its `tier`
+# while `active = 1` (decision 0119; no row is paper).
+#
+# The project .env was MEASURED read-only on 2026-09-28 ("What the CI box runs today" in
+# docs/superpowers/specs/2026-09-28-venue-settings-live-in-sqlite-design.md): it held
+# VIKE_RUN_PROFILE and nothing else. Decision 0111 made the run profile ROWS ONLY — the daemon
+# reads the ACTIVE `run` row (`vike-cli config bootstrap-run` writes one) — and VIKE_RUN_PROFILE is
+# now refused at startup like POLY_PROXY_ENABLED before it (decision 0095): a set one, this file
+# included, REFUSES STARTUP (`vike_config::REMOVED_ENV`).
+#
+# ⚠ AND ONE COMMENT INSIDE THAT `.env` WAS FALSE, which matters more than the drift above because it
+# is what an operator reaching for the brake would read. Above VIKE_RUN_PROFILE it said *"ARMS the
+# tradehub's live venue mount. Removing this line puts it back to paper."* Removing it did NOT put
+# that box back to paper, and deactivating the run row does not either: with the live gate on and
+# no run profile, `vike_mount`'s `require_live_risk_budget` refuses the mount pre-connect
+# (`MountError::MissingRiskBudget`) and the daemon EXITS FAILURE. The PAPER BRAKE is `vike-cli config set flags.tradehub_live false` and a
+# restart (every settings write is restart-to-apply); the finer one is
+# `vike-cli secrets account deactivate --id <N>`, which disarms ONE account before any credential
+# is read. Neither is a line in a file this unit names, and `tradehub_live = false` in a flags.toml
+# does nothing at all: no binary reads one (decision 0086).
+#
+# Ask the running binary: the ready banner's `"mode"` is the authority, and
+# docs/ops/tradehub-the CI box.md's "confirm what is actually deployed" section is the procedure.
+#
+# The one-folder shape is MACHINE-CHECKED: crates/vike-ops/tests/container_deploy/deploy_layout_gate.rs reads every
+# unit in this directory and fails if one names a second location, spreads its write grant over more
+# than one ReadWritePaths= LINE, grants a path that covers a binary it runs or its own settings
+# directory, sets VIKE_LOG_DIR, points EnvironmentFile= at the credential store, or runs an
+# ExecStartPre= binary from outside the project folder (or behind a `-`, which would make the
+# pre-check non-fatal).
+#
+# PAPER variant: this mounts the A-S SpreadMaker on the PRODUCTION live core over the PAPER exchange
+# (vike_mount::build_paper_maker_core) — ZERO real-money / credential / geo risk. It has NO network
+# control surface (that is PR-10/11/12) and no live feed (real-venue mounting is the PR-8 follow-up):
+# PR-9 proves the daemon LIFECYCLE runs headless and survives an SSH disconnect (R7).
+
+[Unit]
+Description=vike-tradehub — headless trading daemon (A-S maker; paper-vs-live comes from the settings database, not <project>/.env)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# ⚠ THE DAEMON PROFILE IS NO LONGER A TOML FILE THIS LINE NAMES. This comment used to read "the
+# daemon reads its whole config from ONE reviewable TOML profile (LEAN "environments", S8)" — true
+# of the retired `--config <path>` argument, false since decision 0086 ("settings live only in the
+# database"): the mount now comes from the ACTIVE daemon-profile ROW in `<project>/settings/db`,
+# written with `vike-cli config bootstrap-daemon` / `config activate daemon <name>`, and ExecStart=
+# below passes no profile argument at all.
+#
+# ⚠ **THE RELEASE SHIPS ONE BACKEND BINARY, `vike-backend`, AND `tradehub` IS A TOOL INSIDE IT.**
+# That is why ExecStart below reads `bin/vike-backend trade` rather than `bin/vike-tradehub`:
+# since 2026-09-09 the release attaches the multicall and `vike-cli` and nothing else, because the
+# multicall already contained every per-tool binary and shipping both shipped the same program twice
+# (629 MB against 148 MB, measured on v0.1.20). Dispatch is on a SUBCOMMAND, so there is no symlink
+# here and no `203/EXEC` class to inherit from a dangling one.
+# ⚠ THE VERB LOST ITS `vike-` PREFIX WHEN THE BINARY WAS RENAMED `vike` -> `vike-backend`, and the
+# binary and the verb are ONE EDIT, never two. `crates/vike/src/lib.rs`'s `resolve` matches a tool
+# by EXACT string with no aliases, so `bin/vike-backend vike-tradehub` and `bin/vike tradehub` are
+# each `Route::Usage(2)`: exit 2 with a tool list on stderr — a trading daemon that "started" and
+# quietly did nothing, which is a worse outcome than a missing binary. Until the rename this line
+# said the opposite (`vike tradehub` printed the dispatcher's help and exited, MEASURED on the
+# released v0.1.20 binary, so the tool name WAS the full binary name); that measurement is kept as
+# the evidence for why one half cannot be edited alone, not as today's spelling.
+# Building it yourself is the same one command it always was, under the multicall's own package —
+# and the `--bin` follows the PACKAGE name, because crates/vike/Cargo.toml declares no `[[bin]]`:
+#   cargo build --release -p vike-backend --bin vike-backend --features full
+# ⚠ **THE TELEGRAM CONTROL CHANNEL IS COMPILED IN, AND THIS BLOCK SAID THE OPPOSITE UNTIL
+# 2026-09-09.** It read "this DEFAULT build contains NO Telegram control channel", which was true of
+# `cargo build -p vike-tradehub` with no features and is NOT true of what an operator installs: the
+# release builds the daemon `--features …,vike-tradehub/telegram,…` and the multicall's `full`
+# resolves to the same set (`crates/vike-ops/tests/container_deploy/multicall_gate.rs` holds the two equal), so a
+# remote-chat order path IS linked into the binary this unit starts. `docs/decisions/0035-…` is
+# where that call was made: a production box must run the binary users get.
+# What keeps it inert is therefore RUNTIME, not linkage, and all four gates must be true together:
+# the `flags.tradehub_control` row + the `flags.telegram_control` row + VIKE_TELEGRAM_BOT_TOKEN + a
+# non-empty VIKE_TELEGRAM_ALLOWED_CHAT_IDS (the last two are credentials, in the credential store).
+# Both rows default off, and nothing in this file can turn either on. Building the tool without the
+# feature is still possible and is the only way back to "cannot arm at all":
+#   cargo build --release -p vike-tradehub --bin vike-tradehub   # no `telegram`, no multicall
+# ⚠ That allowlist is per-CHAT, and a chat is not a person: an allowlisted GROUP authorizes every
+# member, including everyone anyone later adds, with no config change. Every accepted command names
+# its sender in the audit trail; to also RESTRICT by sender, set the optional
+# VIKE_TELEGRAM_ALLOWED_USER_IDS (comma-separated numeric ids, ANDed with the chat list).
+#
+# WorkingDirectory IS the project root, and that is what makes the rest of this file short: the
+# settings walk, the rolling log and the HALT sentinel default all resolve off it with no extra
+# variable (crates/vike-model/src/paths/state_path.rs's `project_state_dir`,
+# crates/vike-bridge-core/src/halt.rs's `resolve_halt_path`). ⚠ Where Environment=VIKE_SETTINGS_DIR
+# is set (it is, below), THAT names the project instead and the walk never runs — for the sentinel
+# too, since the daemon hands its one resolved settings directory to
+# crates/vike-bridge-core/src/halt.rs's `declare_project_state_dir`. The two agree here by
+# construction; they would not if a WorkingDirectory= were ever changed without the other.
+#
+# ⚠ THE BINARY AND THIS FILE REACH THE BOX SEPARATELY, AND NOTHING SEQUENCES THEM.
+# `deploy/sbin/vike-trader-ci-deploy` replaces the BINARY, unattended, on a tag; this FILE only
+# reaches the box when an operator runs the `install -Dm644` recipe at the top and `systemctl
+# daemon-reload`. The helper's deploy-time SKEW warning names the case where this line and the
+# installed binary disagree.
+#
+# ⚠ NO `--config` ARGUMENT — this line named `--config /srv/vike-<unit>/settings/tradehub.toml`
+# until decision 0086's phase 2. `crates/vike-tradehub/src/tradehub_cli.rs` RETIRED the flag first
+# (accepted for one release and IGNORED, warning at startup that it decides nothing and naming this
+# exact edit) so a unit could be updated after the binary that tolerates a `--config`-less
+# invocation was already the one running — never before it, which is why the flag stayed on this
+# line through that release. That release has shipped, so the deferral is closed: the daemon
+# profile comes from the ACTIVE daemon-profile row in `<project>/settings/db` (`vike-cli config
+# activate daemon <name>` / `config bootstrap-daemon`), never from a file, and a future release
+# refuses the flag outright rather than warning.
+WorkingDirectory=/srv/vike-<unit>
+ExecStart=/srv/vike-<unit>/bin/vike-backend trade
+
+# --- PRE-FLIGHT: refuse a broken configuration instead of starting degraded -----------------------
+# Without this line the daemon STARTS ANYWAY when its configuration is broken, and every way it can
+# be broken is silent by construction: a `settings/` that was never created makes the project walk
+# answer nothing, a credential store that has become unreadable logs one line and returns an EMPTY
+# map, and both end in the same place — every venue on paper, nothing in the log that says why, and
+# a `systemctl status` that reads healthy. The library layer had already drawn the distinction that
+# matters (crates/vike-secrets/src/store/secret_map.rs's `SecretsError` exists precisely so that "not
+# configured" and "cannot open" never look the same); nothing at DEPLOY time acted on it, which is
+# the gap this line closes. docs/decisions/0013-degrade-vs-refuse.md is the rule it implements.
+#
+# `vike-cli config check` resolves the SAME settings directory through the SAME loader this daemon
+# uses (crates/vike-config/src/load.rs's `load`, via `describe`) and makes the EXIT CODE the product.
+# A non-zero status fails the unit BEFORE ExecStart runs, so the daemon never reaches a venue with a
+# configuration nobody validated.
+#
+# ⚠ It refuses only what a silent difference would MISREPRESENT: a settings row that does not load
+# (an illegal value, an unknown or removed key), a REMOVED environment variable (which the
+# EnvironmentFile= below can still deliver), and a VIKE_SETTINGS_DIR naming a directory that is not
+# there. An ABSENT credential store is NOT a failure — absent credentials ARE the live gate, this
+# unit ships as a PAPER daemon whose store is deliberately empty, and a pre-check that refused one
+# would make a correct fresh install unstartable.
+#
+# ⚠ An UNREADABLE credential store — one that exists and cannot be opened — is the case this check
+# was written for, and its disposition is COMPUTED, not fixed. On a paper box it is a WARNING and
+# this daemon still starts: docs/decisions/0013-degrade-vs-refuse.md classifies the daemon's own
+# behaviour there (one log line, an empty map, every venue paper) as a conforming degrade, and a
+# pre-check that stopped a working paper deployment over a file it never opens would take down more
+# than it protects. It becomes a REFUSAL when the box's settings rows ARM a live venue
+# (crates/vike-config/src/arming.rs's `armed_for_live` reads them): then the
+# operator has asked for real money and the process cannot read the file that venue authenticates
+# from, so it would place no orders while every surface reads live. Run
+# `vike-cli config check --strict` if you want the paper case counted too.
+#
+# ⚠ Deliberately NOT `--strict`. That flag promotes every WARNING to a failure, including a 0644
+# settings database — and crates/vike-secrets/src/store/warnings.rs's `PermissionWarning` argues that one must
+# never be a refusal, because refusing strands somebody mid-setup with every venue on paper, which
+# is worse than the exposure it objects to. Run `vike-cli config check --strict` by hand when
+# auditing a box; never from a unit.
+#
+# ⚠ One `--strict` surprise worth knowing before you run it: an ABSENT credential store beside the
+# `<project>/.env` below is a WARNING (crates/vike-secrets/src/store/warnings.rs's `LegacyStoreWarning` — a
+# pre-one-store leftover and a systemd EnvironmentFile are the same file to anything that does not
+# read it), so `--strict` calls that pair an error. Once the settings database exists the store is
+# PRESENT and the warning does not apply (docs/ops/tradehub-the CI box.md creates it with
+# `vike-cli secrets init`); a box that has not created it yet will see it. The default
+# disposition — what the line above runs — passes either way.
+#
+# ⚠ NO leading `-` on this line. That prefix makes a failed ExecStartPre non-fatal, which is the
+# same as deleting the line while appearing to have it.
+#
+# ⚠ IT NEEDS A SECOND BINARY IN bin/. `vike-cli` is the command-line surface, not the daemon, so it
+# must be installed beside it or systemd fails the unit with status=203/EXEC — a loud failure, but
+# not the one you were debugging. Build and install it with the daemon (it is DataFusion-free and
+# transport-free, so it costs a small binary and no runtime dependency):
+#   cargo build --release -p vike-cli --bin vike-cli
+#   install -m755 target/release/vike-cli /srv/vike-<unit>/bin/vike-cli
+ExecStartPre=/srv/vike-<unit>/bin/vike-cli config check
+
+# --- stop ----------------------------------------------------------------------------------------
+# `systemctl stop` IS a graceful stop. SIGTERM raises the daemon's stop flag — the SAME flag the
+# interactive `shutdown`/`quit` word raises — and the ordinary teardown runs: the resting-order
+# cancel sweep (when `cancel_orders_on_shutdown` is on), the strategy-state save, the terminal
+# journal snapshot, the feed quiesce, and the bounded core join. One stop flag, many triggers; the
+# decision, the the CI box measurements and the options that were refused are in docs/ops/graceful-stop.md.
+#
+# ⚠ Before 2026-08-07 this was NOT true, and a box still running an older binary is unchanged: the
+# headless path ended in a park loop SIGTERM could not interrupt, so `systemctl stop` ran no Rust at
+# all, `cancel_orders_on_shutdown` was silently bypassed, and the book was ABANDONED at the venue
+# while `systemctl status` reported success. Check `journalctl -u vike-tradehub` for
+# `SIGTERM/SIGINT will stop this daemon gracefully` at startup — a build without it needs
+# docs/ops/kill-switches.md section C (HALT, then market-exit) before every stop.
+#
+# Under systemd stdin is /dev/null, so the stdio words are still unreachable here and a non-tty EOF
+# deliberately does NOT stop the daemon (it would exit at startup). The periodic one-line JSON
+# summaries + acks land in the journal (StandardOutput defaults to `journal`); read them with
+# `journalctl -u vike-tradehub -f`. For interactive control (type `shutdown`/`quit`, or a JSON
+# Command), run the binary directly in a terminal — stdin is then a TTY.
+#
+# There is deliberately NO ExecStop=: the daemon stops on the signal, so a stop command could only
+# add a SECOND stop route to a design whose whole invariant is that there is one.
+KillSignal=SIGTERM
+# ⚠ MUST EXCEED the profile's `[daemon] shutdown_deadline_ms`, or SIGKILL wins the race and the
+# teardown is cut in half — which is worse than the old ungraceful stop, because it interrupts the
+# cancel sweep at an arbitrary point instead of never starting it. The daemon's own teardown is
+# hard-capped at that profile deadline (vike_ops::shutdown::run_with_deadline), and
+# `the_default_shutdown_deadline_fits_inside_the_units_stop_timeout` in crates/vike-tradehub/src/main.rs
+# checks THIS line against the shipped default. Raise the profile deadline and raise this too.
+TimeoutStopSec=10
+
+# --- the OUT-OF-BAND kill switch (HALT sentinel) --------------------------------------------------
+# The one stop that works when the runtime is wedged: the venue adapters check this file's existence
+# at the submit/modify boundary, so `touch` it and the very NEXT order is refused — no IPC, no event
+# loop, no responsive control channel needed. `rm` resumes. See docs/ops/kill-switches.md §C.
+#
+#   touch /srv/vike-<unit>/settings/state/HALT     # stop new orders
+#   rm    /srv/vike-<unit>/settings/state/HALT     # resume
+#
+# (settings/ is mode 700 owned by the service user, so run those AS that user — `sudo -u <user>` on a
+# system install, your own shell on a --user one.)
+#
+# ⚠ NO `Environment=` LINE NAMES THE SENTINEL, AND NONE MAY. This unit used to carry
+# `Environment=VIKE_HALT_FILE=<project>/settings/state/HALT`, and decision 0099 retired the variable:
+# the daemon REFUSES TO START with it set (`vike_config::REMOVED_ENV`), because a value that was
+# merely ignored would send an operator to `touch` a path nothing watches. The sentinel is always
+# `<project>/settings/state/HALT` — the state directory the daemon declares from the settings
+# directory it booted with, which `Environment=VIKE_SETTINGS_DIR` below names outright and which
+# `ReadWritePaths=` below grants — so there was never anything for that line to add on this layout.
+# (It was added by #1143 when the sentinel's DEFAULT was `<exe_dir>/HALT`; ProtectSystem=strict
+# mounts the exe directory read-only, so `touch` returned EROFS and the switch could not be armed at
+# all. The default moved into the granted state directory, the CI box's installed unit omitted the line
+# and resolved to the same file, and the line left with the variable.)
+# Never widen the sandbox instead: see the ReadWritePaths block at the bottom for why the exe
+# directory must stay read-only.
+#
+# The state directory must EXIST — nothing creates it lazily, and an operator discovers a missing
+# one at the worst possible moment. <project>/settings/state is both granted below and mandatory for
+# the unit to start at all, which is what makes it the right anchor. The daemon also says which path
+# it resolved, once, when the first real venue mounts (`HALT sentinel path resolved`, or
+# `HALT KILL SWITCH IS NOT ARMABLE` at error) — but verify by hand after any deployment change
+# anyway, while nothing is on fire:
+#   touch /srv/vike-<unit>/settings/state/HALT && rm /srv/vike-<unit>/settings/state/HALT
+
+# --- turn the trace FILE log DOWN ----------------------------------------------------------------
+# RUST_LOG and the log_level row filter the CONSOLE only; the file layer defaults to `trace`. A long
+# headless run would otherwise grow a colossal JSON file no console setting can turn down. The file
+# level is the `preferences.log_file_level` ROW (no line in this file sets it); write it once, as the
+# service user with this unit's VIKE_SETTINGS_DIR, before the first start:
+#   vike-cli config set preferences.log_file_level warn
+# ⚠ Deliberately NO VIKE_LOG_DIR. Unset, the project layer resolves the rolling log to
+# <project>/settings/state/logs — INSIDE the single write grant at the bottom of this file. Naming a
+# directory here would put the log somewhere that grant does not cover, and under a manager where the
+# sandbox is actually enforced the daemon then cannot write its own log. Watch it with
+# `du -sh /srv/vike-<unit>/settings/state/logs`.
+# Optional: the write-ahead command journal's directory is the `config.journal_dir` row. Keep it
+# inside the project root so the one grant still covers it:
+#   vike-cli config set config.journal_dir /srv/vike-<unit>/settings/state/journal
+
+# --- OPT-IN ESCALATIONS (default OFF; each is a separate explicit gate) ---------------------------
+# ⚠ Read docs/ops/tradehub-the CI box.md before enabling ANY of these. Each is a ROW in the settings
+# database, written with `vike-cli config set` (run as the service user, with this unit's
+# VIKE_SETTINGS_DIR) and applied at the next restart — never a line in this file, where a variable
+# naming one REFUSES startup. The shipped unit is the zero-risk PAPER daemon with no network surface.
+#
+# LIVE trading: swap the paper mount for the real 12-venue build_node core. From here the daemon is
+# bound by the live-gate rules in CLAUDE.md — a venue trades ONLY if its creds are in the credential
+# store (NOT the .env below; see the block after next), Aster is MAINNET-ONLY (exclude ASTER_* from
+# validation), Polymarket must egress via arbdub.
+#   vike-cli config set flags.tradehub_live true
+#
+# Observe/control server (localhost only; reach it over `ssh -L 7879:localhost:7879 <box>`). Observe
+# = read-only; Control additionally admits order commands and is DOUBLE-GATED (key + the CONTROL
+# flag) and server-edge notional/rate-limited. Keep the two keys SEPARATE + separately revocable.
+#
+# ⚠ "localhost only" is ENFORCED, not advisory: the handshake is plaintext and authenticates the
+# connection rather than each frame, so the tunnel IS the confidentiality/integrity layer. A
+# non-loopback address (0.0.0.0 and :: included) is refused at startup — the daemon logs the reason
+# and keeps trading headless — unless the `flags.tradehub_allow_public_bind` row says the listening
+# network is trusted.
+#   vike-cli config set config.tradehub_addr 127.0.0.1:7879
+#   vike-cli config set flags.tradehub_control true
+#   vike-cli config set config.tradehub_control_rate 20
+# (VIKE_TRADEHUB_OBSERVE_KEY / VIKE_TRADEHUB_CONTROL_KEY come from the credential store, never argv.)
+#
+# The per-order NOTIONAL ceiling is the `policy.max_notional_per_order` row
+# (`vike-cli config set policy.max_notional_per_order <n>`): a ceiling a line in this file could
+# raise would not be a ceiling.
+#
+# HFT thread→core pinning (honored by the core builders the daemon reuses).
+#   vike-cli config set config.pin_cores md:2,core:3,exec:4
+
+# --- WHERE SETTINGS AND CREDENTIALS LIVE ---------------------------------------------------------
+# `<project>/settings/` holds `db/vike.db` (every setting and every credential) and `state/`. No
+# settings file is read (decision 0086). The binary finds it by walking UP from its working
+# directory for a project marker: a
+# checkout's `Cargo.toml` declaring `[workspace]`, else the NEAREST marker of either kind — for a
+# DEPLOYMENT, its own `settings/` directory.
+#
+# ⚠ A DEPLOYED box has a BINARY, not a source checkout. Until the `settings/` marker existed the walk
+# returned NOTHING here, and this daemon started with no policy ceiling and NO CREDENTIALS: every
+# venue silently on paper, no error in the log, because "no settings" and "settings that say nothing"
+# look identical downstream.
+#
+# So the deployment must have the directory — AND its `state/` sub-directory, which under
+# ProtectSystem=strict the daemon cannot create for itself (see the ReadWritePaths block at the
+# bottom, which is also why `state` is listed there):
+#   install -d -m700 /srv/vike-<unit>/settings /srv/vike-<unit>/settings/state
+#   VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings vike-cli secrets init
+# (`--init` creates the EMPTY database store; credentials then go in with `vike-cli secrets set`.)
+#
+# The line below then makes the answer EXPLICIT and independent of WorkingDirectory — set it and no
+# walk happens at all. Keep it: a unit that resolves its credentials by probing its CWD is one
+# `systemd-run --working-directory` away from finding nothing.
+Environment=VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings
+
+# The process-level variables decision 0111 leaves in the environment (the console's `RUST_LOG`, the
+# file-log level), from a plain env file at the PROJECT ROOT — NOT settings and NOT credentials.
+# Harmless if absent — the `-` makes it optional.
+#
+# ⚠ It MUST NOT name anything under settings/. The credential store is the one file in this
+# workspace that is deliberately NEVER an environment source: an EnvironmentFile= at it exports every
+# venue key into /proc/<pid>/environ and `systemctl show -p Environment`, inherited by every child
+# process — the leak the separation exists to prevent.
+#
+# ⚠ Whatever DOES go here reaches the process environment, where a variable that used to carry a
+# setting is REFUSED at startup, naming the row that replaced it, rather than ignored
+# (crates/vike-config/src/lib.rs's `REMOVED_ENV`).
+EnvironmentFile=-/srv/vike-<unit>/.env
+
+# --- keep the daemon from starving a live node ---------------------------------------------------
+# prod boxes may also host live trading; cap memory so a runaway can never starve it. Tune to the
+# box's headroom.
+MemoryMax=2G
+# Restart on a crash (an OOM kill included), but not on a clean exit / operator stop.
+Restart=on-failure
+RestartSec=5
+# ⚠ Restart=on-failure and a failure NOTIFIER are different things, and this template ships only the
+# first. `OnFailure=` fires when the unit enters the FAILED state, which a successful restart does
+# not — so a daemon that crashes and recovers restarts forever, silently, visible only as a rising
+# NRestarts=. the CI box's installed unit carries the hook inline as `OnFailure=vike-notify@%n.service`;
+# deploy/attach-onfailure.sh
+# attaches it as a drop-in to a unit whose file you do not own. Do not do both: OnFailure= is a LIST
+# directive and you would get two notifications per failure.
+
+# Hardening: the daemon needs no privileges and (paper) no venue network.
+NoNewPrivileges=true
+# ⚠ ProtectSystem=strict mounts the WHOLE filesystem read-only except /dev, /proc, /sys and
+# whatever ReadWritePaths= names. That includes the project root — so `settings/` and everything
+# under it is READ-ONLY to this daemon except the one grant below. Reads are unaffected: the
+# settings database and the credential store all load normally, which is exactly why this never
+# showed up in testing — the paper daemon reads its settings and writes no state, so the ceiling
+# arms, the venues mount, and nothing complains.
+#
+# ⚠ MEASURED on the CI box (systemd 255, Ubuntu 24.04): under a `systemd --user` manager with the
+# distribution default `kernel.apparmor_restrict_unprivileged_userns=1`, these four directives are
+# applied as NO-OPS — no warning, no failed unit, and `systemctl --user show` still reports them as
+# configured. They enforce under the SYSTEM manager. If the sandbox is load-bearing for you, install
+# system-wide with `User=`, and verify rather than assume: docs/ops/tradehub-the CI box.md has the probe.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+# TWO grants, and deliberately the SUB-directories rather than the project root. Granting the root
+# would hand the daemon write access to everything beside them in the settings tree and to the
+# binary it is running; the ceilings themselves live in the database, whose grant is argued at
+# length in [2] below — a daemon that can rewrite its own ceiling has none. Anything writable by
+# this unit must be data, never code.
+#
+# ⚠ The paths must EXIST — `write_path`'s lazy `create_dir_all` cannot make one under a read-only
+# parent. Under the SYSTEM manager systemd also refuses to start a unit whose ReadWritePaths= names
+# a missing path (status=226), and that refusal is the point: it names the directory, where a silent
+# degradation would not. ⚠ Under a --user manager there is NO such refusal — the same root cause as
+# the sandbox no-op noted above, measured on the CI box with the probe in docs/ops/tradehub-the CI box.md — so
+# create them with the `install -d` lines in the settings block above rather than relying on it.
+#
+# ⚠ BOTH PATHS ON ONE LINE, and `crates/vike-ops/tests/container_deploy/deploy_layout_gate.rs` refuses a second:
+# `ReadWritePaths=` is a LIST directive, so a second LINE APPENDS rather than replaces — the silent
+# way a sandbox widens — and the whole writable set belongs where one glance reads it.
+#
+#   [1] STATE — the rolling log (settings/state/logs) and the daemon's program state
+#       (`<settings>/state/alerts.json` today, and the ONE root every later state file lands in,
+#       `vike_model::paths::state_path`).
+#   [2] THE SETTINGS DATABASE — argued below.
+ReadWritePaths=/srv/vike-<unit>/settings/state /srv/vike-<unit>/settings/db
+#
+# [2] THE SETTINGS DATABASE, the second path above — **added on the owner's ruling of 2026-09-18**
+# (*"why doesn't the daemon have access to write to the db? it has to have access"*), after it was
+# measured that it did not.
+#
+# MEASURED 2026-09-18 inside the live daemon's own mount namespace (`nsenter -t $MainPID -m`), which
+# is the only place the fact is visible:
+#
+#     REFUSED   <root>/settings        Read-only file system
+#     REFUSED   <root>/settings/db     Read-only file system
+#     WRITABLE  <root>/settings/state
+#
+# …while the SAME path from an ordinary shell, as the SAME user, is `drwx------ the operator the operator`
+# and writable. The read-only-ness is a property of this unit's mount namespace, not of the
+# filesystem, so every error message that sends an operator to `ls -l` sends them where it cannot be
+# seen. The store moved to `<settings>/db/vike.db` when the credentials migrated (2026-09-14) and
+# this grant did not move with it, so every write the daemon owns there — the account lifecycle and
+# the credential upsert behind it — failed at `open_for_write` with a bare SQLite string.
+#
+# ⚠ **THE CEILING IS IN THIS FILE TOO — so a FILESYSTEM grant is the wrong instrument to guard it
+# with, and this block will not pretend otherwise.** `crates/vike-secrets/src/schema.rs` creates
+# seven tables, three of them settings: `setting`, `venue_arming` (the per-venue ARMING CEILING,
+# unread since decision 0119 moved arming onto each `account` row's tier and `active`) and
+# `profile_risk`. Granting the directory grants all seven, because a mount namespace cannot see a
+# table.
+#
+# An earlier draft of this block argued the grant was safe because
+# `docs/decisions/0057-the-seven-settings-files-answered-one-at-a-time.md` Phase 1 writes the store
+# and lets **the FILES still win** — true on 2026-09-18, and proven then by a test named
+# `the_mirror_changes_no_effective_value` in `crates/vike-config/tests/mirror.rs`, which went with
+# the files when `docs/decisions/0086-settings-live-only-in-the-database.md` deleted them (#2210).
+# **That argument was refused by the owner on 2026-09-18 and he is right**: 0057 and
+# `docs/decisions/0054-settings-move-into-one-database.md` exist to RETIRE those files. An argument
+# whose premise the roadmap is built to delete is an argument with an expiry date nobody will be
+# watching for — and it protects `policy.toml`, the artefact being abandoned, while handing over the
+# place the ceiling is moving TO.
+#
+# **So the guard belongs in the DATABASE, and this block called it OWED** (2026-09-18) — until the owner
+# ruled otherwise the same day and confirmed it on 2026-10-06 (see the RESOLVED paragraph below). The seam it
+# named: every write in that store goes through `crates/vike-secrets/src/db/open.rs`'s
+# `open_for_write`, and a `Connection::authorizer` (rusqlite's `hooks` feature, not enabled)
+# installed on the connection this daemon opens would make the ceiling tables unwritable by this
+# process STRUCTURALLY. Nothing of the kind has been built. Nor has the fallback named beside it:
+# the PARK-AND-FOLD shape `crates/vike-model/src/accounts/account_confirmation.rs` uses, where the
+# sandboxed daemon writes `settings/state` and an un-sandboxed `vike-cli` verb folds it in.
+#
+# ⚠ **The premise that argument stood on is FALSE since 2026-09-26.** This block said the three
+# ceiling tables were written by `crates/vike-secrets/src/settings.rs` ALONE, that this daemon's own
+# paths (`edit_account_in`, the credential upsert) touched `account` and `credential` and nothing
+# else, and that what stood between this daemon and its own ceiling was that no code path in it
+# wrote those tables. `docs/decisions/0086-settings-live-only-in-the-database.md` point 6 (the
+# owner, 2026-09-26) REVERSED that: an accepted `WireCommand::SetSetting` reaches
+# `crates/vike-tradehub/src/server/settings.rs`'s `apply_set_setting`, which calls
+# `vike_config::write_setting_row` — the same one-row writer `vike-cli config set` uses — so THIS
+# daemon writes `setting` rows (the `policy` ceilings among them) for an authenticated control
+# peer, and, through its account verbs, the `account` rows whose `tier` and `active` arm each account
+# (decision 0119). It does not reach `profile_risk` or the profile tables: that writer plans only the
+# one `setting` row shape (`crates/vike-secrets/src/settings/row_write.rs`'s `RowChange`).
+#
+# ⚠ **RESOLVED 2026-10-06 — NO AUTHORIZER IS WANTED, and none is owed:** the guard this block called
+# owed would make exactly those writes impossible, while 0086 point 6 makes this daemon a legitimate
+# ceiling writer for an authenticated control peer. The owner asked FROM WHOM it would defend and
+# `docs/decisions/0068-the-ceiling-bounds-mistakes-not-an-adversary.md` is the answer, now accepted: a
+# ceiling bounds MISTAKES (a typo, a runaway strategy, an agent pointed at the wrong thing) and is not
+# a barrier against a compromised daemon, which holds the keys it bounds and signs directly, nor
+# against the operator, who is who it is for. What remains open is 0068's own residual and nothing
+# new: a stolen control key can raise a ceiling. The authorizer idea above is kept as history.
+#
+# NOTE — protection of a ceiling against a write by this daemon rests on CODE today, not on this
+# grant or on any line of this unit:
+#   * the handshake scope: only a `Scope::Write` peer reaches the command arm, and a node holding no
+#     control key refuses that scope (`crates/vike-tradehub/src/server/handshake.rs`'s
+#     `scope_admission`);
+#   * the one acceptance path, `crates/vike-tradehub/src/server/control.rs`'s `accept_command`: the
+#     rate token, the rationale sanitizer, then the write, then the audit record;
+#   * the row validator, `crates/vike-config/src/write.rs`'s `validate_row_write`: a sealed store
+#     must already boot clean (`crates/vike-config/src/mirror.rs`'s `seal_refusal`), the candidate
+#     must load and change only the key it names, and a refusal leaves the database byte-identical;
+#     before that, `crates/vike-config/src/write.rs`'s `refuse_credential_key` refuses a
+#     credential-shaped key without opening the database;
+#   * no hot apply: `crates/vike-tradehub/src/hot_reload.rs`'s `classify` answers Restart for every
+#     `policy` key, so a written ceiling binds at the next start;
+#   * the audit trail: `crates/vike-tradehub/src/audit.rs`'s `record_settings_write`, old -> new, to
+#     the log line and to the change journal under `settings/state/changes`.
+# The same list, with its residuals, is in `crates/vike-secrets/src/settings.rs`'s module doc.
+#
+# The Telegram at-most-once ledger is COVERED by the grant above. A `--features telegram` build
+# persists Telegram's `update_id` high-water mark — the thing that stops a restart replaying an order
+# command — and `telegram_ledger_path` resolves it to `<settings>/state/telegram_updates.ledger`,
+# i.e. inside ReadWritePaths= already; no extra grant, and nothing further to do.
+#
+# It also no longer degrades quietly if the path is wrong: an unreadable or unappendable ledger
+# REFUSES TO ARM the channel (one error! naming the cause) instead of trading on with at-most-once
+# switched off, and a mark that stops persisting under a running daemon drops that update
+# undispatched. So a misconfigured layout here costs the remote-control channel, never a duplicate
+# order — the daemon keeps trading headless either way.
+#
+# ⚠ Still do NOT add the exe directory to ReadWritePaths=. `<exe_dir>/telegram_updates.log` was the
+# pre-move path and nothing reads or writes it any more, so it needs no grant. A daemon that can
+# rewrite its own binary is a worse problem than any it would solve here.
+#
+# ⚠ The HALT sentinel is the other standing temptation to grant it, and the answer is the same. Its
+# built-in default USED to be `<exe_dir>/HALT`, so the obvious "fix" for an EROFS on `touch` was to
+# grant the bin directory — which buys one writable sentinel and hands the daemon write access to the
+# binary it is running. The default moved to <project>/settings/state/HALT instead, into the grant
+# that already exists above; there is no longer a variable that could name it elsewhere. The grant
+# stays where it is.
+
+
+# --- syscall / capability hardening, MEASURED ON THE REAL BINARIES -------------------------------
+# ⚠ MEASURED on the CI box 2026-08-17, systemd 255, with throwaway SYSTEM units running these exact
+# binaries — the set below is not a template copied from a hardening guide, every line survived a
+# run. The recorder's own `--once` dry run exits 0 under it, and that run dials 8 live polymarket
+# streams and 2 binance streams, so the TLS handshakes and WebSocket dials happen UNDER the seccomp
+# filter; vike-tradehub reaches `{"kind":"ready"}`. `systemd-analyze security`: recorder 8.7 -> 1.9,
+# tradehub 8.3 -> 1.7. Before this block the units carried the four filesystem directives above and
+# NONE of these — the whole syscall and capability surface was open.
+#
+# Nothing here is a guess about what the daemon needs: it runs as an ordinary user, acquires no
+# capability, creates no namespace of its own, takes no realtime priority and executes one ABI.
+#
+# ⚠ PrivateNetwork= is deliberately ABSENT and always will be — these daemons ARE network clients.
+# `systemd-analyze` charges 0.5 for that plus 0.3 for holding AF_INET sockets at all; both are
+# unrecoverable for anything that talks to a venue, and adding it to chase the number would produce a
+# daemon that cannot do its job. RestrictAddressFamilies= therefore ALLOWS the three families in use
+# rather than pretending the internet is optional.
+#
+# ⚠ The one line with a real blast radius is UMask=0077: new files become owner-only. Checked on
+# the CI box before adopting — `lsof +D <project>` shows exactly one user touching the tree, so nothing
+# else reads the store today. A future reader under a DIFFERENT account breaks on it, loudly, with a
+# permission error rather than silence. That is the intended trade for a tree holding venue keys.
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @module @reboot @swap @raw-io @debug @clock @cpu-emulation
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0077
+[Install]
+WantedBy=default.target

@@ -1,0 +1,63 @@
+# vike-notify@.service — SYSTEM-scope OnFailure= notifier template.
+# Install to /etc/systemd/system/vike-notify@.service, then `systemctl daemon-reload`.
+#
+# Attach to a production unit by adding ONE line to its [Unit] section:
+#     OnFailure=vike-notify@%n.service
+# `%n` expands to the failing unit's own name, which arrives here as `%i`.
+#
+# ⚠ There is deliberately NO `OnFailure=` in THIS unit: a notifier that notified about its own
+# failure would recurse. Its failures surface through `systemctl --failed` instead (the script
+# exits non-zero when delivery fails) plus the breadcrumb file in the state directory.
+#
+# ⚠ systemd starts an OnFailure= unit as an INDEPENDENT job. It does not gate, delay or serialize
+# with the failing unit's own `Restart=`, so attaching this cannot slow a service's recovery. The
+# `TimeoutStartSec=` below and the script's own `curl --max-time` bound it regardless.
+#
+# The USER-scope twin is deploy/vike-notify-user@.service — a systemd USER manager cannot start a
+# system unit, so user units (poly-l2-monitor, vike-recorder, the gh-runners) need their own copy.
+
+[Unit]
+Description=vike-notify — report failure of %i to Telegram
+# Do not let a notification attempt fire before the network is plausibly up at boot.
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/vike-notify %i
+SyslogIdentifier=vike-notify
+
+# Credentials. ⚠ EnvironmentFile, never an inline `Environment=` line: unit files are world-readable
+# (`/etc/systemd/system/vike-web.service` is mode 0644 with an inline `Environment=PA_PUSH_TOKEN=…`,
+# which is exactly the anti-pattern this avoids), and `systemctl show` prints inline Environment= to
+# any user. This file must be 0600 root:root and contains:
+#     VIKE_NOTIFY_TELEGRAM_TOKEN=...
+#     VIKE_NOTIFY_TELEGRAM_CHAT_ID=...
+EnvironmentFile=/etc/vike-notify/telegram.env
+
+# Anti-storm knobs — see the header of deploy/vike-notify for why there are two of them.
+Environment=VIKE_NOTIFY_COOLDOWN=3600
+Environment=VIKE_NOTIFY_MAX_PER_HOUR=12
+
+# Resolves to /var/lib/vike-notify here and to ~/.local/state/vike-notify in the user twin, so the
+# one script works unchanged in both scopes via $STATE_DIRECTORY.
+StateDirectory=vike-notify
+StateDirectoryMode=0750
+
+# Bounded: a hung notifier must never accumulate.
+TimeoutStartSec=30
+
+# --- hardening ------------------------------------------------------------------------------------
+# This unit holds a bot token and makes an outbound HTTPS call. It needs no privilege beyond that.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=

@@ -1,0 +1,47 @@
+[package]
+name = "vike-options"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the venue-free options pure core: the chain calendar constructors and pure column model, Black–Scholes price/greeks/implied-vol and second-order greeks, multi-leg basket analytics (a leg built from a vike-model OptionSpec) and the ATM-IV / IV−RV read. The chain/greeks/column modules are f64 ports of vike-trader-app data/options/*.py. The option VALUE types (OptionKind and the chain snapshot) are vike-marketdata's; its only internal-crate deps are the two vocabularies, vike-marketdata and vike-model. The realized-vol estimators are vike-indicators'. No I/O, no egui."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `leaf` — names at most the
+# floor: the market-data vocabulary at 5 and the domain vocabulary at 10.
+# ⚠ WAS `domain` (20) until 2026-09-23, when this crate had NO vike-* dependency at all, so `domain` overstated it by a whole tier.
+# Since decision 0126 it names `vike-marketdata` (5), and since a basket `Leg` is built from a contract (`Leg::from_contract`)
+# `vike-model` (10) too — exactly the floor this band admits. The band's rule is machine-checked by
+# `every_tier_15_crate_names_nothing_above_the_vocabulary`; the verdict is
+# docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+libm = { workspace = true }   # erf for Black–Scholes (see the root-manifest rationale)
+chrono = { workspace = true } # UTC calendar math for expiry DTE / 08:00-UTC settle epoch
+# The option VALUE types (decision 0126): `OptionKind` and the chain snapshot
+# `OptionChain`/`Expiry`/`StrikeRow`/`OptionQuote`/`UnderlyingKind` are feed output and live in the
+# market-data vocabulary; this crate keeps the maths and the chrono constructors. Layer 5 < 15; serde
+# is the only thing it brings along.
+vike-marketdata = { path = "../vike-marketdata" }
+# The contract vocabulary (decision 0126): `Leg::from_contract` takes a leg's strike and right from a
+# `vike_model::OptionSpec`, so a caller holding an `Instrument` never re-spells them. Layer 10 < 15.
+# No feature: `test-support` stays on the dev edge below.
+vike-model = { path = "../vike-model" }
+
+# ⚠ The edge below is a DEV edge on the SAME crate as the normal one above, and only adds a
+# feature: it is invisible to any consumer, absent from `cargo package`'s tarball, and discounted
+# by `crates/vike-ops/tests/architecture/layer_gate.rs`, which walks NORMAL edges only.
+#
+# The shared libm walk (decision 0074): `vike_model::libm_walk` holds the text parser this crate's
+# `tests/libm_platform_probe.rs` used to keep a private copy of. The feature must be named here
+# because `test-support` is gated `#[cfg(any(test, feature = "test-support"))]`; naming it on the
+# NORMAL edge would compile that code into shipped builds, which is exactly what the gate is for.
+[dev-dependencies]
+vike-model = { path = "../vike-model", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true
