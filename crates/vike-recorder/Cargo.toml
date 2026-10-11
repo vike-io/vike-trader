@@ -1,0 +1,52 @@
+[package]
+name = "vike-recorder"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the live-tape RECORDING LIBRARY. A customer subscribes to symbols or market FAMILIES; this resolves them, drives the venue feeds and writes the rows into their local DataFusion+Parquet store, one grouped commit per family. It is no longer a daemon of its own: ruling 10 of docs/superpowers/specs/2026-09-09-datahub-market-data-wire-design.md merged the recorder process into the data server, so the mount, the tick cadence and the teardown live in crates/vike-datahub/src/recorder.rs and this crate is what that mount is built from."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Every NORMAL (non-dev)
+# vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+#
+# 25 `domain-stacked`. This is a LIBRARY the data daemon composes (ruling 10), and since decision
+# 0092 (one venue client per process) it names no bridge: the venue table lives in
+# `crates/vike-datahub/src/recording.rs`. The normal vike-* edges are vike-data (20), vike-catalog (20),
+# vike-alerting (15) and vike-model (10), so the floor is 21 and `domain-stacked` ("a crate composed
+# of layer-20 pieces") is the lowest correctly-named rank above it. The down-only rule at 25 also
+# keeps it off the research harness (`vike-backtest`, 30). Its one consumer, `vike-datahub` (65), is
+# unaffected. How the rank follows the declaration, not the role:
+# docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+[package.metadata.vike]
+layer = 25
+
+[dependencies]
+# The store + the RecorderSink write engine. `hist-datafusion` because a recorder writes Parquet.
+vike-data = { path = "../vike-data", features = ["hist-datafusion"] }
+# Domain types on the sink verbs (QuoteTick/TradeTick/BookUpdate).
+vike-model = { path = "../vike-model" }
+# The silence watchdog's DELIVERY half (`src/alerts.rs`). A plain edge with no feature to choose:
+# vike-alerting declares none and names no vike-* crate in any build (its whole reason to exist is
+# that a watchdog can page without linking the trading core). The engine, the rule model, the
+# evaluator and the webhook sinks all come with it.
+# `crates/vike-ops/tests/architecture/layer_gate/vike_free.rs`'s `VIKE_FREE_CRATES` gates that.
+vike-alerting = { path = "../vike-alerting" }
+serde = { workspace = true, features = ["derive"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+# ⚠ NO venue bridge and no `[features]` table (decision 0092): what a binance or polymarket recording
+# contains is argued in `crates/vike-datahub/src/recording.rs`, and the features that choose it are
+# the daemon's `record-<venue>`.
+# The `Instrument` model and `CatalogProvider` seam `resolve::CatalogGlob` filters — the family glob
+# for EVERY venue with an enumerable instrument list (bridge-free, vike-model only).
+vike-catalog = { path = "../vike-catalog" }
+
+[dev-dependencies]
+tempfile = "3"
+# `vike_data::NoopSink` — the workspace's ONE owned `LiveDataSink` double ("one owned double behind
+# a test-support feature"), so this crate does not grow a private copy of it.
+vike-data = { path = "../vike-data", features = ["hist-datafusion", "test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

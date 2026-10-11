@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Vike Trader
+GenericName=Trading terminal
+Comment=Charts, order entry and backtests on your Vike backend
+Exec=vike-desktop
+Icon=io.vike.Trader
+Terminal=false
+Categories=Office;Finance;
+StartupWMClass=io.vike.Trader

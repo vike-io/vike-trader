@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 47c0b037442ff1e90780eb8420752457dfba5f8663015813a2ac3d598e321d4f # shrinks to end_date = "300000000-1-1T0:0:0Z"
+cc 780fe17aae4ec17229fb341b576eef3c9a5208de78a69c5d2b22a342a072757d # shrinks to log = Object {"blockNumber": String("0x10"), "blockTimestamp": String("0x10"), "data": String("0x"), "topics": Array [String("0xb44d84d3289691f71497564b85d4233648d9dbae8cbdbb4329f301c3a0185894")], "transactionHash": String("0xabc")}, text = "0000000000000000000000000000000é0000000000000000000000000000000"

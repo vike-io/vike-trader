@@ -1,0 +1,37 @@
+{
+  "_what": "The exact Hyperliquid /exchange POST bodies this build signs, frozen. Replayed by crates/bridges/hyperliquid/tests/signed_payload_fixtures.rs, which carries the full rationale.",
+  "_property": "STABILITY, not correctness — with ONE exception named below. These bytes were RECORDED from this implementation, not ported from a venue SDK vector: neither official Hyperliquid SDK publishes one for usdClassTransfer or approveBuilderFee (measured 2026-09-14). They prove the signed payload did not change; they do not prove it was ever right.",
+  "_the_one_exception": "l1_limit_order_no_vault reproduces the official Rust SDK's test_limit_order_action_hashing inputs exactly — its key, its action, its nonce 1583838 — so the signature inside that payload IS the SDK's published mainnet vector and is checked against it. That one case is a correctness anchor; the other five are not.",
+  "_authority": "The frozen side wins. A mismatch means a source key or an EIP-712 type string moved: restore the source. Editing this file to match makes a protocol break permanent and silent, which is the exact failure the test exists to prevent. There is deliberately no regenerator.",
+  "_inputs": "Signed with the official Rust SDK's public test key (e908f8…688e — no funds, no account). User-signed cases use nonce 1700000000123; L1 cases use the SDK's own 1583838. RFC-6979 ECDSA makes every byte, signature included, deterministic.",
+  "_fields": "`payload` is the exact UTF-8 request body, compared byte-for-byte. `digest` is the EIP-712 message the signature was produced over — present only for the user-signed pair, and the only thing that moves if an eip712.rs type string is edited. `primary_type` is the hashed type string itself, matched as raw text so a new user-signed action cannot ship without a frozen digest.",
+  "_one_exception_to_byte_for_byte": "The two l1_limit_order_* payloads are compared byte-for-byte FIRST and, only if that fails, re-judged with every object's keys sorted. Their JSON key order is not this repo's to pin: src/transport.rs's exchange_body returns a serde_json::Value, and serde_json::Map is a BTreeMap (sorted) or an IndexMap (declaration order) depending on whether anything else in the build graph enables serde_json/preserve_order — datafusion-physical-plan does, so `cargo test -p vike-hyperliquid` alone and the full roster lane emit DIFFERENT bytes from identical source. The key order recorded below is the sorted one. Nothing else is relaxed: a changed serde rename moves a key, a changed signature moves a value, and neither survives the sorting. The SIGNED bytes are unaffected — the L1 signature is msgpack over the Action struct, computed before to_value is called, and the user-signed digests are EIP-712 over typed fields with no JSON in the preimage. crates/bridges/hyperliquid/tests/signed_payload_fixtures.rs's ORDER_UNSTABLE_CASES is the declared set and carries the argument.",
+  "cases": {
+    "usd_class_transfer_mainnet_to_perp": {
+      "primary_type": "HyperliquidTransaction:UsdClassTransfer(string hyperliquidChain,string amount,bool toPerp,uint64 nonce)",
+      "digest": "0xc9f085341b772792754a9782327552a2d63e95d304e9eb6c26b20903688d4b94",
+      "payload": "{\"action\":{\"type\":\"usdClassTransfer\",\"amount\":\"25.5\",\"toPerp\":true,\"nonce\":1700000000123,\"signatureChainId\":\"0x66eee\",\"hyperliquidChain\":\"Mainnet\"},\"nonce\":1700000000123,\"signature\":{\"r\":\"0xe119ccdb282f36217a75441ad2ad5e5f52fe848446459b8f728a721889c43b3e\",\"s\":\"0x4ba9562302618d8ae5e663eea5f685f95a53c3974af369f6eb37621bd585ea97\",\"v\":27}}"
+    },
+    "usd_class_transfer_testnet_from_perp": {
+      "primary_type": "HyperliquidTransaction:UsdClassTransfer(string hyperliquidChain,string amount,bool toPerp,uint64 nonce)",
+      "digest": "0x5790189615bb6cc09bf572af99010c7eb0dfdf36582d38ad45ffbe4648a48ba6",
+      "payload": "{\"action\":{\"type\":\"usdClassTransfer\",\"amount\":\"100\",\"toPerp\":false,\"nonce\":1700000000123,\"signatureChainId\":\"0x66eee\",\"hyperliquidChain\":\"Testnet\"},\"nonce\":1700000000123,\"signature\":{\"r\":\"0x3f3565c19a64aa5998a420bf2a97375a187b039eef584a7a62ce39b2afe6d1d3\",\"s\":\"0x3b066343d1c732d4e1b070650738b248317d934eaf8dd7fe3eaad192d9fde574\",\"v\":28}}"
+    },
+    "approve_builder_fee_mainnet": {
+      "primary_type": "HyperliquidTransaction:ApproveBuilderFee(string hyperliquidChain,string maxFeeRate,address builder,uint64 nonce)",
+      "digest": "0x9354ee6ba110ace1557e1e5f8ab0f865ab17d3b64ae99c3e960bdf4abf10e4dc",
+      "payload": "{\"action\":{\"type\":\"approveBuilderFee\",\"hyperliquidChain\":\"Mainnet\",\"signatureChainId\":\"0x66eee\",\"maxFeeRate\":\"0.01%\",\"builder\":\"0x0c8de5f0362f6e4e9f0a4e3c1e1d2f3a4b5c6d7e\",\"nonce\":1700000000123},\"nonce\":1700000000123,\"signature\":{\"r\":\"0x77f132d06f395c84d38d40e2603602e7349d04d8b93bf10889e1f745e49ea439\",\"s\":\"0x4ced0fea8643aee2889a7bffcc43d8a0c9e7aed343a48d98dda72ecbb153da5c\",\"v\":28}}"
+    },
+    "approve_builder_fee_testnet": {
+      "primary_type": "HyperliquidTransaction:ApproveBuilderFee(string hyperliquidChain,string maxFeeRate,address builder,uint64 nonce)",
+      "digest": "0xff8d0dcdbb589acb3ac8e8111590f0bc92712fa94a9ce5ada060eab9d39a6b51",
+      "payload": "{\"action\":{\"type\":\"approveBuilderFee\",\"hyperliquidChain\":\"Testnet\",\"signatureChainId\":\"0x66eee\",\"maxFeeRate\":\"0%\",\"builder\":\"0x0c8de5f0362f6e4e9f0a4e3c1e1d2f3a4b5c6d7e\",\"nonce\":1700000000123},\"nonce\":1700000000123,\"signature\":{\"r\":\"0x9a3d65ee6263a8bef6daae5a8e17a7dac679971852456f4253ac315f7899433a\",\"s\":\"0x6b0aa6db8f409c9b78ecc093f91952a456aac20569ebb58b072f20d2063ec817\",\"v\":27}}"
+    },
+    "l1_limit_order_with_vault": {
+      "payload": "{\"action\":{\"grouping\":\"na\",\"orders\":[{\"a\":1,\"b\":true,\"p\":\"2000.0\",\"r\":false,\"s\":\"3.5\",\"t\":{\"limit\":{\"tif\":\"Ioc\"}}}],\"type\":\"order\"},\"nonce\":1583838,\"signature\":{\"r\":\"0xaac1a61f4fc69df83493e8ad0ab3caf684002b2cec3f4e35287b869ba3ca20fd\",\"s\":\"0x6cca4f794849e9d6426a7ab4ea06ea2354459f1c019c7e3bc77adec59e64714c\",\"v\":28},\"vaultAddress\":\"0x1111111111111111111111111111111111111111\"}"
+    },
+    "l1_limit_order_no_vault": {
+      "payload": "{\"action\":{\"grouping\":\"na\",\"orders\":[{\"a\":1,\"b\":true,\"p\":\"2000.0\",\"r\":false,\"s\":\"3.5\",\"t\":{\"limit\":{\"tif\":\"Ioc\"}}}],\"type\":\"order\"},\"nonce\":1583838,\"signature\":{\"r\":\"0x77957e58e70f43b6b68581f2dc42011fc384538a2e5b7bf42d5b936f19fbb673\",\"s\":\"0x60721a8598727230f67080efee48c812a6a4442013fd3b0eed509171bef9f23f\",\"v\":28}}"
+    }
+  }
+}

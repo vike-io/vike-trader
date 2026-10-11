@@ -1,0 +1,824 @@
+//! The `SETTINGS` rows read by `vike-config`.
+
+use super::vike_refused;
+use crate::settings::{Layer, Medium, Naming, Scope, Setting};
+
+pub(crate) const ROWS: &[Setting] = &[
+    Setting {
+        // The row for this RETIRED switch (decision 0095: the arming ceiling alone chooses the
+        // network now). A SET process-env value is a hard startup refusal
+        // (`vike_config::refuse_removed_env`, looked up in the caller-supplied map, hence
+        // `Injected`/`MapLookup`) pointing the operator at `policy.venues.binance`. A credential
+        // row of this name is read by nothing (`vike_config::arming`'s module doc).
+        name: "BINANCE_MAINNET",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095): the account's tier chooses the \
+                  network (decision 0119)",
+    },
+    Setting {
+        // The row for this RETIRED switch (decision 0095: the arming ceiling alone chooses the
+        // network now). A SET process-env value is a hard startup refusal
+        // (`vike_config::refuse_removed_env`, looked up in the caller-supplied map, hence
+        // `Injected`/`MapLookup`) pointing the operator at `policy.venues.bybit`. A credential
+        // row of this name is read by nothing (`vike_config::arming`'s module doc).
+        name: "BYBIT_MAINNET",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095): the account's tier chooses the \
+                  network (decision 0119)",
+    },
+    Setting {
+        // The PROCESS variable of that name, and only it: decision 0095 moved `ctrader_authorize`
+        // onto the credential store's map, which is what every cTrader mount reads (its
+        // `bridges/ctrader` row, `crates/vike-ops/src/settings/rows/bridges.rs`'s
+        // `CTRADER_CLIENT_ID`), and `vike_config::REMOVED_ENV` refuses a set process variable at
+        // startup.
+        name: "CTRADER_CLIENT_ID",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); the credential store holds the app \
+                  pair, `vike-cli secrets set CTRADER_CLIENT_ID`",
+    },
+    Setting {
+        // The PROCESS variable of that name, and only it — see `CTRADER_CLIENT_ID`'s row above.
+        name: "CTRADER_CLIENT_SECRET",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); the credential store holds the app \
+                  pair, `vike-cli secrets set CTRADER_CLIENT_SECRET`",
+    },
+    Setting {
+        // `ctrader_authorize`'s OAuth flow parameters were these three process variables until
+        // decision 0095 made them the tool's command-line flags (`--redirect-uri`, `--scope`,
+        // `--token-file`, with the variables' old defaults). Every booting root refuses them
+        // through `vike_config::REMOVED_ENV` — which is the lookup these rows declare. The tool
+        // boots nothing and refuses the same five out of its own sweep
+        // (`crates/bridges/ctrader/src/bin/ctrader_authorize.rs`'s `refuse_retired_variables`), a
+        // table-driven check that resolves at no `.get(` site — so it is a sighting, not a row, and
+        // no `bridges/ctrader` row declares a read of a retired name.
+        name: "CTRADER_REDIRECT_URI",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); ctrader_authorize --redirect-uri",
+    },
+    Setting {
+        name: "CTRADER_SCOPE",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); ctrader_authorize --scope",
+    },
+    Setting {
+        name: "CTRADER_TOKEN_FILE",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); ctrader_authorize --token-file",
+    },
+    Setting {
+        name: "HYPERLIQUID_HIP3",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); flags.hyperliquid_hip3 in the \
+                  settings database",
+    },
+    Setting {
+        // The row for this RETIRED switch (decision 0095: the arming ceiling alone chooses the
+        // network now). A SET process-env value is a hard startup refusal
+        // (`vike_config::refuse_removed_env`, looked up in the caller-supplied map, hence
+        // `Injected`/`MapLookup`) pointing the operator at `policy.venues.hyperliquid`. A
+        // credential row of this name is read by nothing (`vike_config::arming`'s module doc).
+        name: "HYPERLIQUID_MAINNET",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095): the account's tier chooses the \
+                  network (decision 0119)",
+    },
+    Setting {
+        // The row for this RETIRED switch (decision 0095: the arming ceiling alone chooses the
+        // network now). A SET process-env value is a hard startup refusal
+        // (`vike_config::refuse_removed_env`, looked up in the caller-supplied map, hence
+        // `Injected`/`MapLookup`) pointing the operator at `policy.venues.okx`. A credential
+        // row of this name is read by nothing (`vike_config::arming`'s module doc).
+        name: "OKX_MAINNET",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095): the account's tier chooses the \
+                  network (decision 0119)",
+    },
+    Setting {
+        // The settlement pollers' switches and the chain watcher's settings were `bridges/polymarket`
+        // `Layer::Library` reads until decision 0095 (D4): code nothing starts takes its values as
+        // PARAMETERS now, so no crate reads these; `vike_config::REMOVED_ENV` refuses each at
+        // startup, which is the lookup these rows declare.
+        name: "POLY_AUTO_REDEEM",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); AutoRedeemPoller::spawn's `enabled`, \
+                  and nothing starts that poller",
+    },
+    Setting {
+        name: "POLY_CHAIN_MAX_SPAN",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); ChainRpcSettings::max_span, and \
+                  nothing starts the chain readers",
+    },
+    Setting {
+        name: "POLY_CHAIN_PROXY",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); ChainRpcSettings::via_proxy, and \
+                  nothing starts the chain readers",
+    },
+    Setting {
+        name: "POLY_CHAIN_RPC_URL",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); ChainRpcSettings::rpc_url, and \
+                  nothing starts the chain readers",
+    },
+    Setting {
+        name: "POLY_CHAIN_WATCH",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); ChainWatchPoller::spawn's \
+                  `enabled`, and nothing starts that watcher",
+    },
+    Setting {
+        // The egress guard's two variables became its parameters (decision 0095): the polymarket
+        // smokes pass `DEFAULT_EGRESS_PROBE`, and the order-placing ones `DUBLIN_EGRESS_COUNTRY`.
+        name: "POLY_EGRESS_PROBE_URL",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); check_expected_egress's probe_url",
+    },
+    Setting {
+        // The SECOND row for this name, in the crate that REFUSES it: a SET process-env value is a
+        // hard startup refusal (`vike_config::refuse_removed_env`, looked up in the caller-supplied
+        // map, hence `Injected`/`MapLookup`, decision 0095). The `bridges/polymarket` row is the
+        // mount gate's map read, which the daemon fills from the resolved flag, so a credential row
+        // of this name is read by nothing (`vike_config::arming`'s module doc).
+        name: "POLY_EXEC",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); flags.poly_exec is the setting",
+    },
+    Setting {
+        name: "POLY_EXPECT_EGRESS_COUNTRY",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); check_expected_egress's expected",
+    },
+    Setting {
+        name: "POLY_HEARTBEAT",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); HeartbeatPoller::spawn's \
+                  `enabled`, and nothing starts that poller",
+    },
+    Setting {
+        // The SECOND row for this name, in the crate that REFUSES it: a SET process-env value is a
+        // hard startup refusal (`vike_config::refuse_removed_env`, looked up in the caller-supplied
+        // map, hence `Injected`/`MapLookup`, decision 0095). The `bridges/polymarket` row is the
+        // mount gate's map read, which the daemon fills from the resolved flag, so a credential row
+        // of this name is read by nothing (`vike_config::arming`'s module doc).
+        name: "POLY_RECONCILE",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); flags.poly_reconcile is the \
+                  setting",
+    },
+    Setting {
+        name: "POLY_REDEEM_HALT",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup, an empty value included (decision 0095); \
+                  AutoRedeemPoller::spawn's `halted` beside the halt file",
+    },
+    // The nine retired Polymarket settings variables below — decision 0095 — each looked up by
+    // `vike_config::refuse_removed_env` in its caller-supplied map (`crate::REMOVED_ENV`), which
+    // refuses startup when one is set rather than reading it. `POLY_EXEC` and `POLY_RECONCILE`
+    // already have their own `vike-config` row above and are not repeated here.
+    Setting {
+        name: "POLY_EXEC_MARKETS",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); venue.polymarket.exec_markets in \
+                  the settings database",
+    },
+    Setting {
+        name: "POLY_PRESUBMIT_REGISTER",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); venue.polymarket.presubmit_register \
+                  in the settings database",
+    },
+    Setting {
+        name: "POLY_PROXY_ENABLED",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); venue.polymarket.proxy_enabled in \
+                  the settings database",
+    },
+    Setting {
+        name: "POLY_PROXY_HOST",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); venue.polymarket.proxy_host in the \
+                  settings database",
+    },
+    Setting {
+        name: "POLY_PROXY_PORT",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); venue.polymarket.proxy_port in the \
+                  settings database",
+    },
+    Setting {
+        name: "POLY_RATE_GATE",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); venue.polymarket.rate_gate in the \
+                  settings database",
+    },
+    Setting {
+        name: "POLY_SOCKS_PROXY",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); venue.polymarket.socks_proxy in the \
+                  settings database",
+    },
+    Setting {
+        name: "POLY_WS_PROXY_ENABLED",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); venue.polymarket.ws_proxy_enabled \
+                  in the settings database",
+    },
+    Setting {
+        name: "POLY_WS_TOKENS_PER_SOCKET",
+        krate: "vike-config",
+        scope: Scope::Venue,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); \
+                  venue.polymarket.ws_tokens_per_socket in the settings database",
+    },
+    Setting {
+        name: "VIKE_ALLOW_WITHDRAW_KEYS",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); flags.allow_withdraw_keys in the \
+                  settings database",
+    },
+    Setting {
+        name: "VIKE_BINANCE_TRADE_LITE_FILL",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); venue.binance.trade_lite_fill in \
+                  the settings database",
+    },
+    Setting {
+        name: "VIKE_BYBIT_FAST_EXEC",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); venue.bybit.fast_exec in the \
+                  settings database",
+    },
+    // The out-of-band kill switch's PATH OVERRIDE, retired (decision 0099): `vike_config::REMOVED_ENV`
+    // refuses a process that still carries it, which is the one read of this name left, and an
+    // injected lookup. The sentinel itself is unchanged — `crates/vike-bridge-core/src/halt.rs`'s
+    // `resolve_halt_path` owns the precedence (the declared project's `settings/state/HALT`, else
+    // the exe directory), `halt_path_arming_error` is why an unusable one is loud instead of
+    // silent — and so are the two rows that used to stand here: `vike-bridge-core`'s `Library`
+    // read (a `LIBRARY_PIN` ratchet SHRINK) and `vike-paper`'s `TestOnly` row, whose test now
+    // engages the process-wide sentinel through a working directory instead of a variable.
+    Setting {
+        name: "VIKE_HALT_FILE",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0099); the sentinel is always \
+                  <project>/settings/state/HALT",
+    },
+    Setting {
+        name: "VIKE_HL_OUTCOME",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); OutcomePoller::spawn's `enabled`, \
+                  and nothing starts that poller",
+    },
+    Setting {
+        name: "VIKE_MARK_STREAMS",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); venue.<venue>.mark_streams, one \
+                  row per venue, in the settings database",
+    },
+    Setting {
+        name: "VIKE_MARK_STREAMS_ASTER",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); venue.aster.mark_streams in the \
+                  settings database",
+    },
+    Setting {
+        // ⚠ REMOVED, not read — settings unification PHASE 5. This was the per-order notional
+        // ceiling, read by `vike-desktop`'s `main.rs` (into `OrderLimits`) and by `vike-cli`'s
+        // `cmd/verbs.rs` (the advisory preview guardrail). A ceiling any exported variable can
+        // raise is not a ceiling, so BOTH reads were deleted and the value moved to
+        // the `policy.max_notional_per_order` row (`vike_config::Policy`), which has
+        // no env layer at all — `Policy` implements neither `EnvOverride` nor `CliOverride`.
+        //
+        // The row survives, in the crate that now REFUSES the variable: silently ignoring a
+        // ceiling its operator believes is active is worse than either keeping it or erroring, so
+        // `vike_config::refuse_removed_env` looks the name up in the caller-supplied env map
+        // (hence `Injected`/`MapLookup`) and fails startup naming the file and key. The day
+        // nothing refuses it any more, this row goes too.
+        name: "VIKE_MAX_ORDER_NOTIONAL",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup; use policy.max_notional_per_order",
+    },
+    Setting {
+        name: "VIKE_PM_RESOLVE",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); ResolvePoller::spawn's `enabled`, \
+                  and nothing starts that poller",
+    },
+    Setting {
+        // Was `bridges/deribit`/`Library` — the idempotency-bucket width, resolved inside the DVOL
+        // recorder's constructor beside the store it buckets for — until decision 0095 (D4) made the
+        // cadence a PARAMETER of `DvolRecorder::with_cadence` (nothing constructs a recorder, so
+        // nothing reads a setting for it). `vike_config::REMOVED_ENV` refuses a set one.
+        name: "VIKE_RECORD_DVOL_CADENCE_MS",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0095); DvolRecorder::with_cadence's \
+                  cadence_ms, and nothing constructs a recorder",
+    },
+    Setting {
+        // The daemon run profile's FILE pointer, retired by decision 0111 (verdict 4): the run
+        // profile is the ACTIVE `run` row of the settings database, written by
+        // `vike-cli config bootstrap-run`, and no binary reads a profile file. Its three readers
+        // went in the same change — `vike-core`'s library env read (a `LIBRARY_PIN` shrink), the
+        // `incident` bin in `vike-mount`, and the daemon's own selection rung in `vike-tradehub` —
+        // so the one read left is `vike_config::refuse_removed_env`'s lookup in the caller's map,
+        // which fails startup while the variable is set. The row goes the day nothing refuses it.
+        name: "VIKE_RUN_PROFILE",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup (decision 0111); the run profile is the active \
+                  `run` row, written by vike-cli config bootstrap-run",
+    },
+    Setting {
+        // ⚠ REMOVED, not read. Nothing in this workspace consumes it: credentials are read from
+        // the credential store (the settings database; `<project>/settings/secrets.env` only on a
+        // box that has not migrated), in plaintext, and there is no second store and nothing to
+        // unseal.
+        //
+        // The row survives, in the crate that now REFUSES the variable, for the same reason
+        // `VIKE_MAX_ORDER_NOTIONAL`'s does: an operator who set it believes it governs how
+        // credentials are opened, and starting anyway would leave that belief silently false. So
+        // `vike_config::refuse_removed_env` looks the name up in the caller-supplied env map (hence
+        // `Injected`/`MapLookup`) and fails startup. It refuses WITHOUT printing the value — the
+        // value is itself a secret and the refusal lands on stderr, which every service manager
+        // captures (`RemovedSetting::echo_value`). The day nothing refuses it any more, this row
+        // goes too.
+        name: "VIKE_SECRETS_PASSPHRASE",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup; credentials are plaintext in the settings directory",
+    },
+    Setting {
+        // ⚠ NOT the state ROOT (`VIKE_STATE_ROOT`), despite the name: this is the strategy-state
+        // SIDECAR directory (the per-mount `strategy_state::write_json_atomic` blobs). It predates
+        // settings-unification Phase 2, which is exactly why that phase's root had to be called
+        // `VIKE_STATE_ROOT` — one variable cannot mean both without an operator silently dumping
+        // every strategy sidecar into the state root (or relocating the window layout while
+        // pointing the sidecars somewhere). ⚠ Folding this under the state root WAS called "the
+        // obvious follow-up" here, and it LANDED without needing a second variable: the desktop
+        // shell's `state_dir_path` joined `strategy-state` onto the boot's own already-resolved
+        // state directory, so `<exe_dir>` became the no-project last resort rather than the default
+        // this row used to name.
+        //
+        // ⚠ ...and that READER is gone with the desktop cut — the GUI mounts no strategies now, so
+        // nothing in this workspace consumed the `config.state_dir` this variable fed. That left
+        // the key declared, validated and reported by `vike-cli config show` as the ORIGIN of an
+        // effective value while changing nothing, which is the failure `vike_config::consumed`'s
+        // module doc calls worse than an unimplemented feature.
+        //
+        // ⚠ **So the KEY is now DELETED and this variable is REFUSED**, the same shape
+        // `VIKE_MAX_ORDER_NOTIONAL` above takes and for a neighbouring reason: silently ignoring a
+        // directory its operator believes is in force is worse than either keeping it or erroring.
+        // `vike_config::refuse_removed_env` looks the name up in the caller-supplied env map (hence
+        // `Injected`/`MapLookup`, unchanged) and fails startup. The row goes the day nothing
+        // refuses it. Deliberately NO repo-anchored citation of the deleted resolver — a `SYMBOL`
+        // pointer to a function removed in the same change is a citation-gate failure waiting one
+        // commit.
+        //
+        // ⚠ `VIKE_STATE_ROOT` is NOT the replacement and an operator must not be sent there: it is
+        // the state ROOT, a different directory, and the refusal says so. Decision 0111 retired
+        // that one too: its refusal row is further down this file.
+        name: "VIKE_STATE_DIR",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup; nothing read it, and VIKE_STATE_ROOT is not it",
+    },
+    Setting {
+        // ⚠ REMOVED, not read — settings unification PHASE 5, the daemon twin of
+        // `VIKE_MAX_ORDER_NOTIONAL` above (same idea, two names). It was the vike-tradehub
+        // server-edge per-order ceiling (`ControlLimitsConfig::max_notional`); that value now comes
+        // from the `policy.max_notional_per_order` row. This one mattered most: on a
+        // production node the variable lives in a systemd unit, where a stale `Environment=` line
+        // raises a live risk limit with no diff and no review.
+        //
+        // Row kept in the crate that REFUSES it — see the `VIKE_MAX_ORDER_NOTIONAL` row's comment.
+        name: "VIKE_TRADEHUB_MAX_ORDER_NOTIONAL",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "REMOVED — refused at startup; use policy.max_notional_per_order",
+    },
+    // A `vike_config::REMOVED_ENV` row like the literals above it, spelled out as one because no
+    // constructor carries `Medium::Refused` (decision 0111's column).
+    Setting {
+        name: "VIKE_TRADEHUB_RECORD",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "",
+    },
+    // ⚠ Its SIBLING, re-keyed rather than deleted — `refuse_removed_env` genuinely looks this name
+    // up in the caller-supplied map, so it IS read, just never obeyed. The row goes the day
+    // nothing refuses it.
+    Setting {
+        name: "VIKE_TICK_STORE",
+        krate: "vike-config",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::Refused,
+        default: "",
+    },
+    // --- decision 0111: every other setting the environment carried ------------------------------
+    //
+    // Each name was the environment layer of a `config.*` / `flags.*` / `preferences.*` row, or a
+    // daemon's own read beside one; every reader is gone and the row alone decides. The one read of
+    // the name left is `vike_config::refuse_removed_env`'s lookup in the caller's map, which fails
+    // startup naming the row (`vike_config::REMOVED_ENV`). Each `default` names that row. The rows
+    // go the day nothing refuses them.
+    vike_refused(
+        "VIKE_ALERTS",
+        "REMOVED — refused at startup (decision 0111); <settings>/state/alerts.json",
+    ),
+    vike_refused(
+        "VIKE_API_BASE",
+        "REMOVED — refused at startup (decision 0111); vikedata_backfill --api-base",
+    ),
+    vike_refused(
+        "VIKE_BACKTEST_ADDR",
+        "REMOVED — refused at startup (decision 0111); config.backtest_addr",
+    ),
+    vike_refused(
+        "VIKE_BACKTEST_NAMED_RUN",
+        "REMOVED — refused at startup (decision 0111); backtest --addr --named-run",
+    ),
+    vike_refused(
+        "VIKE_CANCEL_ORDERS_ON_SHUTDOWN",
+        "REMOVED — refused at startup (decision 0111); flags.cancel_orders_on_shutdown",
+    ),
+    vike_refused(
+        "VIKE_COUNTERS_FILE",
+        "REMOVED — refused at startup (decision 0111); vike_stat <counters-file>",
+    ),
+    vike_refused(
+        "VIKE_DATAHUB_ADDR",
+        "REMOVED — refused at startup (decision 0111); config.datahub_bind_addr",
+    ),
+    vike_refused(
+        "VIKE_DATAHUB_ADVERTISE_ADDR",
+        "REMOVED — refused at startup (decision 0111); config.datahub_advertise_addr",
+    ),
+    vike_refused(
+        "VIKE_DATAHUB_ALLOW_PUBLIC_BIND",
+        "REMOVED — refused at startup (decision 0111); flags.datahub_allow_public_bind",
+    ),
+    vike_refused(
+        "VIKE_DATAHUB_CHART_SEED",
+        "REMOVED — refused at startup (decision 0111); flags.datahub_chart_seed",
+    ),
+    vike_refused(
+        "VIKE_DATAHUB_LIVE",
+        "REMOVED — refused at startup (decision 0111); flags.datahub_live",
+    ),
+    vike_refused(
+        "VIKE_DATAHUB_LIVE_RESIDENT",
+        "REMOVED — refused at startup (decision 0111); config.datahub_live_resident",
+    ),
+    vike_refused(
+        "VIKE_DATAHUB_STORE",
+        "REMOVED — refused at startup (decision 0111); config.store_root",
+    ),
+    vike_refused(
+        "VIKE_DATAHUB_VENUE_CATALOG",
+        "REMOVED — refused at startup (decision 0111); flags.venue_catalog_off is the switch",
+    ),
+    vike_refused(
+        "VIKE_DATAHUB_VENUE_CATALOG_OFF",
+        "REMOVED — refused at startup (decision 0111); flags.venue_catalog_off",
+    ),
+    vike_refused(
+        "VIKE_EXPORT_DIR",
+        "REMOVED — refused at startup (decision 0111); preferences.export_dir",
+    ),
+    vike_refused(
+        "VIKE_HIST_STORE",
+        "REMOVED — refused at startup (decision 0111); config.store_root",
+    ),
+    vike_refused(
+        "VIKE_INSTANCE_ORIGIN",
+        "REMOVED — refused at startup (decision 0111); config.instance_origin",
+    ),
+    vike_refused(
+        "VIKE_JOURNAL_DIR",
+        "REMOVED — refused at startup (decision 0111); config.journal_dir",
+    ),
+    vike_refused(
+        "VIKE_JOURNAL_SNAPSHOT_EVERY",
+        "REMOVED — refused at startup (decision 0111); config.journal_snapshot_every",
+    ),
+    vike_refused("VIKE_LOG", "REMOVED — refused at startup (decision 0111); preferences.log_level"),
+    vike_refused(
+        "VIKE_LOG_FILE_LEVEL",
+        "REMOVED — refused at startup (decision 0111); preferences.log_file_level",
+    ),
+    vike_refused(
+        "VIKE_MAX_ORDER_QTY",
+        "REMOVED — refused at startup (decision 0111); preferences.max_order_qty",
+    ),
+    vike_refused(
+        "VIKE_OCO_CANCEL_SIBLING_ON_DEAD_EXIT",
+        "REMOVED — refused at startup (decision 0111); flags.oco_cancel_sibling_on_dead_exit",
+    ),
+    vike_refused(
+        "VIKE_PIN_CORES",
+        "REMOVED — refused at startup (decision 0111); config.pin_cores",
+    ),
+    vike_refused(
+        "VIKE_PREFLIGHT_SKIP",
+        "REMOVED — refused at startup (decision 0111); flags.preflight_skip",
+    ),
+    vike_refused("VIKE_RECONCILE", "REMOVED — refused at startup (decision 0111); flags.reconcile"),
+    vike_refused(
+        "VIKE_RECONCILE_AUDIT_MS",
+        "REMOVED — refused at startup (decision 0111); config.reconcile_audit_ms",
+    ),
+    vike_refused(
+        "VIKE_RECONCILE_BALANCE",
+        "REMOVED — refused at startup (decision 0111); flags.reconcile_balance",
+    ),
+    vike_refused(
+        "VIKE_RECONCILE_BALANCE_TOL_ABS",
+        "REMOVED — refused at startup (decision 0111); config.reconcile_balance_tol_abs",
+    ),
+    vike_refused(
+        "VIKE_RECONCILE_BALANCE_TOL_REL",
+        "REMOVED — refused at startup (decision 0111); config.reconcile_balance_tol_rel",
+    ),
+    vike_refused(
+        "VIKE_RECONCILE_GENERATE_MISSING",
+        "REMOVED — refused at startup (decision 0111); flags.reconcile_generate_missing",
+    ),
+    vike_refused(
+        "VIKE_RECONCILE_INTERVAL_MS",
+        "REMOVED — refused at startup (decision 0111); config.reconcile_interval_ms",
+    ),
+    vike_refused(
+        "VIKE_RECONCILE_LOOKBACK_MS",
+        "REMOVED — refused at startup (decision 0111); config.reconcile_lookback_ms",
+    ),
+    vike_refused(
+        "VIKE_RECONCILE_OFF",
+        "REMOVED — refused at startup (decision 0111); flags.reconcile_off",
+    ),
+    vike_refused(
+        "VIKE_RECONCILE_POLICY",
+        "REMOVED — refused at startup (decision 0111); config.reconcile_policy",
+    ),
+    vike_refused(
+        "VIKE_RECONCILE_RESTORE_OFF",
+        "REMOVED — refused at startup (decision 0111); flags.reconcile_restore_off",
+    ),
+    vike_refused(
+        "VIKE_RECONCILE_STARTUP_DELAY_MS",
+        "REMOVED — refused at startup (decision 0111); config.reconcile_startup_delay_ms",
+    ),
+    vike_refused(
+        "VIKE_RECORD_CHAINS",
+        "REMOVED — refused at startup (decision 0111); the record_chains flag row, which nothing reads",
+    ),
+    vike_refused(
+        "VIKE_RECORD_CHAINS_CADENCE_MS",
+        "REMOVED — refused at startup (decision 0111); a parameter of the unmounted chain recorder",
+    ),
+    vike_refused(
+        "VIKE_RECORD_DVOL",
+        "REMOVED — refused at startup (decision 0111); the record_dvol flag is deleted",
+    ),
+    vike_refused(
+        "VIKE_RECORD_PROPERTIES",
+        "REMOVED — refused at startup (decision 0111); flags.record_properties",
+    ),
+    vike_refused(
+        "VIKE_STATE_ROOT",
+        "REMOVED — refused at startup (decision 0111); the state tree is always <settings>/state",
+    ),
+    vike_refused(
+        "VIKE_STRATEGY_BUILDER_OUT_DIR",
+        "REMOVED — refused at startup (decision 0111); strategy-builder --out-dir",
+    ),
+    vike_refused(
+        "VIKE_STRATEGY_BUILDER_PORT",
+        "REMOVED — refused at startup (decision 0111); strategy-builder --port",
+    ),
+    vike_refused(
+        "VIKE_STRATEGY_BUILDER_RETAIN",
+        "REMOVED — refused at startup (decision 0111); strategy-builder --retain",
+    ),
+    vike_refused(
+        "VIKE_STRATEGY_BUILDER_WORKSPACE_ROOT",
+        "REMOVED — refused at startup (decision 0111); strategy-builder --workspace-root",
+    ),
+    vike_refused(
+        "VIKE_STYLE",
+        "REMOVED — refused at startup (decision 0111); preferences.chart_style",
+    ),
+    vike_refused(
+        "VIKE_SWEEP_THREADS",
+        "REMOVED — refused at startup (decision 0111); preferences.sweep_threads",
+    ),
+    vike_refused(
+        "VIKE_TELEGRAM_CONTROL",
+        "REMOVED — refused at startup (decision 0111); flags.telegram_control",
+    ),
+    vike_refused(
+        "VIKE_TRADEHUB_ACCOUNT_ADMIN",
+        "REMOVED — refused at startup (decision 0111); config.tradehub_account_admin",
+    ),
+    vike_refused(
+        "VIKE_TRADEHUB_ADDR",
+        "REMOVED — refused at startup (decision 0111); config.tradehub_addr",
+    ),
+    vike_refused(
+        "VIKE_TRADEHUB_ADVERTISE_ADDR",
+        "REMOVED — refused at startup (decision 0111); config.tradehub_advertise_addr",
+    ),
+    vike_refused(
+        "VIKE_TRADEHUB_ALLOW_PUBLIC_BIND",
+        "REMOVED — refused at startup (decision 0111); flags.tradehub_allow_public_bind",
+    ),
+    vike_refused(
+        "VIKE_TRADEHUB_CONTROL",
+        "REMOVED — refused at startup (decision 0111); flags.tradehub_control",
+    ),
+    vike_refused(
+        "VIKE_TRADEHUB_CONTROL_RATE",
+        "REMOVED — refused at startup (decision 0111); config.tradehub_control_rate",
+    ),
+    vike_refused(
+        "VIKE_TRADEHUB_LIVE",
+        "REMOVED — refused at startup (decision 0111); flags.tradehub_live",
+    ),
+];

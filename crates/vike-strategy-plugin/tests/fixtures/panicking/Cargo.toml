@@ -1,0 +1,15 @@
+# See tests/fixtures/bad_abi_version/Cargo.toml for the shape/exclusion rationale this mirrors.
+# ABI-wise well-formed (correct version + fingerprint), but its on_bar panics internally and
+# catches its OWN panic — proving a real panic inside a compiled .so surfaces as a reported
+# PluginStatus::Panicked rather than aborting the process (see the design doc's "a panic across a
+# C-ABI boundary is UB" note: the catch_unwind MUST happen on this side of the boundary).
+[package]
+name = "panicking"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]

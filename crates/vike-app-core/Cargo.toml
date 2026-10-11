@@ -1,0 +1,189 @@
+[package]
+name = "vike-app-core"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike-desktop's eframe-free / wgpu-free logic, extracted so it runs in CI (like vike-chart): live-data sink wiring (GuiFeedSink/BookStore/TradeStore), the CoreSnapshot-to-render-model fold, backend connection/registry state, order entry and dispatch, and the per-tool view/data model + fetchers (orderflow and tick/volume aggregation live in vike-orderflow). vike-desktop (the wgpu GUI shell) depends on it; egui IS used (the workspace/tool_views draw modules) but nothing here touches eframe/wgpu, so it builds and tests on CI."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `ui-shell` — an egui shell assembled from the widget crates.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 80
+
+[dependencies]
+# The SHARED node-protocol substrate: the HMAC-SHA256 nonce-challenge handshake generalized over
+# its domain separator (`auth`) and the length-prefixed frame codec (`frame`). ⚠ Both were
+# `vike-datahub-client`'s until 2026-09-23 and moved to the crate BELOW both node protocols, so the
+# two clients could stop being a ladder; that crate's own doc carries the measurement. It names no
+# vike-* crate at all, so this edge adds no package to any graph that did not already carry
+# hmac/sha2/rand transitively.
+vike-node-proto = { path = "../vike-node-proto" }
+# Pure logic modules — NO eframe/wgpu (that's why this crate rides the derived CI roster, unlike
+# the shell, `vike-desktop` — `vike-app` when this was written). They wire
+# the live-data seam onto the core lanes, aggregate orderflow/tick/volume bars, and hold the tool
+# view/data model + REST fetchers.
+vike-model = { path = "../vike-model" }
+vike-catalog = { path = "../vike-catalog" }
+# The order vocabulary AND the read model (`CoreSnapshot`, `VenueBlock`, ...) the observe bridge
+# rebuilds from the wire. This crate links NO vike-core:
+# `docs/decisions/0115-the-read-model-lives-in-vike-exec-and-the-gui-does-not-link-vike-core.md`.
+vike-exec = { path = "../vike-exec" }
+vike-data = { path = "../vike-data" } # feature-free: only the pure SeriesId/SeriesCoverage + live seam (no DataFusion)
+# The inventory tree-model (build_tree/VenueNode/…) lives here and is named here —
+# `vike_data_manager::model`. The `vike_app_core::inventory` alias was deleted 2026-09-27.
+vike-data-manager = { path = "../vike-data-manager" }
+vike-orderflow = { path = "../vike-orderflow" }
+vike-chart = { path = "../vike-chart" }
+# shared egui trading widgets — the Trade window's ladder and ticket live here (`vike_panels::trade`;
+# ToolView.trade / trade_actions), as the DOM ladder did after it moved out of vike-chart. Depends on
+# vike-model + egui only (no egui_plot/wgpu).
+vike-panels = { path = "../vike-panels" }
+# Polymarket scalp-cockpit egui widgets (chain rail / Price-to-Beat header / probability ladder /
+# one-click ticket) the Polymarket tool window mounts — same egui-only, data-in/actions-out shape as
+# vike-panels. Its per-window view state lives in ToolView (cockpit_* fields).
+vike-cockpit = { path = "../vike-cockpit" }
+vike-options = { path = "../vike-options" }
+vike-deribit = { path = "../bridges/deribit" }
+# The live-tearsheet reader — `tool_views::tearsheet` (the Tearsheet tool body, moved here from
+# vike-app in tool-view extraction batch 1) reads a LiveTearsheet off the command journal through
+# `vike_report::tearsheet_from_journal` (fills → `vike_analytics::reconstruct_trades` → the
+# vike-analytics catalog). ⚠ That was the inherent `LiveTearsheet::from_journal` until 2026-09-28,
+# when the document type moved to vike-analytics and the journal door became vike-report's free
+# function; this edge is now for the journal READ alone. The store-backed MTM curve stays in
+# vike-report's own `tearsheet` CLI bin.
+vike-report = { path = "../vike-report" }
+# The METRIC TAXONOMY, for `tool_views::tearsheet`'s row source: `metric_catalog::METRICS` (the one
+# roster, whose declaration order IS the render order) and `MetricUnit::render` (the one home for a
+# metric's scaling and precision) — and, since 2026-09-28, the `LiveTearsheet` document itself
+# (with `MetricValues`, `NOT_RECORDED` and `TEARSHEET_SCHEMA`), which moved here out of
+# vike-report. It is a DIRECT edge because Rust needs one to name `vike_analytics::…`, not because
+# it adds anything: vike-report — already a normal dep one line above — links this crate for the
+# same catalog, so no package joins this graph.
+#
+# ⚠ The edge exists to DELETE a hand copy, and that is the whole of its justification. The
+# Tearsheet panel used to carry its own twenty-row roster with its own per-row precision and its own
+# `* 100.0` on the percent rows, against a catalog of thirty-eight — the fourth such copy in the
+# tree, and `MetricUnit::render`'s own doc records what the earlier three published (a three-percent
+# drawdown as `0.0310%`, which reads as three basis points). Anything else in this crate that wants
+# to render a performance number reaches this module too, rather than growing a fifth.
+#
+# Depends on vike-model ALONE (layer 15 against this crate's 80 — down-only), carries no engine, no
+# execution plane and no data layer, and is DataFusion-free, so this crate stays on the fast CI lane.
+vike-analytics = { path = "../vike-analytics" }
+vike-ui-theme = { path = "../vike-ui-theme" } # canonical palette (rail.rs) — no more hand-copied Color32 consts
+# The Connections tool (`ui::tool_views::connections`) renders vike-connections' credential grid
+# (`connections_ui`, `view`, `StoreHealth`, `credential_summary`), and the catalog refresh reads its
+# `credentialed_venues`. ⚠ This said the edge was for "reconcile_config's feed-status → health map"
+# until 2026-09-28: `reconcile_config` left this crate (it is vike-tradehub's now) and `feed_status`
+# lives in vike-model. vike-connections depends on vike-bridge-core/vike-model/vike-secrets/
+# vike-ui-theme — nothing that reaches back here — so this stays a down-only edge (no cycle back to
+# vike-app-core).
+vike-connections = { path = "../vike-connections" }
+# The TYPED settings model — the Settings window's appearance rows (`ui::appearance_settings`) write
+# through `write_setting_row` (the loader-validated, atomic per-key write) and read the
+# `Preferences` vocabulary. ⚠ It is deliberately NOT `vike-mount`: the desktop links no mount, and
+# such an edge would put every venue bridge into its only build. vike-config is layer 20 and depends
+# on vike-model + serde/toml only, so this edge adds no compile weight.
+vike-config = { path = "../vike-config" }
+# The settings-database access for the Data Manager's proxy box: `save_polymarket_proxy` writes the
+# `venue.polymarket.socks_proxy` row (`set_venue_setting_in_journalled`) and
+# `seed_polymarket_proxy_box` reads it back (`venue_setting::load_venue_settings`) — decision 0095.
+# vike-secrets names nothing above the vocabulary floor, so this edge brings nothing behind it that this crate does
+# not already carry.
+# ⚠ That read "carries no vike-* dependency of its own, so this adds no layering edge" until
+# `docs/decisions/0072-vike-secrets-takes-one-vike-edge-and-is-not-split.md` (accepted 2026-09-20)
+# admitted vike-model there. Both halves were loose and are corrected together: the property is the
+# RANK (tier `leaf` means AT MOST THE FLOOR, machine-checked by
+# `crates/vike-ops/tests/architecture/layer_gate/tiers.rs`'s
+# `every_tier_15_crate_names_nothing_above_the_vocabulary`), and this edge always added a layering
+# edge — what it does not add is WEIGHT, since this manifest already declares vike-model itself.
+vike-secrets = { path = "../vike-secrets" }
+# ⚠ A `vike-bridge-core` edge stood here until decision 0095: it existed for exactly one caller,
+# `save_polymarket_proxy`, which handed `vike_bridge_core::credentials::classify_credential_name` to
+# `vike_secrets::save_credentials_to_store_journalled`. That function writes a venue-setting row now
+# and names no classifier, so nothing in this crate names `vike_bridge_core` any more, and the edge
+# went with its only reader. `vike-connections` above still carries the crate in this closure.
+# The OFF-FOLD operations layer. MEASURED 2026-09-28: the one CODE use left is
+# `tests/credential_editor_completeness_gate.rs`'s `vike_ops::settings::SETTINGS` — the library's
+# `src/` names vike-ops in comments only, so this normal edge serves an integration test (moving it
+# to `[dev-dependencies]` is a manifest change this comment does not make). ⚠ This said
+# the layer (alerting / journal_mat / reconcile_config / scan / settings / shutdown) was
+# "re-exported from lib.rs under its historical paths" until 2026-09-28: those re-exports are
+# deleted (lib.rs says when), and alerting, journal_mat and reconcile_config are not vike-ops
+# modules any more. It moved OUT of this crate so `vike-tradehub` — the headless daemon on the
+# production trading box — could reach those modules
+# without compiling the egui widget stack below (egui/egui_plot/epaint/vike-chart/vike-panels/
+# vike-cockpit/…). vike-ops NEVER depends on egui — since 2026-09-26 it names vike-model alone (tier
+# `leaf`), after listing vike-core/-exec/-data/-bridge-core here for as long as its operational and
+# docs-data halves lived in it — so this stays a down-only edge and adds no new compilation unit
+# here (its whole tree is already in this crate's graph).
+vike-ops = { path = "../vike-ops" }
+# thin-client Scope::Control WRITE path (`tradehub_control`): the WireCommand vocabulary +
+# RemoteControlHandle the desktop observer uses to drive a remote headless vike-tradehub daemon's
+# core. LIGHT + DataFusion-free (serde + framing + in-tree hmac/sha2 only), so this stays a
+# down-only edge with no heavy compile weight — the shell (`vike-desktop`) already links this crate
+# for the observe bridge. (It named `vike-app --observe` until 2026-09-28.)
+vike-tradehub-client = { path = "../vike-tradehub-client" }
+# The datahub wire client (`backfill_wire`): the Data-Manager/chart-gap backfill's REMOTE arm
+# (split-plane REQ-9, GUI half) drives `DatahubClient::backfill` from here so the routing logic is
+# CI-tested against scripted loopback servers instead of living untestable in the shell's main.rs.
+# LIGHT + DataFusion-free (serde + framing over one blocking TcpStream, layer 25) and already in
+# the shell's own tree unconditionally (`vike-desktop` names it directly), so this down-only edge
+# adds no new compilation weight to its one build. (It said `vike-app` and "either build" until
+# 2026-09-28.)
+vike-datahub-client = { path = "../vike-datahub-client" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+egui = { workspace = true } # the workspace module (window state/layout/persist/menu/rail) is egui — but NOT eframe/wgpu, so still CI-able
+indexmap = { workspace = true } # deterministic window ordering in the workspace state
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# (`libm` left 2026-09-27 with `nice_orderflow_tick`, now `vike_orderflow::bar_agg`; this crate names no
+# transcendental any more, and `tests/libm_platform_probe.rs` keeps it that way.)
+ureq = "3.3" # blocking REST (tool fetchers)
+tracing = { workspace = true } # tool-fetcher / sink diagnostics (subscriber lives in vike-log)
+
+[dev-dependencies]
+# The shared libm walk (decision 0074): `vike_model::libm_walk` holds the text parser this crate's
+# `libm_platform_probe` used to keep a private copy of. A DEV edge with the feature, never a normal
+# one — `test-support` is gated `#[cfg(any(test, feature = "test-support"))]` and a normal edge
+# would compile it into shipped builds. `cargo package` strips a dev-dependency carrying no
+# version, so a published closure is untouched.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# The headless render gates of the tool windows (`tests/data_manager_screens.rs` and its
+# siblings). ⚠ It is the accessibility TREE that makes them possible: a screen's promise is that a
+# control REACHES the screen, and a pure test of the view-model would stay green with the renderer
+# wired to nothing. The same argument (and the same dependency) as `vike-connections`'s
+# `connections_a11y.rs`. NO wgpu / NO snapshot — see the workspace manifest's `egui_kittest`
+# rationale. Already a workspace dependency, so it adds no package to the `cargo deny` surface.
+egui_kittest = { workspace = true }
+# `harness::type_ready` — the ONE first-frame guard the kittest harnesses above open with: the tool
+# windows draw icons and named weights, whose families only the app's bundled type binds, and
+# kittest's build-time frame runs on egui's default fonts. The feature adds a module, no
+# dependency, and the crate is already a normal dependency, so the lockfile is unchanged.
+vike-ui-theme = { path = "../vike-ui-theme", features = ["test-support"] }
+# the DataFusion-free MemHistStore test double (`tools`' ChainRecorder tests).
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# The settings-row tests (`ui::appearance_settings`, `tests/settings_window.rs`,
+# `tests/polymarket_proxy_journal.rs`) plant a fixture store straight into the database —
+# `plant_settings_rows` is vike-secrets's own test-only fixture,
+# behind this feature so a default build never compiles it. The normal dependency above stays
+# feature-bare; dev-dependency features are not unified into it.
+vike-secrets = { path = "../vike-secrets", features = ["test-support"] }
+# The shared flat-bar builder (`vike_marketdata::test_support::flat_bar_unit_volume`), which the
+# fold/direct-bar tests (`src/ui/*_tests.rs`) and `src/data/data_sink_tests.rs` each used to re-type.
+# A DEV edge with the feature, never a normal one: `test-support` is gated
+# `#[cfg(any(test, feature = "test-support"))]` and a normal edge would compile the builders into
+# shipped builds. vike-marketdata is layer 5 and names no vike crate, so there is no cycle; the
+# library already reaches it through vike-model, and this adds one `vike-app-core` line to
+# `Cargo.lock`'s dependency list.
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+# back for `workspace::persist`'s disk round-trip: a FIXED `<temp>/<name>` is unusable on a box
+# where CI and agents run as different users (whoever creates it owns it), so the test takes a
+# unique self-deleting directory instead. Not a workspace dep — matches the vike-cli/vike-data/
+# vike-ops convention.
+tempfile = "3"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true
