@@ -1,0 +1,40 @@
+[package]
+name = "vike-report"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the LIVE tearsheet journal reader: the journal door (fills_from_journal, tearsheet_from_journal). It reads the command journal only; the tearsheet's store reads live with the CLI in `crates/vike`. The document, its renderers and the pure folds live in vike-analytics. Round-trips go through vike_model::compute_fill; reimplements no metric."
+
+# Declared layer (crates/vike-ops/tests/architecture/layer_gate.rs). 30 is the arithmetic floor, set by
+# `vike-journal` alone (layer 25); the numbers and history are in
+# docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+[package.metadata.vike]
+layer = 30
+
+[dependencies]
+# The parity seam: `compute_fill` (the ONE cost-basis primitive) + `Trade` + `FillEvent`.
+vike-model = { path = "../vike-model" }
+# `LiveTearsheet` and the folds every reader hands its data to; no metric is reimplemented here.
+vike-analytics = { path = "../vike-analytics" }
+# `CommandJournal::read_all`, the command journal the fill stream is read from.
+vike-journal = { path = "../vike-journal" }
+# The `Ingest` lane type the journal records wrap.
+vike-exec = { path = "../vike-exec" }
+
+[features]
+# The crate has no features: it reads one journal and names no store.
+# The empty `default` is kept so this manifest's feature surface is unchanged.
+default = []
+
+[dev-dependencies]
+# Test-only edge: `journal_roundtrip` spawns a real core (`spawn_core`); a dev edge may point up.
+vike-core = { path = "../vike-core" }
+# `test-support` compiles `TestExecutionClient`; only a dev edge may turn it on.
+vike-exec = { path = "../vike-exec", features = ["test-support"] }
+# `journal_roundtrip`'s `TempDir`.
+tempfile = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true
