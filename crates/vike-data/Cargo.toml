@@ -1,0 +1,31 @@
+[package]
+name = "vike-data"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — historical market-data access: the HistStore seam (bars + ticks), TRAIT-ONLY; the DataFusion+Parquet engine (design of record) is the separate crate vike-store."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[features]
+# The in-memory HistStore (`MemHistStore`) and the recording sinks for downstream crates' tests —
+# lets venue bridges assert filter-recording wiring without a backend.
+test-support = []
+
+[dependencies]
+vike-model = { path = "../vike-model" }
+# The market-data vocabulary the seam names (`Bar`, `QuoteTick`, `BookUpdate`, `OptionKind`, …).
+# Layer 5, serde only; already in this crate's closure through vike-model.
+vike-marketdata = { path = "../vike-marketdata" }
+tracing = { workspace = true } # sync facade: the chain/properties recorders' drop-warnings
+serde = { workspace = true }        # datasets + the `*_log` row types
+serde_json = { workspace = true }   # datasets JSON persistence + the funding-rate body parse (no SQLite)
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

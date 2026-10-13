@@ -1,0 +1,57 @@
+# vike-ibkr-cpapi-login.service — the IBKR DEMO Client Portal Gateway's LOGIN, held open: the
+# `KEEPALIVE=1 vike-cli secrets ibkr-cp-login` that `docs/ops/ibkr-cpapi-gateway.md` used to start by
+# hand, supervised.
+#
+# The login is read from the settings database at each start by the verb and handed to the driver's
+# ENVIRONMENT (never argv, never a file); this unit holds no value. `KEEPALIVE=1` keeps the driver
+# running and tickling — that process staying alive IS the session — and it logs in again by itself
+# (at most every 5 minutes) when the demo session lapses.
+#
+# ON ONLY FOR THE (cpapi, demo) SESSION: the same `ExecCondition=` as `vike-ibkr-cpapi.service`
+# (`start-gateway.sh --check`, decision 0140), so on a socket box, a live box or a conflict it is
+# skipped and no login is attempted. The verb itself refuses any other session besides.
+#
+# DEMO ONLY. The LIVE login (`vike-cli secrets ibkr-cp-login --tier live`) is ONE attempt that waits for
+# the phone and is never retried, so it is a hand act and never a unit.
+#
+# ⚠ `BindsTo=` THE JVM: when `vike-ibkr-cpapi.service` stops or restarts, this stops with it, and the
+# JVM unit's `Wants=` starts it again after the JVM is back — an evicted JVM is recovered by a restart
+# AND one fresh login (`docs/ops/ibkr-socket-gateway.md` section 5), never by logging in again into a
+# JVM that holds a dead session.
+#
+# ⚠ A LOGIN LOOP LOCKS THE ACCOUNT: at most three starts in six hours, then it stays failed until
+# someone looks (`systemctl reset-failed vike-ibkr-cpapi-login`), as the IB Gateway unit is capped.
+#
+# Install it with `vike-ibkr-cpapi.service` (that unit's header has the lines); paths are the
+# placeholder project root /srv/vike-<unit>. NON-daemon, unsandboxed: the driver launches a pinned
+# headless Chrome from `bin/ibkr-cpapi/` (`crates/vike-ops/tests/container_deploy/deploy_layout_gate/project_folder.rs`'s
+# `NON_DAEMON_UNITS`).
+
+[Unit]
+Description=IBKR Client Portal Gateway LOGIN (cpapi DEMO, held by KEEPALIVE) — login from the settings database
+BindsTo=vike-ibkr-cpapi.service
+After=vike-ibkr-cpapi.service
+StartLimitIntervalSec=6h
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/vike-<unit>
+# The one bootstrap pointer: the settings database the login and the session are read from.
+Environment=VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings
+# Hold the session open: the driver keeps running and tickles every 30 s.
+Environment=KEEPALIVE=1
+ExecCondition=/srv/vike-<unit>/bin/ibkr-cpapi/start-gateway.sh --check
+ExecStart=/srv/vike-<unit>/bin/vike-cli secrets ibkr-cp-login
+# Started = the gateway reports an AUTHENTICATED session, so the trade daemon (After= this) mounts
+# IBKR against a logged-in gateway.
+ExecStartPost=/srv/vike-<unit>/bin/ibkr-cpapi/start-gateway.sh --wait-login
+TimeoutStartSec=240
+# A driver that dies (a refused login, the browser gone) is started again after five minutes — the
+# driver's own re-login gap — within the start limit above. (No `RestartPreventExitStatus=`: the verb
+# folds every failure of the driver onto its own exit 1, so a driver refusal has no number of its own
+# here; the start limit is what stops a loop.)
+Restart=on-failure
+RestartSec=300
+SyslogIdentifier=vike-ibkr-cpapi-login
+# No [Install]: started by `vike-ibkr-cpapi.service`'s and the trade daemon's `Wants=`.

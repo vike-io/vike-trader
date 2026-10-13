@@ -1,0 +1,50 @@
+[package]
+name = "vike-util"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the pure HELPERS two or more crates used to copy, one home at the bottom of the graph (decision 0141): the shared command-line layer over `clap` (`cli`, behind the off-by-default `cli` feature, decision 0155), the atomic whole-file replace (`atomic_file`), FNV-1a 64 (`fnv`), lowercase hex (`hex`), the standard-normal CDF (`math::norm_cdf`), RFC 3986 percent-encoding (`percent`) and the UTC civil calendar's two primitives (`calendar::civil_from_days`/`days_from_civil`). Named at the module, never re-exported at the root. No vike-* dependency, and it can have none: nothing ranks below it. Its only unconditional dependency is `libm`; `clap` is optional and enters only with the `cli` feature."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `util` — the
+# floor of pure helpers below the market-data vocabulary (5), so every crate can name them.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+# There is none, and there can be none: 3 is the lowest declared rank in the workspace.
+[package.metadata.vike]
+layer = 3
+
+[dependencies]
+# The ONLY unconditional dependency: `math::norm_cdf`'s `erf`. Transcendentals come from the `libm` crate, never
+# from `f64`'s platform-libm methods
+# (`docs/decisions/0032-transcendentals-come-from-the-libm-crate-not-the-platform.md`), and its
+# results are compared bit for bit. Workspace-pinned and already in the lockfile (vike-model,
+# vike-options and vike-orderflow carried it before this crate existed), so no new supply-chain
+# entry.
+libm = { workspace = true }
+# The `cli` feature's one dependency (decision 0155): the command-line reader every program uses.
+# OPTIONAL and the feature is OFF by default, so a crate that names `vike-util` for `hex` or `fnv`
+# does not compile `clap`; only a binary (or a `*_cli` module) that turns `cli` on does. The
+# workspace pin carries the reason and the exact feature set.
+clap = { workspace = true, optional = true }
+
+[features]
+default = []
+# `vike_util::cli`: the shared rules every `clap`-read command line obeys (one error path and exit
+# code, a positional never echoed, the shared value parsers, the flag walk the reference is built
+# from, the docs-example parser). Off by default; named only by programs.
+cli = ["dep:clap"]
+
+[dev-dependencies]
+# dev-only: `atomic_file_tests.rs` writes real files under a scratch directory.
+tempfile = { workspace = true }
+# The shared libm walk (decision 0074) for `tests/libm_platform_probe.rs`, the source scan that
+# moved with `math.rs` out of vike-model. A DEV edge with the feature, never a normal one:
+# `test-support` is gated `#[cfg(any(test, feature = "test-support"))]`, and a normal edge would
+# also be an UPWARD one (vike-model is 10, this crate 3), which the layer gate refuses. A dev edge
+# is a test edge and may point up; vike-model's own normal edge onto this crate is what makes the
+# pair a cycle only for this crate's test targets, the `vike-bridge-core` conformance-harness shape.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

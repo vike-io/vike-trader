@@ -1,0 +1,138 @@
+[package]
+name = "vike-compute"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike's COMPUTE daemon and backtest tool: the `backtest` CLI (`backtest_cli`, the library function behind both the `backtest` bin and the `vike-backend backtest` multicall arm), the daemon it becomes under `--addr` (`compute_server`, which serves the seven compute verbs over the node protocol and calls `vike-studio-core`'s Studio runners directly), the published-starter-dataset download, and the Polymarket cheap_np/sport_taker research bins. The harness itself stays in `vike-backtest`."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `daemon` — a headless top-of-graph binary: nothing may depend on it.
+# 65 is the rank of its sibling daemons (`vike-datahub`, `vike-tradehub`), and the arithmetic floor is
+# 36: the ceiling is `vike-studio-core` (35), the crate whose Studio runners the compute server now
+# calls DIRECTLY. This code was `vike-backtest`'s (30) until the change that deleted that crate's
+# `datafusion-store` and `venue-fetch` features and the boxed-function seam
+# (`StudioRunTable`/`StudyRunFn`) the layer rule forced while the server sat BELOW the crate that owns
+# the runners (`crates/vike-compute/CLAUDE.md` carries the change).
+# ⚠ The layer rule alone does not keep a venue or collector (40-42) off the harness through this
+# crate's neighbours; that is `crates/vike-ops/tests/architecture/layer_gate/fences.rs`'s
+# `no_venue_or_collector_names_the_research_harness`, which fences `vike-backtest` and walks the
+# normal closure. Nothing in the 40-42 band names this crate, and nothing may.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 65
+
+[dependencies]
+# The HARNESS the daemon and the CLI serve: `harness::run_backtest`/`run_paramscan`/
+# `run_walkforward`, the search family, `data_plan`, `run_fingerprint`, `trial_ledger`,
+# `named_run`, `wire_result`. Layer 30, a plain DataFusion-free library.
+vike-backtest = { path = "../vike-backtest" }
+# The Studio runners the three Studio verbs and `RunStudy` call DIRECTLY (`wire_run`'s
+# `run_slice_local`/`run_sweep_local`/`run_walkforward_local`, the study runner). Layer 35 — the
+# crate this one used to sit BELOW, which is why the runners were injected as boxed functions.
+vike-studio-core = { path = "../vike-studio-core" }
+# The SHARED node-protocol substrate: the HMAC-SHA256 nonce-challenge handshake generalized over its
+# domain separator (`auth`), the length-prefixed frame codec (`frame`) and `hash::sha256_hex` (the
+# starter download's checksum). Names no vike-* crate.
+vike-node-proto = { path = "../vike-node-proto" }
+# The WIRE (`Request`/`Response`, the shared plane/scope tables, the bind guard both daemons
+# enforce) and the HISTORY ROUTE (`hist-route`: the node keys and `config.datahub_addr` that decide
+# which datahub the CLI and the daemon read history from). The route is ALWAYS on here — it was
+# `vike-backtest`'s `datafusion-store` feature.
+vike-datahub-client = { path = "../vike-datahub-client", features = ["hist-route"] }
+vike-model = { path = "../vike-model" }
+# The pure helpers (decision 0141, layer 3) this crate calls: `fnv`, `calendar`, and `cli` (decision 0155),
+# the rules every command line obeys on top of `clap`: the `backtest` CLI and every bin read their argv through it.
+vike-util = { path = "../vike-util", features = ["cli"] }
+# `#[derive(clap::Parser)]` on each program's args struct (decision 0155): named directly, never re-exported.
+clap = { workspace = true }
+# The project's filesystem layout (`vike_paths::state_path`, `store_path`, `scratch`): std-only, layer 7.
+vike-paths = { path = "../vike-paths" }
+# The run directory every backtest and search writes and reads back (`vike_runs::X`).
+vike-runs = { path = "../vike-runs" }
+vike-marketdata = { path = "../vike-marketdata" }
+# `vike_sim::{StrategyEngine, EngineParams, Tick, LatencyModelKind}` — the research bins drive the
+# engine directly.
+vike-sim = { path = "../vike-sim" }
+vike-analytics = { path = "../vike-analytics" }
+# The `HistStore` trait, the row types and the `cheap_np_book` fold the research bins read.
+vike-data = { path = "../vike-data" }
+# The DataFusion+Parquet engine, linked DIRECTLY and unconditionally: `data export`,
+# `data repair-series`, `data fetch-starter` and the research bins open a concrete `DataFusionHist`
+# (`DataFusionHist`, `BacktestStore`). It was the optional dependency behind `vike-backtest`'s
+# `datafusion-store` feature; the layer gate's `STORE_NORMAL_NAMERS` row for this crate is the
+# declaration (docs/decisions/0151-vike-data-splits-the-engine-becomes-vike-store.md).
+vike-store = { path = "../vike-store" }
+# The datahub NODE KEYS the daemon arm reads, and `config.backtest_addr`. ⚠ `vike-secrets`, NOT
+# `vike-bridge-core`: that crate owns the ureq/tungstenite/rustls transport stack, which must not
+# join this crate's graph to read a `.env`. Both are light leaves (layers 15 and 20).
+vike-secrets = { path = "../vike-secrets" }
+vike-config = { path = "../vike-config" }
+vike-log = { path = "../vike-log" }
+# `load_and_install_user_indicators`, the once-per-process Rhai indicator install that `backtest_cli`'s
+# `run` performs for every invocation (a one-shot run compiles a Rhai strategy exactly as the daemon does).
+vike-script = { path = "../vike-script" }
+# The Polymarket research bins' strategies (`CheapNp`, `SignalTracker`, `fair_value`, `cheap_np_ask`,
+# `sport_taker`).
+vike-strategy = { path = "../vike-strategy" }
+# `data fetch-starter`'s HTTPS download (`starter.rs`): the blessed blocking REST client, already in
+# the tree and workspace-pinned, so it widens no audit surface `deny.toml` covers. It used to be
+# OPTIONAL behind `venue-fetch` so the CLI (`vike-cli`, which stays light) did not inherit it through
+# `vike-backtest`; this crate is above the CLI, so that guard is gone with the feature.
+ureq = { workspace = true }
+tracing = { workspace = true }
+toml = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# The real history SERVER, for the tests that drive the shipped `backtest` binary over a scratch
+# store (`tests/optimizer_cli.rs`, `tests/search_persist_cli.rs`, through `tests/support/
+# local_datahub.rs`). Since the owner closed the local READ door on 2026-09-25 (decision 0084) the
+# binary refuses `--store DIR` and reads every byte of history through a datahub, so those tests
+# serve their store with `vike_datahub::serve` on a loopback port — the production route in
+# miniature, not a double. An UPWARD edge (vike-datahub is layer 65, this crate's own rank, so a
+# NORMAL edge would be refused), legal only because it is a dev-dependency.
+vike-datahub = { path = "../vike-datahub" }
+# The in-memory `HistStore` double, `vike_data::MemHistStore`, which `src/compute_server.rs`'s unit
+# tests and `tests/compute_plane.rs` hand to the server in place of a store.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# The shared market-data test builders (`vike_marketdata::test_support`).
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+# `vike_secrets::plant_settings_rows` (behind its `test-support`), which `tests/support/engine.rs`
+# uses to write the `config.datahub_addr` row a spawned `backtest` dials: decision 0111 retired
+# the variable, so a test names its hub in the child's settings database. A DEV edge with the
+# feature, never a normal one.
+vike-secrets = { path = "../vike-secrets", features = ["test-support"] }
+# `backtest_cli`'s search-flag tests build a `TpeConfig`.
+vike-ml = { path = "../vike-ml" }
+tempfile = { workspace = true }
+
+[[bin]]
+# The `backtest` CLI shim over `backtest_cli::run`: BacktestNode-lite, opens no store of its own (it
+# reads history through a datahub) and becomes the compute daemon under `--addr`.
+name = "backtest"
+
+[[bin]]
+# Store-driven `cheap_np` runner: drives the REAL StrategyEngine over the ingested Polymarket tape
+# + spot series, window by window.
+name = "cheap_np_run"
+
+[[bin]]
+# Resting-depth measurement for `cheap_np`: rebuilds the recorded L2 book (the pmxt archive,
+# ingested by `pmxt_backfill`) at each entry moment and turns the ask side into a size → PnL
+# curve — the CAPACITY question the per-share reference numbers cannot answer.
+name = "cheap_np_depth"
+
+[[bin]]
+# Ask-gate measurement for `cheap_np`: re-gates and re-prices every fired signal on the RESTING
+# ASK a taker could actually lift (the engine's own `book_taker_price` law over the same
+# reconstructed book `cheap_np_depth` uses), and applies Polymarket's venue-enforced 250 ms taker
+# delay — reporting fills, rests and misses separately.
+name = "cheap_np_askgate"
+
+[[bin]]
+# Sport taker runner: opens NO store (it reads the tape from files) and uses no harness module.
+name = "sport_taker_run"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true
