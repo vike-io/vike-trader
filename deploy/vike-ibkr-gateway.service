@@ -1,0 +1,80 @@
+# vike-ibkr-gateway.service — the IBKR DEMO IB Gateway (socket API, 127.0.0.1:4102) under IBC,
+# supervised.
+#
+# WHY A UNIT: the gateway used to be started by hand (`start-gateway.sh`) and nothing restarted it.
+# IBKR logs every gateway off once a day; on 2026-10-08 that ended the CI box's demo gateway and it stayed
+# down, so every trade-daemon start mounted IBKR as PAPER (`exec connect failed … 4102`). This unit
+# starts it with the trade daemon and starts it again when IBC exits.
+#
+# ON ONLY WHEN IT IS NEEDED, and the switch is the settings database, not this file. A box rides ONE
+# IBKR session (decision 0140): the tier of its ACTIVE ibkr account rows (every label) and that tier's
+# `venue.ibkr.<tier>.backend` row (absent = socket). `ExecCondition=` below runs
+# `start-gateway.sh --check`, which asks `vike-cli secrets ibc-start --check`: on any session but
+# (socket, demo) — off, the cpapi product, the live tier, a conflict — systemd SKIPS this unit (not
+# failed, nothing started, no login attempted), and `deploy/vike-ibkr-cpapi.service` is the one
+# that runs on a cpapi box. Only a question that cannot be answered (no vike-cli, an unreadable
+# store) fails it. Turning IBKR on is the account row (`account.active`), then
+# `systemctl start vike-ibkr-gateway` or a trade-daemon restart.
+#
+# DEMO ONLY. The LIVE gateway is never supervised: its login is a phone tap, and an unattended
+# restart would be an unattended login attempt against the real-money account (IBKR locks an account
+# after a few wrong logins). On a (socket, live) box the condition skips this unit, and
+# `start-gateway.sh --foreground live` refuses besides. Start it by hand:
+# `docs/ops/ibkr-socket-gateway.md`.
+#
+# The login is read from the settings database at each start and is on the gateway's command line
+# for its lifetime (the owner's accepted exposure, 2026-10-08; no file holds it).
+#
+# ⚠ NO SANDBOX, unlike the daemon units. IB Gateway is a third-party Java program: its JIT needs
+# writable+executable memory (`MemoryDenyWriteExecute=` would kill it) and it writes its own
+# settings and logs inside its install tree under `bin/ibkr-gateway/`, which no daemon unit may
+# grant (`crates/vike-ops/tests/container_deploy/deploy_layout_gate/project_folder.rs`'s
+# `NON_DAEMON_UNITS` says why this unit is not judged as one). That is exactly how it ran by hand.
+#
+# ⚠ EVERY PATH BELOW IS THE PLACEHOLDER PROJECT ROOT /srv/vike-<unit> — the trade daemon's project,
+# whose `bin/ibkr-gateway/` holds the install (`deploy/ibkr-gateway/install.sh`). Substitute it, add
+# the project owner's `User=`/`Group=` (not shipped, as in every unit here), install and enable:
+#
+#   R=/your/project/root
+#   sed "s,/srv/vike-<unit>,$R,g" deploy/vike-ibkr-gateway.service > /tmp/vike-ibkr-gateway.service
+#   grep -n /srv/vike-<unit> /tmp/vike-ibkr-gateway.service    # expect no output
+#   sudo install -Dm644 /tmp/vike-ibkr-gateway.service /etc/systemd/system/vike-ibkr-gateway.service
+#   sudo systemctl daemon-reload && sudo systemctl start vike-ibkr-gateway
+#
+# `vike-tradehub.service` WANTS this unit and is ordered after it, so a trade-daemon start starts the
+# gateway first and mounts IBKR once the API port answers (`wait-gateway.sh`). A failed or absent
+# gateway does not stop the trade daemon: IBKR then mounts as PAPER, as before. Restarting the trade
+# daemon leaves a running gateway alone.
+
+[Unit]
+Description=IB Gateway (IBKR DEMO, API 127.0.0.1:4102) under IBC — login from the settings database
+After=network-online.target
+Wants=network-online.target
+# A login loop is how an account gets locked: at most three starts in six hours, then it stays
+# failed until someone looks (`systemctl reset-failed vike-ibkr-gateway`). The nightly logoff is one.
+StartLimitIntervalSec=6h
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/vike-<unit>
+# The one bootstrap pointer: the settings database the login and the account row are read from.
+Environment=VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings
+# Run only for the (socket, demo) IBKR session the settings database states: exit 1 skips the unit,
+# 255 fails it (the header has why). Reads no secret.
+ExecCondition=/srv/vike-<unit>/bin/ibkr-gateway/start-gateway.sh --check
+# The private X display IB Gateway draws on; a no-op when it is already up.
+ExecStartPre=/srv/vike-<unit>/bin/ibkr-gateway/start-xvfb.sh
+ExecStart=/srv/vike-<unit>/bin/ibkr-gateway/start-gateway.sh --foreground
+# Started = the API port answers, so `After=` in the trade daemon means "logged in".
+ExecStartPost=/srv/vike-<unit>/bin/ibkr-gateway/wait-gateway.sh
+TimeoutStartSec=240
+# IBC exits 0 after IBKR's nightly logoff; `always` starts it again (a demo login needs no tap).
+Restart=always
+RestartSec=60
+# Exit 2 is the scripts' own refusal (an install piece missing, a gateway already running): a restart
+# would only repeat it.
+RestartPreventExitStatus=2
+SyslogIdentifier=vike-ibkr-gateway
+# No [Install]: nothing enables this unit. The trade daemon's `Wants=` is its one starter, so the
+# gateway runs only on a box whose trade daemon runs.

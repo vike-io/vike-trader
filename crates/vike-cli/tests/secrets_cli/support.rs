@@ -1,0 +1,538 @@
+//! Fixtures more than one section uses: `SetCase` (all five `impl` blocks), `Project`, the rungs.
+
+use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
+
+use super::{BIN, stderr, stdout};
+
+/// A `set` case: a `<dir>/settings/` holding the store, with `<dir>/settings/state/` for the ledger
+/// — the layout `vike_boot::boot` resolves and every daemon on a box uses.
+///
+/// ⚠ **A BOUND `tempfile::TempDir`** — see [`Case`] for why a fixed-tag-plus-pid directory in the
+/// shared system temp root is not a repair.
+pub(super) struct SetCase {
+    /// BOUND, so its `Drop` removes the tree even on the panic path.
+    root: tempfile::TempDir,
+}
+
+impl SetCase {
+    pub(super) fn new(tag: &str) -> Self {
+        let root = tempfile::Builder::new()
+            .prefix(&format!("vike-cli-set-{tag}-"))
+            .tempdir()
+            .expect("tempdir");
+        std::fs::create_dir_all(root.path().join("settings")).unwrap();
+        SetCase { root }
+    }
+
+    /// The project root — the directory `settings/` sits in.
+    pub(super) fn dir(&self) -> &std::path::Path {
+        self.root.path()
+    }
+
+    pub(super) fn settings(&self) -> PathBuf {
+        self.dir().join("settings")
+    }
+
+    /// The store: the settings DATABASE — the only credential store since the credential FILE
+    /// store was removed on 2026-10-07.
+    pub(super) fn store(&self) -> PathBuf {
+        self.settings().join("db").join("vike.db")
+    }
+
+    /// The store as the one handle every reader takes, over this case's settings directory under
+    /// the FULL scope — what a test READS the store back through.
+    pub(super) fn credential_store(&self) -> vike_secrets::CredentialStore {
+        vike_secrets::CredentialStore::open(
+            Some(vike_secrets::StoreLocation::new(self.settings())),
+            vike_secrets::CredentialScope::Full,
+        )
+    }
+
+    /// Make the store hold `text`'s `KEY=value` lines, each a name-addressed row — see
+    /// [`seed_store`].
+    pub(super) fn store_rows(&self, text: &str) {
+        seed_store(&self.settings(), text);
+    }
+
+    /// Make the store hold `accounts`, each created with its tier and its fields written against it
+    /// — see [`seed_accounts`]. Returns the ids, in the order given.
+    pub(super) fn seed_accounts(&self, accounts: &[PlantedAccount<'_>]) -> Vec<i64> {
+        seed_accounts(&self.settings(), accounts)
+    }
+
+    /// What the store holds, as [`canon`] renders a `KEY=value` text: one sorted line per
+    /// credential row. Compared against `canon(<the text written>)`, so "nothing else moved" stays
+    /// an exact assertion over the rows a reader sees.
+    pub(super) fn read_store(&self) -> String {
+        render(self.credential_store().read_all().map_or_else(
+            |_| std::collections::BTreeMap::new(),
+            |r| r.secrets.into_map().into_iter().collect(),
+        ))
+    }
+
+    /// The change journal's directory — `<settings>/state/changes`, off the SAME walk the store is.
+    fn journal_dir(&self) -> PathBuf {
+        self.settings().join("state").join("changes")
+    }
+
+    /// Every `changes-*.jsonl` line the ledger holds, or an empty vec when nothing was written.
+    pub(super) fn journal_lines(&self) -> Vec<String> {
+        let Ok(entries) = std::fs::read_dir(self.journal_dir()) else { return Vec::new() };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("changes-") || !name.ends_with(".jsonl") {
+                continue;
+            }
+            let text = std::fs::read_to_string(entry.path()).unwrap();
+            out.extend(text.lines().filter(|l| !l.trim().is_empty()).map(str::to_string));
+        }
+        out
+    }
+
+    /// `vike-cli secrets <args…>` against this case's settings directory, with `stdin` fed the
+    /// given bytes (`None` = closed, which is what a shell with no pipe hands a process).
+    pub fn run(&self, args: &[&str], stdin_text: Option<&str>, envs: &[(&str, &str)]) -> Output {
+        let mut cmd = Command::new(BIN);
+        cmd.arg("secrets")
+            .args(args)
+            .env("VIKE_SETTINGS_DIR", self.settings())
+            .env_remove("VIKE_MAX_ORDER_NOTIONAL")
+            .env_remove("VIKE_TRADEHUB_MAX_ORDER_NOTIONAL")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        match stdin_text {
+            None => {
+                cmd.stdin(Stdio::null());
+                cmd.output().expect("the vike-cli binary must run")
+            }
+            Some(text) => {
+                use std::io::{ErrorKind, Write};
+                cmd.stdin(Stdio::piped());
+                let mut child = cmd.spawn().expect("the vike-cli binary must run");
+                // ⚠ A child that REFUSES before reading its stdin — an absent store, an unknown
+                // key — has closed the pipe by the time this write lands, and on Linux that is
+                // `EPIPE`, not a silent short write as on Windows. Refusing without consuming
+                // the value is exactly the behaviour those cases assert, so a broken pipe here is
+                // the expected shape of a correct refusal, never a harness failure. Caught by
+                // Linux CI on the first run; the Windows box could not see it.
+                match child.stdin.take().expect("piped").write_all(text.as_bytes()) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == ErrorKind::BrokenPipe => {}
+                    Err(e) => panic!("feeding the child's stdin failed: {e}"),
+                }
+                child.wait_with_output().expect("the child must finish")
+            }
+        }
+    }
+}
+
+/// A rung of `crates/vike-cli/src/exit.rs`'s ladder as the number a shell sees. Taken from the enum
+/// rather than written out, so this file states no exit code of its own — the ladder is a public
+/// interface and it has exactly ONE definition.
+pub(super) fn rung(exit: vike_cli::exit::Exit) -> i32 {
+    exit as i32
+}
+
+pub(super) fn exit_code(o: &Output) -> i32 {
+    o.status.code().expect("the process exited rather than being signalled")
+}
+
+/// A project on disk: `<root>/settings/`, its store the settings database
+/// `<root>/settings/db/vike.db` once a case writes one.
+///
+/// ⚠ It drives `secrets` with `$VIKE_SETTINGS_DIR`, and that is the point: the project's own store
+/// is whatever `vike_secrets::backend_in` says it is. Every assertion below is about that store.
+pub(super) struct Project {
+    root: tempfile::TempDir,
+}
+
+impl Project {
+    pub(super) fn new(tag: &str) -> Project {
+        let root = tempfile::Builder::new()
+            .prefix(&format!("vike-cli-db-{tag}-"))
+            .tempdir()
+            .expect("tempdir");
+        std::fs::create_dir_all(root.path().join("settings")).expect("settings dir");
+        Project { root }
+    }
+
+    pub(super) fn settings(&self) -> PathBuf {
+        self.root.path().join("settings")
+    }
+
+    pub(super) fn db(&self) -> PathBuf {
+        self.settings().join("db").join("vike.db")
+    }
+
+    /// Make the store hold `text`'s `KEY=value` lines — see [`seed_store`].
+    pub(super) fn write_store(&self, text: &str) {
+        seed_store(&self.settings(), text);
+        assert!(self.db().is_file(), "the fixture must really have a store");
+    }
+
+    /// Run `vike-cli secrets <args…>` inside this project.
+    pub(super) fn secrets(&self, args: &[&str]) -> Output {
+        Command::new(BIN)
+            .arg("secrets")
+            .args(args)
+            .stdin(Stdio::null())
+            .env("VIKE_SETTINGS_DIR", self.settings())
+            .output()
+            .expect("the vike-cli binary must run")
+    }
+
+    /// Run `vike-cli secrets <args…>` inside this project with `value` on stdin — the one shape a
+    /// WRITE takes, since `set` accepts a value from stdin or a named variable and never from argv.
+    pub(super) fn secrets_with_stdin(&self, args: &[&str], value: &str) -> Output {
+        use std::io::{ErrorKind, Write};
+        let mut child = Command::new(BIN)
+            .arg("secrets")
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("VIKE_SETTINGS_DIR", self.settings())
+            .spawn()
+            .expect("the vike-cli binary must run");
+        // A child that refuses before reading stdin has already closed the pipe — `EPIPE` on Linux,
+        // and the expected shape of a correct refusal. Same note as `SetCase::run`'s.
+        match child.stdin.take().expect("piped").write_all(value.as_bytes()) {
+            Ok(()) => {}
+            Err(e) if e.kind() == ErrorKind::BrokenPipe => {}
+            Err(e) => panic!("feeding the child's stdin failed: {e}"),
+        }
+        child.wait_with_output().expect("the child must finish")
+    }
+
+    /// Every `changes-*.jsonl` line the ledger under `<settings>/state/changes` holds.
+    pub(super) fn journal_lines(&self) -> Vec<String> {
+        let dir = self.settings().join("state").join("changes");
+        let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+        let mut out = Vec::new();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with("changes-") || !name.ends_with(".jsonl") {
+                continue;
+            }
+            let text = std::fs::read_to_string(entry.path()).expect("read the ledger");
+            out.extend(text.lines().filter(|l| !l.trim().is_empty()).map(str::to_string));
+        }
+        out
+    }
+
+    /// Run `vike-cli config check` inside this project.
+    pub(super) fn config_check(&self) -> Output {
+        Command::new(BIN)
+            .args(["config", "check"])
+            .stdin(Stdio::null())
+            .env("VIKE_SETTINGS_DIR", self.settings())
+            .output()
+            .expect("the vike-cli binary must run")
+    }
+
+    /// Run `vike-cli config show …` inside this project.
+    ///
+    /// ⚠ `env_clear`, like `crates/vike-cli/tests/config_cli.rs`'s `Case::run` — an exported
+    /// `RUST_LOG` on a developer box moves a row's SOURCE to `env`, which is precisely the column
+    /// these cases measure.
+    pub(super) fn config_show(&self, args: &[&str]) -> Output {
+        let mut cmd = Command::new(BIN);
+        cmd.args(["config", "show"]).args(args);
+        cmd.env_clear();
+        cmd.env("VIKE_SETTINGS_DIR", self.settings());
+        cmd.stdin(Stdio::null()).output().expect("the vike-cli binary must run")
+    }
+}
+
+/// A store with comments, a blank line and three DEPLOYMENT names — the rows a name-addressed write
+/// files (no account, no venue: decision 0156 item 6): a vendor key, the pager token and an
+/// attribution code.
+pub(super) const SEEDED_STORE: &str = "# vike credential store\n\
+                             # hand-written, and it stays hand-written\n\
+                             \n\
+                             TARDIS_API_KEY=key-one\n\
+                             VIKE_ALERT_TELEGRAM_TOKEN=token-one\n\
+                             BINANCE_BROKER_CODE=broker-one\n";
+
+impl SetCase {
+    pub(super) fn db(&self) -> PathBuf {
+        self.settings().join("db").join("vike.db")
+    }
+}
+
+/// The accounts the book verbs are exercised over: **TWO dukascopy demo accounts** — the shape the
+/// whole account-book verb exists for, two legal entities of one venue at one tier, told apart by
+/// the LABEL the operator gave each (decision 0156 item 6) and by `id` — and a binance demo account
+/// beside them, so the listing has a third row and the assertions cannot pass by counting to two.
+/// Each is created with its tier first and its fields written against it, the one way an account's
+/// credential reaches a store.
+pub(super) const BOOK_ACCOUNTS: &[PlantedAccount<'static>] = &[
+    ("binance", "demo", None, &[("API_KEY", "key-one")]),
+    ("dukascopy", "demo", Some("SWISS"), &[("LOGIN", "login-one"), ("PASSWORD", "pass-one")]),
+    ("dukascopy", "demo", Some("EUROPE"), &[("LOGIN", "login-two"), ("PASSWORD", "pass-two")]),
+];
+
+impl SetCase {
+    /// A project whose store holds [`BOOK_ACCOUNTS`], and the two dukascopy `account` ids in it.
+    ///
+    /// The ids come out of the shipped binary's own `accounts` listing rather than out of the
+    /// database directly — so if the listing ever stopped printing the id, these cases fail at the
+    /// step that reads it rather than silently testing a handle no operator can obtain.
+    pub(super) fn seeded_books(&self) -> Vec<i64> {
+        self.seed_accounts(BOOK_ACCOUNTS);
+
+        let listed = self.run(&["accounts"], None, &[]);
+        assert_eq!(exit_code(&listed), rung(vike_cli::exit::Exit::Ok), "{}", stderr(&listed));
+        let text = stdout(&listed);
+        // ⚠ A TABLE ROW is an INDENTED line whose FIRST token parses as an id, not merely any line
+        // naming the venue. The listing also prints a block under the table for every
+        // `(venue, tier, label)` more than one row shares — the dukascopy pair is exactly that —
+        // and its header names the venue too. Filtering on the name alone made this helper panic
+        // on the prose line.
+        //
+        // ⚠ And the INDENT is the third clause, added after the `last verified` footer landed: that
+        // paragraph opens with a COUNT (`3 row(s) read …`) and names dukascopy as the venue that
+        // produces a verification today, so it satisfied both earlier clauses at once and this
+        // helper reported three dukascopy rows in a two-row fixture. Every table row carries
+        // `run_accounts`' two-space indent; every footer line is flush left.
+        let ids: Vec<i64> = text
+            .lines()
+            .filter(|l| l.starts_with(' ') && l.contains("dukascopy"))
+            .filter_map(|l| l.split_whitespace().next().and_then(|t| t.parse::<i64>().ok()))
+            .collect();
+        assert_eq!(ids.len(), 2, "the fixture's two dukascopy rows must be listed: {text}");
+        ids
+    }
+}
+
+impl SetCase {
+    /// A project whose store holds [`BOOK_ACCOUNTS`], and the `account` id of the binance row, the
+    /// one that owns an `API_KEY`.
+    ///
+    /// A KEYED row: the ⚠ block the rehearsal owes an operator only prints for one, and the
+    /// dukascopy pair is the wrong fixture for it because nothing else in the listing would then be
+    /// distinguishable from it by venue.
+    ///
+    /// The id comes out of the shipped binary's own `accounts` listing for [`Self::seeded_books`]'
+    /// reason — a handle no operator can obtain is not the handle under test — and through the same
+    /// indent-plus-leading-integer filter, which that helper's own comment argues.
+    pub(super) fn seeded_keyed_row(&self) -> i64 {
+        self.seed_accounts(BOOK_ACCOUNTS);
+
+        let listed = self.run(&["accounts"], None, &[]);
+        assert_eq!(exit_code(&listed), rung(vike_cli::exit::Exit::Ok), "{}", stderr(&listed));
+        let text = stdout(&listed);
+        let ids: Vec<i64> = text
+            .lines()
+            .filter(|l| l.starts_with(' ') && l.contains("binance"))
+            .filter_map(|l| l.split_whitespace().next().and_then(|t| t.parse::<i64>().ok()))
+            .collect();
+        assert_eq!(ids.len(), 1, "the fixture's ONE binance row must be listed: {text}");
+        ids[0]
+    }
+
+    /// Add a KEYLESS labelled account through the shipped binary and answer with the id the insert
+    /// assigned — `account add`, the ONE way an account comes into being (a credential write never
+    /// creates one, decision 0156 item 6).
+    pub(super) fn added_account(&self, venue: &str, tier: &str, label: &str) -> i64 {
+        self.added(&["account", "add", "--venue", venue, "--tier", tier, "--label", label])
+    }
+
+    /// [`Self::added_account`] for the UNLABELLED account of `(venue, tier)` (`--no-label`).
+    pub(super) fn added_unlabelled_account(&self, venue: &str, tier: &str) -> i64 {
+        self.added(&["account", "add", "--venue", venue, "--tier", tier, "--no-label"])
+    }
+
+    /// Run one `account add` and read back the id it printed.
+    fn added(&self, argv: &[&str]) -> i64 {
+        let out = self.run(argv, None, &[]);
+        assert_eq!(exit_code(&out), rung(vike_cli::exit::Exit::Ok), "{}", stderr(&out));
+        let text = stdout(&out);
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("added account "))
+            .unwrap_or_else(|| panic!("`account add` must report the id it assigned: {text}"));
+        line.split_whitespace()
+            .nth(2)
+            .and_then(|t| t.parse::<i64>().ok())
+            .unwrap_or_else(|| panic!("the id is the third token of {line:?}"))
+    }
+}
+
+impl SetCase {
+    /// `<settings>/state/account-confirmations.json` — the path the daemon's sandbox can write and
+    /// this verb reads.
+    fn parked_path(&self) -> PathBuf {
+        self.settings().join("state").join("account-confirmations.json")
+    }
+
+    /// Plant what a mount would have parked: one confirmation per `(venue, key prefix)`.
+    pub(super) fn park(&self, records: &[(&str, &str, &str)]) {
+        std::fs::create_dir_all(self.settings().join("state")).unwrap();
+        let body: Vec<String> = records
+            .iter()
+            .map(|(venue, prefix, answered)| {
+                format!(
+                    "{{\"venue\":\"{venue}\",\"key_prefix\":\"{prefix}\",\
+                     \"handshake_account_id\":\"{answered}\",\"observed_row\":null,\
+                     \"observed_book\":null,\"at_ms\":1787356800000}}"
+                )
+            })
+            .collect();
+        std::fs::write(self.parked_path(), format!("{{\"records\":[{}]}}\n", body.join(",")))
+            .unwrap();
+    }
+
+    pub(super) fn parked_text(&self) -> String {
+        std::fs::read_to_string(self.parked_path()).unwrap_or_default()
+    }
+
+    /// Only the TABLE ROWS of an `accounts` listing — INDENTED lines whose first token parses as
+    /// an id.
+    ///
+    /// ⚠ Load-bearing, not tidiness: that listing also prints the PARKED CONFIRMATIONS at the foot,
+    /// and a confirmation names the very string a disagreement case is asserting was NOT written.
+    /// A `!listing.contains(answer)` assertion therefore passes for the wrong reason when the fold
+    /// worked and fails for the wrong reason when it correctly refused — which is exactly how it
+    /// failed when these cases were first written.
+    ///
+    /// ⚠ **The INDENT is half the filter**, and it stopped being optional the moment a case wanted
+    /// to assert something POSITIVE about every row. The footer lines start with a count
+    /// (`4 account(s), …`, `3 row(s) read …`) whose first token parses as an id just as happily as
+    /// a row's does, and they are flush left while `run_accounts` prints every table row with a
+    /// two-space indent. A `for row in account_rows()` loop over the untightened filter therefore
+    /// asserted about prose. Tightening only ever REMOVES lines, so the negative assertions that
+    /// were already here are unaffected.
+    pub(super) fn account_rows(&self) -> String {
+        stdout(&self.run(&["accounts"], None, &[]))
+            .lines()
+            .filter(|l| l.starts_with(' '))
+            .filter(|l| l.split_whitespace().next().is_some_and(|t| t.parse::<i64>().is_ok()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// The `account_book` records only — a `set` files a `credential_write` of its own, so a bare
+    /// line count is not a count of book writes.
+    pub(super) fn book_records(&self) -> Vec<String> {
+        self.journal_lines().into_iter().filter(|l| l.contains("account_book")).collect()
+    }
+}
+
+/// One `KEY=value` line per entry, sorted — the shape [`SetCase::read_store`] renders the store in.
+fn render(rows: std::collections::BTreeMap<String, String>) -> String {
+    rows.into_iter().map(|(k, v)| format!("{k}={v}\n")).collect()
+}
+
+/// A fixture's `KEY=value` text as rows: comments and blank lines dropped, one layer of surrounding
+/// quotes stripped, the value trimmed, LAST-wins over a duplicate.
+pub(super) fn parse_rows(text: &str) -> std::collections::BTreeMap<String, String> {
+    let mut rows = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let v = v.trim().trim_matches('"').trim_matches('\'');
+        rows.insert(k.trim().to_string(), v.to_string());
+    }
+    rows
+}
+
+/// A `KEY=value` text as the store holds it once [`seed_store`] wrote it — [`parse_rows`], rendered
+/// sorted by [`render`].
+pub(super) fn canon(text: &str) -> String {
+    render(parse_rows(text))
+}
+
+/// **Make `settings`' store hold `text`'s rows** — the settings DATABASE, the only credential store
+/// since the credential FILE store was removed (2026-10-07). It is created the way a fresh box
+/// creates it (`vike_secrets::create_store`, the library half of `vike-cli secrets init`; an
+/// existing store is left as it is), and each row is
+/// written through the production writer's record-less body
+/// (`vike_secrets::save_credentials_to_store_unjournalled`): a platform key
+/// (`vike_venues::credential_keys::is_platform_key`, the node pairs among them) into the `node_key`
+/// table, every other name into the `credential` table as a DEPLOYMENT row — no account, no venue
+/// (decision 0156 item 6: a name-addressed write creates no account; [`seed_accounts`] plants an
+/// account's credentials). No ledger record is written — the fixture is not an operator act.
+pub(super) fn seed_store(settings: &std::path::Path, text: &str) {
+    vike_secrets::create_store(Some(settings.to_str().expect("a UTF-8 scratch path")))
+        .expect("create the fixture's store");
+    let mut node = Vec::new();
+    let mut credential = Vec::new();
+    for row in parse_rows(text) {
+        if vike_venues::credential_keys::is_platform_key(&row.0) {
+            node.push(row);
+        } else {
+            credential.push(row);
+        }
+    }
+    if !node.is_empty() {
+        vike_secrets::save_credentials_to_store_unjournalled(
+            settings,
+            vike_secrets::Table::NodeKey,
+            &node,
+            vike_secrets::UpsertIntent::Add,
+        )
+        .expect("write the fixture's node keys");
+    }
+    if !credential.is_empty() {
+        vike_secrets::save_credentials_to_store_unjournalled(
+            settings,
+            vike_secrets::Table::Credential,
+            &credential,
+            vike_secrets::UpsertIntent::Add,
+        )
+        .expect("write the fixture's credentials");
+    }
+}
+
+/// One planted ACCOUNT: its venue, its tier word (`paper`/`demo`/`live`), its label (`None` = the
+/// unlabelled account), and the `(FIELD, value)` pairs filed against it.
+pub(super) type PlantedAccount<'a> = (&'a str, &'a str, Option<&'a str>, &'a [(&'a str, &'a str)]);
+
+/// **Make `settings`' store hold `accounts`** — each created WITH ITS TIER first (the store's account
+/// writer, the act `vike-cli secrets account add` performs) and its fields then written against the
+/// new row by owner and FIELD (`vike_secrets::save_owned_credentials_unjournalled`, the body
+/// `vike-cli secrets set --account` reaches) — the one way an account's credential reaches a store
+/// (decision 0156 item 6). The store is created first when there is none. Record-less, like
+/// [`seed_store`]: the fixture is not an operator act. Returns the ids, in the order given.
+pub(super) fn seed_accounts(
+    settings: &std::path::Path,
+    accounts: &[PlantedAccount<'_>],
+) -> Vec<i64> {
+    vike_secrets::create_store(Some(settings.to_str().expect("a UTF-8 scratch path")))
+        .expect("create the fixture's store");
+    accounts
+        .iter()
+        .map(|&(venue, tier, label, fields)| {
+            let tier: vike_model::AccountTier = tier.parse().expect("a tier word");
+            let id = vike_secrets::edit_account_in_unjournalled(
+                settings,
+                vike_secrets::AccountEdit::Create { venue, tier, label },
+            )
+            .expect("create the fixture's account")
+            .after
+            .expect("a create returns its row")
+            .id;
+            if !fields.is_empty() {
+                let pairs: Vec<(String, String)> =
+                    fields.iter().map(|(f, v)| (f.to_string(), v.to_string())).collect();
+                vike_secrets::save_owned_credentials_unjournalled(
+                    settings,
+                    &vike_secrets::CredentialOwner::Account(id),
+                    &pairs,
+                    vike_secrets::UpsertIntent::Add,
+                )
+                .expect("write the fixture's account fields");
+            }
+            id
+        })
+        .collect()
+}

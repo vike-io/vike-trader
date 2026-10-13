@@ -1,0 +1,655 @@
+use std::io::Cursor;
+
+use crate::proto::*;
+use vike_data::StoreKindId;
+
+/// [`welcome_plane`] names a plane only when the `Welcome` names exactly ONE: a pre-split daemon
+/// (both sentinels) and an unknown peer (neither) answer `None`, and so does a feature that
+/// merely CONTAINS a sentinel — capability strings are compared whole, never by substring.
+#[test]
+fn a_welcome_names_a_plane_only_when_it_names_exactly_one() {
+    let f = |xs: &[&str]| xs.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+    let compute = f(&[COMPUTE_PLANE_SENTINEL, STUDIO_RUNNER_SENTINEL, FEATURE_AUTH]);
+    let data = f(&[DATA_PLANE_SENTINEL, FEATURE_BACKFILL, FEATURE_AUTH]);
+    assert_eq!(welcome_plane(&compute), Some(Plane::Compute));
+    assert_eq!(welcome_plane(&data), Some(Plane::Data));
+    // A pre-split daemon serves BOTH planes, so it is neither — a Write session there carries
+    // the store verbs.
+    let both = f(&[COMPUTE_PLANE_SENTINEL, DATA_PLANE_SENTINEL, FEATURE_AUTH]);
+    assert_eq!(welcome_plane(&both), None);
+    assert_eq!(welcome_plane(&f(&[FEATURE_AUTH])), None);
+    assert_eq!(welcome_plane(&[]), None);
+    // Whole-string equality: a longer token that happens to start with a sentinel is not it.
+    let lookalike = f(&["backtest_v2", "load_bars_v2"]);
+    assert_eq!(welcome_plane(&lookalike), None);
+    // ...and the three sentinels are three different tokens.
+    assert_ne!(COMPUTE_PLANE_SENTINEL, DATA_PLANE_SENTINEL);
+    assert_ne!(STUDIO_RUNNER_SENTINEL, COMPUTE_PLANE_SENTINEL);
+}
+
+/// ⚠ THE THREE CLASSIFIERS, asserted rather than trusted to the compiler. Each of them is
+/// exhaustive, so a missing arm is a build failure — but WHICH arm was chosen is a judgement,
+/// and these are the three judgements: a study RUNS an engine (compute), it WRITES a run
+/// directory on the backend (Control, which `crates/vike-cli/src/cmd/study.rs`'s connect
+/// already negotiates under), and it names itself in a refusal.
+#[test]
+fn the_study_verb_is_a_control_scoped_compute_verb() {
+    let r = Request::RunStudy(Box::new(WireStudy {
+        study: "cohort".to_string(),
+        recipe_toml: String::new(),
+        from: "1".to_string(),
+        to: "2".to_string(),
+    }));
+    assert_eq!(plane_of(&r), Plane::Compute);
+    assert_eq!(request_kind(&r), "RunStudy");
+    assert_eq!(required_scope(&r), VerbScope::Write);
+}
+
+/// The variant each request maps to, through a match with NO `_` arm — so a new verb fails to
+/// COMPILE here until it is given a row, and then fails
+/// [`every_verb_is_classified_and_names_itself_by_its_wire_tag`] until it is given a sample.
+fn variant_index(r: &Request) -> usize {
+    match r {
+        Request::Hello { .. } => 0,
+        Request::Auth { .. } => 1,
+        Request::Ping => 2,
+        Request::RunBacktest(_) => 3,
+        Request::RunSlice { .. } => 4,
+        Request::RunParamscan { .. } => 5,
+        Request::RunWalkforward { .. } => 6,
+        Request::RunParamscanProfile { .. } => 7,
+        Request::RunWalkforwardProfile { .. } => 8,
+        Request::RunStudy(_) => 9,
+        Request::LoadBars { .. } => 10,
+        Request::ScanQuotes { .. } => 11,
+        Request::ScanTrades { .. } => 12,
+        Request::ScanBookUpdates { .. } => 13,
+        Request::ScanDepth { .. } => 14,
+        Request::ScanCohort { .. } => 15,
+        Request::ScanPerpMetrics { .. } => 16,
+        Request::ScanEquity { .. } => 17,
+        Request::ScanExecFills { .. } => 18,
+        Request::PropertiesAsOf { .. } => 19,
+        Request::ListSeries => 20,
+        Request::Inventory => 21,
+        Request::SeriesFacts { .. } => 22,
+        Request::SeriesGaps { .. } => 23,
+        Request::Coverage => 24,
+        Request::ListStrategies => 25,
+        Request::NamedStrategies => 26,
+        Request::RunNamed(_) => 27,
+        Request::Backfill { .. } => 28,
+        Request::ImportArchive(_) => 29,
+        Request::SeedSeries { .. } => 30,
+        Request::VenueCatalog { .. } => 31,
+        Request::DeleteSeries { .. } => 32,
+        Request::MdSubscribe { .. } => 33,
+        Request::MdUpdate { .. } => 34,
+        Request::ListBackfills => 35,
+        Request::CancelBackfill { .. } => 36,
+        Request::HistoryChannels => 37,
+        Request::ScanExecOrders { .. } => 38,
+        Request::OptionsChain { .. } => 39,
+        Request::NewsFeed { .. } => 40,
+        Request::EconomicCalendar { .. } => 41,
+        Request::EquityCalendar { .. } => 42,
+    }
+}
+
+/// How many [`Request`] variants [`variant_index`] numbers.
+const REQUEST_VARIANTS: usize = 43;
+
+/// One sample of EVERY [`Request`] variant.
+fn one_of_every_request() -> Vec<Request> {
+    use crate::wire_studio::WireSliceKind;
+    let slice = || {
+        Box::new(WireSlice {
+            venue: "binance".to_string(),
+            symbols: vec!["BTCUSDT".to_string()],
+            interval: "1m".to_string(),
+            start: None,
+            end: None,
+            kind: WireSliceKind::Bars,
+        })
+    };
+    let spec = || WireSpec::Rhai("fn on_bar() {}".to_string());
+    let series =
+        || SeriesId::per_symbol(StoreKindId::Bar, "binance", "BTCUSDT", Some("1h".to_string()));
+    let venue = "binance".to_string();
+    let symbol = "BTCUSDT".to_string();
+    let md = crate::market::MdSpec {
+        venue: "binance".to_string(),
+        symbol: "BTCUSDT".to_string(),
+        lane: crate::market::MdLane::Trades,
+        depth_levels: None,
+    };
+    vec![
+        Request::Hello { proto_version: PROTO_VERSION },
+        Request::Auth { scope: Scope::Read, mac: vec![0u8; 32] },
+        Request::Ping,
+        Request::RunBacktest(String::new()),
+        Request::RunSlice { spec: spec(), slice: slice(), params: None },
+        Request::RunParamscan {
+            spec: spec(),
+            slice: slice(),
+            paramscan: WireParamscan { axes: vec![] },
+            params: None,
+        },
+        Request::RunWalkforward {
+            spec: spec(),
+            slice: slice(),
+            walkforward: WireWalkforward::fixed(2),
+            params: None,
+        },
+        Request::RunParamscanProfile { profile_toml: String::new(), rank_by: None, search: None },
+        Request::RunWalkforwardProfile { profile_toml: String::new() },
+        Request::RunStudy(Box::new(WireStudy {
+            study: "cohort".to_string(),
+            recipe_toml: String::new(),
+            from: "1".to_string(),
+            to: "2".to_string(),
+        })),
+        Request::LoadBars {
+            venue: venue.clone(),
+            symbol: symbol.clone(),
+            interval: "1h".to_string(),
+            start: None,
+            end: None,
+            limit: None,
+        },
+        Request::ScanQuotes {
+            venue: venue.clone(),
+            symbol: symbol.clone(),
+            start: None,
+            end: None,
+            limit: None,
+        },
+        Request::ScanTrades {
+            venue: venue.clone(),
+            symbol: symbol.clone(),
+            start: None,
+            end: None,
+            limit: None,
+        },
+        Request::ScanBookUpdates {
+            venue: venue.clone(),
+            symbol: symbol.clone(),
+            start: None,
+            end: None,
+            limit: None,
+        },
+        Request::ScanDepth {
+            venue: venue.clone(),
+            symbol: symbol.clone(),
+            start: None,
+            end: None,
+            limit: None,
+        },
+        Request::ScanCohort {
+            venue: venue.clone(),
+            asset: "BTC".to_string(),
+            start: None,
+            end: None,
+            limit: None,
+        },
+        Request::ScanPerpMetrics {
+            venue: venue.clone(),
+            symbol: symbol.clone(),
+            start: None,
+            end: None,
+            limit: None,
+        },
+        Request::ScanEquity {
+            venue: venue.clone(),
+            symbol: symbol.clone(),
+            start: None,
+            end: None,
+            limit: None,
+        },
+        Request::ScanExecFills {
+            venue: venue.clone(),
+            symbol: symbol.clone(),
+            start: None,
+            end: None,
+            limit: None,
+        },
+        Request::ScanExecOrders {
+            venue: venue.clone(),
+            symbol: symbol.clone(),
+            start: None,
+            end: None,
+            limit: None,
+        },
+        Request::PropertiesAsOf { venue: venue.clone(), symbol: symbol.clone(), ts: 0 },
+        Request::ListSeries,
+        Request::Inventory,
+        Request::SeriesFacts { id: series() },
+        Request::SeriesGaps { id: series() },
+        Request::Coverage,
+        Request::ListStrategies,
+        Request::NamedStrategies,
+        Request::RunNamed(Box::new(crate::named_run::NamedRunSpec {
+            strategy: "buy_hold".to_string(),
+            params: Vec::new(),
+            venue: venue.clone(),
+            symbol: symbol.clone(),
+            interval: "1h".to_string(),
+            start: 0,
+            end: 3_600_000,
+        })),
+        Request::Backfill {
+            venue: venue.clone(),
+            symbol: symbol.clone(),
+            interval: "1h".to_string(),
+            start: 0,
+            end: 1,
+        },
+        Request::ImportArchive(crate::archive::ImportSpec {
+            format: "dukascopy-bi5".to_string(),
+            dataset: "EURUSD".to_string(),
+            from_day: None,
+            to_day: None,
+            bars: vec!["1m".to_string()],
+            dry_run: true,
+            verify: false,
+        }),
+        Request::SeedSeries {
+            venue: venue.clone(),
+            symbol: symbol.clone(),
+            interval: "1h".to_string(),
+            class: None,
+        },
+        Request::VenueCatalog { venue: venue.clone() },
+        Request::DeleteSeries {
+            selector: SeriesSelector::new(StoreKindId::Bar, "binance"),
+            produced_by: Some("klines:".to_string()),
+            dry_run: true,
+        },
+        Request::MdSubscribe { specs: vec![md.clone()] },
+        Request::MdUpdate { session: crate::market::MdSessionId(7), add: vec![md], remove: vec![] },
+        Request::ListBackfills,
+        Request::CancelBackfill { venue, symbol, interval: "1h".to_string() },
+        Request::HistoryChannels,
+        Request::OptionsChain {
+            venue: "deribit".to_string(),
+            underlying: "BTC".to_string(),
+            expiries: vec!["2026-06-26".to_string()],
+        },
+        Request::NewsFeed { if_generation: Some(3) },
+        Request::EconomicCalendar { if_generation: None },
+        Request::EquityCalendar { week_start: "2026-10-12".to_string(), if_generation: Some(9) },
+    ]
+}
+
+/// A request's WIRE TAG, read off its encoding — the externally-tagged key, or the bare string of a
+/// unit variant.
+fn wire_tag(r: &Request) -> String {
+    match serde_json::to_value(r).expect("every request encodes") {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Object(m) => {
+            assert_eq!(m.len(), 1, "an externally-tagged request has ONE outer key: {m:?}");
+            m.keys().next().expect("one key").clone()
+        }
+        other => panic!("a request encoded as neither a tag nor a tagged object: {other}"),
+    }
+}
+
+/// ⚠ **A NEW VERB CANNOT BE MISSED.** [`variant_index`] has no `_` arm, so a variant added to
+/// [`Request`] fails to compile until it is numbered; this test then fails until the sample set
+/// carries it — and for every sample it holds the three exhaustive classifiers to one rule a
+/// compiler cannot check: [`request_kind`] names the verb by the tag the WIRE carries, the one an
+/// operator can grep a capture for. ([`plane_of`] and [`required_scope`] are exhaustive by
+/// construction; WHICH arm they chose is pinned verb by verb in
+/// `crates/vike-datahub/tests/auth_roundtrip/scope_split.rs`'s
+/// `the_verb_scope_classification_is_pinned` and, for this crate's newest verb, below.)
+#[test]
+fn every_verb_is_classified_and_names_itself_by_its_wire_tag() {
+    let samples = one_of_every_request();
+    let mut seen = [false; REQUEST_VARIANTS];
+    for r in &samples {
+        let i = variant_index(r);
+        assert!(i < REQUEST_VARIANTS, "REQUEST_VARIANTS is stale: {r:?} maps to {i}");
+        seen[i] = true;
+        assert_eq!(request_kind(r), wire_tag(r), "request_kind must name the WIRE tag: {r:?}");
+        // Exhaustive and total: neither may panic on any variant.
+        let _ = (plane_of(r), required_scope(r), reply_wait(r));
+    }
+    let missing: Vec<usize> = (0..REQUEST_VARIANTS).filter(|i| !seen[*i]).collect();
+    assert!(missing.is_empty(), "variant indices with no sample: {missing:?}");
+}
+
+/// ⚠ WHICH VERBS WAIT UNBOUNDED, pinned verb by verb over the full sample set: [`reply_wait`] is
+/// exhaustive, so a new verb cannot compile without a class, but WHICH class it got is a judgement.
+/// A verb moved INTO `Unbounded` parks its caller on a dead link; one moved OUT clips a live
+/// backfill, import or run at 300 s.
+#[test]
+fn only_the_client_sized_verbs_wait_unbounded() {
+    let unbounded = [
+        "Backfill",
+        "ImportArchive",
+        "RunBacktest",
+        "RunSlice",
+        "RunSweep",
+        "RunWalkforward",
+        "RunSweepProfile",
+        "RunWalkforwardProfile",
+        "RunStudy",
+        "RunNamed",
+    ];
+    for r in one_of_every_request() {
+        let kind = request_kind(&r);
+        let expected = match kind {
+            "Hello" | "Auth" => ReplyWait::Handshake,
+            k if unbounded.contains(&k) => ReplyWait::Unbounded,
+            _ => ReplyWait::Bounded,
+        };
+        assert_eq!(reply_wait(&r), expected, "{kind}");
+    }
+}
+
+/// ⚠ THE ARCHIVE IMPORT'S THREE CLASSIFIERS, asserted rather than trusted to the compiler: it
+/// WRITES the data daemon's store, so it is a DATA-plane verb (a `Plane::Compute` answer would have
+/// the data daemon refuse its own verb with a wrong-plane message), it is Control-scoped for the
+/// reasons `required_scope`'s arm carries, and it names itself by its wire tag.
+#[test]
+fn the_import_verb_is_a_control_scoped_data_verb() {
+    let r = Request::ImportArchive(crate::archive::ImportSpec {
+        format: "dukascopy-bi5".to_string(),
+        dataset: "EURUSD".to_string(),
+        from_day: None,
+        to_day: None,
+        bars: vec![],
+        dry_run: true,
+        verify: false,
+    });
+    assert_eq!(plane_of(&r), Plane::Data);
+    assert_eq!(required_scope(&r), VerbScope::Write);
+    assert_eq!(request_kind(&r), "ImportArchive");
+    // ...and an Observe credential may not send it, while a Control one may.
+    assert!(!scope_admits(Scope::Read, required_scope(&r)));
+    assert!(scope_admits(Scope::Write, required_scope(&r)));
+}
+
+/// ⚠ THE BACKFILL REGISTRY'S TWO VERBS, asserted rather than trusted to the compiler —
+/// `docs/decisions/0101-cancelling-a-backfill-is-a-control-verb-served-wherever-backfill-is.md`.
+/// Both are DATA-plane (the registry is the data daemon's); the list is Observe and the cancel is
+/// Control — an Observe key may see what the operator is fetching and may not stop any of it.
+#[test]
+fn the_backfill_registry_verbs_are_an_observe_list_and_a_control_cancel() {
+    let list = Request::ListBackfills;
+    let cancel = Request::CancelBackfill {
+        venue: "oanda".to_string(),
+        symbol: "EUR_USD".to_string(),
+        interval: "5s".to_string(),
+    };
+    for r in [&list, &cancel] {
+        assert_eq!(plane_of(r), Plane::Data, "{r:?}");
+    }
+    assert_eq!(required_scope(&list), VerbScope::Read);
+    assert_eq!(required_scope(&cancel), VerbScope::Write);
+    assert!(scope_admits(Scope::Read, required_scope(&list)));
+    assert!(!scope_admits(Scope::Read, required_scope(&cancel)), "Observe must not cancel");
+    assert!(scope_admits(Scope::Write, required_scope(&cancel)));
+    assert_eq!(request_kind(&list), "ListBackfills");
+    assert_eq!(request_kind(&cancel), "CancelBackfill");
+}
+
+/// ⚠ THE HISTORY-CHANNELS READ'S THREE CLASSIFIERS, asserted rather than trusted to the compiler —
+/// `docs/decisions/0102-the-history-channels-read-is-an-observe-verb.md`. A DATA-plane verb (its
+/// overlay is the data daemon's table, store and credential store), Observe-scoped, a bare unit tag
+/// on the wire — and its answer, the client's own compiled table here, survives the frame codec.
+#[test]
+fn the_history_channels_read_is_an_observe_scoped_data_verb_and_its_answer_round_trips() {
+    let r = Request::HistoryChannels;
+    assert_eq!(plane_of(&r), Plane::Data);
+    assert_eq!(required_scope(&r), VerbScope::Read);
+    assert!(scope_admits(Scope::Read, required_scope(&r)), "an Observe key may ask");
+    assert_eq!(request_kind(&r), "HistoryChannels");
+    assert_eq!(
+        serde_json::to_value(&r).expect("encode"),
+        serde_json::json!("HistoryChannels"),
+        "the request names NOTHING — a bare unit tag"
+    );
+
+    let report = crate::history::compiled_report(1_790_899_200_000);
+    let mut buf: Vec<u8> = Vec::new();
+    write_frame(&mut buf, &Response::HistoryChannels(report.clone())).unwrap();
+    match read_frame::<_, Response>(&mut Cursor::new(buf)).unwrap() {
+        Response::HistoryChannels(got) => assert_eq!(got, report),
+        other => panic!("expected HistoryChannels, got {other:?}"),
+    }
+    assert_eq!(FEATURE_HISTORY_CHANNELS, "history_channels");
+}
+
+/// ⚠ THE ORDER-LIFECYCLE READ'S THREE CLASSIFIERS, asserted rather than trusted to the compiler: a
+/// DATA-plane `HistStore` read (the data daemon's store), Observe-scoped like the six 0084 reads
+/// beside it (it writes nothing), named by its wire tag — and its reply survives the frame codec.
+#[test]
+fn scan_exec_orders_is_a_data_plane_read() {
+    let r = Request::ScanExecOrders {
+        venue: "binance".to_string(),
+        symbol: "BTCUSDT".to_string(),
+        start: Some(1),
+        end: Some(2),
+        limit: Some(3),
+    };
+    assert_eq!(plane_of(&r), Plane::Data);
+    assert_eq!(required_scope(&r), VerbScope::Read);
+    assert!(scope_admits(Scope::Read, required_scope(&r)), "an Observe key may ask");
+    assert_eq!(request_kind(&r), "ScanExecOrders");
+}
+
+/// ⚠ THE OPTIONS-CHAIN VERB'S THREE CLASSIFIERS, asserted rather than trusted to the compiler: the
+/// DATA daemon serves it (it links the venue bridge and runs the poll), it is Observe-scoped for
+/// the catalog's reason (`required_scope`'s arm), and it names itself by its wire tag — and both of
+/// its frames survive the codec, every outcome of the reply included.
+#[test]
+fn the_options_chain_verb_is_an_observe_scoped_data_verb_and_its_frames_round_trip() {
+    use crate::options::{OptionsChainOutcome, OptionsChainReply, OptionsRefusal};
+    let r = Request::OptionsChain {
+        venue: "deribit".to_string(),
+        underlying: "BTC".to_string(),
+        expiries: vec!["2026-06-26".to_string(), "2026-07-31".to_string()],
+    };
+    assert_eq!(plane_of(&r), Plane::Data);
+    assert_eq!(required_scope(&r), VerbScope::Read);
+    assert!(scope_admits(Scope::Read, required_scope(&r)), "an Observe key may ask");
+    assert_eq!(request_kind(&r), "OptionsChain");
+    assert_eq!(FEATURE_OPTIONS_CHAIN, "options_chain");
+
+    let mut buf: Vec<u8> = Vec::new();
+    write_frame(&mut buf, &r).unwrap();
+    match read_frame::<_, Request>(&mut Cursor::new(buf)).unwrap() {
+        Request::OptionsChain { venue, underlying, expiries } => {
+            assert_eq!((venue.as_str(), underlying.as_str()), ("deribit", "BTC"));
+            assert_eq!(expiries, ["2026-06-26", "2026-07-31"]);
+        }
+        other => panic!("expected OptionsChain, got {other:?}"),
+    }
+
+    let mut chains = vike_marketdata::UnderlyingChains {
+        default_expiry: "2026-06-26".to_string(),
+        ..Default::default()
+    };
+    chains.expiries.push(vike_marketdata::Expiry {
+        date: "2026-06-26".to_string(),
+        dte: 3,
+        label: "26 Jun".to_string(),
+    });
+    for outcome in [
+        OptionsChainOutcome::Chains(chains),
+        OptionsChainOutcome::NotArmed,
+        OptionsChainOutcome::Refused(OptionsRefusal::UnknownVenue {
+            supported: vec!["deribit".to_string()],
+        }),
+        OptionsChainOutcome::Refused(OptionsRefusal::UnknownUnderlying {
+            supported: vec!["BTC".to_string()],
+        }),
+        OptionsChainOutcome::Refused(OptionsRefusal::TooManyExpiries { max: 8 }),
+        OptionsChainOutcome::Refused(OptionsRefusal::NotReady { why: "warming".to_string() }),
+    ] {
+        // The served set rides every outcome, in canonical order — and SOL (the USDC book) with it.
+        let served = match outcome {
+            OptionsChainOutcome::NotArmed => Vec::new(),
+            _ => vec!["BTC".to_string(), "ETH".to_string(), "SOL".to_string()],
+        };
+        let reply = OptionsChainReply {
+            venue: "deribit".into(),
+            underlying: "BTC".into(),
+            served_underlyings: served,
+            outcome,
+        };
+        let mut buf: Vec<u8> = Vec::new();
+        write_frame(&mut buf, &Response::OptionsChain(reply.clone())).unwrap();
+        match read_frame::<_, Response>(&mut Cursor::new(buf)).unwrap() {
+            Response::OptionsChain(got) => assert_eq!(got, reply),
+            other => panic!("expected OptionsChain, got {other:?}"),
+        }
+    }
+    // ...and the field is ON the wire under its own name, so a client can read it off any reply.
+    let reply = OptionsChainReply {
+        venue: "deribit".into(),
+        underlying: "SOL".into(),
+        served_underlyings: vec!["BTC".into(), "ETH".into(), "SOL".into()],
+        outcome: OptionsChainOutcome::NotArmed,
+    };
+    let doc = serde_json::to_value(Response::OptionsChain(reply)).expect("encode");
+    assert_eq!(
+        doc["OptionsChain"]["served_underlyings"],
+        serde_json::json!(["BTC", "ETH", "SOL"]),
+        "{doc}"
+    );
+}
+
+/// ⚠ THE THREE TOOL-FEED VERBS' CLASSIFIERS, asserted rather than trusted to the compiler: the DATA
+/// daemon serves them, an Observe key may ask, the reply wait is the server-bounded class (cache
+/// reads), each names itself by its wire tag, and the frames — every outcome of every reply
+/// included — survive the codec.
+#[test]
+fn the_tool_feed_verbs_are_observe_scoped_server_bounded_data_verbs_and_their_frames_round_trip() {
+    use crate::tool_feeds::{
+        CalEvent, DividendRow, EarningsRow, EconomicCalendarReply, EquityCalendarReply, IpoRow,
+        NewsItem, NewsReply, ToolFeedOutcome, ToolFeedRefusal,
+    };
+    assert_eq!(FEATURE_TOOL_FEEDS, "tool_feeds");
+    let requests = [
+        (Request::NewsFeed { if_generation: Some(4) }, "NewsFeed"),
+        (Request::EconomicCalendar { if_generation: None }, "EconomicCalendar"),
+        (
+            Request::EquityCalendar {
+                week_start: "2026-10-12".to_string(),
+                if_generation: Some(1),
+            },
+            "EquityCalendar",
+        ),
+    ];
+    for (r, kind) in requests {
+        assert_eq!(plane_of(&r), Plane::Data, "{kind}");
+        assert_eq!(required_scope(&r), VerbScope::Read, "{kind}");
+        assert!(scope_admits(Scope::Read, required_scope(&r)), "an Observe key may ask: {kind}");
+        assert_eq!(reply_wait(&r), ReplyWait::Bounded, "{kind}");
+        assert_eq!(request_kind(&r), kind);
+        let mut buf: Vec<u8> = Vec::new();
+        write_frame(&mut buf, &r).unwrap();
+        let back = read_frame::<_, Request>(&mut Cursor::new(buf)).unwrap();
+        assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&r).unwrap());
+    }
+    // an absent `if_generation` decodes as None: a client that never held one may omit the key
+    let bare: Request = serde_json::from_value(serde_json::json!({"NewsFeed": {}})).unwrap();
+    assert!(matches!(bare, Request::NewsFeed { if_generation: None }));
+
+    fn outcomes<T: Clone>(rows: Vec<T>) -> Vec<ToolFeedOutcome<T>> {
+        vec![
+            ToolFeedOutcome::Snapshot {
+                rows,
+                fetched_at_ms: 1_760_000_000_000,
+                generation: 12,
+                sources_ok: 15,
+                sources_total: 16,
+                cadence_secs: 300,
+            },
+            ToolFeedOutcome::Snapshot {
+                rows: Vec::new(),
+                fetched_at_ms: 1,
+                generation: 1,
+                sources_ok: 0,
+                sources_total: 1,
+                cadence_secs: 0,
+            },
+            ToolFeedOutcome::Unchanged { generation: 12 },
+            ToolFeedOutcome::Warming,
+            ToolFeedOutcome::NotConfigured { key_name: "FINNHUB_API_KEY".to_string() },
+            ToolFeedOutcome::NotArmed,
+            ToolFeedOutcome::Refused(ToolFeedRefusal::WeekOutOfRange {
+                allowed_from: "2026-10-05".to_string(),
+                allowed_to: "2026-10-19".to_string(),
+            }),
+        ]
+    }
+    fn round_trip(response: Response) {
+        let mut buf: Vec<u8> = Vec::new();
+        write_frame(&mut buf, &response).unwrap();
+        let back = read_frame::<_, Response>(&mut Cursor::new(buf)).unwrap();
+        assert_eq!(serde_json::to_value(&back).unwrap(), serde_json::to_value(&response).unwrap());
+        match (&response, &back) {
+            (Response::NewsFeed(a), Response::NewsFeed(b)) => assert_eq!(a, b),
+            (Response::EconomicCalendar(a), Response::EconomicCalendar(b)) => assert_eq!(a, b),
+            (Response::EquityCalendar(a), Response::EquityCalendar(b)) => assert_eq!(a, b),
+            other => panic!("the variant changed on the wire: {other:?}"),
+        }
+    }
+    let news = NewsItem {
+        source: "CoinDesk".to_string(),
+        title: "BTC rallies".to_string(),
+        summary: "A summary.".to_string(),
+        url: "https://example.test/a".to_string(),
+        market: "crypto".to_string(),
+        tags: vec!["Markets".to_string()],
+        ts_ms: 1_760_000_000_000,
+    };
+    let event = CalEvent {
+        ts_ms: 1_760_000_000_000,
+        currency: "USD".to_string(),
+        title: "CPI".to_string(),
+        impact: "High".to_string(),
+        forecast: "0.3%".to_string(),
+        previous: "0.2%".to_string(),
+        actual: String::new(),
+    };
+    let earn = EarningsRow {
+        date: "2026-10-13".to_string(),
+        symbol: "JPM".to_string(),
+        hour: "Pre-mkt".to_string(),
+        eps_est: "4.80".to_string(),
+        eps_act: "5.00".to_string(),
+        surprise: "+4.2%".to_string(),
+    };
+    let div = DividendRow {
+        date: "2026-10-14".to_string(),
+        symbol: "KO".to_string(),
+        pay_date: "2026-11-01".to_string(),
+        amount: "0.51 $".to_string(),
+        yield_pct: "3.00%".to_string(),
+        freq: "Quarterly".to_string(),
+    };
+    let ipo = IpoRow {
+        date: "2026-10-15".to_string(),
+        symbol: "NEW".to_string(),
+        company: "New Co".to_string(),
+        exchange: "NASDAQ".to_string(),
+        price: "$18.00".to_string(),
+        shares: "10,000,000".to_string(),
+        status: "Upcoming".to_string(),
+    };
+    for outcome in outcomes(vec![news]) {
+        round_trip(Response::NewsFeed(NewsReply { outcome }));
+    }
+    for outcome in outcomes(vec![event]) {
+        round_trip(Response::EconomicCalendar(EconomicCalendarReply { outcome }));
+    }
+    for ((earnings, dividends), ipos) in
+        outcomes(vec![earn]).into_iter().zip(outcomes(vec![div])).zip(outcomes(vec![ipo]))
+    {
+        round_trip(Response::EquityCalendar(EquityCalendarReply { earnings, dividends, ipos }));
+    }
+}
