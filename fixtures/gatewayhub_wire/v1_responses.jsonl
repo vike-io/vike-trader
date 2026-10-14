@@ -1,0 +1,29 @@
+{"Welcome":{"proto_version":1,"features":["gatewayhub","gw_data","gw_fetch","md_venue=binance","cd_venue=oanda"],"nonce":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]}}
+{"AuthOk":{"scope":"Write"}}
+{"AuthDenied":{"reason":"bad mac"}}
+"Pong"
+{"Error":"gatewayhub: venue `foo` is not served by this daemon"}
+{"DataOpened":{"session":3,"epoch":14,"heartbeat_ms":15000}}
+{"OptionsFeedOpened":{"epoch":14,"heartbeat_ms":15000}}
+{"FetchProgress":{"rid":7,"state":"Queued","pages":0,"rows":0,"elapsed_ms":12,"next_in_ms":5000}}
+{"FetchProgress":{"rid":7,"state":"Running","pages":2,"rows":1000,"elapsed_ms":3012,"next_in_ms":5000}}
+{"FetchPage":{"rid":7,"page":0,"rows":{"Bars":[{"ts":1,"open":1.0,"high":2.0,"low":0.5,"close":1.5,"volume":10.0,"funding":null,"bid":null,"ask":null,"symbol":null}]}}}
+{"FetchPage":{"rid":8,"page":0,"rows":{"Funding":[{"ts_ms":1,"rate":0.0001,"premium":null},{"ts_ms":2,"rate":-0.0002,"premium":0.5}]}}}
+{"FetchPage":{"rid":9,"page":0,"rows":{"Quotes":[{"ts":1,"local_ts":2,"bid":1.0,"ask":1.5,"bid_size":3.0,"ask_size":4.0,"symbol":"EURUSD"}]}}}
+{"FetchPage":{"rid":10,"page":0,"rows":{"Instruments":[]}}}
+{"FetchDone":{"rid":7,"pages":3,"rows":1500}}
+{"FetchFailed":{"rid":7,"failure":{"Fetch":"venue fetch: HTTP 429"}}}
+{"FetchFailed":{"rid":7,"failure":{"Refused":"no such pair"}}}
+{"FetchCancelled":{"rid":7}}
+{"CatalogDescribed":{"asset_classes":["CryptoSpot","CryptoPerp"],"mode":"Enumerable"}}
+{"CatalogDescribed":{"asset_classes":["Equity"],"mode":"QueryBacked"}}
+{"OptionsReplied":{"Underlyings":["BTC","ETH","SOL"]}}
+{"OptionsReplied":{"Expiries":[{"date":"2026-10-30","dte":17,"label":"30 Oct"}]}}
+{"OptionsReplied":{"Chain":{"underlying":"BTC","underlying_kind":"crypto","underlying_price":null,"expiry":{"date":"2026-10-30","dte":17,"label":"30 Oct"},"asof_ms":1,"source":"deribit","rows":[]}}}
+{"FamilyResolved":{"symbols":["a","b"]}}
+{"PresenceIs":{"presence":"NotNeeded"}}
+{"PresenceIs":{"presence":"Present"}}
+{"PresenceIs":{"presence":"Absent"}}
+{"PresenceIs":{"presence":"Unreadable"}}
+{"PresenceIs":{"presence":"NotChecked"}}
+{"StatusIs":{"epoch":1,"started_ms":2,"uptime_ms":3,"connections":4,"stream_sessions":5,"fetches_running":6,"md_venues":["binance"],"cd_venues":["oanda"],"budget":[{"venue":"binance","host":"fapi","scope":"ip","class":"live","used":10,"cap":2400,"window_ms":60000,"would_throttle":0}]}}

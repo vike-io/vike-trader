@@ -1,0 +1,13 @@
+{"Sub":{"sid":1,"op":{"Bars":{"symbol":"BTCUSDT","interval":"1m"}}}}
+{"Sub":{"sid":2,"op":{"Quotes":{"symbol":"BTCUSDT"}}}}
+{"Sub":{"sid":3,"op":{"Trades":{"symbol":"BTCUSDT"}}}}
+{"Sub":{"sid":4,"op":{"Book":{"symbol":"BTCUSDT"}}}}
+{"Sub":{"sid":5,"op":{"Depth":{"symbol":"BTCUSDT"}}}}
+{"Sub":{"sid":6,"op":{"Depth":{"symbol":"ETHUSDT"}},"class":"Lossless"}}
+{"Unsub":{"sid":5}}
+{"Delivery":{"sid":6,"class":"Conflatable"}}
+{"Delivery":{"sid":6,"class":"Lossless"}}
+{"Delivery":{"sid":6,"class":"Control"}}
+"BeginShutdown"
+"Close"
+"Ping"

@@ -1,0 +1,124 @@
+[package]
+name = "vike-bridge-core"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "Shared venue-bridge plumbing every crates/bridges/<venue> crate is built from: blocking REST transport + signers, the venue-neutral WS user-data pump (reconnect/backoff/keepalive/resync), the ExecActor command thread, the venue-adapter contract and the pinned Decimal wire-format site. Depends on vike-model, vike-secrets (the credential loaders, which moved there by docs/decisions/0135), vike-exec and vike-data."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs): 25 is the
+# arithmetic floor set by its two highest edges, `vike-exec` and `vike-data` (both 20), which the
+# exec lanes and the venue-adapter contract name.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 25
+
+[dependencies]
+# vike-model by trigger/klines/event_map/pacer and nearly everything else, serde by frame_scan,
+# serde_json by json/rate_discovery/capture, tracing by connectivity/ratelimit and the pumps.
+vike-model = { path = "../vike-model" }
+# `vike_marketdata::interval::interval_ms`: the bar-interval vocabulary, which moved out of
+# `vike_model::time`. Layer 5, serde only; already in this crate's closure through vike-model.
+vike-marketdata = { path = "../vike-marketdata" }
+# The credential store and the light half that moved down into it (docs/decisions/0135):
+# `vike_secrets::credentials` (the signer's `Credentials`, the mount's `TierKeys`),
+# `vike_secrets::account_directory` (the mount contract's `AdapterInputs::accounts`).
+vike-secrets = { path = "../vike-secrets" }
+serde = { workspace = true }                           # frame_scan's Visitor blocks
+serde_json = { workspace = true }
+tracing = { workspace = true }                      # transport / user-data-pump diagnostics
+vike-exec = { path = "../vike-exec" }               # exec_actor / rest / user_data
+# venue_adapter's `AdapterRequest::properties_rec` (vike-data's PropertiesRecorder). DEFAULT features
+# only: that tree adds no package this crate does not already have (docs/decisions/0096).
+vike-data = { path = "../vike-data" }
+ureq = { workspace = true }                         # blocking REST (rustls, no OpenSSL) — http/transport/ws_proxy
+hmac = { workspace = true }                         # signer
+sha2 = { workspace = true }                         # signer
+hex = { workspace = true }                          # signer + eip712
+base64 = { workspace = true }                       # OKX signatures are base64, not hex — signer
+rust_decimal = { workspace = true }                 # the ONE Decimal wire site (format_to_step)
+# Blocking WS: the generic TungsteniteStream/WsSocket plumbing every WS venue bridge uses.
+tungstenite = { workspace = true }                  # depth/market_pump/ws/ws_proxy
+k256 = { workspace = true, optional = true }        # EIP-712 secp256k1 signing (eip712.rs, feature-gated)
+tiny-keccak = { workspace = true, optional = true } # EIP-712 keccak256 hashing (eip712.rs, feature-gated)
+# SOCKS5 egress for the blocking WS dial (ws_proxy.rs, `socks-proxy`). NOT a second transport
+# stack: the same crate `ureq`'s own `socks-proxy` feature pulls in, so deny.toml stays green.
+socks = { workspace = true, optional = true }
+# --- `test-support` only -------------------------------------------------------------------------
+# The workspace's ONE scoped `tracing` capture (`vike_log::capture`), read by
+# `venue_adapter_fixture::found_tier_events`. Enabled by `test-support` alone, so no shipped build
+# links vike-log's subscriber tree. Points DOWN (vike-log is layer 15).
+vike-log = { path = "../vike-log", optional = true }
+
+[features]
+# ⚠ There is no `full` feature and no default set any more (docs/decisions/0135). `full` existed so
+# ONE light consumer (vike-cli) could take this crate with `default-features = false` and reach
+# `credentials` without the transport stack; `credentials` and the rest of that light half moved
+# into `vike-secrets`, the consumer dropped its edge, and nothing takes this crate with defaults
+# off. Every build of it is the whole crate.
+#
+# The generic EIP-712 primitive (eip712.rs). Opt-in so venues that don't sign with an EVM key stay
+# k256-free. vike-aster and vike-hyperliquid enable it via their default-on `exec` features,
+# vike-polymarket via its `polymarket` feature; all three consume THIS module as the one shared copy.
+eip712 = ["dep:k256", "dep:tiny-keccak"]
+# Shared test doubles (`scripted`'s WS doubles, `venue_adapter_fixture`) for downstream crates' tests.
+# Only dev-dependency edges turn it on, so it never reaches a shipped binary. It turns on vike-log's
+# own `test-support` (the scoped `tracing` capture a bridge's mount test reads).
+test-support = ["dep:vike-log", "vike-log/test-support"]
+# Sanitized real-frame capture (capture.rs) behind the fixture-faithfulness harness: capture smokes
+# and captured-wire replay tests in the bridge crates enable it via their dev-deps. No extra deps;
+# gated so the shipped order-signing binary never compiles the fixture writer.
+capture = []
+# Optional SOCKS5 egress for the shared WS dial (ws_proxy.rs). Off, a default build compiles NO
+# proxy code and `connect_ws(url, None, _)` is the plain dial; a `Some(proxy)` is then a named
+# error, never a silent direct fallback. `vike-polymarket/polymarket` turns it on (its CLOB hosts
+# are geo-blocked).
+socks-proxy = ["dep:socks"]
+
+[dev-dependencies]
+# Test-only: the project's filesystem layout (`vike_paths`, here its `scratch` guard or project walk): std-only.
+vike-paths = { path = "../vike-paths" }
+# Self-referential dev-dep: enables `test-support` for THIS crate's own `tests/` targets (an
+# integration test compiles the lib without `cfg(test)`, so the shared doubles are only visible to
+# it through the feature). Standard cargo idiom; never affects normal builds.
+vike-bridge-core = { path = ".", features = ["test-support"] }
+# `vike_exec::recon::FakeReconClient` (`src/venue_adapter_tests.rs`) and
+# `vike_exec::testing::RecordingClient` (the conformance and fill-label suites under `tests/`),
+# compiled only under vike-exec's `test-support`, which a DEV edge may turn on and a normal one may
+# not. The normal edge above stays feature-free.
+vike-exec = { path = "../vike-exec", features = ["test-support"] }
+# test-only: the ExecActor and conformance tests read the ingest lane (a tokio mpsc receiver), with
+# a timeout around each read.
+tokio = { workspace = true }
+# test-only: the cross-bridge conformance suites under `tests/` drive each covered venue's REAL
+# mapper through one shared scenario table. DEV edges only — the venue crates normal-depend on this
+# crate, and cargo permits a cycle that closes through dev-dependencies. Nothing under `src/` may
+# reach for these.
+vike-binance = { path = "../bridges/binance" }
+vike-bybit = { path = "../bridges/bybit" }
+vike-okx = { path = "../bridges/okx" }
+vike-deribit = { path = "../bridges/deribit" }
+vike-aster = { path = "../bridges/aster" }
+vike-hyperliquid = { path = "../bridges/hyperliquid" }
+# The non-WS venues the conformance harness covers via the FillShape::Whole axis — oanda/ig (FX/CFD
+# streaming), alpaca (SSE) — default-buildable, so plain path dev-deps.
+vike-oanda = { path = "../bridges/oanda" }
+vike-ig = { path = "../bridges/ig" }
+vike-alpaca = { path = "../bridges/alpaca" }
+# FXCM joins the same FillShape::Whole axis. A PLAIN path dep: `vike-fxcm`'s `fxcm` feature gates
+# only `build.rs`'s native-shim compile, so this edge builds no C++ and links no proprietary SDK.
+vike-fxcm = { path = "../bridges/fxcm" }
+# Property-based testing: tests/format_props.rs proves the pinned Decimal wire site (format_to_step)
+# never over-emits precision, stays a step-multiple, truncates toward zero and round-trips.
+proptest = { workspace = true }
+# test-only: temp directories for tests that write real files on disk (`src/poller.rs`'s ledger
+# tests): a fixed name under the system temp directory is
+# what `crates/vike-ops/tests/hygiene/temp_path_gate.rs` refuses.
+tempfile = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+# The per-venue tables this crate's tests read (`vike-model` held them until decision 0162).
+vike-venues = { path = "../vike-venues" }
+[lints]
+workspace = true

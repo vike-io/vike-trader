@@ -1,0 +1,327 @@
+# systemd unit for the vike-gatewayhub GATEWAY daemon — the one process that owns every connection to
+# every roster venue (docs/decisions/0164-one-daemon-owns-every-venue-connection-vike-gatewayhub.md;
+# the design is docs/superpowers/specs/2026-10-13-vike-gatewayhub-design.md), in the
+# ONE-PROJECT-FOLDER shape. See docs/ops/gatewayhub-the CI box.md for the runbook: the install order, the
+# rollback and what to read in the journal.
+#
+# ⚠ WHAT IT IS, AND WHAT IT IS TO THE OTHER UNITS. Wave 1 of that record moves every venue call the
+# data daemon makes into this process: the market-data and recorder feeds, the REST of backfill and
+# the chart seed, the venue catalog, the Deribit options poll and the OANDA practice-token history
+# read. The data daemon (deploy/vike-datahub.service) is its one client and dials it over loopback
+# through `vike-gatewayhub-client`; it keeps the store, the recorder, the md hub and every served
+# verb. This daemon holds NO store, commits nothing and signs no order. The trading daemon
+# (deploy/vike-tradehub.service) is UNTOUCHED in wave 1 and still opens its own venue sessions; the
+# backtesthub never talks to this one.
+#
+# ⚠ ORDER, AND WHY IT IS `Wants=` + `After=` AND NEVER `Requires=`. The data daemon's unit orders
+# itself after this one and WANTS it, so a box that starts both starts this one first. It does not
+# REQUIRE it: a restart of this daemon must not take the data daemon down, whose remote clients retry
+# (a recorder that stopped with it would open a gap in the tape for nothing). The converse is the
+# trap this file's runbook is written around — a data daemon started with this one absent has no
+# venue access at all — so install and enable THIS unit BEFORE the release that contains the data
+# daemon's remote client reaches the box (docs/ops/gatewayhub-the CI box.md, "Install order").
+#
+# ⚠ EVERY PATH BELOW IS THE PLACEHOLDER PROJECT ROOT /srv/vike-<unit>. It is an example, not a
+# requirement — the daemon works from ANY absolute path, and THE ROOT IS THE PARAMETER THIS FILE IS
+# SUBSTITUTED FOR. On a box that already runs the data and trading daemons the root is THEIR project
+# folder: one folder, one `settings/`, each daemon with its own write grant. Choose your own by ONE
+# rule: a single directory on a disk with room, owned by the user the service runs as, holding bin/
+# and settings/ (with state/ and state/logs/). Then substitute it everywhere in the installed copy and
+# check nothing was missed:
+#
+#   R=/your/project/root
+#   sed "s,/srv/vike-<unit>,$R,g" deploy/vike-gatewayhub.service > /tmp/vike-gatewayhub.service
+#   grep -n /srv/vike-<unit> /tmp/vike-gatewayhub.service    # no output means every placeholder went
+#   sudo install -Dm644 /tmp/vike-gatewayhub.service /etc/systemd/system/vike-gatewayhub.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vike-gatewayhub
+#
+# A SYSTEM install also wants `User=`/`Group=` added and `WantedBy=` changed to `multi-user.target`
+# (this file ships the `--user`-friendly `default.target`). ⚠ Read the hardening block at the bottom
+# first: under a --user manager the sandbox directives are applied as NO-OPS on a stock Ubuntu box —
+# measured, docs/ops/tradehub-the CI box.md.
+#
+# ⚠ ONE UNIT PER DAEMON: a daemon has ONE unit file, named without a suffix, and the project root is a
+# substitutable parameter rather than a second file. WHAT A BOX SUBSTITUTES AND ADDS, as for every unit
+# in this directory: the root; `User=`/`Group=`, deliberately NOT shipped here because this file is
+# published to the public source mirror, whose redaction rewrites a box's user name into a phrase that
+# is not a legal systemd user name; `WantedBy=multi-user.target` for a SYSTEM install; and, where the
+# box wants a failure pager, `OnFailure=vike-notify@%n.service` inline OR deploy/attach-onfailure.sh's
+# drop-in — never both, `OnFailure=` is a LIST directive and the notifier would fire twice.
+#
+# ⚠ THE INSTALLED COPY OF A SIBLING UNIT IS A HAND-DERIVED ARTIFACT, NOT A RENDERING OF ITS TEMPLATE.
+# MEASURED on the live box 2026-10-13: the installed data unit names no `--store` argument (the store
+# is its `config.store_root` row) and grants the box's `data` directory where the tracked template
+# grants `market_data`. Do not diff this file against a sibling's installed copy and read the
+# difference as a defect; a unit on that box is installed by hand from the tracked file and drifts only
+# by hand (docs/ops/gatewayhub-the CI box.md, "The installed units differ from their templates").
+#
+# The shape is MACHINE-CHECKED: crates/vike-ops/tests/container_deploy/deploy_layout_gate.rs reads every
+# unit in this directory and fails if one names a second location, spreads its write grant over more
+# than one ReadWritePaths= LINE, grants a path that covers a binary it runs or its own settings
+# directory, sets VIKE_LOG_DIR, points EnvironmentFile= at the credential store, or runs an
+# ExecStartPre= binary from outside the project folder (or behind a `-`, which would make the
+# pre-check non-fatal).
+
+[Unit]
+Description=vike-gatewayhub — gateway daemon: the one process that owns the venue connections the data daemon reads through (wave 1 serves market data, history, catalog and options)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+
+# ⚠ **THE RELEASE SHIPS ONE BACKEND BINARY, `vike-backend`, AND `gatewayhub` IS A TOOL INSIDE IT** —
+# the same multicall deploy/vike-datahub.service runs as `datahub`; the two units differ only in the
+# verb. Dispatch is on a SUBCOMMAND, so there is no symlink here and no `203/EXEC` class to inherit
+# from a dangling one. The binary and the verb are ONE edit, never two: `crates/vike/src/lib.rs`'s
+# `resolve` matches a tool by EXACT string with no aliases, so `bin/vike-backend vike-gatewayhub` is
+# exit 2 with a tool list — a daemon that "started" and did nothing, not a crash.
+# The standalone crate binary (`vike-gatewayhub`) exists too and is what the crate's own tests spawn;
+# nothing on a box installs it. Building the shipped one yourself:
+#   cargo build --release -p vike-backend --bin vike-backend --features full
+#
+# ⚠ THE BINARY AND THIS FILE REACH THE BOX SEPARATELY, AND NOTHING SEQUENCES THEM.
+# `deploy/sbin/vike-trader-ci-deploy` replaces the BINARY, unattended, on a tag; THIS file only reaches
+# the box when an operator runs the `install -Dm644` recipe above and `systemctl daemon-reload`, and
+# that helper restarts this unit only if the INSTALLED copy of the helper itself names it (it is
+# installed by hand too: docs/ops/gatewayhub-the CI box.md, "Install order", step 1). The daemon takes NO
+# flags: everything it can be told is a settings row, and a typo on this line is refused with exit 2
+# rather than ignored.
+#
+# WorkingDirectory IS the project root: the settings walk and the rolling log resolve off it with no
+# extra variable (crates/vike-paths/src/state_path.rs's `project_state_dir`).
+WorkingDirectory=/srv/vike-<unit>
+ExecStart=/srv/vike-<unit>/bin/vike-backend gatewayhub
+
+# --- PRE-FLIGHT: refuse a broken configuration instead of starting degraded ----------------------
+# The same check deploy/vike-datahub.service and deploy/vike-tradehub.service run, for the same
+# reason: `vike-cli config check` resolves the SAME settings directory through the SAME loader this
+# daemon uses and makes the EXIT CODE the product, so a non-zero status fails the unit BEFORE
+# ExecStart runs. docs/decisions/0013-degrade-vs-refuse.md is the rule it implements. The daemon's
+# own boot (`crates/vike-gatewayhub/src/gatewayhub_cli/boot.rs`'s `boot_root`) loads settings too, so
+# on a box with this line a broken tree is met here, once, rather than as a restart loop.
+#
+# ⚠ Deliberately NOT `--strict` (it promotes a 0644 credential-store permission finding into a
+# refusal the workspace argues must never be one), and NO leading `-` (that would make a failed
+# pre-check non-fatal, i.e. delete this line while appearing to have it).
+# ⚠ It needs a second binary in bin/, or systemd fails the unit with status=203/EXEC:
+#   cargo build --release -p vike-cli --bin vike-cli
+#   install -m755 target/release/vike-cli /srv/vike-<unit>/bin/vike-cli
+ExecStartPre=/srv/vike-<unit>/bin/vike-cli config check
+
+# --- the listen address --------------------------------------------------------------------------
+# The listener binds the `config.gatewayhub_addr` row of this box's settings database, and
+# loopback port 7883 when the row is absent — which is what this template relies on. A non-loopback
+# address is REFUSED at startup with exit 2, and there is NO flag, no key and no row that lifts it:
+# the daemon holds every venue connection and its handshake is plaintext, so it serves this host only
+# (`crates/vike-gatewayhub/src/gatewayhub_cli/boot.rs`'s `resolve_bind` is the rule). Reach it from
+# elsewhere through an SSH tunnel to its loopback port. Do not restate the bind as a property in
+# `Description=` — see
+# `crates/vike-ops/tests/container_deploy/deploy_layout_gate/descriptions_and_hardening.rs`'s
+# `no_unit_description_claims_what_an_environment_file_can_falsify`.
+# ⚠ The row is also what the DATA DAEMON dials. Move one and the other with it, or every venue call
+# fails at its first connect, naming the address it tried.
+#
+# ⚠ **NO KEYS, NO START.** This daemon holds venue credentials, so unlike a key-less data daemon it
+# has no unauthenticated mode: with no gateway hub key in the credential store it logs why and exits.
+# Mint the keys BEFORE enabling this unit (docs/ops/gatewayhub-the CI box.md, "Install order", step 2).
+
+# --- WHERE SETTINGS AND CREDENTIALS LIVE ---------------------------------------------------------
+# `<project>/settings/` holds the settings database and `state/`. No settings file is read (decision
+# 0086) and no setting is read from the process environment (decision 0111): a retired variable in
+# this unit REFUSES startup, naming the row that replaced it (`vike_config::REMOVED_ENV`). The binary
+# finds the project by walking UP from its working directory; the line below makes the answer
+# EXPLICIT and independent of WorkingDirectory — set it and no walk happens at all.
+#
+# ⚠ A DEPLOYED box has a BINARY, not a source checkout, so the directory must exist, AND its `state/`
+# sub-directory (and `state/logs/`), which under ProtectSystem=strict the daemon cannot create for
+# itself:
+#   install -d -m700 /srv/vike-<unit>/settings /srv/vike-<unit>/settings/state /srv/vike-<unit>/settings/state/logs
+#
+# ⚠⚠ **ONE DAEMON READS THE VENUE CREDENTIALS, AND THIS IS IT** (decision 0164, verdict 6). It reads
+# them by SCOPED reads after boot — its hub keys, and in wave 1 one OANDA practice-token field of
+# one account, once per history request — never the whole venue map at boot, and a value reaches no
+# log line, no reply and no `Debug`. The venue settings rows (`venue.<name>.*`) are READS too.
+Environment=VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings
+
+# ⚠ NO `EnvironmentFile=`, and that is the point rather than an omission. The directive is a second
+# lever on the process environment that WINS over every `Environment=` line here (measured, both
+# orders), and on a shared root it reaches the OTHER daemons' operator file: one stray line there
+# would arrive in the one process that holds every venue key. Everything this daemon is told is a
+# settings ROW; the console's `RUST_LOG` is the one developer switch and is not a unit concern.
+
+# --- turn the trace FILE log DOWN ----------------------------------------------------------------
+# RUST_LOG and the log_level row filter the CONSOLE only; the file layer defaults to `trace`. The file
+# level is the `preferences.log_file_level` ROW (no line in this file sets it); write it once, as the
+# service user with this unit's VIKE_SETTINGS_DIR, before the first start:
+#   vike-cli config set preferences.log_file_level warn
+# ⚠ Deliberately NO VIKE_LOG_DIR. Unset, the project layer resolves the rolling log to
+# <project>/settings/state/logs — the one path of the write grant at the bottom of this file, shared
+# with the data daemon's log directory under a prefix of its own (`vike-gatewayhub`), so the two do not
+# prune each other's files. Watch it with `du -sh /srv/vike-<unit>/settings/state/logs`.
+
+# --- keep the daemon from starving the box -------------------------------------------------------
+# ⚠ THE CAP IS A SUM OF FOUR TERMS, and the unit's life is longer than wave 1: this daemon holds every
+# fetch ANSWER whole (a lane returns the full `Vec` of rows and the daemon pages it out of memory), and
+# it is the process wave 2 puts the Dukascopy JVM and the FXCM native SDK in. A child process and a
+# loaded library both count against THIS cgroup.
+#
+#   steady  MEASURED on the live box 2026-10-13 (docs/ops/gatewayhub-the CI box.md carries the table): the
+#           data daemon's client-owning half is 45 threads, 6 established venue sockets and a resident
+#           set of about 0.5 GB, 1.0 GB at its high-water. That is the WHOLE data daemon, store and
+#           page cache included, so it over-states the half that moved here; the stream queues add at
+#           most their ceilings (`crates/vike-gatewayhub/src/server/limits.rs`'s
+#           `STREAM_PLANE_MEMORY_CEILING_BYTES`, 128 MiB, and the options feeds' 8 x 4 MiB).
+#           1.0 GB + 0.16 GB = about 1.2 GB.
+#   jvm     WAVE 2, and NOT MEASURED: wave 1 starts no JVM.
+#           `crates/bridges/dukascopy/src/exec.rs`'s `jvm_args` launches `java -Duser.home=... -jar
+#           <bridge jar>` and emits NO `-Xmx` and no `-Xms`, so the heap is the JVM's default: a quarter
+#           of the memory the JVM believes it has. A JDK 17 that finds this unit's cgroup limit sizes it
+#           from MemoryMax (a quarter of 8G is 2 GB of heap); one that does not (a `--user` manager, a
+#           hidden /sys/fs/cgroup) sizes it from the box (a quarter of 125 GB), which no MemoryMax could
+#           hold. The launch SHOULD carry an explicit `-Xmx` (512m as a start value, and the heap is only
+#           half the process: metaspace, the code cache, thread stacks and the GC's tables add a few
+#           hundred MB). Planned: 0.5 GB heap + 0.5 GB the rest = 1.0 GB for the ONE sidecar. Until the
+#           flag exists the term is 2 GB under this cap and unbounded outside it. Measure with the sidecar
+#           under this unit (`systemd-cgtop`, or `VmHWM` of the java pid) before trusting it.
+#   fxcm    WAVE 2. The ForexConnect SDK (`libForexConnect.so` behind `libfcshim.so`) lives IN the
+#           process (decision 0164, "Measured on the live box"), in native memory the Rust allocator
+#           never sees. Its footprint is not measured separately; the one bound there is: the trading
+#           daemon hosts it today (its FXCM demo account is active and armed) inside cgroup peaks of 88
+#           to 205 MB per run for ALL its venue sessions (`t0_baselines.md` section 5). 0.25 GB.
+#   answer  ONE kline request is ONE batch: `backfill_kline_source` asks the source once for the whole
+#           window the caller names, and nothing in the datahub bounds that window, so the largest
+#           answer is the largest window an operator asks for. A `Bar` is 120 B, a funding point 32 B,
+#           a `QuoteTick` 72 B plus its symbol (`crates/vike-gatewayhub-client/src/proto_tests.rs`'s
+#           `the_row_sizes_the_unit_memory_arithmetic_uses` measures them). Ten million bars (19 years of
+#           1m, or about four months of 1s) is 1.2 GB, held ONCE: the pager makes one page at a time
+#           (it used to build a second copy of the whole answer, so the peak was twice that; measured on
+#           the lane, 3 million bars: 345 MB of rows, +343 MB to split them eagerly, +3 MB lazily). A tick
+#           window is capped at 31 days (`GW_TICKS_MAX_SPAN_MS`); its quote count is not measured here, and
+#           at several million quotes of about 100 B each it is the same order. The chunked lanes (a day of
+#           ticks, a day of OANDA bars) are far under it.
+#
+#   1.2 GB steady + 1.0 GB jvm + 0.25 GB fxcm = 2.45 GB that is there whatever is being fetched; 8G leaves
+#   5.5 GB, which is FOUR answers of 1.2 GB (7.25 GB in all). 8G is the cap of the data daemon's unit
+#   (deploy/vike-datahub.service), where these same buffers lived until the venue calls moved here, so a
+#   request that fitted there fits here. Wave 1 alone (no JVM, no FXCM session) holds five. It is a
+#   BACKSTOP and not a promise: `MAX_FETCHES` (32) fetches at the worst window would not fit.
+#
+# ⚠ WHAT A BREACH DOES. A MemoryMax breach is an OOM kill inside THIS unit's cgroup, and it takes the
+# whole unit down: the kernel picks a victim by badness inside the cgroup (`OOMScoreAdjust=` only
+# reorders the candidates; it cannot exempt the daemon, and it would make the JVM child the likelier
+# victim), and systemd's default `OOMPolicy=stop` then stops the rest. Every stream session ends, every
+# client reconnects after `Restart=` below, and a half-open JForex login is lost with it. So the cap is
+# where a request too large for the box ends, not a way to spare the other sessions.
+# The old 2G was sized from the steady set alone. Tune to the box's headroom (125 GB on the CI box).
+MemoryMax=8G
+# Restart on a crash (an OOM kill included), but not on a clean exit / operator stop.
+Restart=on-failure
+RestartSec=5
+
+# --- stop ----------------------------------------------------------------------------------------
+# `systemctl stop` IS a graceful stop. SIGTERM raises the same stop flag the daemon's whole run order
+# is built around (`crates/vike-gatewayhub/src/gatewayhub_cli.rs`'s `run_with` arms the handlers
+# before anything can block) and the accept loop drains: every connection is told, a stream session
+# writes its `Bye`, a running fetch is cancelled and the connection threads are joined. The decision,
+# the measurements and the options that were refused are in docs/ops/graceful-stop.md.
+# There is deliberately NO ExecStop=: the daemon stops on the signal, so a stop command could only add
+# a SECOND stop route to a design whose whole invariant is that there is one.
+KillSignal=SIGTERM
+# ⚠ THE BUDGET IS DERIVED, and `crates/vike-ops/tests/container_deploy/graceful_stop_pin.rs`'s
+# `the_gatewayhub_unit_outlasts_its_stop_drain` reads it out of THIS file. The one bounded wait in the
+# teardown is `crates/vike-gatewayhub/src/server/accept.rs`'s `serve`, which joins the connection
+# threads for at most `crates/vike-gatewayhub/src/server/limits.rs`'s `STOP_DRAIN` (half of it politely,
+# then the sockets are cut) and returns whatever has not finished: a thread still inside a venue call
+# is left behind and ends with the process. Nothing here is buffered — the daemon holds no store and
+# commits nothing, the data daemon owns every row — so a SIGKILL costs the clients a reconnect and
+# no data. So the number is the drain, plus that gate's fixed allowance for what runs after `serve`
+# returns (the lane drop and the exit), plus the same allowance again as margin. Raise the drain and
+# raise this too; if the wire hook ever JOINS something after `serve`, that wait joins this sum.
+TimeoutStopSec=15
+
+# --- the sandbox ---------------------------------------------------------------------------------
+# The daemon needs no privileges, makes outbound connections to the venues and one loopback listener.
+NoNewPrivileges=true
+# ⚠ ProtectSystem=strict mounts the WHOLE filesystem read-only except /dev, /proc, /sys and whatever
+# ReadWritePaths= names. READS are unaffected, so the settings and the credential store load normally.
+#
+# ⚠ MEASURED on the live box (systemd 255, Ubuntu 24.04): under a `systemd --user` manager with the
+# distribution default `kernel.apparmor_restrict_unprivileged_userns=1`, these directives are applied
+# as NO-OPS — no warning, no failed unit, and `systemctl --user show` still reports them as
+# configured. They enforce under the SYSTEM manager. docs/ops/tradehub-the CI box.md has the probe.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+# ONE grant, ONE path, and deliberately the SUB-directory: this daemon writes its rolling log and
+# NOTHING else in wave 1. The OANDA token and the venue settings are READS, it commits no store row,
+# it checks no HALT sentinel (it places no order) and it persists no rotated credential — so none of
+# `settings/state` (the trading daemon's HALT, journal and lock files), the settings database or the
+# tape is granted, and a daemon that cannot write its own configuration has none to lose.
+#
+# ⚠ **THE GRANT GROWS HERE, IN THIS FILE, NEVER IN A DROP-IN.** A later wave that makes this daemon
+# persist a rotated cTrader pair or claim a live-account lock adds its path to THIS one line, with
+# the argument, in the same change as the code that needs it. A grant that exists only in an
+# `/etc/systemd/system/*.d/` file is a grant no review of this repository ever saw. The path must
+# EXIST (the install recipe above creates it): under the SYSTEM manager systemd refuses a unit whose
+# `ReadWritePaths=` names a missing path (status=226), and that refusal is the point.
+# ⚠ ONE LINE if it ever names several paths: deploy_layout_gate.rs fails a unit that spreads its grant
+# over more than one ReadWritePaths= line, because a second line is where a grant nobody re-read gets
+# added. NOT the project root either: that would cover bin/ (the binary this unit executes) and
+# settings/ (the credential store), which the same gate refuses.
+ReadWritePaths=/srv/vike-<unit>/settings/state/logs
+
+
+# --- syscall / capability hardening, MEASURED ON THE REAL BINARIES -------------------------------
+# The tradehub's whole block, VERBATIM, except one directive. MEASURED on the CI box 2026-08-17, systemd
+# 255, with throwaway SYSTEM units running these exact binaries — every line survived a run, the TLS
+# handshakes and WebSocket dials included. The set is the one every daemon unit in this directory
+# carries; `crates/vike-ops/tests/container_deploy/deploy_layout_gate/descriptions_and_hardening.rs`'s
+# `REQUIRED_HARDENING` is the minimum and its `every_daemon_unit_keeps_its_syscall_and_capability_hardening`
+# the rule.
+#
+# ⚠⚠ **`MemoryDenyWriteExecute=` IS DELIBERATELY ABSENT, AND IT IS THE ONLY DIRECTIVE THIS UNIT OMITS.**
+# MEASURED on the live box 2026-10-13 (decision 0164, "Measured on the live box"): the JForex JRE
+# (Temurin 17.0.19) REFUSES TO START under `MemoryDenyWriteExecute=yes`, printing
+# "Failed to mark memory page as executable", under the JIT and `-Xint` alike, and starts with it off
+# and the rest of the sandbox unchanged. deploy/vike-ibkr-gateway.service already runs without it for
+# the same JIT reason (its header says so). This daemon is where the Dukascopy JVM sidecar will be
+# spawned (wave 2), so the sandbox of the process that owns it cannot carry the directive.
+# ⚠ Wave 1 STARTS NO JVM — its Dukascopy fetch is the keyless `.bi5` archive read — so the directive
+# could stay ON until wave 2 and cost nothing; the owner chose to omit it now (record 0164, verdict
+# 7(c)), so the unit does not have to change twice. ⚠ NOT a loophole to copy: every other daemon unit
+# keeps it, `deploy_layout_gate`'s `every_daemon_unit_keeps_memory_deny_write_execute_unless_declared`
+# holds that and names this unit as the one declared exemption, with this reason. The record's
+# reopener: Dukascopy reachable without a JVM, or a need to restore the directive — the JVM then
+# gets its own unit.
+#
+# ⚠ PrivateNetwork= is deliberately ABSENT and always will be — this daemon IS a network client.
+# `systemd-analyze` charges for that and for holding AF_INET sockets at all; both are unrecoverable
+# for anything that talks to a venue. RestrictAddressFamilies= therefore ALLOWS the three families in
+# use rather than pretending the internet is optional.
+#
+# ⚠ The one line with a real blast radius is UMask=0077: new files become owner-only. A future reader
+# under a DIFFERENT account breaks on it, loudly, with a permission error rather than silence. That
+# is the intended trade for a tree holding venue keys.
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @module @reboot @swap @raw-io @debug @clock @cpu-emulation
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0077
+
+[Install]
+WantedBy=default.target
