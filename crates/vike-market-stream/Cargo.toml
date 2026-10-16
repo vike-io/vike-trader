@@ -1,0 +1,48 @@
+[package]
+name = "vike-market-stream"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the one live-data TUBE (docs/decisions/0167): the stream frames of a `LiveDataSink` over a socket (StreamUp, StreamDown, WireStream, GapVerb), the sending half (the bounded gap-ledger queue, the wire sink, the writer) and the reconnecting receiving engine (RemoteDataClient, generalised over an Opener the client crate supplies). Links no bridge, no vike-bridge-core and no HTTP, WebSocket or TLS crate; the dial and the handshake stay with each client."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `data-plane`,
+# NEW with decision 0167: above `vike-data` (20), whose `LiveDataSink` and `DataClient` it carries over a
+# socket, and below the two hub clients (`vike-gatewayhub-client` and `vike-datahub-client`, 25) and the
+# daemons (65) that both consume it. No tier sat between 20 and 25 before it.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 22
+
+[dependencies]
+# The SHARED hub-protocol substrate, the frame codec only (`frame::read_frame_raw_capped`,
+# `frame::write_frame`). It names no vike-* crate.
+vike-hub-proto = { path = "../vike-hub-proto" }
+# The seams this crate carries: `DataClient`/`LiveDataSink` (live.rs), the `StreamLabel` vocabulary
+# and `require_live_verb`. Default features: the traits only, no store engine.
+vike-data = { path = "../vike-data" }
+# The domain value types the frames carry (`StreamStatus`, `DataDelay`).
+vike-model = { path = "../vike-model" }
+# `LiveVerb` — the key to the canonical `Unsupported` reasons (`vike_data::require_live_verb`), so a
+# reason the sender forwards maps back to the SAME `&'static str` without a leak (src/intern.rs).
+vike-venues = { path = "../vike-venues" }
+# The market-data vocabulary the frames carry (`Bar`, `QuoteTick`, `TradeTick`, `L2Book`,
+# `BookUpdate`). Layer 5, serde only.
+vike-marketdata = { path = "../vike-marketdata" }
+serde = { workspace = true }        # derive on the wire enums (src/wire.rs)
+serde_json = { workspace = true }   # the frame payload codec (float_roundtrip: bit-exact f64)
+# The facade only (libraries never init): link-loss and replay disclosures a reconnect makes, and the
+# writer's incident lines. Already in this crate's closure through vike-data.
+tracing = { workspace = true }
+# NOT here, and the fences keep it so: no bridge, no `vike-bridge-core`, no `vike-secrets`, no
+# `vike-config`, no `tungstenite`/`rustls`/`ureq`. Keys, addresses and the handshake are the opener's,
+# which the client crate supplies.
+
+[dev-dependencies]
+# The shared `RecordingSink` the engine's frame-by-frame tests assert through.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is the sole
+# crate that does NOT inherit this.
+[lints]
+workspace = true
