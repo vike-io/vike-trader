@@ -1,0 +1,365 @@
+use super::*;
+use std::assert_matches;
+use std::time::{Duration, Instant};
+
+#[test]
+fn order_fill_transaction_dual_publishes_fill_and_wrap() {
+    let v = serde_json::json!({
+        "type": "ORDER_FILL", "id": "6373", "time": "1478012400.000000000",
+        "orderID": "6372", "instrument": "EUR_USD", "units": "-1000", "price": "1.09300",
+        "commission": "0.02", "clientExtensions": {"id": "coid-9"}
+    });
+    // Dual-publish contract: a fill yields BOTH the bare FillEvent (the Account folds
+    // it into position/PnL) AND the OrderFilled wrap (the order FSM applies it), both
+    // carrying the same FillEvent (same trade_id, so the two dedup sets key correctly).
+    let evs = decode_transaction_events(&v);
+    assert_eq!(evs.len(), 2, "fill must emit bare Fill + wrap");
+    match &evs[0] {
+        Event::Fill(fill) => {
+            assert_eq!(fill.client_order_id, "coid-9"); // clientExtensions.id preferred
+            assert_eq!(fill.trade_id, "6373");
+            assert_eq!(fill.side, -1); // negative units → sell
+            assert_eq!(fill.last_qty, 1000.0);
+            assert_eq!(fill.last_px, 1.093);
+            assert_eq!(fill.commission, 0.02);
+            assert_eq!(fill.ts, 1_478_012_400_000);
+        }
+        other => panic!("expected bare Fill first, got {other:?}"),
+    }
+    match &evs[1] {
+        Event::OrderFilled(of) => {
+            assert_eq!(of.client_order_id, "coid-9");
+            assert_eq!(of.fill.trade_id, "6373"); // same fill on the wrap
+            assert_eq!(of.fill.side, -1);
+        }
+        other => panic!("expected OrderFilled wrap second, got {other:?}"),
+    }
+}
+
+#[test]
+fn order_cancel_transaction_maps_to_single_cancel() {
+    let v = serde_json::json!({
+        "type": "ORDER_CANCEL", "id": "700", "time": "1", "orderID": "6372", "reason": "CLIENT_REQUEST"
+    });
+    let evs = decode_transaction_events(&v);
+    assert_eq!(evs.len(), 1);
+    assert_matches!(&evs[0], Event::OrderCanceled(c) if c.reason == "CLIENT_REQUEST");
+}
+
+/// **The cancel half of an order REPLACE is not a cancel of the order.** The replacement keeps the
+/// client id, so mapping this line to `OrderCanceled` would TERMINATE an order that is still
+/// resting. Either marker alone suffices; a plain cancel carries neither and still maps.
+#[test]
+fn the_cancel_half_of_a_replace_ends_nothing() {
+    let by_successor = serde_json::json!({
+        "type": "ORDER_CANCEL", "id": "6401", "time": "1", "orderID": "6372",
+        "clientOrderID": "coid-1", "reason": "CLIENT_REQUEST_REPLACED", "replacedByOrderID": "6402"
+    });
+    assert!(decode_transaction_events(&by_successor).is_empty());
+    let by_reason_only = serde_json::json!({
+        "type": "ORDER_CANCEL", "id": "6401", "time": "1", "orderID": "6372",
+        "clientOrderID": "coid-1", "reason": "CLIENT_REQUEST_REPLACED"
+    });
+    assert!(decode_transaction_events(&by_reason_only).is_empty());
+    let by_successor_only = serde_json::json!({
+        "type": "ORDER_CANCEL", "id": "6401", "time": "1", "orderID": "6372",
+        "clientOrderID": "coid-1", "replacedByOrderID": "6402"
+    });
+    assert!(decode_transaction_events(&by_successor_only).is_empty());
+    let plain = serde_json::json!({
+        "type": "ORDER_CANCEL", "id": "6403", "time": "1", "orderID": "6402",
+        "clientOrderID": "coid-1", "reason": "CLIENT_REQUEST"
+    });
+    assert_matches!(
+        decode_transaction_events(&plain).as_slice(),
+        [Event::OrderCanceled(c)] if c.client_order_id == "coid-1"
+    );
+}
+
+/// The fill of a REPLACEMENT order names the order by the carried-over client id, not by the new
+/// venue order id, so it folds into the order the platform already knows.
+#[test]
+fn a_fill_of_the_replacement_order_carries_the_original_client_id() {
+    let fill = serde_json::json!({
+        "type": "ORDER_FILL", "id": "6410", "time": "2", "orderID": "6402",
+        "clientOrderID": "coid-1", "instrument": "EUR_USD", "units": "500", "price": "1.095"
+    });
+    match decode_transaction_events(&fill).as_slice() {
+        [Event::Fill(f), Event::OrderFilled(w)] => {
+            assert_eq!(f.client_order_id, "coid-1");
+            assert_eq!(w.client_order_id, "coid-1");
+        }
+        other => panic!("expected the dual-publish pair, got {other:?}"),
+    }
+}
+
+#[test]
+fn heartbeat_is_ignored() {
+    assert!(
+        decode_transaction_events(&serde_json::json!({"type": "HEARTBEAT", "time": "1"}))
+            .is_empty()
+    );
+}
+
+// --- the rejected open: classified, logged, bounded ---------------------------------------
+//
+// These drive the REAL [`stream_transactions`] against a loopback server that answers a
+// scripted status per open. They live here rather than in `tests/` because that is where the
+// driver is reachable — this crate promotes only its PURE helpers to the crate root — and
+// because the thing under test is the loop, not a decode.
+
+use std::io::Write;
+use std::net::{SocketAddr, TcpListener};
+use std::sync::mpsc;
+use std::thread;
+
+/// How long a bounded lane is given to give up. Generous against the real budget
+/// ([`MAX_TERMINAL_OPENS`] opens with the exec row's fixed reconnect wait between them) so a slow
+/// runner cannot flake it, and finite so the pre-fix behaviour — retry FOREVER — fails the test
+/// instead of hanging the suite.
+const LANE_GIVE_UP_BUDGET: Duration = Duration::from_secs(30);
+
+/// The bounds `transactions_agent` builds are the exec lane's row, each on its own builder call —
+/// observed on the BUILT agent (`agent.config().timeouts()`), not on a constant that could stop
+/// being the thing the builder reads. `connect` and `send_request` are both 10 s today and are two
+/// facts: the dial and the wait for the response head.
+#[test]
+fn the_transactions_agent_carries_the_exec_rows_bounds() {
+    let timeouts = transactions_agent().config().timeouts();
+    assert_eq!(timeouts.connect, Some(Duration::from_secs(10)), "the dial bound");
+    assert_eq!(timeouts.send_request, Some(Duration::from_secs(10)), "the response-head wait");
+    assert_eq!(timeouts.recv_response, None, "a recv_response bound would cap the whole body");
+    assert_eq!(timeouts.recv_body, Some(Duration::from_secs(20)), "the idle bound per body read");
+}
+
+/// A loopback HTTP server answering each open with the next status in `script`, then closing.
+/// Its join value is how many opens it actually served — the count each test asserts on.
+fn spawn_scripted_server(script: Vec<u16>) -> (SocketAddr, thread::JoinHandle<usize>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral loopback");
+    let addr = listener.local_addr().expect("resolve assigned port");
+    let handle = thread::spawn(move || {
+        let mut served = 0_usize;
+        for status in script {
+            let Ok((mut sock, _)) = listener.accept() else { break };
+            let head = format!(
+                "HTTP/1.1 {status} Rejected\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+            );
+            let _ = sock.write_all(head.as_bytes());
+            let _ = sock.flush();
+            served += 1;
+        }
+        served
+    });
+    (addr, handle)
+}
+
+/// Run the REAL driver against `addr` on its own thread. The receiver fires exactly once
+/// [`stream_transactions`] RETURNS, which is the property under test.
+fn spawn_lane(addr: SocketAddr, stop: Arc<AtomicBool>) -> mpsc::Receiver<()> {
+    let (done_tx, done_rx) = mpsc::channel();
+    let config = OandaConfig {
+        api_token: "bad-token".to_string(),
+        account_id: "101-004-1234567-001".to_string(),
+        rest_base: format!("http://{addr}"),
+        stream_base: format!("http://{addr}"),
+    };
+    thread::spawn(move || {
+        let (events, _ingest) = vike_exec::event_channel(16);
+        stream_transactions(config, events, stop, Arc::new(AtomicU64::new(0)));
+        let _ = done_tx.send(());
+    });
+    done_rx
+}
+
+/// The shared taxonomy answers, and the split this lane acts on: a rejection that re-issuing
+/// cannot fix is terminal, everything transient keeps looping. Pinned as a unit so a widened
+/// terminal set (which would abandon the lane over a rate limit) cannot land quietly.
+#[test]
+fn open_failures_classify_into_the_shared_taxonomy() {
+    for status in [401, 403] {
+        let kind = open_failure_kind(Some(status));
+        assert_eq!(kind, ErrorKind::Auth, "HTTP {status} on a stream open is an auth failure");
+        assert!(kind.is_terminal(), "a bad token answers the same way forever");
+    }
+    for status in [429, 500, 503] {
+        assert!(
+            !open_failure_kind(Some(status)).is_terminal(),
+            "HTTP {status} is transient — this lane must keep retrying it"
+        );
+    }
+    // No status at all: DNS/connect/TLS, the taxonomy's `code == 0` case. Retryable.
+    assert_eq!(open_failure_kind(None), ErrorKind::Network);
+    assert!(!open_failure_kind(None).is_terminal());
+}
+
+/// **THE TRAP, closed.** A venue that rejects the open outright used to be retried forever
+/// with nothing logged. The lane now gives up after a bounded number of terminal rejections —
+/// so this test TERMINATES, which is the whole assertion. (Before the fix it never returned.)
+///
+/// It also pins the wait BETWEEN the opens from below: the exec row's reconnect is a fixed 1 s and
+/// this lane reads only its `initial`, so the `MAX_TERMINAL_OPENS - 1` gaps cost at least that many
+/// seconds (`sleep_unless_stopped` never sleeps short, so the bound cannot flake on a fast runner).
+/// A row that stopped being fixed would stop being what this loop does, hence the `is_fixed` check.
+#[test]
+fn a_permanently_rejected_open_gives_up_after_the_bounded_budget() {
+    let reconnect = venue_timings::OANDA.exec().reconnect();
+    assert!(reconnect.is_fixed(), "stream_transactions reads `initial` and nothing else");
+    assert_eq!(reconnect.initial, Duration::from_secs(1));
+
+    let (addr, server) = spawn_scripted_server(vec![401; MAX_TERMINAL_OPENS as usize]);
+    let stop = Arc::new(AtomicBool::new(false));
+    let started = Instant::now();
+    let done = spawn_lane(addr, stop.clone());
+
+    done.recv_timeout(LANE_GIVE_UP_BUDGET)
+        .expect("the lane must GIVE UP on a permanently rejected open, not retry forever");
+    assert!(
+        started.elapsed() >= Duration::from_secs(1) * (MAX_TERMINAL_OPENS - 1),
+        "the opens were not spaced by the 1 s exec reconnect wait: gave up in {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        server.join().expect("server thread joins"),
+        MAX_TERMINAL_OPENS as usize,
+        "the lane spends exactly its budget of opens before abandoning"
+    );
+    assert!(!stop.load(Ordering::Relaxed), "it gave up on its own, not because of a stop");
+}
+
+/// The COMPLEMENT, and the reason the split is not "abandon on any failed open": a transient
+/// rejection must keep looping past the terminal budget. Serving one more 500 than
+/// [`MAX_TERMINAL_OPENS`] proves the lane did not treat it as terminal.
+#[test]
+fn a_transient_rejection_keeps_retrying_past_the_terminal_budget() {
+    let opens = MAX_TERMINAL_OPENS as usize + 1;
+    let (addr, server) = spawn_scripted_server(vec![500; opens]);
+    let stop = Arc::new(AtomicBool::new(false));
+    let done = spawn_lane(addr, stop.clone());
+
+    assert_eq!(
+        server.join().expect("server thread joins"),
+        opens,
+        "a 5xx is retryable — the lane must still be dialling after the terminal budget"
+    );
+    // The listener is gone now, so further opens fail pre-send (also retryable): stop it.
+    stop.store(true, Ordering::Relaxed);
+    done.recv_timeout(LANE_GIVE_UP_BUDGET).expect("a stopped lane returns");
+}
+
+/// **The counter resets on a SUCCESSFUL open, not on any non-terminal one** — the rule
+/// [`MAX_TERMINAL_OPENS`] states. Interleaving 5xx between auth rejections must NOT refill the
+/// budget, or `401, 500, 401, 500, …` reopens the forever-loop this fix closes.
+#[test]
+fn an_interleaved_transient_failure_does_not_refill_the_terminal_budget() {
+    let script = vec![401, 500, 401, 500, 401];
+    let (addr, server) = spawn_scripted_server(script.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let done = spawn_lane(addr, stop.clone());
+
+    done.recv_timeout(LANE_GIVE_UP_BUDGET)
+        .expect("the third auth rejection must end the lane despite the 5xx between them");
+    assert_eq!(
+        server.join().expect("server thread joins"),
+        script.len(),
+        "it gave up on the THIRD terminal open, having also spent the two transient ones"
+    );
+}
+
+// --- an opened stream outlives the response-head bound --------------------------------------
+
+/// How long the heartbeating server keeps one stream open. It must clear both the 10 s head wait
+/// (the bound that used to cap the body, see `transactions_agent`) and the 20 s idle bound, which
+/// an unbroken heartbeat feed never trips: only a stream killed by the HEAD bound fails this.
+const HEARTBEAT_STREAM_LIFETIME: Duration = Duration::from_secs(26);
+
+/// **A healthy stream is not cut after the response-head bound.** The loopback server answers with
+/// a chunked 200 and one HEARTBEAT every 3 s for [`HEARTBEAT_STREAM_LIFETIME`]. Under
+/// `timeout_recv_response` ureq ended the body ~10 s after the head; the lane then redialled, which
+/// shows here as a second connection waiting in the listener's backlog (a TCP connect completes
+/// before `accept`, so the pending dial is observable without a second server loop). The wait is
+/// real time on purpose: the bound under test is ureq's own clock.
+#[test]
+fn a_heartbeating_stream_survives_past_the_response_head_bound() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral loopback");
+    let addr = listener.local_addr().expect("resolve assigned port");
+    let stop = Arc::new(AtomicBool::new(false));
+    let server_stop = stop.clone();
+    let server = thread::spawn(move || {
+        let (mut sock, _) = listener.accept().expect("the lane dials once");
+        let head = "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\n\
+                    transfer-encoding: chunked\r\n\r\n";
+        sock.write_all(head.as_bytes()).expect("write the response head");
+        let beat = "{\"type\":\"HEARTBEAT\",\"time\":\"1700000000.000000000\"}\n";
+        let started = Instant::now();
+        let mut writes_ok = true;
+        while started.elapsed() < HEARTBEAT_STREAM_LIFETIME {
+            let chunk = format!("{:x}\r\n{beat}\r\n", beat.len());
+            writes_ok &= sock.write_all(chunk.as_bytes()).and_then(|()| sock.flush()).is_ok();
+            thread::sleep(Duration::from_secs(3));
+        }
+        // Stop first, then look for a second dial: the lane returns on its next line or, if it
+        // has already left its read loop, on its next `while` check.
+        server_stop.store(true, Ordering::Relaxed);
+        listener.set_nonblocking(true).expect("non-blocking accept");
+        let redialled = listener.accept().is_ok();
+        (writes_ok, redialled)
+    });
+    let done = spawn_lane(addr, stop.clone());
+
+    let (writes_ok, redialled) = server.join().expect("server thread joins");
+    assert!(writes_ok, "the lane closed the connection while heartbeats were still arriving");
+    assert!(
+        !redialled,
+        "the lane dropped a healthy stream and redialled before the server ended it"
+    );
+    done.recv_timeout(LANE_GIVE_UP_BUDGET).expect("a stopped lane returns");
+}
+
+/// A loopback origin answering every request with a 302 to a SECOND loopback listener, plus that
+/// listener's hit counter: the stand-in for the host a followed redirect would replay credentials
+/// to.
+fn redirecting_origin() -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    use std::io::Read;
+    use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
+    fn serve(reply: String) -> (u16, Arc<AtomicUsize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let port = listener.local_addr().expect("local addr").port();
+        let hits = Arc::new(AtomicUsize::new(0));
+        let seen = hits.clone();
+        thread::spawn(move || {
+            for mut conn in listener.incoming().flatten() {
+                seen.fetch_add(1, SeqCst);
+                let _ = conn.set_read_timeout(Some(Duration::from_millis(300)));
+                let mut buf = [0u8; 8192];
+                for _ in 0..2 {
+                    let _ = conn.read(&mut buf);
+                }
+                let _ = conn.write_all(reply.as_bytes());
+            }
+        });
+        (port, hits)
+    }
+    let (target, target_hits) =
+        serve("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".into());
+    let (origin, _) = serve(format!(
+        "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:{target}/stolen\r\n\
+         Content-Length: 0\r\nConnection: close\r\n\r\n"
+    ));
+    (format!("http://127.0.0.1:{origin}"), target_hits)
+}
+
+/// **A 3xx on the credentialed transactions-stream open surfaces as a response and the `Location`
+/// is never dialled.** ureq strips the Bearer token on a redirect, so this is defence in depth: no
+/// redirect is followed from a credentialed open at all.
+///
+/// MUTATION PROOF: delete `.max_redirects(0)` from `transactions_agent` — the 302 is followed.
+#[test]
+fn the_transactions_agent_never_follows_a_redirect() {
+    let (base, target_hits) = redirecting_origin();
+    let resp = transactions_agent()
+        .get(&format!("{base}/v3/accounts/101-004-1234567-001/transactions/stream"))
+        .header("Authorization", "Bearer test-token")
+        .call();
+    assert_eq!(target_hits.load(std::sync::atomic::Ordering::SeqCst), 0, "the target was dialled");
+    assert_eq!(resp.expect("a 302 is a response").status().as_u16(), 302);
+}
