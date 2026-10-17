@@ -1,0 +1,83 @@
+# vike-ibkr-cpapi.service — the IBKR DEMO Client Portal Gateway (cpapi, https://127.0.0.1:5000): the
+# JVM alone, supervised. Its login is `vike-ibkr-cpapi-login.service`.
+#
+# WHY A UNIT: the Client Portal Gateway was a hand-started JVM plus a hand-started login driver, and
+# nothing restarted either. A cpapi box gets the same treatment as a socket box's
+# `vike-ibkr-gateway.service` (decision 0140): the gatewayhub's `Wants=` starts it (the trade daemon's too, during the wave-2 soak), and systemd
+# starts it again when it exits.
+#
+# ON ONLY WHEN IT IS NEEDED, and the switch is the settings database, not this file. A box rides ONE
+# IBKR session: the tier of its ACTIVE ibkr account rows (every label) and that tier's
+# `venue.ibkr.<tier>.backend` row. `ExecCondition=` below runs `start-gateway.sh --check`, which asks
+# `vike-cli secrets ibkr-cp-login --check`: on any session but (cpapi, demo) — off, the socket
+# product, the live tier, a conflict — systemd SKIPS this unit (not failed, nothing started). Only a
+# question that cannot be answered (no vike-cli, an unreadable store) fails it.
+#
+# DEMO ONLY. No unit ever runs the JVM a LIVE login would ride: `start-gateway.sh --foreground` asks
+# the same question again and refuses anything but (cpapi, demo). The live Client Portal Gateway is a
+# hand start — the JVM by hand, then `vike-cli secrets ibkr-cp-login --tier live` and a phone tap:
+# `docs/ops/ibkr-cpapi-gateway.md`.
+#
+# ⚠ A JVM RESTART FORCES A FRESH LOGIN, on purpose: an evicted JVM holds a session a new login cannot
+# get past (`docs/ops/ibkr-socket-gateway.md` section 5), so the login unit is `BindsTo=` this one and
+# stops with it, and this unit `Wants=` the login unit, so every start of the JVM — the restart below
+# included — starts one login after it.
+#
+# ⚠ ONE SESSION PER ACCOUNT. `start-gateway.sh` refuses while an IB Gateway (or a second Client Portal
+# Gateway) runs on this box; one on another box is the operator's to check.
+#
+# ⚠ NO SANDBOX, unlike the daemon units: IBKR's gateway is a third-party Java program that writes its
+# own logs inside `bin/ibkr-cpapi/clientportal.gw/`, which no daemon unit may grant
+# (`crates/vike-ops/tests/container_deploy/deploy_layout_gate/project_folder.rs`'s `NON_DAEMON_UNITS`
+# says why this unit is not judged as one).
+#
+# ⚠ EVERY PATH BELOW IS THE PLACEHOLDER PROJECT ROOT /srv/vike-<unit> — the trade daemon's project,
+# whose `bin/ibkr-cpapi/` holds the install (`docs/ops/ibkr-cpapi-gateway.md`). Substitute it, add the
+# project owner's `User=`/`Group=` (not shipped, as in every unit here), and install BOTH cpapi units:
+#
+#   R=/your/project/root
+#   for u in vike-ibkr-cpapi vike-ibkr-cpapi-login; do
+#     sed "s,/srv/vike-<unit>,$R,g" deploy/$u.service > /tmp/$u.service
+#     grep -n /srv/vike-<unit> /tmp/$u.service    # expect no output
+#     sudo install -Dm644 /tmp/$u.service /etc/systemd/system/$u.service
+#   done
+#   sudo systemctl daemon-reload && sudo systemctl start vike-ibkr-cpapi
+#
+# `vike-gatewayhub.service` WANTS both cpapi units and is ordered after them (wave 2 of decision 0164: the
+# IBKR session is a venue connection and the gatewayhub owns it), so a gatewayhub start on a cpapi box
+# starts the JVM, then the login, and mounts IBKR once the session is authenticated. `vike-tradehub.service`
+# keeps the same lines DURING THE SOAK so that a rollback needs no unit edit. A skipped, failed or absent
+# unit does not stop either daemon: IBKR is then NOT RUNNING (never a paper stand-in, decision 0156).
+
+[Unit]
+Description=IBKR Client Portal Gateway (cpapi DEMO, 127.0.0.1:5000) — the JVM; login by vike-ibkr-cpapi-login
+After=network-online.target
+Wants=network-online.target
+# The login rides this JVM: started after it, stopped with it (its BindsTo=), started again by each
+# restart of it.
+Wants=vike-ibkr-cpapi-login.service
+# A crash loop is capped as the IB Gateway unit's is: three starts in six hours, then it stays failed
+# until someone looks (`systemctl reset-failed vike-ibkr-cpapi`). Each start brings a login with it.
+StartLimitIntervalSec=6h
+StartLimitBurst=3
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/vike-<unit>
+# The one bootstrap pointer: the settings database the session question is answered from.
+Environment=VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings
+# Run only for the (cpapi, demo) IBKR session the settings database states: exit 1 skips the unit,
+# 255 fails it. Reads no secret.
+ExecCondition=/srv/vike-<unit>/bin/ibkr-cpapi/start-gateway.sh --check
+ExecStart=/srv/vike-<unit>/bin/ibkr-cpapi/start-gateway.sh --foreground
+# Started = port 5000 answers TLS, so the login unit (After= this) drives a listening gateway.
+ExecStartPost=/srv/vike-<unit>/bin/ibkr-cpapi/start-gateway.sh --wait
+TimeoutStartSec=120
+Restart=always
+RestartSec=60
+# Exit 2 is the script's own refusal (no install, another session, another gateway on this box): a
+# restart would only repeat it.
+RestartPreventExitStatus=2
+SyslogIdentifier=vike-ibkr-cpapi
+# No [Install]: nothing enables this unit. The gatewayhub's `Wants=` (and, during the soak, the trade
+# daemon's) is its one starter.
