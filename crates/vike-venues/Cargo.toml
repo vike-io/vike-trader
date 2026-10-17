@@ -1,0 +1,32 @@
+[package]
+name = "vike-venues"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the PER-VENUE tables: what each venue can do (`venue_caps` and the preflight that refuses what a row does not declare), its time-in-force, amend, rate-limit, hold, restore, client-order-id, margin, fee, session, timing and wiring facts, the credential-field table and the attribution mechanic. They moved out of `vike-model` whole (decision 0162), so an edit of a venue row no longer rebuilds the crates that name only the vocabulary. `src/lib.rs`'s module doc is the contract."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier
+# `vocabulary-stacked` — one hop over the domain vocabulary (10), below the leaf band (15) except
+# the one declared exception (`vike-secrets`, `TIER_15_EXCEPTIONS`): its lowest consumers sit at 15
+# and above, and it names `vike-model`, so no rank but 11 or 12 fits and 12 is the tier's number.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 12
+
+[dependencies]
+# The vocabulary the tables are rows OVER: `OrderRequest`, `TimeInForce`, `Event`, `MarginMode`,
+# `AccountTier`, `FeeSchedule`, the roster `VENUES`, `InstanceOrigin`'s tag budget.
+vike-model = { path = "../vike-model" }
+# `venue_amend::AmendSemantics` derives the serde pair.
+serde = { workspace = true }
+
+[dev-dependencies]
+# `session_tests.rs` builds trading-week instants from the civil calendar (`days_from_civil`).
+vike-util = { path = "../vike-util" }
+# `venue_amend_tests.rs` and `venue_margin_support_tests.rs` pin the JSON spelling of the words.
+serde_json = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

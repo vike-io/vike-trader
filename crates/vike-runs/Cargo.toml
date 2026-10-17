@@ -1,0 +1,37 @@
+[package]
+name = "vike-runs"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — what a RUN leaves behind: one directory under `<project>/user_data/runs/` holding the common manifest every producer writes the same way, beside a report only that producer's kind understands; plus the tag sidecar and the mark store. It was vike-model's `runs` module until it became a crate of its own; `src/lib.rs`'s crate doc is the contract."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `leaf` — a crate that
+# names AT MOST THE FLOOR: its vike-* edges are the domain vocabulary at 10 (`vike-model`: the time
+# formatter, `Trade`, `ProfileRisk`) and the helper floor at 3 (`vike-util`: the atomic writer). The
+# path constants its docs cite are `vike-paths`', named in prose only.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+vike-model = { path = "../vike-model" }
+# `atomic_file::write_atomic`, the one workspace write policy `marks.rs`'s `write_mark` uses.
+vike-util = { path = "../vike-util" }
+# The document types derive `Serialize`/`Deserialize`; `RunManifest::detail` is a `serde_json::Value`
+# and every reader and writer here goes through `serde_json`. Both are already in every consumer's
+# graph through vike-model, so this crate adds no external package.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# `test-support` for `vike_model::test_support::text::fn_body`, which `src/tests/reserved_roster.rs`
+# harvests the writers' bodies with. A DEV edge only: a normal one would compile the test surface into
+# shipped builds (`crates/vike-ops/tests/architecture/test_surface_gate/manifests.rs`).
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# The directory-minting tests create real run directories under a scratch root.
+tempfile = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true
