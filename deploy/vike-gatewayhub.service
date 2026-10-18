@@ -1,0 +1,498 @@
+# systemd unit for the vike-gatewayhub GATEWAY daemon — the one process that owns every connection to
+# every roster venue (docs/decisions/0164-one-daemon-owns-every-venue-connection-vike-gatewayhub.md;
+# the design is docs/superpowers/specs/2026-10-13-vike-gatewayhub-design.md), in the
+# ONE-PROJECT-FOLDER shape. See docs/ops/gatewayhub-the CI box.md for the runbook: the install order, the
+# rollback and what to read in the journal.
+#
+# ⚠ WHAT IT IS, AND WHAT IT IS TO THE OTHER UNITS. Wave 1 of that record moved every venue call the
+# data daemon makes into this process: the market-data and recorder feeds, the REST of backfill and
+# the chart seed, the venue catalog, the Deribit options poll and the OANDA practice-token history
+# read. WAVE 2 MOVES THE TRADING DAEMON'S VENUE HALF IN TOO: the order, cancel and modify path, the
+# user-data (fill) streams, the reconcile reads, the arming table and the live-account locks of every
+# roster venue now run HERE, one account session per (venue, account), and the trading daemon
+# (deploy/vike-tradehub.service) reaches them over the loopback `trade` wire as a CLIENT that signs
+# nothing and opens no venue order socket. The data daemon (deploy/vike-datahub.service) is the
+# other client: it keeps the store, the recorder, the md hub and every served verb, and its strategy
+# lane (decision 0164, D8) is how the trading daemon's strategy feeds arrive. This daemon still holds NO
+# store and commits nothing; what it signs it signs for a tradehub that asked, and it cancels
+# nothing on its own (D6: a lost trade link cancels no resting order). The backtesthub never talks
+# to this one. Because it now holds the live positions' sessions, a BREACH or a crash here is a
+# trading event, not a gap in a tape: see MemoryMax= and Restart= below and the runbook's
+# "restart drills" (docs/ops/gatewayhub-the CI box.md).
+#
+# ⚠ ORDER, AND WHY IT IS `Wants=` + `After=` AND NEVER `Requires=`. The data daemon's unit AND the
+# trading daemon's unit order themselves after this one and WANT it, so a box that starts them starts
+# this one first and, at shutdown, stops them first (the reverse of `After=`): the trading daemon's
+# graceful stop runs its resting-order cancel sweep THROUGH this daemon, so this daemon must still be
+# serving while the tradehub tears down and must go down AFTER it. Neither REQUIRES it: a restart of
+# this daemon must not take them down (the tradehub's trade link re-opens and re-teaches the adapter
+# at the new epoch, the datahub's remote clients retry, and a recorder stopped with it would open a
+# gap in the tape for nothing). ⚠ `After=` orders a START or a STOP that systemd plans in ONE
+# transaction (boot, shutdown, `systemctl stop a b`); it does NOT make `systemctl restart
+# vike-gatewayhub` wait for the tradehub, which is why the runbook's per-step drill stops the
+# tradehub FIRST. The converse of the order is the trap this file's runbook is written around — a
+# data daemon started with this one absent has no venue access at all, and a tradehub started with
+# it absent waits a bounded time and then runs its demo/live accounts as NOT RUNNING
+# `GatewayUnavailable` (never as paper, decision 0156) — so install and enable THIS unit BEFORE the
+# release that contains the remote clients reaches the box (docs/ops/gatewayhub-the CI box.md, "Install
+# order").
+#
+# ⚠ EVERY PATH BELOW IS THE PLACEHOLDER PROJECT ROOT /srv/vike-<unit>. It is an example, not a
+# requirement — the daemon works from ANY absolute path, and THE ROOT IS THE PARAMETER THIS FILE IS
+# SUBSTITUTED FOR. On a box that already runs the data and trading daemons the root is THEIR project
+# folder: one folder, one `settings/`, each daemon with its own write grant. Choose your own by ONE
+# rule: a single directory on a disk with room, owned by the user the service runs as, holding bin/
+# and settings/ (with state/ and state/logs/). Then substitute it everywhere in the installed copy and
+# check nothing was missed:
+#
+#   R=/your/project/root
+#   sed "s,/srv/vike-<unit>,$R,g" deploy/vike-gatewayhub.service > /tmp/vike-gatewayhub.service
+#   grep -n /srv/vike-<unit> /tmp/vike-gatewayhub.service    # no output means every placeholder went
+#   sudo install -Dm644 /tmp/vike-gatewayhub.service /etc/systemd/system/vike-gatewayhub.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now vike-gatewayhub
+#
+# A SYSTEM install also wants `User=`/`Group=` added and `WantedBy=` changed to `multi-user.target`
+# (this file ships the `--user`-friendly `default.target`). ⚠ Read the hardening block at the bottom
+# first: under a --user manager the sandbox directives are applied as NO-OPS on a stock Ubuntu box —
+# measured, docs/ops/tradehub-the CI box.md.
+#
+# ⚠ ONE UNIT PER DAEMON: a daemon has ONE unit file, named without a suffix, and the project root is a
+# substitutable parameter rather than a second file. WHAT A BOX SUBSTITUTES AND ADDS, as for every unit
+# in this directory: the root; `User=`/`Group=`, deliberately NOT shipped here because this file is
+# published to the public source mirror, whose redaction rewrites a box's user name into a phrase that
+# is not a legal systemd user name; `WantedBy=multi-user.target` for a SYSTEM install; and, where the
+# box wants a failure pager, `OnFailure=vike-notify@%n.service` inline OR deploy/attach-onfailure.sh's
+# drop-in — never both, `OnFailure=` is a LIST directive and the notifier would fire twice.
+#
+# ⚠ THE INSTALLED COPY OF A SIBLING UNIT IS A HAND-DERIVED ARTIFACT, NOT A RENDERING OF ITS TEMPLATE.
+# MEASURED on the live box 2026-10-13: the installed data unit names no `--store` argument (the store
+# is its `config.store_root` row) and grants the box's `data` directory where the tracked template
+# grants `market_data`. Do not diff this file against a sibling's installed copy and read the
+# difference as a defect; a unit on that box is installed by hand from the tracked file and drifts only
+# by hand (docs/ops/gatewayhub-the CI box.md, "The installed units differ from their templates").
+#
+# The shape is MACHINE-CHECKED: crates/vike-ops/tests/container_deploy/deploy_layout_gate.rs reads every
+# unit in this directory and fails if one names a second location, spreads its write grant over more
+# than one ReadWritePaths= LINE, grants a path that covers a binary it runs or its own settings
+# directory, sets VIKE_LOG_DIR, points EnvironmentFile= at the credential store, or runs an
+# ExecStartPre= binary from outside the project folder (or behind a `-`, which would make the
+# pre-check non-fatal).
+
+[Unit]
+Description=vike-gatewayhub — gateway daemon: the one process that owns every venue connection, the data daemon's reads and the trading daemon's orders alike
+After=network-online.target
+Wants=network-online.target
+# The IBKR DEMO gateways, BOTH products: the IB Gateway (`deploy/vike-ibkr-gateway.service`) and the
+# Client Portal Gateway's JVM and login (`deploy/vike-ibkr-cpapi.service`,
+# `deploy/vike-ibkr-cpapi-login.service`). The IBKR session is a VENUE connection, so its owner is
+# this daemon now, and these two lines MOVED HERE from `deploy/vike-tradehub.service` (decision 0140:
+# a box rides ONE IBKR session and each unit's `ExecCondition=` asks the settings database which, so
+# exactly one pair's units start and the other's are skipped). This daemon starts once the started
+# ones are up (the API port answers / the session is authenticated), so IBKR mounts against a
+# logged-in gateway. `Wants=`, not `Requires=`: a skipped, failed or absent unit leaves this daemon
+# starting as before, with IBKR NOT RUNNING for want of its gateway. A unit that does not exist is
+# ignored by both lines.
+#
+# ⚠ DURING THE SOAK THE SAME LINES STAY ON `deploy/vike-tradehub.service` TOO, so a rollback needs
+# no unit edit: the previous tradehub opens its own IBKR session and must find the gateway up. A
+# restart of this daemon leaves a RUNNING IBKR unit alone, and the lines are deleted from the
+# tradehub's file only after the soak (docs/ops/gatewayhub-the CI box.md, "Wave 2 release runbook").
+#
+# ⚠ THE COST, STATED: on a COLD START (boot, or `systemctl start` with the IB Gateway stopped) this
+# daemon's start waits for `deploy/ibkr-gateway/wait-gateway.sh` (the API port answers; 180 s at
+# most, the unit's `TimeoutStartSec=240`) because `After=` orders it behind the gateway's start job,
+# and the data and trading daemons, which are ordered after THIS one, wait behind it in turn. A
+# failed IB Gateway start (login refused, no display) releases them at its failure, not before. A
+# plain restart of this daemon, which is what a deploy does, waits for nothing WHILE the IB Gateway
+# unit is active. ⚠ It is NOT so during IBKR's daily logoff: the IB Gateway unit drops at 23:45:00 UTC
+# and is back at about 23:46:25 on the 2026-10-12 and 13 evidence (a 60 s `RestartSec=` and its login),
+# and `Wants=`+`After=` put that unit's start job INTO a restart of this one, so a restart (a deploy,
+# a hand drill) that lands in the window blocks behind it, and a failed IB Gateway start holds it
+# for up to the 180 s wait. With a live tradehub that is longer than the 120 s dead-man grace. Do not
+# deploy or restart this daemon between 23:40 and 23:55 UTC (the runbook says so at each step).
+Wants=vike-ibkr-gateway.service vike-ibkr-cpapi.service vike-ibkr-cpapi-login.service
+After=vike-ibkr-gateway.service vike-ibkr-cpapi.service vike-ibkr-cpapi-login.service
+
+[Service]
+Type=simple
+
+# ⚠ **THE RELEASE SHIPS ONE BACKEND BINARY, `vike-backend`, AND `gatewayhub` IS A TOOL INSIDE IT** —
+# the same multicall deploy/vike-datahub.service runs as `datahub`; the two units differ only in the
+# verb. Dispatch is on a SUBCOMMAND, so there is no symlink here and no `203/EXEC` class to inherit
+# from a dangling one. The binary and the verb are ONE edit, never two: `crates/vike/src/lib.rs`'s
+# `resolve` matches a tool by EXACT string with no aliases, so `bin/vike-backend vike-gatewayhub` is
+# exit 2 with a tool list — a daemon that "started" and did nothing, not a crash.
+# The standalone crate binary (`vike-gatewayhub`) exists too and is what the crate's own tests spawn;
+# nothing on a box installs it. Building the shipped one yourself:
+#   cargo build --release -p vike-backend --bin vike-backend --features full
+#
+# ⚠ THE BINARY AND THIS FILE REACH THE BOX SEPARATELY, AND NOTHING SEQUENCES THEM.
+# `deploy/sbin/vike-trader-ci-deploy` replaces the BINARY, unattended, on a tag; THIS file only reaches
+# the box when an operator runs the `install -Dm644` recipe above and `systemctl daemon-reload`, and
+# that helper restarts this unit only if the INSTALLED copy of the helper itself names it (it is
+# installed by hand too: docs/ops/gatewayhub-the CI box.md, "Install order", step 1). The daemon takes NO
+# flags: everything it can be told is a settings row, and a typo on this line is refused with exit 2
+# rather than ignored.
+#
+# WorkingDirectory IS the project root: the settings walk and the rolling log resolve off it with no
+# extra variable (crates/vike-paths/src/state_path.rs's `project_state_dir`).
+WorkingDirectory=/srv/vike-<unit>
+ExecStart=/srv/vike-<unit>/bin/vike-backend gatewayhub
+
+# --- PRE-FLIGHT: refuse a broken configuration instead of starting degraded ----------------------
+# The same check deploy/vike-datahub.service and deploy/vike-tradehub.service run, for the same
+# reason: `vike-cli config check` resolves the SAME settings directory through the SAME loader this
+# daemon uses and makes the EXIT CODE the product, so a non-zero status fails the unit BEFORE
+# ExecStart runs. docs/decisions/0013-degrade-vs-refuse.md is the rule it implements. The daemon's
+# own boot (`crates/vike-gatewayhub/src/gatewayhub_cli/boot.rs`'s `boot_root`) loads settings too, so
+# on a box with this line a broken tree is met here, once, rather than as a restart loop.
+#
+# ⚠ Deliberately NOT `--strict` (it promotes a 0644 credential-store permission finding into a
+# refusal the workspace argues must never be one), and NO leading `-` (that would make a failed
+# pre-check non-fatal, i.e. delete this line while appearing to have it).
+# ⚠ It needs a second binary in bin/, or systemd fails the unit with status=203/EXEC:
+#   cargo build --release -p vike-cli --bin vike-cli
+#   install -m755 target/release/vike-cli /srv/vike-<unit>/bin/vike-cli
+ExecStartPre=/srv/vike-<unit>/bin/vike-cli config check
+
+# --- the listen address --------------------------------------------------------------------------
+# The listener binds the `config.gatewayhub_addr` row of this box's settings database, and
+# loopback port 7883 when the row is absent — which is what this template relies on. A non-loopback
+# address is REFUSED at startup with exit 2, and there is NO flag, no key and no row that lifts it:
+# the daemon holds every venue connection and its handshake is plaintext, so it serves this host only
+# (`crates/vike-gatewayhub/src/gatewayhub_cli/boot.rs`'s `resolve_bind` is the rule). Reach it from
+# elsewhere through an SSH tunnel to its loopback port. Do not restate the bind as a property in
+# `Description=` — see
+# `crates/vike-ops/tests/container_deploy/deploy_layout_gate/descriptions_and_hardening.rs`'s
+# `no_unit_description_claims_what_an_environment_file_can_falsify`.
+# ⚠ The row is also what the DATA DAEMON dials. Move one and the other with it, or every venue call
+# fails at its first connect, naming the address it tried.
+#
+# ⚠ **NO KEYS, NO START.** This daemon holds venue credentials, so unlike a key-less data daemon it
+# has no unauthenticated mode: with no gateway hub key in the credential store it logs why and exits.
+# Mint the keys BEFORE enabling this unit (docs/ops/gatewayhub-the CI box.md, "Install order", step 2):
+# `vike-cli gatewayhub setup` mints the observe/control pair AND the order-scope Trade key the
+# tradehub signs its trade lease with, and `vike-cli datahub setup --strategy-lane` mints the
+# datahub's strategy-lane key. All of them are ROWS of the one `vike.db` hub-key table: no key lives in
+# this unit, in an environment file or on a command line. WITHOUT the Trade key this daemon serves
+# its data lane and NO trade surface (the tradehub then reports its demo/live accounts NOT RUNNING
+# `GatewayUnavailable`, naming the key).
+
+# --- WHERE SETTINGS AND CREDENTIALS LIVE ---------------------------------------------------------
+# `<project>/settings/` holds the settings database and `state/`. No settings file is read (decision
+# 0086) and no setting is read from the process environment (decision 0111): a retired variable in
+# this unit REFUSES startup, naming the row that replaced it (`vike_config::REMOVED_ENV`). The binary
+# finds the project by walking UP from its working directory; the line below makes the answer
+# EXPLICIT and independent of WorkingDirectory — set it and no walk happens at all.
+#
+# ⚠ A DEPLOYED box has a BINARY, not a source checkout, so the directory must exist, AND its `state/`
+# sub-directory (and `state/logs/`), which under ProtectSystem=strict the daemon cannot create for
+# itself:
+#   install -d -m700 /srv/vike-<unit>/settings /srv/vike-<unit>/settings/state /srv/vike-<unit>/settings/state/logs
+#
+# ⚠⚠ **ONE DAEMON READS THE VENUE CREDENTIALS, AND THIS IS IT** (decision 0164, verdict 6). It reads
+# them by SCOPED reads — its hub keys, one OANDA practice-token field of one account per history
+# request, and (wave 2) each trade account's own credential book when its lease opens — never the
+# whole venue map at boot, and a value reaches no log line, no reply and no `Debug`. The venue
+# settings rows (`venue.<name>.*`) are READS too.
+#
+# ⚠ **THE `account` ROWS, THE FLAGS, THE VENUE SETTINGS AND THE DEPLOYMENT NAMES ARE RE-READ AT EACH
+# TRADEHUB STEP, NOT AT THIS DAEMON'S START** (the trade lane's `RefreshedTrade`: the arming table, a
+# `TradeOpen`, an adapter start and the preflight's plan each read the store afresh). Activating an
+# account, changing its tier or rotating its key therefore reaches the venue half at the next tradehub
+# restart, with no restart of THIS daemon; an adapter that is already running keeps the credentials it
+# started with. A restart of THIS daemon is needed only for what the boot reads: the hub keys, the
+# listen address and the log level.
+Environment=VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings
+
+# ⚠ NO `EnvironmentFile=`, and that is the point rather than an omission. The directive is a second
+# lever on the process environment that WINS over every `Environment=` line here (measured, both
+# orders), and on a shared root it reaches the OTHER daemons' operator file: one stray line there
+# would arrive in the one process that holds every venue key. Everything this daemon is told is a
+# settings ROW; the console's `RUST_LOG` is the one developer switch and is not a unit concern.
+
+# --- turn the trace FILE log DOWN ----------------------------------------------------------------
+# RUST_LOG and the log_level row filter the CONSOLE only; the file layer defaults to `trace`. The file
+# level is the `preferences.log_file_level` ROW (no line in this file sets it); write it once, as the
+# service user with this unit's VIKE_SETTINGS_DIR, before the first start:
+#   vike-cli config set preferences.log_file_level warn
+# ⚠ Deliberately NO VIKE_LOG_DIR. Unset, the project layer resolves the rolling log to
+# <project>/settings/state/logs — inside the `settings/state` path of the write grant at the bottom of
+# this file, shared with the data daemon's log directory under a prefix of its own (`vike-gatewayhub`), so the two do not
+# prune each other's files. Watch it with `du -sh /srv/vike-<unit>/settings/state/logs`.
+
+# --- keep the daemon from starving the box -------------------------------------------------------
+# ⚠ THE CAP IS A SUM OF SEVEN TERMS, and the unit's life is longer than wave 1: this daemon holds every
+# fetch ANSWER whole (a lane returns the full `Vec` of rows and the daemon pages it out of memory), and
+# it is the process wave 2 puts the Dukascopy JVM, the FXCM native SDK and every account's trade
+# session in. A child process and a loaded library both count against THIS cgroup.
+#
+#   steady  MEASURED on the live box 2026-10-13 (docs/ops/gatewayhub-the CI box.md carries the table): the
+#           data daemon's client-owning half is 45 threads, 6 established venue sockets and a resident
+#           set of about 0.5 GB, 1.0 GB at its high-water. That is the WHOLE data daemon, store and
+#           page cache included, so it over-states the half that moved here; the stream queues add at
+#           most their ceilings (`crates/vike-gatewayhub/src/server/limits.rs`'s
+#           `STREAM_PLANE_MEMORY_CEILING_BYTES`, 768 MiB = 48 sessions x the 16 MiB `WIRE_QUEUE_BYTES`,
+#           and the options feeds' 8 x 4 MiB). 1.0 GB + 0.75 GB + 0.03 GB = about 1.8 GB.
+#   jvm     WAVE 2, and NOT MEASURED: wave 1 starts no JVM.
+#           `crates/bridges/dukascopy/src/exec.rs`'s `jvm_args` launches `java -Duser.home=... -Xmx512m
+#           -jar <bridge jar>` (`MAX_HEAP_FLAG`; no `-Xms`): the heap is CAPPED at 512 MiB whatever this
+#           unit's cgroup says. Without the flag the JVM's default was a quarter of the memory it
+#           believes it has: a JDK 17 that finds this unit's cgroup limit sizes it from MemoryMax (a
+#           quarter of 8G is 2 GB of heap); one that does not (a `--user` manager, a hidden
+#           /sys/fs/cgroup) sizes it from the box (a quarter of 125 GB), which no MemoryMax could hold.
+#           512 MiB is exactly the default under the trading daemon's own `MemoryMax=2G`
+#           (deploy/vike-tradehub.service), the unit whose execution path can launch it today.
+#           The heap is only half the process: metaspace, the code cache, thread stacks and the
+#           GC's tables add a few hundred MB. Planned: 0.5 GB heap + 0.5 GB the rest = 1.0 GB for
+#           the ONE sidecar; the heap half is now a bound, the rest (`-Xmx` bounds only the heap)
+#           is NOT MEASURED.
+#           Measure with the sidecar under this unit (`systemd-cgtop`, or `VmHWM` of the java pid)
+#           before trusting it.
+#   fxcm    WAVE 2. The ForexConnect SDK (`libForexConnect.so` behind `libfcshim.so`) lives IN the
+#           process (decision 0164, "Measured on the live box"), in native memory the Rust allocator
+#           never sees. Its footprint is not measured separately; the one bound there is: the trading
+#           daemon hosts it today (its FXCM demo account is active and armed) inside cgroup peaks of 88
+#           to 205 MB per run for ALL its venue sessions (`t0_baselines.md` section 5). 0.25 GB.
+#   trade   WAVE 2, DERIVED FROM THE QUEUE BOUNDS AND NOT MEASURED. One account session holds, at their
+#           ceilings (`crates/vike-gatewayhub/src/server/limits.rs`): the replay ring
+#           (`GW_TRADE_RING_EVENTS`, 20,000 events), the command queue (`GW_TRADE_COMMAND_QUEUE`, 4,096),
+#           the bridge-to-forwarder channel (`GW_TRADE_EVENT_CHANNEL`, 4,096) and the control queue
+#           (`GW_TRADE_CONTROL_QUEUE`, 1,024). At about 0.5 KiB an event or order and 4 KiB a control
+#           frame that is 10 + 2 + 2 + 4 = 18 MiB per account. The count is the SESSION CEILING this file
+#           declares in the `GATE-READS trade_sessions ceiling=` line below (18: the box's account rows on
+#           2026-10-14, every one of which may run at once but IBKR's two, which exclude each other under
+#           decision 0140), so 18 x 18 MiB = 324 MiB; `GW_MAX_TRADE_LEASES` (64) bounds it at 64 x 18 MiB
+#           = 1.15 GB. Round the box's figure to 0.35 GB. ⚠ The ring is bounded in
+#           EVENTS and not in bytes: one event may be a whole frame (the 64 KiB skip bound), so nothing
+#           here PROVES 20,000 of them fit, only that real events are hundreds of bytes.
+#   exec    WAVE 2. The 14 bridges' exec halves (REST clients, user-data sockets, signers) were the
+#           trading daemon's and are THIS cgroup's now. The only measurement of their size is that
+#           daemon's cgroup peak with all of them mounted, 88 to 205 MB per run (the number the fxcm
+#           term above also leans on), so it is counted again, in full: 0.25 GB. (The tradehub keeps
+#           its core, journal and feeds; none of that comes here.)
+#   answer  ONE kline request is ONE batch: `backfill_kline_source` asks the source once for the whole
+#           window the caller names, and nothing in the datahub bounds that window, so the largest
+#           answer is the largest window an operator asks for. A `Bar` is 120 B, a funding point 32 B,
+#           a `QuoteTick` 72 B plus its symbol (`crates/vike-gatewayhub-client/src/proto_tests.rs`'s
+#           `the_row_sizes_the_unit_memory_arithmetic_uses` measures them). Ten million bars (19 years of
+#           1m, or about four months of 1s) is 1.2 GB, held ONCE: the pager makes one page at a time
+#           (it used to build a second copy of the whole answer, so the peak was twice that; measured on
+#           the lane, 3 million bars: 345 MB of rows, +343 MB to split them eagerly, +3 MB lazily). A tick
+#           window is capped at 31 days (`GW_TICKS_MAX_SPAN_MS`); its quote count is not measured here, and
+#           at several million quotes of about 100 B each it is the same order. The chunked lanes (a day of
+#           ticks, a day of OANDA bars) are far under it.
+#
+#   1.8 GB steady + 1.0 GB jvm + 0.25 GB fxcm + 0.35 GB trade + 0.25 GB exec = 3.65 GB that is there
+#   whatever is being fetched. Wave 1's 8G left 4.95 GB over its three fixed terms, FOUR answers of
+#   1.2 GB, and 8G was the data daemon's cap, where these same buffers lived until the venue calls moved
+#   here, so a request that fitted there fits here. Keeping that promise on top of the two new terms
+#   needs 3.65 GB + 4 x 1.2 GB = 8.45 GB; the next whole step up is 10G, which leaves 6.35 GB = FIVE answers
+#   (3.65 GB + 6.0 GB = 9.65 GB) and 0.35 GB of slack for the two terms that are not measured (the JVM's
+#   non-heap half and the ring's byte size). So the cap is 10G, the one number the wave moves. It is a
+#   BACKSTOP and not a promise: `MAX_FETCHES` (32) fetches at the worst window would not fit.
+#
+# THE LINE BELOW IS READ BY A GATE, which is what makes this comment and the cap one claim: the terms
+# above, in MB, and the answer count the cap must hold. `wave2_units.rs`'s
+# `the_gatewayhub_memory_cap_covers_the_terms_its_comment_declares` sums them and requires
+# `MemoryMax=` to cover the sum, so editing a term here without the cap (or the cap without the term)
+# goes red; its own floors (the wave-1 promise of four 1.2 GB answers) stop a term being lowered to
+# make a smaller cap pass.
+# GATE-READS memory_mb steady=1800 jvm=1000 fxcm=250 trade=350 exec=250 answer=1200 answers_held=4
+#
+# ⚠ WHAT A BREACH DOES, AND IT IS A TRADING EVENT NOW. A MemoryMax breach is an OOM kill inside THIS
+# unit's cgroup, and it takes the whole unit down: the kernel picks a victim by badness inside the
+# cgroup (`OOMScoreAdjust=` only reorders the candidates; it cannot exempt the daemon, and it would
+# make the JVM child the likelier victim), and systemd's default `OOMPolicy=stop` then stops the rest.
+# Every stream session ends, every client reconnects after `Restart=` below, a half-open JForex login
+# is lost with it, and EVERY account's venue session drops at once: an order in flight is UNKNOWN to the
+# tradehub (the lease answers NEVER-SENT versus UNKNOWN, decision 0164), resting orders stay at the
+# venue (D6: nothing is cancelled on a link loss), fills missed in the gap are reconcile's job, and a
+# venue in `link_deadman_default` (binance, aster, bybit, okx, polymarket) trips the tradehub's dead-man
+# if the daemon is not back inside its grace (120 s). So the cap is where a request too large for the
+# box ends, not a way to spare the other sessions, and a history request this big is a reason to ask
+# the datahub for a smaller window, never to raise the cap again.
+# The old 2G was sized from the steady set alone. Tune to the box's headroom (125 GB on the CI box).
+# ⚠ A cgroup limit edited into the INSTALLED copy reaches the RUNNING daemon at `systemctl daemon-reload`,
+# not at its next restart (this one is a relaxation, 8G to 10G, so applying it early is harmless); the
+# runbook puts the reload in the same sitting as the deploy for that reason.
+MemoryMax=10G
+# Restart on a crash (an OOM kill included), but not on a clean exit / operator stop.
+Restart=on-failure
+RestartSec=5
+
+# --- stop ----------------------------------------------------------------------------------------
+# `systemctl stop` IS a graceful stop. SIGTERM raises the same stop flag the daemon's whole run order
+# is built around (`crates/vike-gatewayhub/src/gatewayhub_cli.rs`'s `run_with` arms the handlers
+# before anything can block) and the accept loop drains: every connection is told, a stream session
+# writes its `Bye`, a running fetch is cancelled and the connection threads are joined. The decision,
+# the measurements and the options that were refused are in docs/ops/graceful-stop.md.
+# There is deliberately NO ExecStop=: the daemon stops on the signal, so a stop command could only add
+# a SECOND stop route to a design whose whole invariant is that there is one.
+KillSignal=SIGTERM
+# ⚠ THE BUDGET IS DERIVED, and `crates/vike-ops/tests/container_deploy/graceful_stop_pin.rs`'s
+# `the_gatewayhub_unit_outlasts_its_stop_drain` reads it out of THIS file. The first bounded wait in the
+# teardown is `crates/vike-gatewayhub/src/server/accept.rs`'s `serve`, which joins the connection
+# threads for at most `crates/vike-gatewayhub/src/server/limits.rs`'s `STOP_DRAIN` (half of it politely,
+# then the sockets are cut: every lease is told `Bye(ServerStopping)`) and returns whatever has not
+# finished: a thread still inside a venue call is left behind and ends with the process.
+#
+# WAVE 2 ADDS THE SECOND: right after `serve`'s drain it retires the trade sessions
+# (`crates/vike-gatewayhub/src/trade/session.rs`'s `TradeHub::shutdown`), ONE SESSION AFTER ANOTHER,
+# and each retire queues a stop behind the account's commands and joins the exec thread, whose body is
+# the bridge's `begin_detach` then `detach`: a flag raise and a wind-down that waits for the
+# user-data pump's next idle check, about one second (`ExecutionClient::begin_detach`'s doc in
+# `crates/vike-exec/src/execution_engine/client.rs`; [inferred], not measured at a venue). In the
+# PLANNED order the tradehub has already detached every lease at its own stop (its final `Detach`
+# retires each adapter on the lease's own thread, in parallel), so this loop finds nothing to do; it
+# earns its place in the UNPLANNED one, which is also the deploy's: `vike-trader-ci-deploy` restarts
+# THIS unit while the running tradehub still holds all of its leases, and every one of them is retired
+# here, serially. The count is SESSIONS, one per `(venue, account)`, and not active accounts: an
+# account that does not arm (Dukascopy's two today, an inactive row) holds no session and costs nothing,
+# while a row the rollout activates adds one. The ceiling this file declares is 18, the box's account
+# rows on 2026-10-14 (the planned rollout reaches 15 sessions with Dukascopy blocked and 17 with it
+# unblocked; IBKR's two rows exclude each other, decision 0140, so 18 is one above the real maximum).
+# The previous value was sized for 14 and was EXACTLY FULL at the rollout's 15 (5 + 15 + 5 + 5 = 30), so
+# the first release after the last live tier would have been SIGKILLed mid-retire under a live tradehub.
+# The retire also waits for each lease to say goodbye (`TradeHub::shutdown`, at most 3 s), but every
+# lease is told to stop BEFORE any wait begins, so those waits overlap and cost about 3 s once, not
+# 3 s a session; that overlap is read from the code and is not measured.
+#
+# Nothing here is buffered and nothing resting at a venue is cancelled (D6: that is the tradehub's
+# own sweep) — the daemon holds no store and commits nothing — so a SIGKILL costs the venues a dropped
+# connection where a logoff was owed (IBKR, cTrader, the JForex sidecar), the clients a reconnect and
+# no data. THE ARITHMETIC, every term read by the gate except the two estimates it states:
+#   STOP_DRAIN 5 s + 18 sessions x 1 s + 5 s for what runs after (the lane drop, the exit) + 5 s margin
+#   = 33 s, so 35.
+# THE LINE BELOW IS READ BY A GATE: `graceful_stop_pin.rs`'s `the_gatewayhub_unit_outlasts_its_stop_drain`
+# takes the session ceiling from it (and refuses one above `GW_MAX_TRADE_LEASES`, or below the box's
+# account rows its own constant states), so this comment, the cap on sessions in the code and the number
+# on the next line are one claim. Raise the drain or add an account row and raise this too.
+# GATE-READS trade_sessions ceiling=18
+# The ORDER against the tradehub is not a number: that unit's `After=` this one is what makes systemd
+# stop it FIRST, and the tradehub's own `TimeoutStopSec=` is its own budget (deploy/vike-tradehub.service).
+TimeoutStopSec=35
+
+# --- the sandbox ---------------------------------------------------------------------------------
+# The daemon needs no privileges, makes outbound connections to the venues and one loopback listener.
+NoNewPrivileges=true
+# ⚠ ProtectSystem=strict mounts the WHOLE filesystem read-only except /dev, /proc, /sys and whatever
+# ReadWritePaths= names. READS are unaffected, so the settings and the credential store load normally.
+#
+# ⚠ MEASURED on the live box (systemd 255, Ubuntu 24.04): under a `systemd --user` manager with the
+# distribution default `kernel.apparmor_restrict_unprivileged_userns=1`, these directives are applied
+# as NO-OPS — no warning, no failed unit, and `systemctl --user show` still reports them as
+# configured. They enforce under the SYSTEM manager. docs/ops/tradehub-the CI box.md has the probe.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+# TWO grants, both SUB-directories, ON ONE LINE: wave 2 makes this daemon write in two places beyond
+# its rolling log, and each is the narrowest path that holds the write. It still never gets the
+# project root, `bin/` (the binary it executes) or the settings directory itself (the credential
+# store), which `deploy_layout_gate` refuses, and the tradehub unit carries the same two paths.
+#
+#   [1] `settings/state`  (the log directory `settings/state/logs` is inside it, so the wave-1 line is
+#       NOT lost). What the trade lane writes there, all of it small data and none of it code:
+#         * `LIVE-<route key>.lock`, claimed at a live account's trade lease (the B11 sentinel; the
+#           tradehub claims none of its own any more, and a lock it cannot create REFUSES the live
+#           lease loudly — `trade/state_dir.rs` says "fail closed");
+#         * `gateway-id`, the project token the tradehub compares;
+#         * the parked account confirmation (`vike_secrets::account_confirmation::park`), which an
+#           un-sandboxed `vike-cli` folds into the store;
+#         * the Dukascopy sidecar's JForex home (`state/jforex`).
+#       The HALT sentinel in this directory is READ, never written, by this daemon (its dispatch checks
+#       it before a submit); the operator's `touch` is the tradehub-side grant's argument and is
+#       unchanged (deploy/vike-tradehub.service).
+#       ⚠ KNOWN TRADE-OFF, ACCEPTED AND NOT FIXED HERE: a directory grant makes `settings/state/HALT`
+#       writable, and writable means DELETABLE, by the daemon the sentinel is meant to stop. This unit's
+#       sibling, deploy/vike-datahub.service, calls the identical grant a safety finding for a recorder
+#       and refuses it; the difference is that THIS daemon needs the directory for its lock files and
+#       `gateway-id` (a lock it cannot create refuses every live lease), and the tradehub already carries
+#       the same grant, so the exposure is one more process and not a new class. Nothing in this crate's
+#       source removes a file outside its tests (the lock files are claimed with `flock` and left in place),
+#       so the risk is a defect or a compromise, which the ceilings do not bound either (decision 0068).
+#       The narrower layout would put the locks, `gateway-id` and the JForex home in ONE state
+#       subdirectory (a `state/live/`) and grant only that plus `settings/state/logs`; it costs a path
+#       change in `vike_boot::live_lock` and the tradehub's own grant, and it is the reopener for this
+#       paragraph (docs/ops/gatewayhub-the CI box.md, "Wave 2 release runbook", doubts).
+#   [2] `settings/db`  (the settings database). The ONE credential write this daemon owns is cTrader's
+#       rotated access/refresh pair (`vike_ctrader::token_store`'s `persist`): the venue spends the old
+#       refresh token on use, so a process that does not write the new pair back strands the account
+#       on a spent one. SQLite's journal files live beside the database, so the DIRECTORY has to be
+#       writable, and that is the same trade the trading daemon's unit argues at length in its own
+#       `[2]` block: a filesystem grant cannot see a table, the ceilings are rows in the same file, and
+#       decision 0068 is the answer (a ceiling bounds MISTAKES, not a compromised daemon, which holds
+#       the keys it bounds). `crates/vike-ops/tests/settings_secrets/credential_writer_gate.rs`'s
+#       `WRITER_CALLERS` is the list of code paths that may write there at all. Nothing here DELETES,
+#       MOVES or REWRITES the store wholesale.
+#
+# ⚠ **THE GRANT GROWS HERE, IN THIS FILE, NEVER IN A DROP-IN.** This line grew in the change that made
+# this daemon claim a live-account lock and persist a rotated cTrader pair, with the argument above.
+# A grant that exists only in an `/etc/systemd/system/*.d/` file is a grant no review of this
+# repository ever saw, and this box's owner has ruled drop-ins out. Both paths must EXIST (the install
+# recipe above creates `settings/state`; `settings/db` is where the store already lives): under the
+# SYSTEM manager systemd refuses a unit whose `ReadWritePaths=` names a missing path (status=226), and
+# that refusal is the point.
+# ⚠ ONE LINE: deploy_layout_gate.rs fails a unit that spreads its grant over more than one
+# ReadWritePaths= line, because a second line is where a grant nobody re-read gets added. NOT the
+# project root either: that would cover bin/ (the binary this unit executes) and settings/ (the
+# credential store), which the same gate refuses.
+ReadWritePaths=/srv/vike-<unit>/settings/state /srv/vike-<unit>/settings/db
+
+
+# --- syscall / capability hardening, MEASURED ON THE REAL BINARIES -------------------------------
+# The tradehub's whole block, VERBATIM, except one directive. MEASURED on the CI box 2026-08-17, systemd
+# 255, with throwaway SYSTEM units running these exact binaries — every line survived a run, the TLS
+# handshakes and WebSocket dials included. The set is the one every daemon unit in this directory
+# carries; `crates/vike-ops/tests/container_deploy/deploy_layout_gate/descriptions_and_hardening.rs`'s
+# `REQUIRED_HARDENING` is the minimum and its `every_daemon_unit_keeps_its_syscall_and_capability_hardening`
+# the rule.
+#
+# ⚠⚠ **`MemoryDenyWriteExecute=` IS DELIBERATELY ABSENT, AND IT IS THE ONLY DIRECTIVE THIS UNIT OMITS.**
+# MEASURED on the live box 2026-10-13 (decision 0164, "Measured on the live box"): the JForex JRE
+# (Temurin 17.0.19) REFUSES TO START under `MemoryDenyWriteExecute=yes`, printing
+# "Failed to mark memory page as executable", under the JIT and `-Xint` alike, and starts with it off
+# and the rest of the sandbox unchanged. deploy/vike-ibkr-gateway.service already runs without it for
+# the same JIT reason (its header says so). This daemon is where the Dukascopy JVM sidecar is
+# spawned (wave 2: the trade lane's Dukascopy adapter launches it), so the sandbox of the process that
+# owns it cannot carry the directive. THE EXEMPTION IS UNCHANGED BY W17 and so is its argument; what
+# wave 2 changes is only that the process it exempts now also holds the trading sessions, which is a
+# reason to keep every OTHER directive and to keep the exemption declared, not to widen it.
+# ⚠ Wave 1 STARTED NO JVM — its Dukascopy fetch is the keyless `.bi5` archive read — so the directive
+# could stay ON until wave 2 and cost nothing; the owner chose to omit it then (record 0164, verdict
+# 7(c)), so the unit does not have to change twice. ⚠ NOT a loophole to copy: every other daemon unit
+# keeps it, `deploy_layout_gate`'s `every_daemon_unit_keeps_memory_deny_write_execute_unless_declared`
+# holds that and names this unit as the one declared exemption, with this reason. The record's
+# reopener: Dukascopy reachable without a JVM, or a need to restore the directive — the JVM then
+# gets its own unit.
+#
+# ⚠ PrivateNetwork= is deliberately ABSENT and always will be — this daemon IS a network client.
+# `systemd-analyze` charges for that and for holding AF_INET sockets at all; both are unrecoverable
+# for anything that talks to a venue. RestrictAddressFamilies= therefore ALLOWS the three families in
+# use rather than pretending the internet is optional.
+#
+# ⚠ The one line with a real blast radius is UMask=0077: new files become owner-only. A future reader
+# under a DIFFERENT account breaks on it, loudly, with a permission error rather than silence. That
+# is the intended trade for a tree holding venue keys.
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @module @reboot @swap @raw-io @debug @clock @cpu-emulation
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0077
+
+[Install]
+WantedBy=default.target
