@@ -1,0 +1,475 @@
+{
+ "manifest": {
+  "exporter": "scripts/export_r6_fixtures.py",
+  "oracle": "vike-trader-app origin/main worktree",
+  "source_sha": "023d6e87ced0b495d8575fd247914e14522ccd2d",
+  "generated": "2026-07-03T22:58:51Z",
+  "float_encoding": "ieee754-f64-hex-bits (inputs plain JSON numbers)"
+ },
+ "ws_frames": {
+  "auth": {
+   "jsonrpc": "2.0",
+   "id": 1,
+   "method": "public/auth",
+   "params": {
+    "grant_type": "client_credentials",
+    "client_id": "cid-XXXX",
+    "client_secret": "csec-YYYY"
+   }
+  },
+  "auth_scoped": {
+   "jsonrpc": "2.0",
+   "id": 2,
+   "method": "public/auth",
+   "params": {
+    "grant_type": "client_credentials",
+    "client_id": "cid-XXXX",
+    "client_secret": "csec-YYYY",
+    "scope": "session:vike trade:read_write"
+   }
+  },
+  "refresh": {
+   "jsonrpc": "2.0",
+   "id": 3,
+   "method": "public/auth",
+   "params": {
+    "grant_type": "refresh_token",
+    "refresh_token": "rt-ZZZZ"
+   }
+  },
+  "subscribe": {
+   "jsonrpc": "2.0",
+   "id": 4,
+   "method": "private/subscribe",
+   "params": {
+    "channels": [
+     "user.trades.option.BTC.raw"
+    ]
+   }
+  }
+ },
+ "instruments_payload": {
+  "result": [
+   {
+    "instrument_name": "BTC-8JUL26-62000-C",
+    "kind": "option",
+    "tick_size": 0.0001,
+    "min_trade_amount": 0.1,
+    "contract_size": 1.0
+   },
+   {
+    "instrument_name": "BTC-8JUL26-62000-P",
+    "kind": "option",
+    "tick_size": "0.0001",
+    "min_trade_amount": "0.1",
+    "contract_size": "1"
+   },
+   {
+    "instrument_name": "BTC-PERPETUAL",
+    "kind": "future",
+    "tick_size": 0.5
+   },
+   {
+    "instrument_name": "not-an-option",
+    "kind": "option"
+   }
+  ]
+ },
+ "instruments": {
+  "BTC-8JUL26-62000-C": {
+   "tick_size": "3f1a36e2eb1c432d",
+   "step_size": "3fb999999999999a",
+   "min_qty": "3fb999999999999a",
+   "max_qty": "0000000000000000",
+   "min_notional": "0000000000000000",
+   "contract_size": "3ff0000000000000",
+   "base_asset": "BTC"
+  },
+  "BTC-8JUL26-62000-P": {
+   "tick_size": "3f1a36e2eb1c432d",
+   "step_size": "3fb999999999999a",
+   "min_qty": "3fb999999999999a",
+   "max_qty": "0000000000000000",
+   "min_notional": "0000000000000000",
+   "contract_size": "3ff0000000000000",
+   "base_asset": "BTC"
+  }
+ },
+ "order_params": {
+  "limit": {
+   "instrument_name": "BTC-8JUL26-62000-C",
+   "amount": 0.3,
+   "type": "limit",
+   "label": "vtr6dbL",
+   "post_only": false,
+   "price": 0.0333
+  },
+  "market": {
+   "instrument_name": "BTC-8JUL26-62000-C",
+   "amount": 0.1,
+   "type": "market",
+   "label": "vtr6dbM",
+   "post_only": false,
+   "reduce_only": true
+  }
+ },
+ "mapper": [
+  {
+   "frame": {
+    "method": "subscription",
+    "params": {
+     "channel": "user.trades.option.BTC.raw",
+     "data": [
+      {
+       "trade_id": "BTC-1001",
+       "label": "vtr6db1",
+       "instrument_name": "BTC-8JUL26-62000-C",
+       "direction": "buy",
+       "amount": 0.3,
+       "price": 0.033,
+       "fee": 1.05e-05,
+       "liquidity": "T",
+       "timestamp": 1751600000456,
+       "state": "open"
+      }
+     ]
+    }
+   },
+   "events": [
+    {
+     "trade_id": "BTC-1001",
+     "client_order_id": "vtr6db1",
+     "venue": "deribit",
+     "symbol": "BTC-8JUL26-62000-C",
+     "side": 1,
+     "last_qty": 0.3,
+     "last_px": 0.033,
+     "commission": 1.05e-05,
+     "liquidity_side": "taker",
+     "ts": 1751600000456,
+     "mark_price": null,
+     "position_side": "BOTH",
+     "type": "FillEvent"
+    },
+    {
+     "client_order_id": "vtr6db1",
+     "fill": {
+      "trade_id": "BTC-1001",
+      "client_order_id": "vtr6db1",
+      "venue": "deribit",
+      "symbol": "BTC-8JUL26-62000-C",
+      "side": 1,
+      "last_qty": 0.3,
+      "last_px": 0.033,
+      "commission": 1.05e-05,
+      "liquidity_side": "taker",
+      "ts": 1751600000456,
+      "mark_price": null,
+      "position_side": "BOTH"
+     },
+     "ts": 1751600000456,
+     "type": "OrderPartiallyFilled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "method": "subscription",
+    "params": {
+     "channel": "user.trades.option.BTC.raw",
+     "data": [
+      {
+       "trade_id": "BTC-1002",
+       "label": "vtr6db1",
+       "instrument_name": "BTC-8JUL26-62000-C",
+       "direction": "sell",
+       "amount": 0.3,
+       "price": 0.033,
+       "fee": -2e-06,
+       "liquidity": "M",
+       "timestamp": 1751600000456,
+       "state": "filled"
+      }
+     ]
+    }
+   },
+   "events": [
+    {
+     "trade_id": "BTC-1002",
+     "client_order_id": "vtr6db1",
+     "venue": "deribit",
+     "symbol": "BTC-8JUL26-62000-C",
+     "side": -1,
+     "last_qty": 0.3,
+     "last_px": 0.033,
+     "commission": -2e-06,
+     "liquidity_side": "maker",
+     "ts": 1751600000456,
+     "mark_price": null,
+     "position_side": "BOTH",
+     "type": "FillEvent"
+    },
+    {
+     "client_order_id": "vtr6db1",
+     "fill": {
+      "trade_id": "BTC-1002",
+      "client_order_id": "vtr6db1",
+      "venue": "deribit",
+      "symbol": "BTC-8JUL26-62000-C",
+      "side": -1,
+      "last_qty": 0.3,
+      "last_px": 0.033,
+      "commission": -2e-06,
+      "liquidity_side": "maker",
+      "ts": 1751600000456,
+      "mark_price": null,
+      "position_side": "BOTH"
+     },
+     "ts": 1751600000456,
+     "type": "OrderFilled"
+    }
+   ]
+  },
+  {
+   "frame": {
+    "method": "subscription",
+    "params": {
+     "channel": "user.portfolio.btc",
+     "data": {
+      "x": 1
+     }
+    }
+   },
+   "events": []
+  },
+  {
+   "frame": {
+    "method": "subscription",
+    "params": {
+     "channel": "user.trades.option.BTC.raw",
+     "data": {
+      "not": "a list"
+     }
+    }
+   },
+   "events": []
+  },
+  {
+   "frame": {
+    "id": 7,
+    "result": {
+     "access_token": "t"
+    }
+   },
+   "events": []
+  },
+  {
+   "frame": {
+    "method": "heartbeat",
+    "params": {
+     "type": "test_request"
+    }
+   },
+   "events": []
+  }
+ ],
+ "reconcile": [
+  {
+   "name": "long_with_orders",
+   "positions_result": [
+    {
+     "instrument_name": "BTC-8JUL26-62000-C",
+     "size": 0.5,
+     "direction": "buy",
+     "average_price": 0.031,
+     "mark_price": 0.0325
+    }
+   ],
+   "orders_result": [
+    {
+     "order_state": "open",
+     "label": "vtr6db1",
+     "direction": "buy",
+     "amount": 0.2,
+     "order_type": "limit",
+     "price": 0.03,
+     "order_id": "D-1",
+     "filled_amount": 0
+    },
+    {
+     "order_state": "open",
+     "label": "",
+     "direction": "sell",
+     "amount": 1.0,
+     "order_type": "limit",
+     "price": 0.05,
+     "order_id": "D-2",
+     "filled_amount": 0
+    },
+    {
+     "order_state": "filled",
+     "label": "vtr6db2",
+     "direction": "buy",
+     "amount": 0.1,
+     "order_type": "limit",
+     "price": 0.02,
+     "order_id": "D-3",
+     "filled_amount": 0.1
+    },
+    {
+     "order_state": "open",
+     "label": "vtr6db3",
+     "direction": "sell",
+     "amount": 0.4,
+     "order_type": "stop_market",
+     "price": "market_price",
+     "order_id": "D-4",
+     "filled_amount": 0.1,
+     "average_price": 0.0301
+    }
+   ],
+   "snapshot": {
+    "positions": [
+     [
+      "BTC-8JUL26-62000-C",
+      "3fe0000000000000"
+     ]
+    ],
+    "position_avg_px": [
+     [
+      "BTC-8JUL26-62000-C",
+      "3f9fbe76c8b43958"
+     ]
+    ],
+    "position_mark_px": [
+     [
+      "BTC-8JUL26-62000-C",
+      "3fa0a3d70a3d70a4"
+     ]
+    ],
+    "open_orders": [
+     {
+      "coid": "vtr6db1",
+      "status": "ACCEPTED",
+      "venue_order_id": "D-1",
+      "side": 1,
+      "qty": "3fc999999999999a",
+      "order_type": "limit",
+      "price": "3f9eb851eb851eb8",
+      "filled_qty": "0000000000000000",
+      "avg_fill_px": "0000000000000000"
+     },
+     {
+      "coid": "vtr6db3",
+      "status": "PARTIALLY_FILLED",
+      "venue_order_id": "D-4",
+      "side": -1,
+      "qty": "3fd999999999999a",
+      "order_type": "stop_market",
+      "price": null,
+      "filled_qty": "3fb999999999999a",
+      "avg_fill_px": "3f9ed288ce703afb"
+     }
+    ]
+   }
+  },
+  {
+   "name": "short",
+   "positions_result": [
+    {
+     "instrument_name": "BTC-8JUL26-62000-C",
+     "size": -0.7,
+     "direction": "sell",
+     "average_price": 0.04,
+     "mark_price": 0.0335
+    }
+   ],
+   "orders_result": [],
+   "snapshot": {
+    "positions": [
+     [
+      "BTC-8JUL26-62000-C",
+      "bfe6666666666666"
+     ]
+    ],
+    "position_avg_px": [
+     [
+      "BTC-8JUL26-62000-C",
+      "3fa47ae147ae147b"
+     ]
+    ],
+    "position_mark_px": [
+     [
+      "BTC-8JUL26-62000-C",
+      "3fa126e978d4fdf4"
+     ]
+    ],
+    "open_orders": []
+   }
+  },
+  {
+   "name": "flat_zero_direction",
+   "positions_result": [
+    {
+     "instrument_name": "BTC-8JUL26-62000-C",
+     "size": 0.0,
+     "direction": "zero"
+    }
+   ],
+   "orders_result": [],
+   "snapshot": {
+    "positions": [
+     [
+      "BTC-8JUL26-62000-C",
+      "0000000000000000"
+     ]
+    ],
+    "position_avg_px": [
+     [
+      "BTC-8JUL26-62000-C",
+      "0000000000000000"
+     ]
+    ],
+    "position_mark_px": [
+     [
+      "BTC-8JUL26-62000-C",
+      "0000000000000000"
+     ]
+    ],
+    "open_orders": []
+   }
+  },
+  {
+   "name": "other_instrument",
+   "positions_result": [
+    {
+     "instrument_name": "BTC-9JUL26-60000-P",
+     "size": 1.0,
+     "direction": "buy"
+    }
+   ],
+   "orders_result": [],
+   "snapshot": {
+    "positions": [
+     [
+      "BTC-8JUL26-62000-C",
+      "0000000000000000"
+     ]
+    ],
+    "position_avg_px": [
+     [
+      "BTC-8JUL26-62000-C",
+      "0000000000000000"
+     ]
+    ],
+    "position_mark_px": [
+     [
+      "BTC-8JUL26-62000-C",
+      "0000000000000000"
+     ]
+    ],
+    "open_orders": []
+   }
+  }
+ ]
+}

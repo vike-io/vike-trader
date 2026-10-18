@@ -1,0 +1,4 @@
+{"Marks":[{"ts":1,"symbol":"BTC-30OCT26-70000-C","mark":0.05,"mark_iv":0.62},{"ts":1,"symbol":"BTC-30OCT26-70000-P","mark":0.04,"mark_iv":0.63}]}
+{"Ticker":{"ts":2,"symbol":"BTC-30OCT26-70000-C","bid":0.049,"ask":0.051,"bid_size":10.0,"ask_size":12.0}}
+"Heartbeat"
+{"Bye":"ServerStopping"}
