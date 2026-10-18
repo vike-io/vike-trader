@@ -1,0 +1,34 @@
+[package]
+name = "vike-change-journal"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the CHANGE JOURNAL: the append-only, durable JSONL record of what changed in a project's settings and arming, and who changed it (`<project>/settings/state/changes/changes-YYYY-MM.jsonl`). One record is one locked, synced append of one JSON line; the timestamp is a parameter, so nothing here reads the clock. It touches the filesystem and never the settings database. It moved out of `vike-secrets` (and before that out of `vike-model`) whole, so the settings store's writers and every other recorder name it directly; `src/lib.rs`'s module doc is the contract."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier
+# `vocabulary-stacked` — one hop over the domain vocabulary (10), below the settings store (15),
+# because the store's writers append into it.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 12
+
+[dependencies]
+# `AccountTier` (a `venue_mounted` record's asked and reached tiers, typed).
+vike-model = { path = "../vike-model" }
+# The calendar helper the month file name is built on (`vike_util::calendar::civil_from_days`).
+vike-util = { path = "../vike-util" }
+# `serde` (the derive) and `serde_json` (the writer): a record is a `#[derive(Serialize)]` struct
+# rendered as ONE JSON line. Both came with the journal; `vike-model`, the edge above, already links
+# both, so neither adds a package to any graph.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# `vike_paths::scratch::ScratchDir`: the self-cleaning test root the in-crate suite and
+# `tests/change_journal_concurrent.rs` build their journals in.
+vike-paths = { path = "../vike-paths" }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true
