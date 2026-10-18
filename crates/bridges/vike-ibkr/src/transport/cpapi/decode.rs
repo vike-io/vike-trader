@@ -1,0 +1,157 @@
+//! Pure CP Gateway JSON → normalized `IbInbound`. cOID → order_ref (order_id left 0; the transport
+//! fills the numeric from its coid→order_id map so the shared EventMapper's fill_state matches — see
+//! the cpapi cluster corrections doc's "coid→num map trick"). A `GET /iserver/account/orders` row
+//! names the coid `order_ref`, not `cOID` (LIVE-PROVEN on a paper account 2026-10-17: the row has no
+//! `cOID` key): [`row_client_order_id`] is the one reader of it. The `/trades` and WS `sor` rows are
+//! still UNPROVEN (no capture): they read the same spellings by analogy.
+//!
+//! `conid` secdef-search key LIVE-VERIFIED (2026-07-15): the gateway returns it as a JSON STRING
+//! (`decode_conid` accepts string-or-number).
+//!
+//! ⚠ **`decode_ws_frame` is DEAD CODE on the live WS path, measured 2026-08-23.** It decodes only
+//! `topic == "sor"`, and the gateway never sends a `sor` frame — the subscribe answers nothing while
+//! its sibling topics answer on the same socket (`transport/cpapi/mod.rs`'s module doc has the
+//! measurement). Accept/cancel are unaffected because they are synthesized from the REST acks, but
+//! an EXECUTION row can only reach the mapper through this function, so cpapi fills have no live
+//! path. The function is NOT dead on the REST path: [`decode_executions`] reuses it by wrapping each
+//! `/iserver/account/trades` row in a synthetic `sor` frame, which is how a fill is recovered on a
+//! resync — the only way one is recovered at all today.
+
+use serde_json::Value;
+
+use crate::exec::event_mapper::{IbCommissionReport, IbExecDetails, IbOrderStatus};
+use crate::transport::IbInbound;
+
+fn s(v: &Value, k: &str) -> String {
+    v.get(k).and_then(|x| x.as_str()).unwrap_or_default().to_string()
+}
+fn f(v: &Value, k: &str) -> f64 {
+    v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0)
+}
+
+/// Decode one CP Gateway WS frame (topic "sor") into zero or more IbInbound.
+pub fn decode_ws_frame(frame: &Value) -> Vec<IbInbound> {
+    let topic = frame.get("topic").and_then(|t| t.as_str()).unwrap_or_default();
+    if topic != "sor" {
+        return vec![];
+    }
+    let Some(args) = frame.get("args").and_then(|a| a.as_array()) else {
+        return vec![];
+    };
+    let mut out = vec![];
+    for row in args {
+        let coid = row_client_order_id(row).unwrap_or_default();
+        // Execution row (has execId): emit ExecDetails + Commission (join happens in EventMapper).
+        if let Some(exec_id) = row.get("execId").and_then(|e| e.as_str()) {
+            out.push(IbInbound::ExecDetails(IbExecDetails {
+                order_id: 0,
+                order_ref: coid.clone(),
+                exec_id: exec_id.to_string(),
+                symbol: s(row, "symbol"),
+                side_buy: s(row, "side").eq_ignore_ascii_case("BUY"),
+                shares: f(row, "cumFill"),
+                price: f(row, "price"),
+                ts: row.get("ts").and_then(|t| t.as_i64()).unwrap_or(0),
+                ..Default::default()
+            }));
+            out.push(IbInbound::Commission(IbCommissionReport {
+                exec_id: exec_id.to_string(),
+                commission: f(row, "commission"),
+                currency: {
+                    let c = s(row, "currency");
+                    if c.is_empty() { "USD".into() } else { c }
+                },
+            }));
+            continue;
+        }
+        // Otherwise a status row (has status).
+        if row.get("status").is_some() {
+            out.push(IbInbound::OrderStatus(IbOrderStatus {
+                order_id: 0,
+                order_ref: coid,
+                status: s(row, "status"),
+                filled: f(row, "filledQuantity"),
+                avg_fill_price: f(row, "avgPrice"),
+                client_id: 0,
+            }));
+        }
+    }
+    out
+}
+
+/// GET /iserver/account/trades → executions. Same row shape as the WS execution row.
+pub fn decode_executions(v: &Value) -> Vec<IbInbound> {
+    let rows = v.as_array().cloned().unwrap_or_default();
+    let mut out = vec![];
+    for row in &rows {
+        out.extend(decode_ws_frame(&serde_json::json!({ "topic": "sor", "args": [row] })));
+    }
+    out
+}
+
+/// The client order id (the coid we set as `cOID` at placement) of one cpapi row (an orders-list
+/// row, a `/trades` row or a WS `sor` row): the first NON-EMPTY of `order_ref`, `cOID`,
+/// `local_order_id`. ONE reader for [`decode_open_orders`], [`decode_ws_frame`] (so the executions
+/// too) and the reconcile parser (`recon::cpapi`).
+///
+/// ⚠ Only `order_ref` on a `GET /iserver/account/orders` row is a capture (paper, 2026-10-17: the
+/// live row carries the `cOID` we sent as `order_ref` and has no `cOID` key). `cOID` is the WS-frame
+/// spelling (unproven, kept as the fallback); `local_order_id` is what the live place reply echoed
+/// our `cOID` as. `orderRef` is an unconfirmed spelling and is NOT read.
+/// `None` = no row field named one (an order placed by hand, or a spelling not listed here).
+pub fn row_client_order_id(row: &Value) -> Option<String> {
+    ["order_ref", "cOID", "local_order_id"].iter().find_map(|k| {
+        row.get(*k).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_string)
+    })
+}
+
+/// GET /iserver/account/orders → open-order snapshot rows (reconnect resync).
+pub fn decode_open_orders(v: &Value) -> Vec<IbInbound> {
+    let rows = v.get("orders").and_then(|o| o.as_array()).cloned().unwrap_or_default();
+    rows.iter()
+        .map(|row| IbInbound::OpenOrder {
+            order_id: 0,
+            order_ref: row_client_order_id(row).unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// /iserver/secdef/search → first conid. The live gateway returns `conid` as a JSON **string**
+/// (e.g. `"conid":"265598"`); accept a number too for robustness. (Live-verified 2026-07-15: a
+/// number-only `.as_i64()` returned None → the order was rejected with "conid or conidex is
+/// required".)
+pub fn decode_conid(v: &Value) -> Option<i64> {
+    let c = v.as_array()?.first()?.get("conid")?;
+    c.as_i64().or_else(|| c.as_str()?.trim().parse().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn ws_status_row_decodes() {
+        let frame = json!({
+            "topic": "sor",
+            "args": [{ "cOID": "c-1", "orderId": 5, "status": "Submitted", "filledQuantity": 0.0, "avgPrice": 0.0 }]
+        });
+        let out = decode_ws_frame(&frame);
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn non_sor_topic_decodes_nothing() {
+        assert!(decode_ws_frame(&json!({ "topic": "other", "args": [] })).is_empty());
+    }
+
+    #[test]
+    fn conid_decodes_from_string_or_number() {
+        // The live gateway returns conid as a STRING — the shape that broke placement.
+        assert_eq!(decode_conid(&json!([{ "conid": "265598" }])), Some(265598));
+        // A numeric conid still decodes (robustness).
+        assert_eq!(decode_conid(&json!([{ "conid": 265598 }])), Some(265598));
+        // No results → None.
+        assert_eq!(decode_conid(&json!([])), None);
+    }
+}

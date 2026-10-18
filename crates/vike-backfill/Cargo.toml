@@ -1,0 +1,151 @@
+[package]
+name = "vike-backfill"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — backfill glue: ingest venue and vendor history into the DataFusion hist store (vike-store); the venue FETCH lives in each bridge crate now, dispatched by the datahub. The historical-backfill counterpart to those bridge crates' own live DataClient feeds (slice 6)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs).
+#
+# 30 `engine`: the highest normal vike-* edge is `vike-store` (25, the DataFusion+Parquet engine the
+# collectors write through), so the arithmetic floor is 26 and 30 is the lowest correctly-named rank
+# above it ("a crate composed over a layer-25 crate"). Its one dependent, `vike-datahub` (65), is
+# unaffected.
+# The crate names no bridge (docs/decisions/0094), and the vendor bins load their one key through
+# `vike_secrets::CredentialStore` (layer 15; `cli::scoped_credentials`) and read the log level through
+# `vike_config::log_file_level` (layer 20), so it links neither `vike-bridge-core` nor `vike-boot`.
+# It also has no `vike-backtest` edge (removed 2026-09-20): a collector must not rank above the
+# simulator, or the simulator cannot open a store held here.
+[package.metadata.vike]
+layer = 30
+
+[dependencies]
+vike-model = { path = "../vike-model" }
+# The pure helpers (decision 0141, layer 3) this crate calls: `calendar`, `percent`, and the shared command-line
+# layer `cli` (decision 0155) every bin reads its argv through.
+vike-util = { path = "../vike-util", features = ["cli"] }
+# `#[derive(clap::Parser)]` on each bin's args struct (decision 0155); the shared rules are `vike_util::cli`'s.
+clap = { workspace = true }
+# The project's filesystem layout (`vike_paths::state_path`, `store_path`, `scratch`): std-only, layer 7.
+vike-paths = { path = "../vike-paths" }
+# `vike_marketdata::interval::{interval_ms, measures_bar_step}`: the bar-interval vocabulary, which
+# moved out of `vike_model::time`. Layer 5, serde only; already in this crate's closure through
+# vike-model.
+vike-marketdata = { path = "../vike-marketdata" }
+# The hist store contract (`HistStore`, the rows, `TsRange`): vike-backfill's whole job is to ingest
+# into it.
+vike-data = { path = "../vike-data" }
+# The DataFusion+Parquet engine the collectors write through (`DataFusionHist`, the bulk ingest).
+vike-store = { path = "../vike-store" }
+vike-log = { path = "../vike-log" } # tracing-native logging init (see crates/vike-log)
+# `vike_config::log_file_level` — every bin's rolling-log level is the `preferences.log_file_level`
+# row (decision 0111, verdict 3), read before `vike_log::init` (`cli::log_config`). Layer 20; the
+# store reader it calls is the vike-secrets edge below.
+vike-config = { path = "../vike-config" }
+tracing = { workspace = true }      # tracing::info! at startup (subscriber lives in vike-log)
+# Shared by the EOD (stooq/Yahoo HTTP) + pmxt (archive Parquet) backfill collectors, non-optional:
+# EOD Yahoo v8 chart JSON + pmxt bids/asks JSON column decode (pmxt/map.rs, not feature-gated).
+serde_json = { workspace = true }
+# Derive on the vendor JSON the archive/events/cohort collectors decode (`events_api.rs`,
+# `vike_archive.rs`, `vikedata/`). serde is already in this crate's transitive tree via vike-data
+# (this crate names no bridge crate, docs/decisions/0094); this just names it directly so the
+# derives are available here.
+serde = { workspace = true }
+# blocking HTTP GET (rustls): EOD sources (stooq/Yahoo) + pmxt hour-part download.
+ureq = { workspace = true }
+# pmxt archive ingest (pmxt/ingest.rs): the Parquet row-group reader (bounded memory) reads through
+# datafusion's re-exported `arrow`/`parquet` — same import paths as vike-store's datafusion_hist.
+datafusion = { workspace = true }
+# `vike_secrets::{KeyScope, ScopedSecrets, UndeclaredKey, Source, CredentialStore}`: the scoped
+# credential read, opened by `cli::scoped_credentials` for the vendor BINS. Plain and non-optional:
+# layer 15, and already linked through vike-config.
+# ⚠ `vike-bridge-core` is deliberately NOT a dependency: a credential read must not link the
+# transport stack.
+vike-secrets = { path = "../vike-secrets" }
+flate2 = { workspace = true, optional = true }
+# Parallel fan-out. Behind `vike-archive`, which uses it for the row-group ingest.
+rayon = { workspace = true, optional = true }
+# vike.io archive backfill (vike-archive feature): `bytes::Bytes` is what `parquet::file::reader::
+# ChunkReader::get_bytes` returns — needed to implement that trait over a ranged-HTTP reader
+# (`vike_archive::readers::HttpRangeReader`). Already resolved in the lockfile transitively (ureq's
+# `http` crate + `datafusion-datasource-parquet`); optional so a default build never compiles it.
+bytes = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# `vike_secrets::smoke_vars` (behind its `test-support`): the databento and tardis smokes read their
+# key through it, under the `VIKE_NO_LIVE_KEYS` scope. The normal edge above already links the
+# crate, so the feature changes no lockfile entry.
+vike-secrets = { path = "../vike-secrets", features = ["test-support"] }
+# The per-venue tables this crate's tests read (`vike-model` held them until decision 0162).
+vike-venues = { path = "../vike-venues" }
+
+[[bin]]
+# Databento historical HTTP API backfill; only built under the `databento` feature.
+name = "databento_backfill"
+required-features = ["databento"]
+
+[[bin]]
+# Tardis datasets backfill; only built under the `tardis` feature.
+name = "tardis_backfill"
+required-features = ["tardis"]
+
+[[bin]]
+# data.vike.io cohort-metrics backfill (kind=cohort); only built under the `vikedata` feature.
+name = "vikedata_backfill"
+required-features = ["vikedata"]
+
+[[bin]]
+# data.vike.io archive backfill (Polymarket L2 book_events/trades/l1_quotes, date-partitioned
+# Parquet); only built under the `vike-archive` feature (needs the ranged-HTTP ChunkReader tree; its
+# key comes through `vike_secrets`' scoped loader).
+name = "vike_archive_backfill"
+required-features = ["vike-archive"]
+
+[[bin]]
+# data.vike.io LIVE events API backfill (paged JSON /v1/events, one token at a time — no
+# ClickHouse, no multi-GB day-file download). Shares the `vike-archive` feature with the sibling
+# bulk-Parquet bin above (same auth/credential-store plumbing; no new feature).
+name = "events_api_backfill"
+required-features = ["vike-archive"]
+
+[features]
+
+# Databento historical HTTP API backfill into the DataFusion store (databento_backfill bin).
+# Raw HTTP over the existing `ureq`. The BIN loads its key through `vike_secrets`' scoped loader
+# and passes it in; the adapter takes no env dependency of its own. The feature pulls nothing: it
+# only gates the bin and the module.
+databento = []
+
+# Tardis downloadable-CSV datasets backfill into the DataFusion store (tardis_backfill bin).
+# Reuses flate2 for the .csv.gz decode; the credential-store loader is `vike_secrets`' (see the
+# databento note above).
+tardis = ["dep:flate2"]
+
+# data.vike.io COHORT METRICS backfill into the DataFusion store (vikedata_backfill bin): the
+# `kind=cohort` graded positioning panel, paged by cursor over the existing `ureq` (no new HTTP
+# stack — `deny.toml`'s [bans].deny is a merge gate on that) and decoded with the `serde_json` this
+# crate already carries unconditionally. The BIN reads VIKE_API_KEY (and its `--api-base`) and
+# passes both in; the library takes them as parameters and reads no environment.
+#
+# ⚠ Deliberately NOT folded into `vike-archive`, which is the SAME VENDOR: that feature is the
+# Polymarket L2 lane (a ranged-HTTP Parquet ChunkReader plus the live events API) and pulls
+# `dep:bytes` and `dep:rayon` for it. This lane needs neither, and sharing a feature would make a
+# cohort-metrics build compile the archive's Parquet tree for nothing.
+vikedata = []
+
+# data.vike.io archive backfill (vike_archive.rs + vike_archive_backfill bin): a ranged-HTTP
+# `parquet::file::reader::ChunkReader` reads ONLY the footer + row-group-pruned column chunks of
+# each date-partitioned Parquet file over `X-API-Key`-authed `ureq` GETs — never the whole 7.4 GB/day
+# file. `dep:bytes` for the `ChunkReader::get_bytes` return type; the BIN reads
+# `VIKE_ARCHIVE_API_KEY` and passes it in, the library itself takes no env dependency. `dep:rayon`
+# fans the `--file` local-ingest path's row groups across a bounded worker pool
+# (`ingest_local_file_parallel`, `--jobs N` on the bin) — the HTTP path is untouched (already
+# solved by row-group pruning + `--file`, see the module doc).
+vike-archive = ["dep:bytes", "dep:rayon"]
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true
