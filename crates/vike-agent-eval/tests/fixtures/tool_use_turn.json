@@ -1,0 +1,21 @@
+{
+  "id": "msg_01AgentEvalFixture",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-5",
+  "content": [
+    {
+      "type": "text",
+      "text": "I need the venue before I can send anything, so I will read the node first."
+    },
+    {
+      "type": "tool_use",
+      "id": "toolu_01ReadTheNode",
+      "name": "node_snapshot",
+      "input": {}
+    }
+  ],
+  "stop_reason": "tool_use",
+  "stop_sequence": null,
+  "usage": { "input_tokens": 1731, "output_tokens": 92 }
+}

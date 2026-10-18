@@ -1,0 +1,453 @@
+//! FX + CFD instrument catalog — the oanda twin of `crates/bridges/alpaca/src/catalog.rs`. OANDA's
+//! instrument list (`GET /v3/accounts/{account_id}/instruments`) sits behind the same Bearer token
+//! every other OANDA REST call needs (see [`crate::rest::OandaRest`]), so `OandaCatalog` holds an
+//! `Option<OandaConfig>` rather than being a zero-arg unit struct, and `list_instruments` returns
+//! `Ok(vec![])` (never an error) when credentials are absent — mirrors the bridge-wide "absent
+//! credentials is the live gate" rule (`config::load_oanda_config_from`). The account's credentials
+//! are INJECTED by the caller (an account's fields, decision 0156 item 6 — they never reach process
+//! env, and `new` must never sweep `std::env::vars()` itself).
+//!
+//! Pure parse (`parse_instruments`, fixture-tested) is split from the authed fetch so the mapping
+//! stays testable without network or a token — mirrors alpaca's `catalog` module exactly.
+//!
+//! # What one v20 `Instrument` row becomes
+//!
+//! The [`Contract`] is built from the row's FIELDS, never from its name:
+//! - `type == "CURRENCY"` -> [`Contract::Fx`]: `pip_size = 10^pipLocation`,
+//!   `lot_size` stays `None`: OANDA trades in UNITS and publishes no standard-lot multiplier, and
+//!   `FxSpec::lot_size` means the standard lot in base units, so the unit increment lives in
+//!   `SymbolProperties::step_size` (`10^-tradeUnitsPrecision`) instead; `swap_long`/`swap_short` =
+//!   `financing.longRate`/`shortRate` VERBATIM (the venue's annualised financing rate, a fraction,
+//!   not a per-lot points figure).
+//! - every other `type` (`CFD`, `METAL`, and what OANDA carries as a CFD: indices, commodities,
+//!   bonds) -> [`Contract::Cfd`]: `underlying_kind` is `Metal` for `type == "METAL"`, else read from
+//!   the row's `ASSET_CLASS` tag (`INDEX`/`COMMODITY`/`BOND`/`METAL`/`CURRENCY`), else `Other`;
+//!   `underlying` is `None` (v20 names no underlying reference), `product` is `Cfd` (OANDA offers no
+//!   spread bet through v20), `expiry` is `Rolling` (v20 CFDs are undated and financed overnight —
+//!   that is what `financing` is), `margin_rate = marginRate`, swaps as for FX.
+//!
+//! An absent or malformed field is `None` in the spec (and the struct's absent-is-`0.0` convention
+//! in [`SymbolProperties`]), never a guessed default: the parser must survive any JSON
+//! (`crates/bridges/oanda/tests/decoder_never_panics.rs`'s `catalog_survives_structured_json`).
+//!
+//! The row's [`SymbolProperties`] grid comes off the SAME payload: `tick_size =
+//! 10^-displayPrecision`, `step_size = 10^-tradeUnitsPrecision`, `min_qty = minimumTradeSize`,
+//! `max_qty = maximumOrderUnits`. `type` is kept verbatim as the venue word. `name` (e.g.
+//! `EUR_USD`) becomes `raw_symbol`, split on `_` for base/quote (base = first part, quote = second —
+//! also correct for a CFD like `SPX500_USD`); `displayName` becomes `description`.
+
+use serde_json::Value;
+use vike_catalog::{CatalogError, CatalogMode, CatalogProvider};
+use vike_model::{
+    AccountTier, AssetClass, CfdExpiry, CfdProduct, CfdSpec, CfdUnderlying, Contract, FxSpec,
+    Instrument, SymbolProperties,
+};
+use vike_secrets::account_credentials::AccountCredentials;
+
+use crate::config::{OandaConfig, load_oanda_config_from};
+use crate::rest::OandaRest;
+
+/// The widest decimal exponent a v20 precision/location field is believed. Real rows sit in
+/// `-5..=1`; the bound only keeps a garbage integer from producing `0.0`/`inf` as a "grid".
+const MAX_DECIMAL_EXPONENT: i64 = 15;
+
+/// `10^exp` as the f64 NEAREST to the decimal value (parsed from `1e{exp}`, so `-4` is exactly the
+/// literal `0.0001`, which `powi` does not promise). `None` outside [`MAX_DECIMAL_EXPONENT`].
+fn pow10(exp: i64) -> Option<f64> {
+    if !(-MAX_DECIMAL_EXPONENT..=MAX_DECIMAL_EXPONENT).contains(&exp) {
+        return None;
+    }
+    format!("1e{exp}").parse().ok()
+}
+
+/// An integer field (`pipLocation`, `displayPrecision`, `tradeUnitsPrecision`).
+fn int_field(e: &Value, key: &str) -> Option<i64> {
+    e.get(key).and_then(Value::as_i64)
+}
+
+/// A v20 `DecimalNumber` (a JSON STRING on the wire; a bare number accepted too), finite only.
+fn decimal_field(v: Option<&Value>) -> Option<f64> {
+    let x = match v? {
+        Value::String(s) => s.trim().parse::<f64>().ok()?,
+        Value::Number(n) => n.as_f64()?,
+        _ => return None,
+    };
+    x.is_finite().then_some(x)
+}
+
+/// A non-negative size (`minimumTradeSize`, `maximumOrderUnits`) for the absent-is-`0.0` grid.
+fn size_field(e: &Value, key: &str) -> f64 {
+    decimal_field(e.get(key)).filter(|x| *x >= 0.0).unwrap_or(0.0)
+}
+
+/// The `name` of the row's `{"type": "ASSET_CLASS", "name": ...}` tag, if it carries one.
+fn asset_class_tag(e: &Value) -> Option<&str> {
+    e.get("tags")?.as_array()?.iter().find_map(|t| {
+        (t.get("type").and_then(Value::as_str) == Some("ASSET_CLASS"))
+            .then(|| t.get("name").and_then(Value::as_str))
+            .flatten()
+    })
+}
+
+/// What a non-CURRENCY row is a CFD ON: `type == "METAL"` first, then the `ASSET_CLASS` tag.
+fn cfd_underlying(kind: &str, e: &Value) -> CfdUnderlying {
+    if kind == "METAL" {
+        return CfdUnderlying::Metal;
+    }
+    match asset_class_tag(e).map(str::to_ascii_uppercase).as_deref() {
+        Some("METAL") => CfdUnderlying::Metal,
+        Some("INDEX") => CfdUnderlying::Index,
+        Some("COMMODITY") => CfdUnderlying::Commodity,
+        Some("BOND") => CfdUnderlying::Bond,
+        Some("CURRENCY") => CfdUnderlying::Fx,
+        _ => CfdUnderlying::Other,
+    }
+}
+
+/// Parse a `/v3/accounts/{id}/instruments` payload (`{"instruments": [...]}`) into universal
+/// [`Instrument`]s, one typed [`Contract`] per row (the module doc is the field map).
+pub fn parse_instruments(payload: &Value) -> Vec<Instrument> {
+    let Some(list) = payload.get("instruments").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for e in list {
+        let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if name.is_empty() {
+            continue;
+        }
+        let raw_symbol = name.to_uppercase();
+        let kind = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let mut parts = raw_symbol.splitn(2, '_');
+        let base = parts.next().unwrap_or("").to_string();
+        let quote = parts.next().unwrap_or("").to_string();
+        let description = e.get("displayName").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+        let unit_step = int_field(e, "tradeUnitsPrecision").and_then(|p| pow10(p.checked_neg()?));
+        let financing = e.get("financing");
+        let swap_long = decimal_field(financing.and_then(|f| f.get("longRate")));
+        let swap_short = decimal_field(financing.and_then(|f| f.get("shortRate")));
+        let contract = if kind == "CURRENCY" {
+            Contract::Fx(FxSpec {
+                pip_size: int_field(e, "pipLocation").and_then(pow10),
+                lot_size: None,
+                swap_long,
+                swap_short,
+            })
+        } else {
+            Contract::Cfd(CfdSpec {
+                underlying_kind: cfd_underlying(kind, e),
+                underlying: None,
+                product: CfdProduct::Cfd,
+                expiry: CfdExpiry::Rolling,
+                margin_rate: decimal_field(e.get("marginRate")),
+                swap_long,
+                swap_short,
+            })
+        };
+        let properties = SymbolProperties {
+            tick_size: int_field(e, "displayPrecision")
+                .and_then(|p| pow10(p.checked_neg()?))
+                .unwrap_or(0.0),
+            step_size: unit_step.unwrap_or(0.0),
+            min_qty: size_field(e, "minimumTradeSize"),
+            max_qty: size_field(e, "maximumOrderUnits"),
+            ..Default::default()
+        };
+        let mut inst = Instrument::new("oanda", raw_symbol, base, quote, contract)
+            .with_description(description)
+            .with_properties(properties);
+        if !kind.is_empty() {
+            inst = inst.with_venue_word(kind);
+        }
+        out.push(inst);
+    }
+    out
+}
+
+/// Authed blocking `GET /v3/accounts/{account_id}/instruments` -> parsed JSON. Mints its own
+/// [`OandaRest`] (mirrors alpaca's `fetch_assets`) — a catalog fetch is a one-shot, not a
+/// long-lived actor, so there's no reason to share the exec/data threads' client.
+fn fetch_instruments(config: &OandaConfig) -> Result<Value, CatalogError> {
+    let rest = OandaRest::new(config.api_token.clone());
+    rest.get(&config.rest_base, &format!("/v3/accounts/{}/instruments", config.account_id), "")
+        .map_err(|e| CatalogError(format!("oanda /v3/instruments: {e}")))
+}
+
+/// The account's home currency out of a `/v3/accounts/{id}/summary` body (`account.currency`,
+/// upper-cased). `None` when the field is absent or empty - never a guessed `USD`.
+fn parse_home_currency(payload: &Value) -> Option<String> {
+    let currency = payload.pointer("/account/currency")?.as_str()?.trim();
+    (!currency.is_empty()).then(|| currency.to_ascii_uppercase())
+}
+
+/// The oanda venue's `CatalogProvider` contribution: FX + CFD, both off the one
+/// `/v3/accounts/{id}/instruments` endpoint. Credential-gated: [`OandaCatalog::new`] loads the
+/// demo config once (absent credentials -> `None`, held for the life of the provider);
+/// `list_instruments` returns an empty catalog rather than erroring when there's nothing to
+/// authenticate with.
+pub struct OandaCatalog {
+    config: Option<OandaConfig>,
+}
+
+impl OandaCatalog {
+    /// Resolves the demo config (same hosts the exec/data clients use for practice trading) from
+    /// the caller-supplied account credentials — NOT the process environment (which never holds
+    /// these credentials in this repo). `None` when credentials are absent — the live gate.
+    pub fn new(creds: &AccountCredentials<'_>) -> Self {
+        Self { config: load_oanda_config_from(AccountTier::Demo, creds) }
+    }
+
+    /// **A non-reversible fingerprint of the ACCOUNT these credentials name** (a 64-bit hash of the
+    /// account id), `None` when the account holds no usable credentials. The gatewayhub keys its
+    /// per-account instrument/currency cache by it, so an operator who swaps the credentials under the
+    /// same label (another OANDA account, with its own list and its own currency) is never answered from
+    /// the old account's cache. The account id is hashed here and nothing else leaves: no token, and no
+    /// id to log. In-process only (the hash is not stable across Rust releases and is never stored).
+    #[must_use]
+    pub fn account_fingerprint(&self) -> Option<u64> {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        let config = self.config.as_ref()?;
+        let mut hasher = DefaultHasher::new();
+        config.account_id.hash(&mut hasher);
+        Some(hasher.finish())
+    }
+
+    /// **The account's own home currency**, one authed `GET /v3/accounts/{account_id}/summary`. The
+    /// instrument list names a quote currency per row and the account books money in this one; the
+    /// gatewayhub's any-symbol facts admit an instrument only when the two are equal. Unlike
+    /// [`CatalogProvider::list_instruments`] this ERRORS when the account holds no credentials: an
+    /// unknown currency must never read as "any currency will do".
+    pub fn home_currency(&self) -> Result<String, CatalogError> {
+        let Some(config) = &self.config else {
+            return Err(CatalogError(
+                "oanda: this account holds no usable credentials (API_KEY and ACCOUNT_ID)".into(),
+            ));
+        };
+        let rest = OandaRest::new(config.api_token.clone());
+        let summary = rest
+            .get(&config.rest_base, &format!("/v3/accounts/{}/summary", config.account_id), "")
+            .map_err(|e| CatalogError(format!("oanda /v3/summary: {e}")))?;
+        parse_home_currency(&summary).ok_or_else(|| {
+            CatalogError("oanda /v3/summary: the account summary carries no currency".into())
+        })
+    }
+}
+
+impl CatalogProvider for OandaCatalog {
+    fn venue(&self) -> &str {
+        "oanda"
+    }
+    fn asset_classes(&self) -> &[AssetClass] {
+        &[AssetClass::Fx, AssetClass::Cfd]
+    }
+    fn mode(&self) -> CatalogMode {
+        CatalogMode::Enumerable
+    }
+    fn list_instruments(&self) -> Result<Vec<Instrument>, CatalogError> {
+        let Some(config) = &self.config else { return Ok(Vec::new()) };
+        Ok(parse_instruments(&fetch_instruments(config)?))
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+
+    /// The docs-shaped fixture (per OANDA v20 docs, no captured payload: its `_provenance` key says
+    /// so). Replace it with a captured practice-account body when one is recorded.
+    fn fixture() -> Vec<Instrument> {
+        let body = include_str!("../tests/fixtures/instruments.json");
+        parse_instruments(&serde_json::from_str(body).expect("fixture is JSON"))
+    }
+
+    fn row<'a>(rows: &'a [Instrument], sym: &str) -> &'a Instrument {
+        rows.iter().find(|i| i.raw_symbol == sym).unwrap_or_else(|| panic!("{sym} present"))
+    }
+
+    fn cfd(kind: CfdUnderlying, margin: f64, long: f64, short: f64) -> Contract {
+        Contract::Cfd(CfdSpec {
+            underlying_kind: kind,
+            underlying: None,
+            product: CfdProduct::Cfd,
+            expiry: CfdExpiry::Rolling,
+            margin_rate: Some(margin),
+            swap_long: Some(long),
+            swap_short: Some(short),
+        })
+    }
+
+    #[test]
+    fn currency_rows_are_fx_with_pip_lot_and_swap_from_the_payload() {
+        let rows = fixture();
+        assert_eq!(rows.len(), 6);
+
+        let eurusd = row(&rows, "EUR_USD");
+        assert_eq!(
+            eurusd.contract,
+            Contract::Fx(FxSpec {
+                pip_size: Some(0.0001),
+                lot_size: None,
+                swap_long: Some(-0.0507),
+                swap_short: Some(0.0284),
+            })
+        );
+        assert_eq!(eurusd.asset_class(), AssetClass::Fx);
+        assert_eq!((eurusd.base.as_str(), eurusd.quote.as_str()), ("EUR", "USD"));
+        assert_eq!(eurusd.description, "EUR/USD");
+        assert_eq!(eurusd.venue, "oanda");
+        assert_eq!(eurusd.contract_type.as_deref(), Some("CURRENCY"));
+        let p = eurusd.properties;
+        assert_eq!((p.tick_size, p.step_size, p.min_qty, p.max_qty), (0.00001, 1.0, 1.0, 1e8));
+
+        // A JPY pair: the pip and the price grid are two decimals coarser — the case a fixed
+        // precision gets wrong.
+        let usdjpy = row(&rows, "USD_JPY");
+        assert_eq!(
+            usdjpy.contract,
+            Contract::Fx(FxSpec {
+                pip_size: Some(0.01),
+                lot_size: None,
+                swap_long: Some(0.0412),
+                swap_short: Some(-0.0661),
+            })
+        );
+        assert_eq!(usdjpy.properties.tick_size, 0.001);
+    }
+
+    #[test]
+    fn non_currency_rows_are_rolling_cfds_with_the_underlying_read_from_type_and_tags() {
+        let rows = fixture();
+
+        let gold = row(&rows, "XAU_USD");
+        assert_eq!(gold.contract, cfd(CfdUnderlying::Metal, 0.05, -0.0675, 0.0225));
+        assert_eq!(gold.contract_type.as_deref(), Some("METAL"));
+        assert_eq!(gold.properties.tick_size, 0.001);
+        assert_eq!(gold.properties.max_qty, 500_000.0);
+
+        let spx = row(&rows, "SPX500_USD");
+        assert_eq!(spx.contract, cfd(CfdUnderlying::Index, 0.05, -0.0726, 0.0174));
+        assert_eq!(spx.asset_class(), AssetClass::Cfd);
+        assert_eq!((spx.base.as_str(), spx.quote.as_str()), ("SPX500", "USD"));
+        assert_eq!(spx.description, "US SPX 500");
+        let p = spx.properties;
+        assert_eq!((p.tick_size, p.step_size, p.min_qty, p.max_qty), (0.1, 0.1, 0.1, 10_000.0));
+
+        assert_eq!(row(&rows, "BCO_USD").contract, cfd(CfdUnderlying::Commodity, 0.1, -0.07, 0.02));
+        assert_eq!(row(&rows, "USB10Y_USD").contract, cfd(CfdUnderlying::Bond, 0.05, -0.06, 0.01));
+    }
+
+    /// A row naming only `name`/`type`/`displayName` (or a `type` the parser does not know) still
+    /// parses: every field it does not carry is `None`/`Unknown`-shaped, never a guessed value.
+    #[test]
+    fn bare_rows_carry_none_rather_than_invented_values() {
+        let payload = serde_json::json!({
+            "instruments": [
+                { "name": "EUR_USD", "type": "CURRENCY", "displayName": "EUR/USD" },
+                { "name": "XAU_USD", "type": "METAL", "displayName": "Gold" },
+                { "name": "WEIRD_THING", "type": "", "displayName": "Weird",
+                  "pipLocation": 9999, "displayPrecision": "5", "minimumTradeSize": "-1",
+                  "tags": [{ "type": "KID_ASSET_CLASS", "name": "INDEX" }] }
+            ]
+        });
+        let out = parse_instruments(&payload);
+        assert_eq!(out.len(), 3);
+        assert_eq!(
+            row(&out, "EUR_USD").contract,
+            Contract::Fx(FxSpec {
+                pip_size: None,
+                lot_size: None,
+                swap_long: None,
+                swap_short: None
+            })
+        );
+        let bare_cfd = |kind| {
+            Contract::Cfd(CfdSpec {
+                underlying_kind: kind,
+                underlying: None,
+                product: CfdProduct::Cfd,
+                expiry: CfdExpiry::Rolling,
+                margin_rate: None,
+                swap_long: None,
+                swap_short: None,
+            })
+        };
+        assert_eq!(row(&out, "XAU_USD").contract, bare_cfd(CfdUnderlying::Metal));
+        let weird = row(&out, "WEIRD_THING");
+        assert_eq!(weird.contract, bare_cfd(CfdUnderlying::Other));
+        assert_eq!(weird.contract_type, None);
+        // `pipLocation` out of range, `displayPrecision` as a string, a negative minimum: all absent.
+        assert!(out.iter().all(|i| i.properties == SymbolProperties::default()));
+    }
+
+    #[test]
+    fn the_home_currency_is_the_summarys_own_and_never_a_default() {
+        let body = |c: serde_json::Value| serde_json::json!({ "account": { "currency": c } });
+        assert_eq!(parse_home_currency(&body(serde_json::json!("usd"))), Some("USD".into()));
+        assert_eq!(parse_home_currency(&body(serde_json::json!(" EUR "))), Some("EUR".into()));
+        for none in [body(serde_json::json!("")), body(serde_json::json!(7)), serde_json::json!({})]
+        {
+            assert_eq!(parse_home_currency(&none), None, "{none}");
+        }
+    }
+
+    /// No credentials is an ERROR here (the listing's `Ok(empty)` would read as "no currency to
+    /// fence on"), and it is raised before any request is built.
+    #[test]
+    fn a_catalog_with_no_credentials_has_no_home_currency() {
+        let why = OandaCatalog::new(&AccountCredentials::none()).home_currency().expect_err("none");
+        assert!(why.0.contains("no usable credentials"), "{}", why.0);
+    }
+
+    #[test]
+    fn empty_payload_is_empty() {
+        assert!(parse_instruments(&serde_json::json!({})).is_empty());
+        assert!(parse_instruments(&serde_json::json!({ "instruments": [] })).is_empty());
+    }
+
+    /// The catalog must read the credentials it is HANDED, not the process environment.
+    /// Before this fix `new()` swept `std::env::vars()`, so a `.env`-only credential set — which
+    /// is the ONLY place this repo stores them — resolved to `None` and the venue silently
+    /// vanished from the Symbol picker.
+    #[test]
+    fn catalog_resolves_credentials_from_the_injected_account() {
+        let fields = vike_secrets::account_credentials::CredentialFields::from_pairs([
+            ("API_KEY", "tok-abc-123"),
+            ("ACCOUNT_ID", "101-004-1234567-001"),
+        ]);
+        let creds = AccountCredentials::new(Some(1), Some(&fields), None);
+        assert!(
+            OandaCatalog::new(&creds).config.is_some(),
+            "injected credentials must resolve without touching process env"
+        );
+    }
+
+    /// The fingerprint follows the ACCOUNT id: stable for one account whatever its token (a rotated key is the
+    /// same account with the same list), different for another account, absent with no credentials, and it
+    /// is a number that carries neither the id nor the token.
+    #[test]
+    fn the_account_fingerprint_follows_the_account_id_and_nothing_else() {
+        use vike_secrets::account_credentials::CredentialFields;
+        let of = |token: &str, account: &str| {
+            let fields =
+                CredentialFields::from_pairs([("API_KEY", token), ("ACCOUNT_ID", account)]);
+            OandaCatalog::new(&AccountCredentials::new(Some(1), Some(&fields), None))
+                .account_fingerprint()
+        };
+        let first = of("tok-a", "101-004-1234567-001").expect("credentials");
+        assert_eq!(
+            of("tok-b", "101-004-1234567-001"),
+            Some(first),
+            "a rotated token is one account"
+        );
+        assert_ne!(of("tok-a", "101-004-7654321-001"), Some(first), "another account differs");
+        assert_eq!(OandaCatalog::new(&AccountCredentials::none()).account_fingerprint(), None);
+    }
+
+    /// An account holding nothing means no credentials — never a panic, and never a silent
+    /// fallback to process env.
+    #[test]
+    fn catalog_with_no_credentials_is_configless() {
+        assert!(OandaCatalog::new(&AccountCredentials::none()).config.is_none());
+    }
+}
