@@ -1,0 +1,193 @@
+[package]
+name = "vike-tradehub-core"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the GENERIC venue mount: the fold every venue's ExecutionEngine is built through (account tier, arming probe, pre-connect budget, process-exclusive claim, the bridge's own mount, the paper fallback, the startup preflight) — AND the runtime assembly and strategy mounts over it: assemble_runtime (every wired market's engine through the fold, over the venue registry the daemon hands it as RuntimeConfig::registry, and the markets wired_markets derives from it), the single-writer live core, the paper/live maker, strategy and cross-exchange mounts, and the incident collector. Names no venue: each bridge implements vike_bridge_core::venue_adapter::VenueAdapter, and vike-tradehub's registry lists them. vike-run merged into it (docs/decisions/0098)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `engine-stacked` —
+# one hop over the engine band: its highest normal vike-* edge is vike-core (30). It was `engine`
+# (30) from the venue-adapter contract's finish until it absorbed vike-run
+# (docs/decisions/0098-vike-run-merges-into-vike-mount.md), whose runtime assembly and strategy mounts
+# brought the vike-core edge; before the contract it was `composition-root` (60), until with every bridge
+# dependency gone nothing above 25 was left (docs/decisions/0096). It still sits below every venue
+# bridge (40/41), so the layer gate keeps refusing a bridge edge.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 35
+
+[dependencies]
+# the domain types engine construction names (SymbolProperties, now_ms/now_us)
+vike-model = { path = "../vike-model" }
+# The per-venue tables (`caps_for`, `fee_schedule_for`, the credential-field table ...) that left `vike-model` (decision 0162).
+vike-venues = { path = "../vike-venues" }
+# The pure helpers (decision 0141, layer 3) this crate calls: `calendar`, `fnv`, and the shared command-line layer
+# `cli` (decision 0155) the `incident` bin reads its argv through.
+vike-util = { path = "../vike-util", features = ["cli"] }
+# `#[derive(clap::Parser)]` on the `incident` bin's args struct (decision 0155); the shared rules are `vike_util::cli`'s.
+clap = { workspace = true }
+# The project's filesystem layout (`vike_paths::state_path`, `store_path`, `scratch`): std-only, layer 7.
+vike-paths = { path = "../vike-paths" }
+# The HALT sentinel's FILE half (`vike_boot::halt`: the path ladder, `halt_path_from_env`, the declared project)
+# and the sequence the tests here drive for real (`tests/halt_default_path.rs` runs `vike_boot::boot`). It left this
+# crate for `vike-boot` so BOTH daemons declare the one project from their boot. Layer 25, below this crate.
+vike-boot = { path = "../vike-boot" }
+# `vike_marketdata::interval::interval_ms`: the bar-interval vocabulary, which moved out of
+# `vike_model::time`. Layer 5, serde only; already in this crate's closure through vike-model.
+vike-marketdata = { path = "../vike-marketdata" }
+# `fee_lane`: the `.P` spot-vs-perp split applied to the FEE table's key. binance/aster route EXEC on
+# that suffix, so `make_engine` must resolve the LANE before reading `fee_schedule_for` — keying it
+# off the bare venue string filled every perp paper book at SPOT fees. Adds no external package:
+# vike-catalog depends on vike-model alone.
+vike-catalog = { path = "../vike-catalog" }
+# ExecutionEngine/ExecutionClient/RiskGate/RiskLimits/Account/EventSender + the recon::ReconClient seam
+vike-exec = { path = "../vike-exec" }
+# Trait surface only (the Arrow/DataFusion engine is the separate `vike-store`, which this crate
+# must not name): this crate names just the `PropertiesRecorder` TYPE (it holds only
+# `Arc<dyn HistStore>`), carried to every bridge's mount as `AdapterRequest::properties_rec`. The
+# recorder is CONSTRUCTED by the calling BINARY (`vike_store::open_properties_recorder` names the
+# concrete `DataFusionHist`; vike-app's `fat` and vike-tradehub's `record-feeds`/`materialize`
+# builds carried it until they were deleted on 2026-09-09 and 2026-09-22) and RECEIVED here as the
+# `AdapterEnv::properties_rec` field — libraries take configuration as parameters; only binaries open
+# stores. A binary without the backend passes `None`, byte-identical to the recorder's own disabled
+# path — which is every caller today
+# (`crates/vike-tradehub/src/tradehub_cli/live_runtime.rs`'s `properties_rec` is always `None`).
+# Also the live seam and the store READ that came in from vike-core (P6a): `core_sink.rs`'s `CoreLaneSink` implements
+# `vike_data::LiveDataSink`, and `journal_view.rs` walks any `vike_data::HistStore` it is handed (still the
+# trait only; the concrete store is never named here).
+vike-data = { path = "../vike-data" }
+# The TYPED settings model (settings-unification Phase 6c). This crate is the venue composition
+# root, so it is where a machine's hard ceilings must actually REACH a venue — before this edge
+# existed the whole `vike-config` tree had no consumer below the order-preview surfaces, and
+# #1051's `spawn_with_market_slippage` seam had nothing to feed it. `src/policy.rs` owns the ONE
+# projection (`AdapterPolicy`), so "which Policy fields does the mount apply?" has a single home and a
+# compile-time completeness gate. Zero new EXTERNAL packages: vike-config is a leaf over vike-model
+# + serde + toml, all already in this crate's tree. ⚠ This crate NEVER loads the settings — the
+# BINARY does (`vike_config::load` takes the env as a MAP) and passes the projection in.
+vike-config = { path = "../vike-config" }
+# `vike_secrets::venue_setting::VenueSettings` — the snapshot `AdapterPolicy::venue_settings` carries
+# and every bridge receives as `AdapterInputs::settings`, and `vike_secrets::Account` (the `account` row
+# `book_identity` reads off `AccountDirectory`). Named by their own crate, never re-exported.
+# No new package: vike-secrets is already in this tree through vike-boot and vike-config.
+vike-secrets = { path = "../vike-secrets" }
+# The change journal (the `venue_mounted` records, src/node/mounts.rs). It was
+# a module of vike-secrets until it moved into its own crate (layer 12); it names only
+# vike-model, vike-util, serde and serde_json, all already in this graph.
+vike-change-journal = { path = "../vike-change-journal" }
+# the paper exchange the live gate falls back to when a venue's credentials are absent.
+# THIS LINE USED TO READ `vike-backtest`, which owned the same module. All 12 call sites in this
+# crate named `vike_backtest::paper::…` and NOTHING else from it, so the entire simulator — engine,
+# harness, analytics — was compiled here to obtain one `ExecutionClient`. vike-paper carries the
+# identical client (it fills with the shared vike-fills core the engine itself uses, so
+# backtest == paper still holds BY CONSTRUCTION) over vike-model + vike-exec + vike-fills alone.
+vike-paper = { path = "../vike-paper" }
+# the fold warns at each venue's live/paper decision boundary (never per-message)
+tracing = { workspace = true }
+# `src/recon_manager/manager.rs` holds a `tokio::sync::mpsc::WeakSender` of the core's ingest lane
+# (the reconcile manager thread that came in from vike-core, P6a) and `tests/halt_paper_live_agree.rs`'s
+# `drain_ingest` drains a client's Ingest receiver within a bounded wait. It was a DEV edge before the
+# manager arrived; the workspace pin is the core's, so no new package or feature joins the tree.
+tokio = { workspace = true }
+# the Account per-symbol contract-multiplier grid is an IndexMap (its insertion order is part of
+# Account's f64 fold order — the repo-wide IndexMap-not-HashMap rule)
+indexmap = { workspace = true }
+#
+# ── The runtime assembly and the strategy mounts (vike-run's, merged in by docs/decisions/0098) ──
+# Every edge below came with them, and each sits below this crate's 35, so the merge adds no
+# upward normal edge. ⚠ Still NO venue bridge: the bridge edges, the registry rows that name the
+# bridges are `vike-tradehub`'s, handed to `assemble_runtime` as `RuntimeConfig::registry`; the wired markets
+# are `wired_markets` over that registry (the engine rows of `vike-model`'s `VENUE_WIRING`).
+#
+# The durable command JOURNAL and its single-writer directory lock. ⚠ Both were vike-run's own
+# `journal`/`journal_lock` modules until 2026-09-23; `crates/vike-journal/src/lib.rs` carries why
+# they left. Layer 25 to this crate's 35, so the edge is down-only.
+vike-journal = { path = "../vike-journal" }
+# the single-writer live core (spawn_core / StrategyMount / LiveBroker) — the PRODUCTION runtime the
+# mount validates the maker on. Layer 30: the HIGHEST normal edge, which is what puts this crate at
+# 35.
+vike-core = { path = "../vike-core" }
+# the A-S SpreadMaker (impl<B: HftBroker> Strategy<B>) mounted here.
+vike-mm = { path = "../vike-mm" }
+vike-log = { path = "../vike-log" } # tracing-native logging init (the incident bin holds the guards)
+# `incident` subcommand (src/incident.rs + src/bin/incident.rs): serde derives the bundle manifest,
+# serde_json writes/reads it, flate2 gzips each frozen evidence file (the raw_tap.rs GzEncoder
+# pattern — per-file gz in a timestamped directory; deliberately NO `tar` dep). All three are
+# already-pinned workspace deps. ⚠ serde_json was this crate's DEV-dependency until the merge (for
+# `src/account_event_lane_tests.rs`); the incident collector makes it a normal one.
+serde = { workspace = true }
+serde_json = { workspace = true }
+flate2 = { workspace = true }
+
+# `src/startup.rs`'s `free_space_bytes`: the startup preflight's DISK-HEADROOM leg, which was
+# configured with no directories and never called until this edge existed. `rustix::fs::statvfs` is
+# a SAFE wrapper, so the leg costs no `unsafe` and no lint exemption in a crate every live mount
+# folds through. Target-scoped: rustix's statvfs is POSIX-only, and the Windows half of
+# `free_space_bytes` declares a reason instead of measuring. The root manifest carries the
+# supply-chain argument (it adds zero packages on Linux).
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
+[features]
+# The workspace's "one owned double behind a `test-support` feature" convention (root CLAUDE.md, as
+# vike-exec's): `ScriptedBackend` (`src/backend/scripted.rs`) answers what a test scripts and records what
+# the fold asked of the venue port. It is gated `#[cfg(any(test, feature = "test-support"))]`, so a default
+# (production) build never compiles it; `vike-tradehub` turns it on as a DEV-dependency feature (its roster
+# tests that stay when the venue half moves are integration binaries of that crate). Empty/additive.
+test-support = []
+
+[dev-dependencies]
+# Self-referential dev-dep (the `vike-exec`/`vike-log` idiom): turns `test-support` on for THIS crate's own
+# `tests/` targets, which compile the lib WITHOUT `cfg(test)`. Never affects a normal build;
+# `crates/vike-ops/tests/architecture/layer_gate.rs` discounts a self-edge.
+vike-tradehub-core = { path = ".", features = ["test-support"] }
+# `vike_exec::testing::{RecordingClient, ..}` and `recon::FakeReconClient`, which `tests/recon.rs` (the
+# reconcile manager's suites that came in from vike-core, P6a) mounts as venues: compiled only under
+# vike-exec's `test-support`, which a DEV edge may
+# turn on and the normal edge above may not.
+vike-exec = { path = "../vike-exec", features = ["test-support"] }
+# `MemHistStore`, the DataFusion-free in-memory `HistStore` double that `tests/recon/recon_journal_view.rs`
+# drives every branch of `journal_view_from_store` through. A DEV edge that only turns `test-support` on
+# over the normal edge above; no non-dev resolution turns the feature on.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# The shared flat-bar builder (`vike_marketdata::test_support::flat_bar_unit_volume`) that
+# `tests/recon/mark_slot_semantics.rs` builds its bars from. A DEV edge with the feature, never a
+# normal one: the builders are `#[cfg(any(test, feature = "test-support"))]`.
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+# assert on emitted events (`#[traced_test]`): `src/core_sink_tests.rs`'s one-line-per-delayed-stream gate.
+tracing-test = { workspace = true }
+# ⚠ No `serde_json` line here any more: `src/account_event_lane_tests.rs` still serializes a
+# delivered `AccountState` with it, through the NORMAL edge the incident collector needs (see
+# `[dependencies]`). No `vike-log` line either, which vike-run's tests took as a dev edge: it is a
+# normal edge of this crate. `vike-bridge-core` is neither any more (wave 2, W15: this crate names no
+# bridge and no transport core, and the fence in `named_run_closure_gate/fences.rs` holds it).
+# TEST-ONLY: `tests/exec_actor_halt_unwired.rs` and `tests/halt_paper_live_agree.rs` drive the shared
+# `ExecActor` (`vike_bridge_core::exec_actor`) against the HALT sentinel the fold's paper path shares
+# with it, which is a statement about the actor and so needs the real one. A dev edge's features reach
+# no shipped binary and no normal closure.
+vike-bridge-core = { path = "../vike-bridge-core", features = ["test-support"] }
+# test-only: the self-deleting scratch directory each HALT sentinel is minted in
+# (`crates/vike-tradehub-core/tests/halt_paper_live_agree.rs`'s `unique_sentinel`), and the `venue_mounted`
+# journal state dir and HALT sentinel the node and scripted-mount tests pin. It replaces a pid-keyed
+# `std::env::temp_dir()` path that leaked 17,696 `/tmp` directories on the CI box and flaked on PID reuse
+# across the box's two test users — that helper's doc carries the measurement and the argument.
+tempfile = { workspace = true }
+# `tests/adapter_names_no_venue_gate.rs`'s text walk: `vike_model::libm_walk` (which files and ranges are
+# test code) and `vike_model::scan::strip_comments`. A DEV edge that only turns `test-support` on for this
+# crate's test builds, over the normal `vike-model` edge above; the feature adds modules and no dependency,
+# so no shipped graph and no `Cargo.lock` row moves.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+
+[[bin]]
+# `incident --since <dur>` — freeze perishable run evidence (journal segments + trace logs
+# overlapping the window, the resolved RunProfile + hash, the latest EngineSnapshot + state_hash,
+# git/build info, a REDACTED env dump) into a timestamped directory of per-file gzips + a manifest.
+# No required-features: feature-free (no venue/native deps), so it builds in the default/CI lane.
+# It moved here from vike-run with the merge (docs/decisions/0098); the bin name is unchanged, and
+# the package a `cargo run -p … --bin incident` names is now this one.
+name = "incident"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true
