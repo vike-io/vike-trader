@@ -1,0 +1,59 @@
+[package]
+name = "vike-store"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the DataFusion+Parquet historical store (design of record): DataFusionHist, the engine behind vike-data's HistStore seam for bars, ticks and every other stored kind, with its manifest/WAL, maintenance and scheduler, the buffered live-tick recorder (RecorderSink), the archive Parquet reader and the backtest store selector."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain-stacked` —
+# one hop over the domain band: a crate composed over `vike-data` (20), whose `HistStore` seam it
+# implements. 25 is the ARITHMETIC FLOOR: `vike-data` is the highest normal vike-* edge;
+# `vike-model` (10), `vike-paths` (7), `vike-marketdata` (5) and `vike-util` (3) sit under it.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 25
+
+[dependencies]
+# The seam this crate implements: `HistStore`, `TsRange`, `DataError`, `SeriesId`, the row types,
+# the live sink and the pure store contracts (`store_kind`, `coverage`, `quality`, `removal`).
+vike-data = { path = "../vike-data" }
+vike-model = { path = "../vike-model" }
+# The pure helpers (decision 0141, layer 3) this crate calls: `atomic_file`, `calendar`.
+vike-util = { path = "../vike-util" }
+# The project's filesystem layout (`vike_paths::store_path`'s hostile-symbol rule): std-only, layer 7.
+vike-paths = { path = "../vike-paths" }
+# The market-data vocabulary the codecs encode (`Bar`, `QuoteTick`, `BookUpdate`, …). Layer 5, serde
+# only; already in this crate's closure through vike-model.
+vike-marketdata = { path = "../vike-marketdata" }
+datafusion = { workspace = true }
+tokio = { workspace = true }        # the runtime `DataFusionHist` owns, so its sync callers drive DataFusion
+tracing = { workspace = true }      # store, maintenance and recorder warnings
+serde = { workspace = true }        # manifest, delta-frame, `_sources.json` and repair-plan serialization
+serde_json = { workspace = true }   # manifests (no SQLite), `_sources.json` and the JSON-encoded columns
+
+# `store_rates` is a probe run by hand, not a `[[bin]]` (its header says why); `test = true` makes
+# `cargo test` build it as a test target too, so its argv pins (decision 0155) run in the roster lane.
+[[example]]
+name = "store_rates"
+test = true
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# The `store_rates` example reads its argv through `vike_util::cli` over `clap` (decision 0155). A DEV edge
+# with the feature: the normal `vike-util` edge above stays `clap`-free, so no library build links it.
+vike-util = { path = "../vike-util", features = ["cli"] }
+clap = { workspace = true }
+# `bytes::Bytes` — the in-memory Parquet bytes `archive_store`'s decode tests hand
+# `ParquetRecordBatchReaderBuilder` (`src/archive_store_tests/decode.rs`).
+bytes = { workspace = true }
+# `vike_model::test_support::bars::assert_bars_bit_eq`, the bit-exact bar check `tests/store/` shares
+# with four other crates' tests. A DEV edge only: the normal `vike-model` edge above stays featureless.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# `MemHistStore`, the in-memory twin `tests/series/` runs each row kind against beside this engine.
+# A DEV edge only: the normal `vike-data` edge above stays featureless.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true
