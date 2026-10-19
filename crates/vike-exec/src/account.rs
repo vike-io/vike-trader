@@ -1,0 +1,966 @@
+//! FillEvent-derived account read-model: positions + realized PnL from the fill stream.
+//!
+//! - per-venue: `apply_fill` asserts `fill.venue == self.venue`.
+//! - per-symbol contract value (kind plus per-unit factor): `contract_value_of(symbol)` with the legacy scalar default as a linear unit.
+//! - explicit `balance_mode` (Delta | Authoritative); `equity_all(seed)` is mode-aware;
+//!   `apply_account_state` flips the mode after each authoritative balance assignment.
+//! - `fold` is the SOLE writer of position + realized PnL (called by both `apply_fill` and
+//!   `apply_liquidation` — one compute_fill block, no drift).
+//! - `apply_fill` is IDEMPOTENT PER `trade_id` (see "Fill dedup" below).
+//! - NO equity cache anywhere (catastrophic-cancellation risk) — every read is a sparse
+//!   full recompute.
+//! - Maps are `IndexMap` so f64 summation order in `equity_all` is FIXED. **NEVER a HashMap** —
+//!   the insertion order IS the f64 fold order the parity gate pins, bit-for-bit, against the
+//!   frozen `fixtures/r0/account_scenarios.json` bytes, which are the oracle themselves.
+//!
+//! ## Fill dedup: the check lives ON the aggregate that owns the money
+//!
+//! [`Account::apply_fill`] moves money (`balance -= commission`, `fees_paid +=`, the position
+//! fold, `realized_pnl +=`), and several producers re-deliver an already-folded fill BY DESIGN:
+//! the `exec_actor::run_loop` gap sentinel's resync, the `user_data::run_resync_supervisor`
+//! replay, hyperliquid's `userFills` `isSnapshot` frame (re-sent on EVERY reconnect), and the
+//! venue twins listed on [`Account::duplicate_fills_refused`]. So [`Account`] owns the ledger,
+//! [`Account::apply_fill`] consults it before anything moves and reports the outcome as a
+//! [`FillFold`]: a caller that ignores the return still cannot double-count.
+//! `ExecutionEngine`'s `seen_trade_ids()`, `local_view()`, `EngineSnapshot` wire and
+//! `seed_seen_trade_ids` all read/write THIS set — one authority.
+//!
+//! **The key choice: the bare `trade_id`, its narrowness DETECTED rather than assumed away.**
+//! A fully qualified key would be `(AccountId, InstrumentId, TradeId)`. The account component is redundant here
+//! (an `Account` IS per-venue-per-account), the instrument one is NOT: binance/aster `t` and okx
+//! `tradeId` are per-SYMBOL venue sequences, so on a multi-symbol engine
+//! (`ExecutionEngine::extra_symbols`, which combo lowering populates) two executions can share an
+//! id string; `vike_paper`'s `paper-{n}` and `vike_exec::testing::TestExecutionClient`'s
+//! `simt{n}` are per-CLIENT counters, so `MultiPaperExecutionClient`'s per-symbol books collide by
+//! construction. The key stays bare because WIDENING it loses money: the reconcile lane compares
+//! venue ids against this set as BARE STRINGS (`vike_exec::recon::diff`'s
+//! `local.seen_trade_ids.contains(f.trade_id.as_str())`), and a `FillReport`'s symbol is the
+//! venue's spelling, not necessarily the unified one, so with a composite key `diff` would call an
+//! already-folded fill a `MissingFill` and `resolve` would fold it a SECOND time. Widening also
+//! moves `EngineSnapshot::seen_trade_ids` off `Vec<String>`, changing the journal `state_hash`
+//! fence, which is the deferred schema-versioning question (`docs/decisions/`).
+//!
+//! **The fingerprint collision detector.** Beside each id the ledger stores an FNV-1a64 over
+//! `(symbol, side, last_qty, last_px)` (`fill_print`). Same id AND same fingerprint is a
+//! re-delivery: refused, counted into [`Account::duplicate_fills_refused`], silent. Same id and a
+//! DIFFERENT fingerprint is an id COLLISION, a genuine fill about to be dropped: counted into
+//! [`Account::colliding_fills_refused`] and logged at ERROR naming both fills. It is still
+//! refused: folding on a mismatch would make the guard depend on venue price/qty rounding being
+//! stable, and a re-delivery whose px re-encoded in the last ulp would double count. The key errs
+//! toward DROPPING a genuine fill; the fingerprint makes that drop visible so an operator can
+//! reconcile. A restored entry ([`Account::seed_seen_fill_ids`]) carries [`PRINT_UNKNOWN`] and is
+//! never reported as a collision: a prior session's fingerprints are not on the journal wire.
+//!
+//! An EMPTY `trade_id` is unrepresentable (`FillEvent::trade_id` is a `TradeId`, whose
+//! constructor refuses the empty string), so no fill escapes the guard.
+//!
+//! **Why the set is UNBOUNDED on purpose.** It grows tens of bytes per distinct fill for the
+//! process lifetime. Every cap (Hummingbot's 2000, an LRU) re-admits a duplicate the moment a
+//! replay window reaches back further than the cap, and the widest window here is not a fill
+//! COUNT: `VIKE_RECONCILE_LOOKBACK_MS` is one hour by default and the venue history endpoints are
+//! row-count-bounded with no start time. This platform's peak sustained fill rate is unmeasured,
+//! so no cap can be shown to sit above that window. Bounding errs toward silently re-admitting a
+//! duplicate; not bounding errs toward memory. See `crates/vike-exec/CLAUDE.md`.
+//!
+//! ## Key types: interned, not owned
+//!
+//! [`PositionKey`] and the mark-slot key are `(Ustr, Ustr, …)`: `FillEvent::venue`/`symbol` are
+//! ALREADY [`Ustr`] and `position_side` is the [`PositionSide`] enum, so building a key in
+//! `apply_fill`, `apply_liquidation`, the mark slot and every `mark_of`/`unrealized_pnl` read
+//! allocates nothing. Interning soundness: venue is ~10 values ever and symbol is bounded by the
+//! instruments a session touches (`vike_model::events`' module doc is the authority); the
+//! `&str`-taking read accessors ([`Account::mark_of`], [`Account::unrealized_pnl`], …) intern
+//! their arguments at the boundary.
+//!
+//! WIRE IS UNCHANGED: `Ustr` is serde-transparent and `PositionSide` serializes to
+//! `"BOTH"/"LONG"/"SHORT"` (`rename_all = "UPPERCASE"`), so
+//! [`crate::engine_snapshot::AccountSnapshot`] and the `state_hash` fence over its canonical JSON
+//! are byte-identical to `String` keys (pinned by
+//! `engine_snapshot::tests::account_snapshot_key_wire_is_byte_identical`).
+//!
+//! The third key element is the closed-set [`PositionSide`]: every producer (the fill lane and
+//! `ReconcileSnapshot::position_sides`) already carries the enum, so no string reaches a key.
+
+use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use ustr::Ustr;
+use vike_model::MarginMode;
+use vike_model::events::{AccountState, FillEvent, FundingEvent, PositionLiquidated, PositionSide};
+
+pub(crate) mod fx;
+mod marks;
+mod valuation;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BalanceMode {
+    Delta,
+    Authoritative,
+}
+
+/// A position ledger entry: `{"size", "avg_px"}`, plus the margin-mode carrier.
+///
+/// `margin_mode`/`isolated_margin` are `#[serde(skip_serializing_if)]` on their default
+/// (`Cross` / `None`), so a cross position serializes to EXACTLY `{"size":…,"avg_px":…}` —
+/// keeping every snapshot/journal, and the `AccountSnapshot` `state_hash` fence, byte-identical.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+pub struct PositionEntry {
+    pub size: f64,
+    pub avg_px: f64,
+    /// Per-position margin mode (`Cross` = whole-account collateral). Carried forward across
+    /// fills by `Account::fold`.
+    #[serde(default, skip_serializing_if = "MarginMode::is_cross")]
+    pub margin_mode: MarginMode,
+    /// Allocated isolated-margin wallet (account currency); `None` for cross, meaningful only
+    /// under `MarginMode::Isolated`. The core's liq-pool inputs subtract it from the cross pool
+    /// (`vike_core::snapshot::build`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub isolated_margin: Option<f64>,
+}
+
+/// Position key: (venue, symbol, position_side) — position_side `Both` for one-way/spot;
+/// the tuple reserves the hedge-mode dimension for perps. All three components are `Copy`, so
+/// building one allocates nothing (module doc, "Key types").
+pub type PositionKey = (Ustr, Ustr, PositionSide);
+
+/// Mark-slot key: (venue, symbol), interned/`Copy` like [`PositionKey`].
+pub type MarkKey = (Ustr, Ustr);
+
+/// WHICH PRICE CONCEPT a write into the account mark slot carries.
+///
+/// `Account.marks` is a SINGLE UNTAGGED SCALAR per symbol, read by the pre-trade risk gate
+/// (`RiskContext.mark_price`, `margin_in_use_priced`, `equity_all`), the margin-call law
+/// (`check_margin_call_priced`), the trailing-stop seed and `LiveBroker.price`. Feeds write it
+/// at very different cadences, so without a rule a klines lane at one bar/second would stomp a 1s
+/// venue mark.
+///
+/// **THE LAW** (enforced inside [`Account::set_mark_from`], nowhere else):
+/// while a symbol's slot holds a GENUINE VENUE MARK ([`MarkSource::is_venue_mark`]) observed
+/// within its source's OWNERSHIP WINDOW, that mark OWNS the slot and a [`MarkSource::BarClose`]
+/// or [`MarkSource::TradeTick`] write for that symbol is DROPPED. Otherwise last-write-wins.
+///
+/// **PER-SOURCE WINDOWS**, keyed off the CURRENT OWNER's source:
+/// - [`MarkSource::VenueMark`] — a streamed mark (~1s cadence) — uses `mark_staleness_ms`
+///   (default 10s, ~10 missed ticks).
+/// - [`MarkSource::ReconcileMark`] — sampled at the RECONCILE cadence (default 60s) — uses the
+///   longer `reconcile_staleness_ms` (default 150s), so ownership stays CONTINUOUS across passes
+///   instead of expiring and alternating with closes every minute.
+///
+/// Consequences:
+/// - A venue with NO mark stream and NO reconcile mark never has an owned slot: plain
+///   last-write-wins.
+/// - A mark stream that DIES hands the slot back after its window and closes resume, so
+///   valuation degrades to the previous rung instead of freezing at a stale mark.
+/// - A venue mark never blocks ANOTHER venue mark, so a reconcile mark replaced by a streamed
+///   mark immediately reverts to the short streamed window.
+///
+/// Nothing is lost to the resolver: the dropped concepts still fill their own `PriceBoard` slots
+/// (`set_bar_close` / `set_last_trade`), where the per-source valuation chain lives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkSource {
+    /// The venue's OWN mark/index price off a dedicated stream (`@markPrice@1s`, bybit
+    /// `tickers.markPrice`, okx `mark-price`, HL `activeAssetCtx.markPx`) or off a fill's
+    /// `mark_price` field. The concept the perp liquidation/valuation law is defined in terms of.
+    VenueMark,
+    /// The venue's own mark for a position as REPORTED BY A RECONCILE SNAPSHOT
+    /// (`ExecReport::position_mark_px`). Genuinely the venue's mark — just sampled at the
+    /// reconcile cadence (default 60s) rather than streamed, so it goes stale between passes and
+    /// hands the slot back. Ranked EQUAL to [`Self::VenueMark`]: it is the same number from the
+    /// same venue, and for a venue with no mark stream it is the only real mark available.
+    ReconcileMark,
+    /// The close of a COMPLETED candle. Up to one full bar interval stale by construction, and
+    /// on a perp it is the LAST TRADED price, not the index-derived mark the venue liquidates on.
+    BarClose,
+    /// A sub-bar print: a trade tick, or a quote-derived price on the tick lane. Fresher than a
+    /// close, still not the mark.
+    TradeTick,
+}
+
+impl MarkSource {
+    /// Whether this source is a genuine venue mark — the two variants that may OWN the slot.
+    pub fn is_venue_mark(self) -> bool {
+        matches!(self, MarkSource::VenueMark | MarkSource::ReconcileMark)
+    }
+}
+
+/// Default ownership window for a STREAMED venue mark: about ten missed ticks of a 1s venue mark
+/// stream. Mirrored by `vike_core::CoreConfig::mark_staleness_ms`, which overwrites it on the
+/// live path.
+pub const DEFAULT_MARK_STALENESS_MS: i64 = 10_000;
+
+/// Default ownership window for a RECONCILE mark ([`MarkSource::ReconcileMark`]): 2.5× the
+/// default reconcile interval (`config.reconcile_interval_ms`, 60s), so the slot stays owned
+/// CONTINUOUSLY between passes.
+///
+/// It matters only where a reconcile mark is WRITTEN: `ExecutionEngine::apply_snapshot`, which
+/// only `Command::ApplySnapshot` reaches (tests and the unwired
+/// `CoreHandle::spawn_periodic_reconcile`; the live reconcile driver sends
+/// `Command::ReconcileReports`, which files none). It is NOT a gate on any reconcile pass: a longer
+/// interval skips and delays nothing. Mirrored by
+/// `vike_core::CoreConfig::reconcile_mark_staleness_ms`, which overwrites it on the live path.
+pub const DEFAULT_RECONCILE_STALENESS_MS: i64 = 150_000;
+
+/// How long a quote-currency conversion rate (`Account::quote_rate_of`) stays usable, in the engine's
+/// clock ms: past it the symbols quoted in that currency refuse OPENING orders (`quote-rate-stale`)
+/// while a covered reduce still passes and the valuation keeps the last rate. The node refreshes a
+/// rate by re-admitting the symbol, about once a minute while a position is held, so two minutes is
+/// two missed refreshes. A constant, not a knob: the verdict is part of what a replay reproduces, so
+/// making it configurable means putting it where the gate's other limits are journaled.
+pub const DEFAULT_QUOTE_RATE_TTL_MS: i64 = 120_000;
+
+/// How far AHEAD of the engine's clock a rate's `rate_as_of_ms` may be and still be believed. The
+/// node stamps the rate with the same process clock the engine's `now_ms` comes from, so the
+/// honest difference is zero; five seconds absorbs a stamp taken on one thread and folded on
+/// another. A stamp beyond it (a µs or ns epoch, `i64::MAX`, a clock that stepped) is refused
+/// (`quote-rate-future`) because it would otherwise PIN the rate: every real refresh is older than
+/// it, so the newer-wins rule would keep the pinned rate for ever and the age test (`now - as_of`)
+/// would never call it stale.
+pub const QUOTE_RATE_FUTURE_SKEW_MS: i64 = 5_000;
+
+/// How much LATER than a refused jump the offer that confirms it must be stamped. A jump is
+/// accepted only when it is offered a second time (`MAX_QUOTE_RATE_STEP`); two offers with one stamp
+/// (a re-delivered command, or two symbols of one currency in one refresh batch) are ONE
+/// observation, not two, and never confirm each other.
+pub const MIN_QUOTE_RATE_CONFIRM_GAP_MS: i64 = 1_000;
+
+/// What `Account::restore_fx_symbol` did with one symbol of a restored admission list.
+pub(crate) enum FxRestore {
+    /// The snapshot does not list the symbol as foreign-quoted: restore it as an ordinary one.
+    NotForeign,
+    /// The symbol is back in the fx book with its currency's rate and its effective value.
+    Restored,
+    /// The snapshot lists the symbol as foreign-quoted but holds no rate for its currency: it is left
+    /// out, so it cannot be folded at its own unit.
+    Unusable,
+}
+
+/// The largest factor (either way) a currency's rate may move in ONE accepted update. A rate beyond
+/// it is refused as `quote-rate-jump` and remembered with its stamp; the SAME rate offered again,
+/// stamped at least [`MIN_QUOTE_RATE_CONFIRM_GAP_MS`] later and no older than
+/// [`DEFAULT_QUOTE_RATE_TTL_MS`], is accepted as a real move (two observations, not one delivered
+/// twice). This is the engine's only defence against a rate in the wrong direction after a good one
+/// (USDJPY as `150` after `0.00667` is a 22,500x step); the first rate of a currency has nothing to
+/// be compared with, so orientation is the node's rate builder's to get right.
+pub const MAX_QUOTE_RATE_STEP: f64 = 1.5;
+
+/// The fingerprint stored for a ledger entry whose identity is UNKNOWN — a `trade_id` seeded from a
+/// durable source ([`Account::seed_seen_fill_ids`]) rather than observed by this session's fold.
+/// Compares equal to nothing, so such an entry is refused as a plain duplicate, never reported as
+/// a collision (prior-session fingerprints are not on the journal wire).
+pub const PRINT_UNKNOWN: u64 = 0;
+
+/// FNV-1a64 over the four fields that IDENTIFY a fill within one account: `(symbol, side,
+/// last_qty, last_px)`. Two deliveries of ONE venue execution agree on all four; two DIFFERENT
+/// executions sharing a `trade_id` string almost never do. Deliberately excludes
+/// `commission`/`ts`/`client_order_id`/`mark_price`: a re-delivery can legitimately restate a fee
+/// or a timestamp (binance perp's early TRADE_LITE fill carries no commission, its authoritative
+/// twin does), and that must not read as a collision.
+///
+/// f64s are hashed by `to_bits()` — an identity test, not arithmetic (a non-finite fill is refused
+/// by the engine's `numbers_finite` guard before it reaches here). Allocation-free. Never returns
+/// [`PRINT_UNKNOWN`] (a computed `0` maps to `1`).
+#[inline]
+fn fill_print(fill: &FillEvent) -> u64 {
+    let mut digest = vike_util::fnv::Fnv1a64::new();
+    digest.write(fill.symbol.as_str().as_bytes());
+    digest.write(&(fill.side as i64).to_le_bytes());
+    digest.write(&fill.last_qty.to_bits().to_le_bytes());
+    digest.write(&fill.last_px.to_bits().to_le_bytes());
+    let h = digest.finish();
+    if h == PRINT_UNKNOWN { 1 } else { h }
+}
+
+/// What [`Account::apply_fill`] DID with the fill it was handed — the money-side answer, reported
+/// so a caller can react (deliver `on_fill`, publish, count) without needing its own dedup set.
+///
+/// Deliberately NOT `#[must_use]`: ignoring it is safe by construction (a [`Self::Duplicate`] moved
+/// nothing); a caller CAN observe the refusal, it need not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FillFold {
+    /// The fill was folded: position, realized PnL, cash and fees all moved.
+    Applied,
+    /// REFUSED — this `trade_id` had already been folded into this account, and the fill's
+    /// `fill_print` MATCHES the one folded under it: an ordinary re-delivery. Nothing moved, and
+    /// [`Account::duplicate_fills_refused`] advanced.
+    Duplicate,
+    /// REFUSED — this `trade_id` had already been folded, but under a DIFFERENT
+    /// `(symbol, side, qty, px)`. That is an id COLLISION, not a re-delivery: a genuine fill has
+    /// been dropped. Nothing moved, [`Account::colliding_fills_refused`] advanced, and the fold
+    /// logged it at ERROR. The caller cannot recover it — reconcile can.
+    Collision,
+}
+
+impl FillFold {
+    /// Whether the fill moved money, without enumerating the two refusal reasons.
+    pub fn applied(self) -> bool {
+        matches!(self, FillFold::Applied)
+    }
+}
+
+/// Folds a stream of `FillEvent`s into positions and realized PnL.
+#[derive(Debug, Clone)]
+pub struct Account {
+    pub venue: String,
+    /// per-symbol contract values (notional kind plus per-unit factor, decision 0170) of the symbols
+    /// whose value is not the default; `contract_value_of` falls back to the legacy scalar as a
+    /// `Linear` unit.
+    /// Written only by `new`/`restore`, [`Account::admit_contract_value`] and the foreign-quote
+    /// installers of `account/fx.rs` (all cold, copy-on-write admissions), behind an `Arc` so
+    /// read-models share the grid by pointer-copy ([`Account::contract_value_grid`],
+    /// [`crate::VenueBlock::contract_values`]).
+    ///
+    /// ⚠ **For a symbol quoted in a currency other than the account's this row is the EFFECTIVE value
+    /// — the venue's unit times the rate to the account's currency — not the venue's own unit.**
+    /// That is what lets every money product on the order path (the fold, the gate, the margin call,
+    /// the published block) stay one lookup and stay right with no edit. The venue's own (BASE) unit
+    /// lives in the cold fx book, and it is the BASE that [`Account::snapshot`] writes, so nothing
+    /// persists the product of a rate that has since moved.
+    values: std::sync::Arc<IndexMap<String, vike_model::ContractValue>>,
+    /// The per-unit factor of the `Linear` value an unlisted symbol reads (the constructor's scalar).
+    default_unit: f64,
+    /// Per-symbol RULING margin mode for a position this account OPENS FROM FLAT — the venue's
+    /// per-ASSET truth, resolved once at the mount and handed in by the composition root.
+    ///
+    /// A grid, not a scalar, because the mode is a property of the ASSET:
+    /// `VenueCaps::default_margin_mode` says `Cross` for hyperliquid, but on an `onlyIsolated`
+    /// asset the mode that RULES is `Isolated` (#1087;
+    /// `vike_hyperliquid::base::symbology::InstrumentRef::effective_margin_mode`).
+    ///
+    /// SPARSE ON PURPOSE — absent means `Cross`, like [`Self::mult`] for 1.0: the map is EMPTY for
+    /// every venue but hyperliquid, and [`Self::default_margin_mode_of`] short-circuits on empty.
+    /// It is consulted ONLY when [`Self::fold`] finds no prior entry (open-from-flat).
+    ///
+    /// IMMUTABLE after construction (written only by [`Account::with_default_margin_modes`]),
+    /// behind an `Arc` like [`Self::mult`].
+    default_margin_modes: std::sync::Arc<IndexMap<String, MarginMode>>,
+    pub balance_mode: BalanceMode,
+    pub positions: IndexMap<PositionKey, PositionEntry>,
+    pub realized_pnl: f64,
+    /// gross price PnL per closing portion, in order — a list of PnL floats, NOT `Trade`
+    /// round-trip objects (the name avoids that collision; FIX/accounting call these closed PnLs).
+    pub closed_pnls: Vec<f64>,
+    pub balance: f64,
+    /// ADDITIVE per-asset ledger (parity law A1): the raw `(asset, qty)` pairs venue AccountState
+    /// events carry, upserted in venue-given order — what the `balance` scalar collapses. Never
+    /// read by any fold formula.
+    pub balances_by_asset: IndexMap<String, f64>,
+    /// `realized_pnl` at the instant [`Self::apply_account_state`] last set `balance`
+    /// (AUTHORITATIVE sync); `None` = never synced. The cash reconcile (`VIKE_RECONCILE_BALANCE`)
+    /// reads it to correct the money-drift CONFOUND: realized PnL never enters `balance` in
+    /// Authoritative mode (see [`Self::equity_all`]), so the diff compares venue cash against
+    /// `balance + (realized_pnl - realized_pnl_at_balance_sync)` and a realized trade never
+    /// false-flags. NOT in `AccountSnapshot` (like `mark_meta`): a restore starts `None`, so the
+    /// first post-restore pass re-adopts venue cash instead of diffing a stale baseline. Never
+    /// read by any fold formula.
+    pub realized_pnl_at_balance_sync: Option<f64>,
+    /// PRIVATE ON PURPOSE — the only way in is [`Account::set_mark_from`], which carries the
+    /// precedence law (see [`MarkSource`]); a `pub` field is how the law got bypassed. Read it
+    /// back with [`Account::mark_of`] / [`Account::marks_iter`].
+    marks: IndexMap<MarkKey, f64>,
+    /// Per-symbol provenance of the CURRENT [`Self::marks`] entry: which concept wrote it and
+    /// the CORE-clock ms at which it was observed. Not in `AccountSnapshot` (derived from
+    /// non-journaled market data, like `marks`): a restore starts with an unowned slot and the
+    /// next writer of any source wins — the safe degradation of a venue with no mark stream.
+    mark_meta: IndexMap<MarkKey, (MarkSource, i64)>,
+    /// How long a STREAMED venue mark ([`MarkSource::VenueMark`]) keeps ownership of a symbol's
+    /// mark slot, in CORE-clock ms. Set by the runtime from `CoreConfig::mark_staleness_ms`; the
+    /// default matches it so a standalone `Account` (backtest, tests, bridges) behaves the same.
+    mark_staleness_ms: i64,
+    /// The ownership window for a RECONCILE mark ([`MarkSource::ReconcileMark`]), longer than
+    /// `mark_staleness_ms` (see [`MarkSource`]'s "PER-SOURCE WINDOWS"). Set by the runtime from
+    /// `CoreConfig::reconcile_mark_staleness_ms`.
+    reconcile_staleness_ms: i64,
+    pub funding_paid: f64,
+    /// cumulative signed commission (>0 net cost, <0 net rebate)
+    pub fees_paid: f64,
+    /// ADDITIVE per-asset fee attribution (parity law A1): the per-asset twin of `fees_paid`,
+    /// keyed by the fill's fee currency, SAME sign (>0 paid, <0 rebate). SEPARATE from
+    /// `balances_by_asset` (the holdings mirror only venue snapshots write), so a fee never
+    /// masquerades as a negative holding. Populated only when the venue surfaced
+    /// `commission_asset`; never read by any fold formula.
+    pub fees_by_asset: IndexMap<Ustr, f64>,
+    /// THE fill-dedup ledger — every `trade_id` this account has already folded. PRIVATE ON PURPOSE
+    /// (the `marks` doctrine): the only way a fill reaches the money is [`Account::apply_fill`],
+    /// which consults this first. Read it back with [`Account::seen_fill_ids`]; pre-load it with
+    /// [`Account::seed_seen_fill_ids`].
+    ///
+    /// A `HashMap`, unlike the rest of this type: it feeds NO f64 fold, and the one place its order
+    /// would escape (`EngineSnapshot::seen_trade_ids`) sorts it. `trade_id -> `[`fill_print`] of
+    /// the fill folded under it ([`PRINT_UNKNOWN`] for a seeded entry).
+    seen_fill_ids: HashMap<String, u64>,
+    /// Count of fills REFUSED by [`Account::apply_fill`] as already-folded duplicates.
+    ///
+    /// ⚠ **A large value here is NORMAL on several venues, not a fault signal.** Duplicate delivery
+    /// is designed-in: bybit emits every execution twice (`execution.fast` then the authoritative
+    /// `execution`), binance perp emits an early fill and its authoritative twin sharing one `t`,
+    /// hyperliquid re-sends its whole `userFills` snapshot on every reconnect, alpaca re-delivers
+    /// across its `since_id` boundary. What means something is a CHANGE in its rate. No
+    /// per-duplicate log: that would be a per-message log on the hot fold.
+    pub duplicate_fills_refused: u64,
+    /// Count of fills refused under an ALREADY-FOLDED `trade_id` whose `fill_print` DISAGREED —
+    /// `trade_id` collisions, each a genuine fill this account dropped.
+    ///
+    /// ⚠ **Unlike [`Self::duplicate_fills_refused`], any nonzero value here is a fault**, one that
+    /// UNDERSTATES the position: the dedup key is too narrow for the producer (binance/aster `t`
+    /// and okx `tradeId`, per-SYMBOL sequences, on a multi-symbol engine; `vike_paper`'s per-client
+    /// `paper-{n}` under `MultiPaperExecutionClient`). The cure is at the PRODUCER (qualify the id)
+    /// or reconcile; this counter makes the loss visible. Each occurrence is logged at ERROR — a
+    /// fault transition, not per-message noise.
+    pub colliding_fills_refused: u64,
+    /// The multi-currency half of the ledger (`account/fx.rs`'s module doc): `None` — one pointer,
+    /// no allocation — for every account without a symbol quoted in a currency other than its own,
+    /// which is every account until a foreign-quoted symbol is admitted. The fold never reads it;
+    /// the per-order, per-publish and snapshot paths test it for `None` before anything else.
+    fx: Option<Box<fx::FxBook>>,
+}
+
+impl Account {
+    pub fn new(
+        multiplier: f64,
+        venue: &str,
+        values: Option<IndexMap<String, vike_model::ContractValue>>,
+        balance_mode: BalanceMode,
+    ) -> Self {
+        Account {
+            venue: venue.to_string(),
+            values: std::sync::Arc::new(values.unwrap_or_default()),
+            default_unit: multiplier,
+            default_margin_modes: std::sync::Arc::new(IndexMap::new()),
+            balance_mode,
+            positions: IndexMap::new(),
+            realized_pnl: 0.0,
+            closed_pnls: Vec::new(),
+            balance: 0.0,
+            balances_by_asset: IndexMap::new(),
+            realized_pnl_at_balance_sync: None,
+            marks: IndexMap::new(),
+            mark_meta: IndexMap::new(),
+            mark_staleness_ms: DEFAULT_MARK_STALENESS_MS,
+            reconcile_staleness_ms: DEFAULT_RECONCILE_STALENESS_MS,
+            funding_paid: 0.0,
+            fees_paid: 0.0,
+            fees_by_asset: IndexMap::new(),
+            seen_fill_ids: HashMap::new(),
+            duplicate_fills_refused: 0,
+            colliding_fills_refused: 0,
+            fx: None,
+        }
+    }
+
+    /// Pre-load the fill-dedup ledger from a durable source — a restored `EngineSnapshot`, or the
+    /// replayed command journal. The cold-start half of the guard: without a seed a restart
+    /// re-folds whatever venue history the first resync / reconnect snapshot hands it.
+    ///
+    /// ⚠ Seeding is the CALLER's job and no shipped binary does it yet — see the "cold start" note
+    /// on `crates/vike-exec/CLAUDE.md`. Seeded entries carry [`PRINT_UNKNOWN`], so a refusal
+    /// against one is a plain duplicate, never a collision.
+    pub fn seed_seen_fill_ids<I: IntoIterator<Item = String>>(&mut self, ids: I) {
+        self.seen_fill_ids.extend(ids.into_iter().map(|id| (id, PRINT_UNKNOWN)));
+    }
+
+    /// Every `trade_id` in the fill-dedup ledger, read-only (snapshots, the reconcile `LocalView`,
+    /// tests). An iterator, so the fingerprint stays private to this type.
+    pub fn seen_fill_ids(&self) -> impl Iterator<Item = &str> {
+        self.seen_fill_ids.keys().map(|s| s.as_str())
+    }
+
+    /// Whether `trade_id` has already been folded into this account. The membership question on its
+    /// own, for a caller that has an id and no fill (the reconcile `diff` shape).
+    pub fn has_folded_fill(&self, trade_id: &str) -> bool {
+        self.seen_fill_ids.contains_key(trade_id)
+    }
+
+    /// What one unit of `symbol`'s quantity is worth (decision 0170): the listed value, else the
+    /// `Linear` value of the legacy scalar default for an unlisted symbol.
+    #[inline]
+    pub fn contract_value_of(&self, symbol: &str) -> vike_model::ContractValue {
+        self.values
+            .get(symbol)
+            .copied()
+            .unwrap_or(vike_model::ContractValue::linear(self.default_unit))
+    }
+
+    /// The whole per-symbol contract-value grid, shared by pointer-copy (`Arc::clone`). Exposed so a
+    /// read-model can answer `contract_value_of` for a symbol the account holds NO position in (the
+    /// deribit options confirm ticket prices a never-traded symbol's notional). A handle is
+    /// never written through ([`Account::admit_contract_value`] is copy-on-write), so it never
+    /// observes a partial update.
+    pub fn contract_value_grid(
+        &self,
+    ) -> std::sync::Arc<IndexMap<String, vike_model::ContractValue>> {
+        std::sync::Arc::clone(&self.values)
+    }
+
+    /// The fallback value `contract_value_of` returns for any symbol absent from the grid.
+    pub fn contract_value_default(&self) -> vike_model::ContractValue {
+        vike_model::ContractValue::linear(self.default_unit)
+    }
+
+    /// Install `symbol`'s contract value after construction — the one writer besides `new` and
+    /// `restore`, called by `ExecutionEngine::admit_symbol` (decision 0173). The grid stays SPARSE:
+    /// a value equal to what an unlisted symbol reads is not stored (and removes a row an earlier
+    /// admission stored). A degenerate factor folds to 1.0 first, like every value that enters the
+    /// money path from outside (`ContractValue::folded`). Copy-on-write through the `Arc`, so a
+    /// read-model handle taken earlier keeps the grid it was given and never sees a partial update.
+    pub fn admit_contract_value(&mut self, symbol: &str, value: vike_model::ContractValue) {
+        // A foreign-quoted symbol's row is its EFFECTIVE value and is written only by the fx
+        // installers; writing a base here would silently value it at par.
+        debug_assert!(!self.is_foreign_quoted(symbol), "{symbol} is quoted in a foreign currency");
+        let value = value.folded();
+        if value == self.contract_value_default() {
+            if self.values.contains_key(symbol) {
+                std::sync::Arc::make_mut(&mut self.values).shift_remove(symbol);
+            }
+        } else {
+            std::sync::Arc::make_mut(&mut self.values).insert(symbol.to_string(), value);
+        }
+    }
+
+    /// Whether a fill on `symbol` has a contract kind this account does NOT know: the engine trades an
+    /// INVERSE contract and `symbol` is not in its grid. An inverse engine's grid lists the one
+    /// instrument whose row the mount read, so any other symbol would be folded as the default
+    /// (`Linear`, 1.0) — a manual `ETH-PERPETUAL` fill on the same sub-account would book PnL a thousand
+    /// times too high. The engine DROPS such a fill (and says so) instead of folding it. The first
+    /// test is a length check, so an engine with no inverse symbol pays nothing for this.
+    #[inline]
+    pub fn kind_is_unknown_for(&self, symbol: &str) -> bool {
+        !self.values.is_empty() && !self.values.contains_key(symbol) && self.trades_inverse()
+    }
+
+    /// Whether this account trades an INVERSE contract: some listed symbol is `Inverse` (the default
+    /// is `Linear`, so an inverse symbol is always listed). Cold path (balance frames, reconcile).
+    pub fn trades_inverse(&self) -> bool {
+        self.values.values().any(|v| v.kind == vike_model::NotionalKind::Inverse)
+    }
+
+    /// Install the per-symbol ruling-margin-mode grid (see `Self::default_margin_modes`). A
+    /// CONSUMING builder rather than a fifth [`Account::new`] parameter: only the venue composition
+    /// root has a grid to give. ⚠ [`Account::restore`] does not carry the grid, so a restore path
+    /// must re-apply it here.
+    ///
+    /// `None` (or an empty map) leaves the account as if never called. **Only rows that differ
+    /// from [`MarginMode::Cross`] belong here**; a `Cross` row only costs the fold a hash.
+    #[must_use]
+    pub fn with_default_margin_modes(
+        mut self,
+        modes: Option<IndexMap<String, MarginMode>>,
+    ) -> Self {
+        if let Some(m) = modes {
+            self.default_margin_modes = std::sync::Arc::new(m);
+        }
+        self
+    }
+
+    /// The margin mode a position OPENED FROM FLAT on `symbol` takes — the venue's per-asset truth
+    /// where it differs from [`MarginMode::Cross`], and `Cross` everywhere else.
+    ///
+    /// The `is_empty` short-circuit means that on every venue but hyperliquid the fold never
+    /// hashes the symbol; it is reached only on open-from-flat anyway (see `Self::fold`).
+    pub fn default_margin_mode_of(&self, symbol: &str) -> MarginMode {
+        if self.default_margin_modes.is_empty() {
+            return MarginMode::Cross;
+        }
+        self.default_margin_modes.get(symbol).copied().unwrap_or(MarginMode::Cross)
+    }
+
+    /// Fold one venue execution into the money: position, realized PnL, cash and per-asset fees.
+    ///
+    /// **IDEMPOTENT PER `trade_id`.** The dedup ledger is this type's own field, checked HERE before
+    /// anything moves, so the guarantee holds for every caller. A repeat returns
+    /// [`FillFold::Duplicate`] having mutated nothing but [`Self::duplicate_fills_refused`]; see
+    /// the module doc for the key choice, the collision detector and why the set is unbounded.
+    ///
+    /// **REFUSED, never panicking.** Several venues re-deliver executions by design, and the one
+    /// live caller (`ExecutionEngine::on_event`) runs on the fold thread the `p99 < 10µs` gate
+    /// measures, where no invariant violation may take the process down (`refuse_nonfinite` is the
+    /// precedent: count, log the fault, drop the event). Panicking on a double-counted fill is
+    /// defensible for a library whose caller can catch it, wrong for a daemon holding live
+    /// positions and resting orders.
+    ///
+    /// **Hot-path cost:** one `HashMap<String, u64>` lookup on the fill's `trade_id` (`&str`
+    /// borrow, no allocation on the duplicate path), plus one `String` allocation for the inserted
+    /// key on the accept path. No logging.
+    pub fn apply_fill(&mut self, fill: &FillEvent) -> FillFold {
+        assert_eq!(
+            fill.venue, self.venue,
+            "fill.venue={:?} routed to Account(venue={:?})",
+            fill.venue, self.venue
+        );
+        // THE WELD. Consult the ledger before a single field moves, and record the id only on the
+        // accept path so a refused fill never burns an id it did not fold. There is NO untagged
+        // branch: `fill.trade_id` is a `TradeId`, which cannot be empty (#1341).
+        {
+            let print = fill_print(fill);
+            // `get(&str)` then `insert(String, _)`, NOT `insert(to_string(), _)`: the latter
+            // allocates before it knows the answer, and on bybit/binance-perp the DUPLICATE path is
+            // roughly half of all fills.
+            if let Some(&folded) = self.seen_fill_ids.get(fill.trade_id.as_str()) {
+                if folded == print || folded == PRINT_UNKNOWN {
+                    self.duplicate_fills_refused += 1;
+                    return FillFold::Duplicate;
+                }
+                self.colliding_fills_refused += 1;
+                // A FAULT TRANSITION, not per-message noise (re-deliveries took the silent branch
+                // above): a REAL fill was just dropped, so it logs like
+                // `ExecutionEngine::refuse_nonfinite` does.
+                tracing::error!(
+                    target: "vike_exec::account",
+                    venue = %self.venue,
+                    symbol = %fill.symbol,
+                    trade_id = %fill.trade_id,
+                    coid = %fill.client_order_id,
+                    side = fill.side,
+                    qty = fill.last_qty,
+                    px = fill.last_px,
+                    "REFUSED a fill whose trade_id was ALREADY FOLDED under a DIFFERENT \
+                     (symbol, side, qty, px) — this is an id COLLISION, not a reconnect replay, so a \
+                     GENUINE fill has been dropped and this account now understates the position. \
+                     The producer of these ids is not unique per account (binance/aster `t` and okx \
+                     `tradeId` are per-SYMBOL sequences; vike-paper's `paper-` counter is per-CLIENT). \
+                     Reconcile this venue."
+                );
+                return FillFold::Collision;
+            }
+            self.seen_fill_ids.insert(fill.trade_id.to_string(), print);
+        }
+        // The key is built from the fill's ALREADY-interned `venue`/`symbol` and enum
+        // `position_side`: three `Copy` moves, zero allocation.
+        let key: PositionKey = (fill.venue, fill.symbol, fill.position_side);
+        let value = self.contract_value_of(&fill.symbol);
+        self.fold(key, fill.side, fill.last_qty, fill.last_px, value);
+        // Net the trade commission into cash, like apply_liquidation nets its fee. Signed:
+        // commission > 0 is a charge (lowers balance), < 0 is a maker rebate (raises it).
+        //
+        // ⚠ On an INVERSE contract the fee is charged in the SETTLE COIN (deribit: BTC), and the
+        // ledger is one currency, the engine's quote: the coin amount enters at the fill price, the
+        // same conversion the inverse PnL takes (decision 0170, item 7). A fee already in a dollar
+        // asset, or on any linear contract, enters as it always did.
+        //
+        // ⚠ With a foreign-quoted symbol on the books the fee also has to reach the ACCOUNT's
+        // currency (`fx_commission`); the test is one `Option` check, so a single-currency account
+        // takes exactly the expression it always did.
+        let charge = if self.fx.is_none() {
+            Self::commission_in_quote(value, fill)
+        } else {
+            self.fx_commission_booked(value, fill)
+        };
+        self.balance -= charge;
+        self.fees_paid += charge;
+        // ADDITIVE per-asset fee attribution (parity law A1): the SAME signed commission into
+        // `fees_by_asset` when the venue surfaced the fee currency (empty = no-op). SEPARATE from
+        // `balances_by_asset`, so `value_in` never reads a fee tally as a negative holding. The
+        // fee asset is often the base asset or a discount token (BNB), so per-asset fees
+        // legitimately span assets the quote-denominated `fees_paid` scalar collapses together.
+        if !fill.commission_asset.is_empty() {
+            // `commission_asset` is a `Ustr` too: no `to_string()` on the fill path.
+            *self.fees_by_asset.entry(fill.commission_asset).or_insert(0.0) += fill.commission;
+        }
+        FillFold::Applied
+    }
+
+    /// Sole writer of position + realized PnL. `apply_fill` and `apply_liquidation` both call
+    /// ONLY this for position/realized mutation (one compute_fill block, no drift).
+    fn fold(
+        &mut self,
+        key: PositionKey,
+        side_sign: i32,
+        qty: f64,
+        px: f64,
+        value: vike_model::ContractValue,
+    ) {
+        // Prior entry: `margin_mode`/`isolated_margin` are carried forward verbatim, so an
+        // isolated position stays isolated across fills.
+        //
+        // ⚠ OPEN-FROM-FLAT takes the ASSET's ruling mode, not `PositionEntry::default()`: a bare
+        // `unwrap_or_default()` books EVERY new position `Cross` (the type default), wrong at birth
+        // on hyperliquid's isolated-only assets, and nothing corrects it — HL heals size through
+        // `recon::diff`/`resolve`, which never reads `PositionStatusReport::margin_mode` and
+        // synthesizes `Fill`s that re-enter HERE, and `ExecutionEngine::apply_snapshot`'s
+        // `ReconcileSnapshot::position_margin` overwrite has no hyperliquid producer. And it is
+        // READ: the admitting gate's margin fold and `check_margin_call_priced`'s pool partition
+        // key on `is_cross()`, and `vike_core`'s liquidation-price badge routes on it.
+        //
+        // COST: a fill into an EXISTING position (the steady state the p99 gate measures) is
+        // unchanged; the grid read happens only on the miss and short-circuits on an empty grid.
+        let prior = match self.positions.get(&key) {
+            Some(p) => *p,
+            None => PositionEntry {
+                margin_mode: self.default_margin_mode_of(&key.1),
+                ..Default::default()
+            },
+        };
+        let out =
+            vike_model::compute_fill_value(prior.size, prior.avg_px, side_sign, qty, px, value);
+        // rebind, not in-place mutate
+        self.positions.insert(
+            key,
+            PositionEntry {
+                size: out.new_size,
+                avg_px: out.new_avg_px,
+                margin_mode: prior.margin_mode,
+                isolated_margin: prior.isolated_margin,
+            },
+        );
+        if out.closing_qty > 0.0 {
+            // a reduce / close / flip realized PnL on the closed portion
+            self.realized_pnl += out.realized_pnl;
+            self.closed_pnls.push(out.realized_pnl);
+        }
+    }
+
+    /// The fill's commission in the ledger's one currency. An INVERSE contract charges its fee in
+    /// the settle coin: any fee asset that is not a dollar asset enters at the fill price. Everything
+    /// else is the commission as the venue stated it.
+    #[inline]
+    fn commission_in_quote(value: vike_model::ContractValue, fill: &FillEvent) -> f64 {
+        if value.kind == vike_model::NotionalKind::Inverse
+            && !matches!(fill.commission_asset.as_str(), "USD" | "USDC" | "USDT")
+        {
+            fill.commission * fill.last_px
+        } else {
+            fill.commission
+        }
+    }
+
+    /// Fold a periodic funding cashflow into the cash balance (signed: + received / - paid).
+    pub fn apply_funding(&mut self, ev: &FundingEvent) {
+        // ⚠ A funding amount on a FOREIGN-QUOTED symbol is not folded: `FundingEvent` carries no
+        // currency, so its amount could be the account's, the symbol's quote's or a third one's, and
+        // each reading is a different number (150x apart for a JPY pair). Booking it at par is the
+        // guess this engine refuses to make; the amount is counted and said once, the authoritative
+        // balance already holds it (reconcile re-converges the rest). Converting it by the currency
+        // the venue states is phase 2 (it needs the event to name one).
+        if self.fx.is_some() && self.fx_unconverted_symbol(&ev.symbol, "funding") {
+            return;
+        }
+        // On an INVERSE contract the amount is in the settle coin: it enters the one-currency ledger
+        // at the event's mark when the venue stated one (decision 0170, item 7).
+        let amount = match (self.contract_value_of(&ev.symbol).kind, ev.mark_price) {
+            (vike_model::NotionalKind::Inverse, Some(mark)) => ev.amount * mark,
+            _ => ev.amount,
+        };
+        self.balance += amount;
+        self.funding_paid += amount;
+    }
+
+    /// Set balance AUTHORITATIVELY from a venue AccountState event.
+    /// Quote-asset selection: (1) the pair whose asset == `quote_asset`; (2) a single balance
+    /// used unconditionally; (3) the sum of all qty values (last resort). Sets `balance`
+    /// absolutely (not +=) and flips `balance_mode` to Authoritative.
+    pub fn apply_account_state(&mut self, ev: &AccountState, quote_asset: &str) {
+        let balances = &ev.balances;
+        if balances.is_empty() {
+            return;
+        }
+        // Per-asset ledger first (additive, upsert): partial venue frames (e.g. Binance
+        // outboundAccountPosition carries only changed assets) merge instead of wiping.
+        // The scalar collapse below stays byte-identical to the oracle.
+        for (asset, qty) in balances {
+            self.balances_by_asset.insert(asset.clone(), *qty);
+        }
+        // ⚠ AN INVERSE ENGINE'S LEDGER IS ONE CURRENCY, THE ENGINE'S QUOTE (decision 0170, item 7):
+        // the venue's wallet is a COIN amount (deribit: BTC), and writing it into `balance` would
+        // make a quote ledger read a coin number. The per-asset ledger above REPORTS it; the scalar
+        // balance, the balance mode and the cash-reconcile baseline stay as they were.
+        if self.trades_inverse() {
+            return;
+        }
+        // ⚠ SO IS A LEDGER WITH A FOREIGN-QUOTED SYMBOL: its `balance` is in the account's currency
+        // and its PnL was converted into it, so a venue frame in ANY other currency (an IBKR
+        // `CashBalance` is the mounted contract's, a multi-currency wallet lists one per currency)
+        // cannot be adopted, and the fallbacks below — "a lone balance, whatever it is" and "the sum of
+        // all balances" — would write yen and dollars into one number. Only the balance whose asset
+        // IS `quote_asset` is the ledger; with none in the frame, the frame is reported above and
+        // `balance` stays as it was. That no-match branch is a MISCONFIGURATION made loud: either the
+        // engine was never told its account currency (`ExecutionEngine::set_account_ccy`, which a
+        // foreign-quoted admission requires) or the venue's frame does not name it, and in both the
+        // ledger stops following the venue until somebody fixes it, so it says so at `error!`.
+        if self.fx.is_some() {
+            if let Some((_, qty)) =
+                balances.iter().find(|(asset, _)| fx::same_ccy(asset, quote_asset))
+            {
+                self.realized_pnl_at_balance_sync = Some(self.realized_pnl);
+                self.balance = *qty;
+                self.balance_mode = BalanceMode::Authoritative;
+            } else {
+                self.fx_balance_frame_unmatched(quote_asset);
+            }
+            return;
+        }
+        // Cash-reconcile baseline: a non-empty frame ALWAYS sets `balance` authoritatively below,
+        // so snapshot the realized-PnL baseline here (`realized_pnl` does not change in this fn).
+        // Each genuine venue balance push IS a reseed, so "realized since sync" resets to zero.
+        // Inert unless `VIKE_RECONCILE_BALANCE` is on.
+        self.realized_pnl_at_balance_sync = Some(self.realized_pnl);
+        for (asset, qty) in balances {
+            if asset == quote_asset {
+                self.balance = *qty;
+                self.balance_mode = BalanceMode::Authoritative;
+                return;
+            }
+        }
+        if balances.len() == 1 {
+            self.balance = balances[0].1;
+            self.balance_mode = BalanceMode::Authoritative;
+            return;
+        }
+        self.balance = vike_model::py_sum(balances.iter().map(|(_a, q)| *q)); // builtin sum()
+        self.balance_mode = BalanceMode::Authoritative;
+    }
+
+    /// Forced close: realize PnL at the liq price, close min(ev.qty, held), deduct the liq fee.
+    /// `ev.qty` falsy (0.0) closes the WHOLE held size; qty is clamped so an over-reported frame
+    /// can never flip the position. Idempotent on a flat position. Routes through `fold`.
+    pub fn apply_liquidation(&mut self, ev: &PositionLiquidated) {
+        // Same allocation-free key construction as `apply_fill` — every component is already
+        // interned / a `Copy` enum on the event.
+        let key: PositionKey = (ev.venue, ev.symbol, ev.position_side);
+        let pos = match self.positions.get(&key) {
+            Some(p) if p.size != 0.0 => *p,
+            _ => return, // true no-op: nothing to liquidate
+        };
+        let close_side = vike_model::closing_side(pos.size); // close on the opposite side
+        // `ev.qty == 0.0` (NaN is not produced here) means the whole size.
+        let close_qty =
+            if ev.qty != 0.0 { ev.qty.abs().min(pos.size.abs()) } else { pos.size.abs() };
+        let value = self.contract_value_of(&ev.symbol);
+        self.fold(key, close_side, close_qty, ev.liq_price, value);
+        // ⚠ The forced-close fee of a FOREIGN-QUOTED symbol is not charged, for the funding reason:
+        // `PositionLiquidated` names no currency for it (phase 2). The position and its PnL above
+        // are converted; only the fee is left out, counted and said once.
+        if self.fx.is_some() && self.fx_unconverted_symbol(&ev.symbol, "liquidation fee") {
+            return;
+        }
+        self.balance -= ev.fee;
+    }
+
+    /// Full-state DTO for the journal `Snap` record. Maps become ordered Vecs.
+    pub fn snapshot(&self) -> crate::engine_snapshot::AccountSnapshot {
+        crate::engine_snapshot::AccountSnapshot {
+            venue: self.venue.clone(),
+            // LINEAR values keep the shape they always had; the INVERSE ones ride the sparse list
+            // below, so the canonical JSON (and `state_hash`) of an engine with none is unchanged.
+            //
+            // ⚠ A FOREIGN-QUOTED symbol's row is its EFFECTIVE value (the unit times today's rate);
+            // what is written is its BASE (`base_value`), the rate riding `fx` below, so a restore
+            // recomputes the product with the same function and nothing here goes stale with a rate.
+            mult: self
+                .values
+                .iter()
+                .map(|(k, v)| (k, self.base_value(k, *v)))
+                .filter(|(_, v)| v.kind == vike_model::NotionalKind::Linear)
+                .map(|(k, v)| (k.clone(), v.per_unit))
+                .collect(),
+            inverse: self
+                .values
+                .iter()
+                .map(|(k, v)| (k, self.base_value(k, *v)))
+                .filter(|(_, v)| v.kind == vike_model::NotionalKind::Inverse)
+                .map(|(k, v)| (k.clone(), v.per_unit))
+                .collect(),
+            fx: self.fx_snapshot(),
+            mult_default: self.default_unit,
+            balance_mode: self.balance_mode,
+            positions: self.positions.iter().map(|(k, v)| (*k, *v)).collect(),
+            realized_pnl: self.realized_pnl,
+            closed_pnls: self.closed_pnls.clone(),
+            balance: self.balance,
+            balances_by_asset: self
+                .balances_by_asset
+                .iter()
+                .map(|(k, v)| (k.clone(), *v))
+                .collect(),
+            marks: self.marks.iter().map(|(k, v)| (*k, *v)).collect(),
+            funding_paid: self.funding_paid,
+            fees_paid: self.fees_paid,
+            fees_by_asset: self.fees_by_asset.iter().map(|(k, v)| (*k, *v)).collect(),
+        }
+    }
+
+    /// Inverse of [`Account::snapshot`] — rebuilds the exact Account (insertion orders preserved).
+    pub fn restore(snap: &crate::engine_snapshot::AccountSnapshot) -> Account {
+        Account {
+            venue: snap.venue.clone(),
+            values: std::sync::Arc::new(
+                snap.mult
+                    .iter()
+                    .map(|(k, v)| (k.clone(), vike_model::ContractValue::linear(*v).folded()))
+                    .chain(
+                        snap.inverse.iter().map(|(k, v)| {
+                            (k.clone(), vike_model::ContractValue::inverse(*v).folded())
+                        }),
+                    )
+                    .collect(),
+            ),
+            default_unit: snap.mult_default,
+            // NOT snapshotted: this grid is MOUNT CONFIGURATION from a live venue `meta` fetch, not
+            // folded state, and a snapshot copy would pin a venue's asset facts to snapshot time.
+            // Restored POSITIONS keep their own (snapshotted) `margin_mode`; only an open-from-flat
+            // reads this. ⚠ A live restore path must re-apply
+            // [`Account::with_default_margin_modes`] after `restore`, as it re-runs the mount.
+            default_margin_modes: std::sync::Arc::new(IndexMap::new()),
+            balance_mode: snap.balance_mode,
+            positions: snap.positions.iter().cloned().collect(),
+            realized_pnl: snap.realized_pnl,
+            closed_pnls: snap.closed_pnls.clone(),
+            balance: snap.balance,
+            balances_by_asset: snap.balances_by_asset.iter().cloned().collect(),
+            // NOT snapshotted (see the field doc): a restored account re-adopts venue cash on its
+            // first reconcile pass instead of diffing against a baseline it can't reconstruct.
+            realized_pnl_at_balance_sync: None,
+            marks: snap.marks.iter().cloned().collect(),
+            // Provenance is NOT snapshotted (see the field doc): a restored slot is unowned, so
+            // no stale owner freezes valuation after replay.
+            mark_meta: IndexMap::new(),
+            mark_staleness_ms: DEFAULT_MARK_STALENESS_MS,
+            reconcile_staleness_ms: DEFAULT_RECONCILE_STALENESS_MS,
+            funding_paid: snap.funding_paid,
+            fees_paid: snap.fees_paid,
+            fees_by_asset: snap.fees_by_asset.iter().cloned().collect(),
+            // NOT in `AccountSnapshot`: the ledger's durable home is the top-level
+            // `EngineSnapshot::seen_trade_ids`, and `ExecutionEngine::from_snapshot` seeds it via
+            // [`Account::seed_seen_fill_ids`] right after this call. A BARE `Account::restore`
+            // starts empty, like `Account::new` (a bare `Account` folds no live stream).
+            seen_fill_ids: HashMap::new(),
+            // LIVE HEALTH SIGNALS, not folded state (the `mark_meta` / `dropped_nonfinite`
+            // doctrine): a prior session's tally would misreport this session's.
+            duplicate_fills_refused: 0,
+            colliding_fills_refused: 0,
+            // `values` above holds BASE values; the fx book (when the snapshot has one) turns the
+            // foreign-quoted ones into their effective value with the function the admission used.
+            fx: None,
+        }
+        .with_restored_fx(snap)
+    }
+
+    /// The FOLDED half of [`Account::restore`], written onto an account its mount already built —
+    /// the boot restore's account step (`crate::ExecutionEngine::restore_runtime_state` is the one
+    /// caller). Takes the snapshot's positions, realized PnL and closed PnLs, balance and per-asset
+    /// balances, funding and fees; keeps everything this account was CONSTRUCTED with: the venue,
+    /// the contract-value grid, the default margin modes and the balance mode (mount configuration),
+    /// the marks and their provenance (market data, re-written by the first tick), the two
+    /// mark-ownership windows (set by the runtime) and the live health counters. The cash-sync
+    /// baseline stays `None`, as after [`Account::restore`], so the first reconcile pass re-adopts
+    /// venue cash. The fill ledger is seeded separately, by the caller, from the engine snapshot.
+    pub fn restore_folded(&mut self, snap: &crate::engine_snapshot::AccountSnapshot) {
+        self.positions = snap.positions.iter().cloned().collect();
+        self.realized_pnl = snap.realized_pnl;
+        self.closed_pnls = snap.closed_pnls.clone();
+        self.balance = snap.balance;
+        self.balances_by_asset = snap.balances_by_asset.iter().cloned().collect();
+        self.realized_pnl_at_balance_sync = None;
+        self.funding_paid = snap.funding_paid;
+        self.fees_paid = snap.fees_paid;
+        self.fees_by_asset = snap.fees_by_asset.iter().cloned().collect();
+    }
+}
+
+#[cfg(test)]
+mod account_tests;
+
+#[cfg(test)]
+mod mark_law_tests;
+
+#[cfg(test)]
+mod fill_dedup_tests;

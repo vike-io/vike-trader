@@ -1,0 +1,484 @@
+//! Alpaca `ReconClient` (ReconFactory seam) — the venue-facing report seam
+//! (`vike_exec::recon::ReconClient`) over the SAME Bearer `AlpacaRest` client [`crate::exec`]
+//! already builds, reconciling against the Broker API:
+//!
+//!   `GET /v1/trading/accounts/{account_id}/orders` (order reports) — `status=all` plus a
+//!       `symbols=` filter scopes the response to the engine symbol SERVER-SIDE (unlike every
+//!       other venue's "currently open only" report, Alpaca's `orders` endpoint returns the
+//!       WHOLE account's order history when unfiltered, so the symbol filter is load-bearing,
+//!       not just an optimization).
+//!   `GET /v1/accounts/activities/FILL` (fill reports — Alpaca's per-fill "trade activity" feed;
+//!       this endpoint has no server-side symbol filter, so [`parse_fills`] filters client-side).
+//!   `GET /v1/trading/accounts/{account_id}/positions` (position reports — also no per-symbol
+//!       filter; [`parse_positions`] filters client-side and synthesizes a flat row for the
+//!       engine symbol when it's absent — Alpaca omits a symbol entirely once its position is
+//!       flat, the same convention `vike_okx::recon_client::parse_positions` already documents).
+//!   `GET /v1/trading/accounts/{account_id}/account` (`fetch_balance` — the account's `cash`,
+//!       the "wallet balance, not available/equity" convention every other venue's
+//!       `fetch_balance` already picks).
+//!
+//! **Symbol spelling.** Alpaca's wire form slashes bare crypto pairs (`BTCUSD` -> `BTC/USD`, see
+//! [`crate::event_mapper::to_alpaca_symbol`]) but every report row this client returns carries the
+//! UNIFIED vike-side spelling (whatever `symbol` the caller started), never the wire form —
+//! `recon::diff::diff` matches a position report's `.symbol` directly against `LocalView`'s keys,
+//! so a report row spelled `"BTC/USD"` against local state keyed `"BTCUSD"` would silently never
+//! match. [`parse_orders`]/[`parse_fills`]/[`parse_positions`] therefore take BOTH the Alpaca wire
+//! symbol (to filter/match rows) and the vike symbol (written into every returned row).
+//!
+//! **`since` is currently a no-op on every fetch (documented gap, not a silent omission):**
+//! Alpaca's `after`/`date` query params take an RFC3339 timestamp, not epoch-ms. The factory IS
+//! wired into the live start now (`crates/bridges/alpaca/src/adapter.rs`'s `AlpacaVenueAdapter` hands
+//! [`recon_client`] to its `start_with`; interval reconcile only, no reconnect trigger), so
+//! every report is refetched in full each pass; wiring a ms->RFC3339 conversion is deferred to
+//! whenever a real start needs bounded reconcile passes.
+//!
+//! **No live fee-rate lane:** the Broker API does not document a per-account maker/taker rate
+//! endpoint (US equities/crypto here are commission-passthrough, not maker/taker), so
+//! `fetch_fee_rates` stays the trait default (`Ok(None)`) — same as every un-wired venue.
+//!
+//! Every fetch delegates to a PURE free function (`parse_*`) over the raw JSON body — the
+//! fixture-tested units (`tests/recon_client_parse.rs`, no network) against captured Broker API
+//! shapes (`alpacahq/alpaca-docs`, verified 2026-07-20).
+
+use vike_bridge_core::side::sign_default_buy;
+use vike_exec::recon::{AdmittedSymbols, ReconClient};
+use vike_model::events::{LiquiditySide, PositionSide, TradeId};
+use vike_model::{
+    FillReport, MarginMode, OrderStatus, OrderStatusReport, OrderType, PositionStatusReport,
+};
+
+use crate::config::AlpacaConfig;
+use crate::data::parse_rfc3339_ms;
+use crate::event_mapper::to_alpaca_symbol;
+use crate::rest::AlpacaRest;
+
+const VENUE: &str = "alpaca";
+
+// --- pure parsers ------------------------------------------------------------------------------
+
+/// A wire numeric field arrives as a JSON STRING (Alpaca quotes every decimal) or `null` — `null`/
+/// absent/unparseable folds to `0.0` (notional-only orders carry no `qty`, for instance) rather
+/// than erroring the whole row.
+fn str_f64(v: &serde_json::Value, key: &str) -> f64 {
+    v.get(key).and_then(|x| x.as_str()).and_then(|s| s.parse().ok()).unwrap_or(0.0)
+}
+
+/// Map an Alpaca order `status` onto the FSM [`OrderStatus`] — every status the Broker/Trading API
+/// documents, explicitly:
+///
+/// - Still resting or in flight → `Accepted`: `new`, `accepted`, `pending_new`,
+///   `accepted_for_bidding`, `pending_replace`, `replaced`, `stopped`, `suspended`, `calculated`,
+///   and `held` (a bracket/OTO child leg parked until its parent fills).
+/// - `partially_filled` → `PartiallyFilled`; `filled` → `Filled`; `expired` → `Expired`;
+///   `rejected` → `Rejected`.
+/// - `canceled`, `pending_cancel` and `done_for_day` → `Canceled` (the order stops being live
+///   either way).
+///
+/// A word outside that list is WARNED and read as `Accepted`: live, the conservative direction —
+/// `diff` raises no `MissingTerminal` on it, adoption synthesizes no cumulative fill, and the restore
+/// planner keeps the order rather than declaring it gone.
+fn normalize_order_status(raw: &str) -> OrderStatus {
+    match raw {
+        "new"
+        | "accepted"
+        | "pending_new"
+        | "accepted_for_bidding"
+        | "pending_replace"
+        | "replaced"
+        | "stopped"
+        | "suspended"
+        | "calculated"
+        | "held" => OrderStatus::Accepted,
+        "partially_filled" => OrderStatus::PartiallyFilled,
+        "filled" => OrderStatus::Filled,
+        "canceled" | "pending_cancel" | "done_for_day" => OrderStatus::Canceled,
+        "expired" => OrderStatus::Expired,
+        "rejected" => OrderStatus::Rejected,
+        other => {
+            tracing::warn!(
+                venue = VENUE,
+                status = other,
+                "unknown order status word — reporting the order as live (Accepted)"
+            );
+            OrderStatus::Accepted
+        }
+    }
+}
+
+/// Map an Alpaca `order_type` onto [`OrderType`]: `market`, `limit`, `stop` and `stop_limit` are
+/// their twins (the same words the exec builder sends). `trailing_stop`, or any other kind, has no
+/// twin and stays [`OrderType::Unrecognized`] lower-cased, as every report spelled it before the
+/// type existed.
+fn normalize_order_type(raw: &str) -> OrderType {
+    match raw {
+        "market" => OrderType::Market,
+        "limit" => OrderType::Limit,
+        "stop" => OrderType::Stop,
+        "stop_limit" => OrderType::StopLimit,
+        other => OrderType::Unrecognized(other.to_ascii_lowercase()),
+    }
+}
+
+/// `GET /v1/trading/accounts/{account_id}/orders?symbols=…` rows -> `OrderStatusReport`. Every
+/// row is kept — an empty/absent `client_order_id` maps to `None` (an externally-placed order),
+/// mirroring binance/bybit/OKX. `order_type` prefers the `order_type` field, falling back to
+/// `type` (the Broker API documents both, normally identical). `ts` is `updated_at`.
+pub fn parse_orders(
+    body: &str,
+    alpaca_symbol: &str,
+    symbol: &str,
+) -> Result<Vec<OrderStatusReport>, String> {
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    let rows = v.as_array().ok_or_else(|| "expected a JSON array".to_string())?;
+    Ok(rows
+        .iter()
+        .filter(|o| o.get("symbol").and_then(|s| s.as_str()) == Some(alpaca_symbol))
+        .map(|o| {
+            let client_order_id = o
+                .get("client_order_id")
+                .and_then(|c| c.as_str())
+                .filter(|c| !c.is_empty())
+                .map(|c| c.to_string());
+            let order_type = normalize_order_type(
+                o.get("order_type")
+                    .or_else(|| o.get("type"))
+                    .and_then(|t| t.as_str())
+                    .unwrap_or(""),
+            );
+            let ts = o
+                .get("updated_at")
+                .and_then(|t| t.as_str())
+                .and_then(parse_rfc3339_ms)
+                .unwrap_or(0);
+            OrderStatusReport {
+                venue: VENUE.to_string(),
+                symbol: symbol.to_string(),
+                venue_order_id: o.get("id").and_then(|s| s.as_str()).unwrap_or("").into(),
+                client_order_id,
+                side: sign_default_buy(o.get("side").and_then(|s| s.as_str()).unwrap_or("")),
+                order_type,
+                qty: str_f64(o, "qty"),
+                filled_qty: str_f64(o, "filled_qty"),
+                avg_px: str_f64(o, "filled_avg_price"),
+                status: normalize_order_status(
+                    o.get("status").and_then(|s| s.as_str()).unwrap_or(""),
+                ),
+                ts,
+            }
+        })
+        .collect())
+}
+
+/// `GET /v1/accounts/activities/FILL` rows -> `FillReport`, filtered to `alpaca_symbol` (this
+/// endpoint has no server-side symbol filter). `activity_type == "FILL"` is asserted defensively
+/// (the path already scopes to FILL activities, but a future caller might hit the unscoped
+/// `/v1/accounts/activities` endpoint instead). No commission/liquidity fields are documented on
+/// this activity shape, so `commission: 0.0`/`commission_asset: ""`/`liquidity_side: Unknown` —
+/// the same "field genuinely absent from the wire" fail-soft every other venue's parser uses.
+/// `ts` is `transaction_time`.
+pub fn parse_fills(
+    body: &str,
+    alpaca_symbol: &str,
+    symbol: &str,
+) -> Result<Vec<FillReport>, String> {
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    let rows = v.as_array().ok_or_else(|| "expected a JSON array".to_string())?;
+    Ok(rows
+        .iter()
+        .filter(|r| r.get("activity_type").and_then(|t| t.as_str()) == Some("FILL"))
+        .filter(|r| r.get("symbol").and_then(|s| s.as_str()) == Some(alpaca_symbol))
+        // SKIP the row, do not fail the batch and do not admit an id-less report. An activity `id`
+        // is Alpaca's documented per-fill identity and the key `vike_exec::recon::diff` looks up in
+        // `seen_trade_ids` to decide whether the fold thread already booked this fill. An EMPTY id
+        // can never match, so it does not merely go unrecognised — it manufactures a `MissingFill`
+        // divergence, and `MissingFill` is one of the two kinds the `hybrid` policy AUTO-APPLIES:
+        // the fill gets synthesized and booked a second time with no operator in front of it.
+        // Skipping is the safe direction (no divergence, so nothing is auto-applied); failing the
+        // whole batch would discard the good rows with the bad one.
+        // ⚠ Was `.unwrap_or("")`.
+        .filter_map(|f| {
+            let trade_id = match TradeId::new(f.get("id").and_then(|s| s.as_str()).unwrap_or("")) {
+                Ok(t) => t,
+                Err(_) => {
+                    tracing::warn!(
+                        venue = VENUE,
+                        %symbol,
+                        "FILL activity row carries no `id` — skipping it; an id-less fill report \
+                         would fabricate a MissingFill divergence that `hybrid` auto-applies"
+                    );
+                    return None;
+                }
+            };
+            Some(FillReport {
+                venue: VENUE.to_string(),
+                symbol: symbol.to_string(),
+                trade_id,
+                venue_order_id: f.get("order_id").and_then(|s| s.as_str()).unwrap_or("").into(),
+                // Activities carry no client-order-id field at all (unlike the orders endpoint).
+                client_order_id: None,
+                side: sign_default_buy(f.get("side").and_then(|s| s.as_str()).unwrap_or("")),
+                last_qty: str_f64(f, "qty"),
+                last_px: str_f64(f, "price"),
+                commission: 0.0,
+                commission_asset: String::new(),
+                liquidity_side: LiquiditySide::Unknown,
+                ts: f
+                    .get("transaction_time")
+                    .and_then(|t| t.as_str())
+                    .and_then(parse_rfc3339_ms)
+                    .unwrap_or(0),
+            })
+        })
+        .collect())
+}
+
+/// `GET /v1/trading/accounts/{account_id}/positions` rows -> `PositionStatusReport`, filtered to
+/// `alpaca_symbol` (no server-side symbol filter documented). `qty` is UNSIGNED on the wire — the
+/// sign comes from `side` (`"long"`/`"short"`), mirroring Bybit's unsigned-`size`-plus-`side`
+/// convention. An absent/non-matching row synthesizes ONE flat (`qty: 0.0`, `PositionSide::Both`)
+/// row for `symbol` — Alpaca omits a symbol entirely once its position is flat (no `qty: "0"` row
+/// sent), the same gap `vike_okx::recon_client::parse_positions` documents and works around, so a
+/// stale local position stays detectable. `ts` is always `0` — the position object carries no
+/// per-row timestamp.
+pub fn parse_positions(
+    body: &str,
+    alpaca_symbol: &str,
+    symbol: &str,
+) -> Result<Vec<PositionStatusReport>, String> {
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    let rows = v.as_array().ok_or_else(|| "expected a JSON array".to_string())?;
+    let matched: Vec<PositionStatusReport> = rows
+        .iter()
+        .filter(|p| p.get("symbol").and_then(|s| s.as_str()) == Some(alpaca_symbol))
+        .map(|p| {
+            let is_short = p
+                .get("side")
+                .and_then(|s| s.as_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case("short"));
+            let unsigned_qty = str_f64(p, "qty").abs();
+            PositionStatusReport {
+                venue: VENUE.to_string(),
+                symbol: symbol.to_string(),
+                position_side: if is_short { PositionSide::Short } else { PositionSide::Long },
+                qty: if is_short { -unsigned_qty } else { unsigned_qty },
+                avg_px: str_f64(p, "avg_entry_price"),
+                ts: 0,
+                margin_mode: MarginMode::default(),
+                isolated_margin: None,
+                delta: None,
+            }
+        })
+        .collect();
+    if matched.is_empty() {
+        return Ok(vec![PositionStatusReport::flat(VENUE, symbol)]);
+    }
+    Ok(matched)
+}
+
+/// `GET /v1/trading/accounts/{account_id}/account` -> the account's `cash` (total tradable cash —
+/// NOT `equity`, which includes unrealized P&L on open positions), matching every other venue's
+/// "wallet balance, not available/equity" `fetch_balance` convention. `None` when the field is
+/// absent (fail-soft); malformed JSON is a hard `Err`.
+pub fn parse_balance(body: &str) -> Result<Option<f64>, String> {
+    let v: serde_json::Value = serde_json::from_str(body).map_err(|e| e.to_string())?;
+    if !v.is_object() {
+        return Err("expected a JSON object".to_string());
+    }
+    Ok(v.get("cash").and_then(|c| c.as_str()).and_then(|s| s.parse().ok()))
+}
+
+// --- the client ----------------------------------------------------------------------------
+
+/// One reconcile client per (account, venue-symbol) — the SAME `AlpacaRest` Bearer seam
+/// [`crate::exec::AlpacaExecutionClient`] uses, dedicated to reconcile reads. `symbol` is the
+/// unified vike-side spelling (e.g. `"AAPL"`, `"BTCUSD"`); the Alpaca wire form
+/// (`event_mapper::to_alpaca_symbol`) is derived once at construction and reused by every fetch.
+pub struct AlpacaReconClient {
+    rest: AlpacaRest,
+    base: String,
+    account_id: String,
+    symbol: String,
+    alpaca_symbol: String,
+    /// The symbols the account's engine admitted on demand (any-symbol, decision 0173), in the engine's
+    /// spelling: every pass reads them beside the mounted one. Alpaca's three reads already span the
+    /// whole account (orders take a `symbols=` list, fills and positions are filtered here), so
+    /// admitting a symbol widens a filter and adds no request.
+    admitted: AdmittedSymbols,
+}
+
+impl AlpacaReconClient {
+    pub fn new(
+        rest: AlpacaRest,
+        base: impl Into<String>,
+        account_id: impl Into<String>,
+        symbol: impl Into<String>,
+    ) -> Self {
+        let symbol = symbol.into();
+        let alpaca_symbol = to_alpaca_symbol(&symbol);
+        AlpacaReconClient {
+            rest,
+            base: base.into(),
+            account_id: account_id.into(),
+            symbol,
+            alpaca_symbol,
+            admitted: AdmittedSymbols::default(),
+        }
+    }
+
+    /// The `(wire symbol, engine symbol)` pairs a pass reads: the mounted symbol first, then each admitted
+    /// one. A symbol whose WIRE form is already in the list is skipped (`BTCUSD` and `BTC/USD` are one
+    /// instrument at the venue), so no report row is produced twice.
+    fn pairs(&self) -> Vec<(String, String)> {
+        let mut pairs = vec![(self.alpaca_symbol.clone(), self.symbol.clone())];
+        for symbol in self.admitted.symbols() {
+            let wire = to_alpaca_symbol(&symbol);
+            if !pairs.iter().any(|(w, _)| *w == wire) {
+                pairs.push((wire, symbol));
+            }
+        }
+        pairs
+    }
+}
+
+impl ReconClient for AlpacaReconClient {
+    /// `_since` is a documented no-op — see the module doc. ONE request carries every symbol the pass
+    /// reads (`symbols=A,B`), and each is parsed out of the same body.
+    fn fetch_order_status_reports(&self, _since: i64) -> Result<Vec<OrderStatusReport>, String> {
+        let path = format!("/v1/trading/accounts/{}/orders", self.account_id);
+        let pairs = self.pairs();
+        let wire = pairs.iter().map(|(w, _)| w.as_str()).collect::<Vec<_>>().join(",");
+        let query =
+            vike_bridge_core::urlencode(&[("status", "all".to_string()), ("symbols", wire)]);
+        let body = self.rest.get(&self.base, &path, &query).map_err(|e| e.to_string())?.to_string();
+        let mut reports = Vec::new();
+        for (wire, symbol) in &pairs {
+            reports.extend(parse_orders(&body, wire, symbol)?);
+        }
+        Ok(reports)
+    }
+
+    /// `_since` is a documented no-op — see the module doc.
+    fn fetch_fill_reports(&self, _since: i64) -> Result<Vec<FillReport>, String> {
+        let query = vike_bridge_core::urlencode(&[("account_id", self.account_id.clone())]);
+        let body = self
+            .rest
+            .get(&self.base, "/v1/accounts/activities/FILL", &query)
+            .map_err(|e| e.to_string())?
+            .to_string();
+        let mut reports = Vec::new();
+        for (wire, symbol) in &self.pairs() {
+            reports.extend(parse_fills(&body, wire, symbol)?);
+        }
+        Ok(reports)
+    }
+
+    fn fetch_position_status_reports(&self) -> Result<Vec<PositionStatusReport>, String> {
+        let path = format!("/v1/trading/accounts/{}/positions", self.account_id);
+        let body = self.rest.get(&self.base, &path, "").map_err(|e| e.to_string())?.to_string();
+        let mut reports = Vec::new();
+        for (wire, symbol) in &self.pairs() {
+            reports.extend(parse_positions(&body, wire, symbol)?);
+        }
+        Ok(reports)
+    }
+
+    /// Tell this client the engine admitted `symbol` (any-symbol, decision 0173): every later pass reads
+    /// its orders, fills and position too. Alpaca's names are upper case already (`AAPL`, `BTC/USD`).
+    fn admit_symbol(&self, symbol: &str) {
+        if self.admitted.admit(symbol, &self.symbol) {
+            tracing::info!(
+                venue = VENUE, symbol = %symbol.to_ascii_uppercase(),
+                "reconcile: the engine admitted a symbol; every pass now reads it too"
+            );
+        }
+    }
+
+    fn admitted_symbols(&self) -> Option<Vec<String>> {
+        Some(self.admitted.symbols())
+    }
+
+    /// Balance meaning (pinned per the task brief): the account's `cash` from
+    /// `/v1/trading/accounts/{account_id}/account` — see [`parse_balance`].
+    fn fetch_balance(&self) -> Result<Option<f64>, String> {
+        let path = format!("/v1/trading/accounts/{}/account", self.account_id);
+        let resp = self.rest.get(&self.base, &path, "").map_err(|e| e.to_string())?;
+        parse_balance(&resp.to_string())
+    }
+}
+
+// --- the factory -----------------------------------------------------------------------------
+
+/// The venue -> `ReconClient` factory (ReconFactory seam). Builds a FRESH
+/// `TokenSource`/`AlpacaRest` dedicated to reconcile reads — a second OAuth2 client-credentials
+/// lifecycle, isolated from the exec side's own (mirrors the "one fresh REST client instance per
+/// purpose" idiom every credentialed venue's factory already follows). `symbol` is the unified
+/// vike-side symbol, NOT Alpaca's slashed crypto wire form (see the module doc). Always `Some` —
+/// construction here is pure/infallible (no network); `Option` is kept so the return type matches
+/// every other bridge's `recon_client`.
+///
+/// **WIRED into `crates/bridges/alpaca/src/adapter.rs`'s `AlpacaVenueAdapter`** — its `start` calls
+/// this EAGERLY on every credentialed start (unlike the lazily-built venues, construction here is
+/// pure and network-free, so there is nothing to defer), and its `credential_probe` reuses the same
+/// factory to build this venue's preflight credential probe. Alpaca reconciles on the periodic
+/// INTERVAL only — no `recon_trigger`.
+///
+/// ⚠ This line used to say "not yet wired ... Alpaca is not a live-mounted venue today", which it
+/// had stopped being. A factory's header is the WRONG place to read that from, because a start arm
+/// can adopt a factory without touching it — read the arm. `crates/bridges/ig/CLAUDE.md` carries
+/// the family rule: every venue enrolled in the reconcile roster after its factory was written
+/// inherited the same stale sentence.
+pub fn recon_client(config: &AlpacaConfig, symbol: &str) -> Option<Box<dyn ReconClient>> {
+    let token = std::sync::Arc::new(crate::auth::TokenSource::new(
+        config.client_id.clone(),
+        config.client_secret.clone(),
+        config.hosts.authx.to_string(),
+    ));
+    let rest = AlpacaRest::new(token);
+    Some(Box::new(AlpacaReconClient::new(
+        rest,
+        config.hosts.broker,
+        config.account_id.clone(),
+        symbol.to_string(),
+    )))
+}
+
+#[cfg(test)]
+mod admitted_tests {
+    use super::*;
+
+    fn client(mounted: &str) -> AlpacaReconClient {
+        // Construction does no network work (the token is minted on first use).
+        let token = std::sync::Arc::new(crate::auth::TokenSource::new(
+            "id".into(),
+            "secret".into(),
+            "http://127.0.0.1:9".into(),
+        ));
+        AlpacaReconClient::new(AlpacaRest::new(token), "http://127.0.0.1:9", "acct", mounted)
+    }
+
+    /// The mounted symbol is read first, an admitted one after it, and a symbol that is the same
+    /// INSTRUMENT as one already read (`BTCUSD` is `BTC/USD` on the wire) adds no second read.
+    #[test]
+    fn an_admitted_symbol_is_read_beside_the_mounted_one_once_per_wire_symbol() {
+        let c = client("AAPL");
+        assert_eq!(c.admitted_symbols(), Some(vec![]), "told nothing yet");
+        c.admit_symbol("msft");
+        c.admit_symbol("MSFT");
+        c.admit_symbol("AAPL");
+        c.admit_symbol("BTC/USD");
+        c.admit_symbol("BTCUSD");
+        assert_eq!(
+            c.pairs(),
+            vec![
+                ("AAPL".to_string(), "AAPL".to_string()),
+                ("MSFT".to_string(), "MSFT".to_string()),
+                ("BTC/USD".to_string(), "BTC/USD".to_string()),
+            ]
+        );
+        assert_eq!(
+            c.admitted_symbols().expect("a claim"),
+            ["MSFT", "BTC/USD", "BTCUSD"],
+            "the claim lists what was told, the mounted symbol and repeats excluded"
+        );
+    }
+}
