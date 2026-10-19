@@ -1,0 +1,27 @@
+[package]
+name = "vike-bi5"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the Dukascopy `.bi5` tick-archive FORMAT: the tick record and the hourly file's decoder, the DAILY archive's path grammar and bounded, refusing decoder, and the per-instrument price-scale table. Pure functions over bytes: no network, no store, no venue. It was the format half of crates/bridges/dukascopy until the bridge kept only the fetch; `src/lib.rs`'s crate doc is the contract."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `leaf` — a crate that
+# names AT MOST THE FLOOR: its vike-* edges are the domain vocabulary at 10 (`vike-model`: the day length) and
+# the market-data vocabulary at 5 (`vike-marketdata`: the `QuoteTick` a tick maps to).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+# `MS_PER_DAY`, the bound every offset of a daily file sits below.
+vike-model = { path = "../vike-model" }
+# The market-data vocabulary (`QuoteTick`): spelled `vike_marketdata::X` everywhere -- vike-model
+# names but does not re-export it (0067).
+vike-marketdata = { path = "../vike-marketdata" }
+chrono = { workspace = true }  # the archive path grammar's calendar math (`archive/path.rs`)
+lzma-rs = { workspace = true } # .bi5 LZMA decode (`tick.rs`, `archive/decode.rs`) — the decoder the bridge already used, so no new package
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

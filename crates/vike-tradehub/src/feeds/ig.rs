@@ -1,0 +1,146 @@
+//! IG's feed arm: the two-verb Lightstreamer `Feeds`, then the arming disclosure.
+
+use std::sync::Arc;
+
+use vike_core::CoreHandle;
+use vike_data::{DataClient, LiveDataSink};
+use vike_model::accounts::account_keys::AccountLabel;
+use vike_tradehub_core::MakerConfig;
+
+use super::FeedCtors;
+use super::live::{QuoteFeed, Tracked};
+use super::price_tap::{PriceTap, TapSink};
+use crate::venue_arming::arming::{
+    data_only_arming, ig_arming, mounts_exec_live, other_live_accounts, with_labelled_mount_remedy,
+    with_other_live_accounts,
+};
+
+/// How many quote lanes the control door may hold open for epics that were NOT mounted (decision 0174).
+/// Each lane is one more IG REST login and one more Lightstreamer socket
+/// (`crates/bridges/ig/src/market_feed.rs`'s `Feeds`), `vike_venues::venue_rate_limits`'s `IG` declares no
+/// gate and the venue's own session caps are UNMEASURED, so the number is deliberately small: it is a
+/// ceiling on what this node asks of IG, well under the engine's own cap on admitted symbols. A fifth epic
+/// is refused for want of a price lane, naming the cap, until a lane is freed: the idle reaper frees only the
+/// lane of an epic NO account admitted, and an admitted epic's lane (it prices an engine's position) stays
+/// open until its account's engine stops or the node restarts. A failed subscribe (a login that is refused) is
+/// remembered for 30 s ([`QuoteFeed::with_lane_cap`]), so a retried order spends no further login.
+pub(super) const IG_MAX_QUOTE_LANES: usize = 4;
+
+/// IG's feed: the Lightstreamer `Feeds` on the venue-agnostic `CoreLaneSink` — exactly two verbs,
+/// a bar subscription per distinct `(epic, interval)` and a quote subscription per distinct epic
+/// across this venue's mounts. Any subscription failure refuses the mount. Held as a [`QuoteFeed`]
+/// (alpaca's shape): a tap in front of the core's sink records the last price per epic, and the feed's
+/// watcher subscribes the QUOTE lane of an epic the control door admits, at most
+/// [`IG_MAX_QUOTE_LANES`] of them.
+pub(super) fn wire_ig_feed(
+    cfgs: &[&MakerConfig],
+    handle: &CoreHandle,
+    wrap: &dyn Fn(Arc<dyn LiveDataSink>) -> Arc<dyn LiveDataSink>,
+    make: &dyn FeedCtors,
+) -> Result<QuoteFeed, String> {
+    // The credentialed-data shape over a THIRD kind of transport: Lightstreamer TLCP text
+    // frames. Everything lands on the venue-agnostic `CoreLaneSink` (through
+    // `wrap` like every other arm), NOT a `MakerSink`: IG's candle lane emits REAL
+    // `close_bar`s on the lossless lane (`CandleFold` closes on `CONS_END` or on a `UTM`
+    // advance, whichever arrives first — the second signal exists so a lost frame cannot
+    // silently drop a close), so the margin/drawdown watchdogs sweep on the venue's own
+    // candle closes and nothing needs synthesizing.
+    //
+    // ⚠ EXACTLY TWO VERBS, and this is where the arm must not be padded out to look like
+    // its neighbours: `subscribe_trades`/`subscribe_book`/`subscribe_depth` are all caps
+    // refusals on this venue (`venue_caps::IG` — a dealer publishes no tape and no
+    // ladder), so calling one here would turn a structural venue fact into a mount error.
+    // The maker requotes on `on_quote_tick` alone; `ig_arming` discloses exactly that.
+    //
+    // ⚠ MOUNT-FAILURE SEMANTICS are alpaca's, not ctrader's: the client builds NO socket at the
+    // gatewayhub's open and each `subscribe_*` only starts a thread that then logs in and dials
+    // with the driver's stop-aware backoff, so a wrong password or an unreachable gateway
+    // surfaces as a reconnect-looping feed in the log, never a mount error. The credential
+    // half is the gatewayhub's refusal of the credentialed stream (the account's `API_KEY` +
+    // `IDENTIFIER` + `PASSWORD`), which reaches this arm as the first `subscribe_*`'s error.
+    //
+    // ⚠ ONE IG REST SESSION PER SUBSCRIPTION — more than the exec side opens, and IG
+    // publishes no rate gate this workspace paces against
+    // (`vike_venues::venue_rate_limits`'s `IG` declares none), so keep the mount set small.
+    // Unlike the exec lane, these sessions DO re-login after token expiry.
+    //
+    // The tap in front of the core's sink only RECORDS the last price per epic (every verb is forwarded
+    // unchanged), so the control door can tell whether an epic it admitted has a price yet.
+    let core = Arc::new(vike_tradehub_core::CoreLaneSink::new(
+        handle.bar_sender(),
+        handle.market_sender(),
+        handle.tick_sender(),
+    )) as Arc<dyn LiveDataSink>;
+    let tap = Arc::new(PriceTap::default());
+    let sink = wrap(Arc::new(TapSink::new(core, Arc::clone(&tap))) as Arc<dyn LiveDataSink>);
+    let mut feeds = Tracked::new(make.client("ig", None, sink)?);
+    // One BAR subscription per distinct (epic, interval) across this venue's mounts — each
+    // is its own TLCP session, so unlike ctrader two intervals genuinely both fire — and
+    // one QUOTE subscription per distinct epic. The HL arm's dedup shape; every interval
+    // here is the bridge's to refuse (`ig_plan` no longer holds the chart-scale table): an interval IG
+    // does not stream refuses the bar subscription and so the mount.
+    let mut bar_keys: Vec<(&str, &str)> = Vec::new();
+    let mut quote_keys: Vec<&str> = Vec::new();
+    for c in cfgs {
+        if !bar_keys.contains(&(c.token_id.as_str(), c.interval.as_str())) {
+            bar_keys.push((&c.token_id, &c.interval));
+            feeds
+                .subscribe_bars(&c.token_id, &c.interval)
+                .map_err(|e| format!("ig subscribe_bars {}@{}: {e:?}", c.token_id, c.interval))?;
+        }
+        if !quote_keys.contains(&c.token_id.as_str()) {
+            quote_keys.push(&c.token_id);
+            feeds
+                .subscribe_quotes(&c.token_id)
+                .map_err(|e| format!("ig subscribe_quotes {}: {e:?}", c.token_id))?;
+        }
+    }
+    Ok(QuoteFeed::new(feeds, tap).with_lane_cap(IG_MAX_QUOTE_LANES))
+}
+
+/// IG's arming disclosure: exec LIVE or PAPER (or paper by `data_only` declaration), with the
+/// venue's other live accounts folded in.
+pub(super) fn announce_ig_arming(
+    cfg: &MakerConfig,
+    cfgs: &[&MakerConfig],
+    live_venues: &std::collections::HashSet<String>,
+    venue_arming: &[vike_config::VenueArming],
+    mount_accounts: &[AccountLabel],
+    data_only: &std::collections::HashSet<String>,
+) {
+    let exec_live = mounts_exec_live("ig", mount_accounts, live_venues);
+    let arming = with_other_live_accounts(
+        if data_only.contains("ig") && !exec_live {
+            // The DECLARED exception — same shape as the alpaca/oanda branches above.
+            data_only_arming(ig_arming(false), "ig")
+        } else {
+            with_labelled_mount_remedy(ig_arming(exec_live), "ig", mount_accounts)
+        },
+        "ig",
+        other_live_accounts("ig", venue_arming, live_venues, mount_accounts),
+    );
+    match &arming.remedy {
+        None => tracing::warn!(
+            venue = %cfg.venue, symbol = %cfg.token_id, interval = %cfg.interval,
+            tick_size = cfg.tick_size, qty = cfg.qty, seed_cash = cfg.seed_cash,
+            mounts = cfgs.len(),
+            requote_lanes = arming.requote_lanes, quote_source = arming.quote_source,
+            exec = arming.exec, network = arming.network, live_venues = ?live_venues,
+            "LIVE assemble_runtime core up; ig feed subscribed (Lightstreamer L1 quotes + \
+             streamed candle closes, both over per-subscription IG logins) — ⚠ EXEC IS \
+             LIVE ON {network}: orders from this mount are REAL orders against the ig \
+             {network} account whose credentials were found",
+            network = arming.network
+        ),
+        Some(remedy) => tracing::warn!(
+            venue = %cfg.venue, symbol = %cfg.token_id, interval = %cfg.interval,
+            tick_size = cfg.tick_size, qty = cfg.qty, seed_cash = cfg.seed_cash,
+            mounts = cfgs.len(),
+            requote_lanes = arming.requote_lanes, quote_source = arming.quote_source,
+            exec = arming.exec, network = arming.network, live_venues = ?live_venues,
+            "LIVE assemble_runtime core up; ig feed subscribed (Lightstreamer L1 quotes + \
+             streamed candle closes, both over per-subscription IG logins) — but EXEC IS \
+             PAPER for ig and NO ORDER FROM THIS MOUNT WILL EVER REACH THE VENUE: {remedy}",
+        ),
+    }
+}
