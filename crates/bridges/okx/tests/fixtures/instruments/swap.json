@@ -1,0 +1,23 @@
+{
+  "_provenance": "BTC-USDT-SWAP: the row captured live 2026-08-05 (src/leverage_cap_tests.rs's live_row); BTC-USD-SWAP: GET /api/v5/public/instruments?instType=SWAP&instId=BTC-USD-SWAP, keyless, 2026-10-11, field values transcribed one by one (not a byte capture); both trimmed to the keys the parsers read",
+  "code": "0",
+  "msg": "",
+  "data": [
+    {
+      "instType": "SWAP", "instId": "BTC-USDT-SWAP", "uly": "BTC-USDT", "instFamily": "BTC-USDT",
+      "baseCcy": "", "quoteCcy": "", "settleCcy": "USDT",
+      "ctVal": "0.01", "ctMult": "1", "ctValCcy": "BTC", "ctType": "linear", "optType": "", "stk": "",
+      "expTime": "", "alias": "", "lever": "100",
+      "tickSz": "0.1", "lotSz": "0.01", "minSz": "0.01", "maxMktSz": "35000",
+      "state": "live"
+    },
+    {
+      "instType": "SWAP", "instId": "BTC-USD-SWAP", "uly": "BTC-USD", "instFamily": "BTC-USD",
+      "baseCcy": "", "quoteCcy": "", "settleCcy": "BTC",
+      "ctVal": "100", "ctMult": "1", "ctValCcy": "USD", "ctType": "inverse", "optType": "", "stk": "",
+      "expTime": "", "listTime": "1535424203000", "alias": "", "lever": "100",
+      "tickSz": "0.1", "lotSz": "0.1", "minSz": "0.1", "maxMktSz": "49000",
+      "state": "live"
+    }
+  ]
+}
