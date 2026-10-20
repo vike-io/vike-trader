@@ -1,0 +1,190 @@
+<!doctype html>
+<!-- @generated from crates/vike-ui-theme/ui-theme.toml by crates/vike-ui-theme/tests/tokens_gen — do not edit; change the TOML and regenerate (see tests/brand_assets.rs). -->
+<html lang="en" data-theme="graphite">
+<head>
+<meta charset="utf-8">
+<title>Vike — the brand book</title>
+<link rel="stylesheet" href="ui-theme.css">
+<style>
+@font-face { font-family: "Inter"; font-weight: 400; src: url("../fonts/Inter-Regular.ttf"); }
+@font-face { font-family: "Inter"; font-weight: 600; src: url("../fonts/Inter-SemiBold.ttf"); }
+@font-face { font-family: "Inter"; font-weight: 700; src: url("../fonts/Inter-Bold.ttf"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 400; src: url("../fonts/JetBrainsMono-Regular.ttf"); }
+@font-face { font-family: "JetBrains Mono"; font-weight: 600; src: url("../fonts/JetBrainsMono-SemiBold.ttf"); }
+@font-face { font-family: "Phosphor"; font-weight: 400; src: url("../fonts/Phosphor-Regular.ttf"); }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-words); font-size: var(--body); line-height: 1.5; }
+header.top { position: sticky; top: 0; z-index: 2; background: var(--surface); border-bottom: 1px solid var(--border); padding: 10px 28px; display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+header.top h1 { font-size: var(--title); font-weight: 600; margin: 0; letter-spacing: .01em; }
+header.top nav { display: flex; gap: 14px; font-size: var(--body); }
+header.top nav a { color: var(--text2); text-decoration: none; }
+header.top nav a:hover { color: var(--text); }
+.switch { margin-left: auto; display: flex; gap: 14px; align-items: center; color: var(--text3); font-size: var(--caption); }
+.switch select { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 3px 6px; font: inherit; font-size: var(--body); }
+main { max-width: 1120px; margin: 0 auto; padding: 8px 28px 80px; }
+section { margin-top: 36px; }
+h2 { font-size: var(--heading); font-weight: 600; margin: 0 0 4px; }
+section > h3 { font-size: var(--title); font-weight: 600; margin: 18px 0 4px; }
+section > p.lead { color: var(--text2); margin: 0 0 14px; max-width: 760px; }
+code, .num { font-family: var(--font-numbers); font-size: .92em; }
+code { color: var(--text2); }
+table { border-collapse: collapse; width: 100%; font-size: var(--body); }
+th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--text3); font-weight: 400; font-size: var(--caption); }
+.theme { display: inline-block; vertical-align: top; width: 262px; margin: 0 14px 14px 0; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px 12px; }
+.theme h3 { margin: 0 0 8px; font-size: var(--strong); font-weight: 600; }
+.swatches { display: grid; grid-template-columns: 1fr; gap: 4px; }
+.sw { display: grid; grid-template-columns: 22px 1fr auto; gap: 8px; align-items: center; font-size: var(--caption); color: var(--text2); }
+.sw i { width: 22px; height: 14px; border-radius: 3px; border: 1px solid #ffffff22; }
+.sw code { font-size: var(--caption); }
+.status { display: flex; gap: 10px; margin: 0 22px 12px 0; vertical-align: top; width: 330px; float: left; }
+.status i { flex: none; width: 26px; height: 26px; border-radius: 6px; margin-top: 2px; }
+.status p { margin: 2px 0 0; color: var(--text2); font-size: var(--caption); }
+.clear { clear: both; }
+/* the account modes: a chip drawn from its roles, and the venue chip's mark beside it */
+table.modes td { vertical-align: middle; }
+table.modes td:nth-child(n+3) { white-space: nowrap; }
+table.modes td:nth-child(2) div { font-size: var(--caption); color: var(--text2); }
+.mchip { display: inline-block; padding: 1px 7px; border: 1px solid transparent; border-radius: var(--radius); font-size: var(--caption); font-weight: 600; letter-spacing: .02em; }
+.mmark { display: inline-block; width: 9px; height: 9px; margin-left: 10px; border-radius: 50%; vertical-align: middle; }
+.mmark.ring { border: 1.5px solid transparent; background: transparent; }
+/* the maps: a role is a swatch of the colour it is in Graphite, an icon its real Phosphor glyph beside its registry key */
+table.maps td { vertical-align: middle; }
+table.maps td:nth-child(n+2):nth-child(-n+7) { white-space: nowrap; }
+.msw { display: inline-block; width: 22px; height: 14px; margin-right: 6px; border-radius: 3px; border: 1px solid #ffffff22; vertical-align: middle; }
+.mico { display: inline-block; margin-right: 6px; font-family: "Phosphor"; font-size: 18px; line-height: 1; color: var(--text2); vertical-align: middle; }
+.spec { font-family: var(--font-words); }
+.spec .num { color: var(--text2); }
+ul.rules { padding-left: 18px; max-width: 820px; }
+ul.rules li { margin: 0 0 8px; }
+ul.rules .by { display: block; margin-top: 2px; font-size: var(--caption); color: var(--text3); }
+ul.rules .by.none { color: var(--status-warning); }
+.dot { display: inline-block; width: 12px; height: 12px; border-radius: var(--radius); vertical-align: -1px; margin-right: 2px; }
+td small { color: var(--text3); font-size: var(--caption); }
+.heat { display: flex; gap: 4px; margin: 6px 0 10px; }
+.heat div { text-align: center; color: var(--text3); font-size: var(--caption); line-height: 1.2; }
+.heat i { display: block; width: 52px; height: 34px; border-radius: var(--radius); margin-bottom: 4px; background-clip: padding-box; }
+.shape { width: 120px; height: 64px; display: grid; place-items: center; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); font-family: var(--font-numbers); color: var(--text2); }
+.bar { display: inline-block; height: 10px; background: var(--accent); border-radius: 2px; vertical-align: middle; }
+.rule { display: block; width: 120px; height: 0; border-top: 1px solid var(--text2); }
+.wash { display: inline-block; width: 90px; height: 22px; border-radius: var(--radius); border: 1px solid var(--border); vertical-align: middle; }
+/* the window values: a length is a bar as long as it is, a size a rectangle, a ratio a meter, a colour a swatch */
+table.values { table-layout: fixed; }
+table.values td.drawn { overflow: hidden; }
+.vbar { display: block; height: 10px; max-width: 100%; background: var(--accent); border-radius: 2px; }
+.vbar.cut { -webkit-mask-image: linear-gradient(90deg, #000 85%, transparent); mask-image: linear-gradient(90deg, #000 85%, transparent); }
+.vbox { display: inline-block; max-width: 100%; background: var(--card); border: 1px solid var(--accent); border-radius: 2px; vertical-align: middle; }
+.vmeter { display: block; width: 120px; height: 8px; background: var(--card); border: 1px solid var(--border); border-radius: 2px; overflow: hidden; }
+.vmeter i { display: block; height: 100%; background: var(--accent); }
+.vsw { display: inline-block; width: 90px; height: 22px; border-radius: var(--radius); border: 1px solid var(--border); vertical-align: middle; }
+.btn { display: inline-flex; align-items: center; height: var(--control-h); padding: 0 var(--pad); background: var(--card); border: 1px solid var(--border); border-radius: 4px; font-size: var(--strong); font-family: var(--font-numbers); }
+/* the title bar, drawn from the chrome tokens */
+.win { width: 520px; max-width: 100%; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); overflow: hidden; }
+.win .bar { height: var(--chrome-title-bar-h); display: flex; align-items: center; padding: 0 var(--chrome-window-controls-pad) 0 var(--chrome-title-inset); background: var(--surface); }
+.win .bar .name { font-size: var(--body); color: var(--text-ui); }
+.win .bar .ctls { margin-left: auto; display: flex; gap: var(--chrome-window-control-gap); }
+.win .bar .ctl { width: var(--chrome-window-control); height: var(--chrome-window-control); display: grid; place-items: center; color: var(--text2); border-radius: 4px; font-size: var(--body); }
+.win .bar .ctl:hover { background: var(--hover); }
+.win .body { padding: 14px; color: var(--text3); font-size: var(--caption); }
+/* do / don't */
+.dd { display: flex; gap: 20px; flex-wrap: wrap; }
+.dd > div { width: 340px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; }
+.dd h4 { margin: 0 0 8px; font-size: var(--caption); font-weight: 400; color: var(--text3); text-transform: uppercase; letter-spacing: .06em; }
+.dd .row { display: flex; align-items: baseline; gap: 8px; padding: 7px 0; }
+.dd .chip { margin-left: auto; font-size: 10px; font-weight: 600; padding: 2px 7px; border: 1px solid var(--status-warning); color: var(--status-warning); border-radius: 4px; }
+.right .v { font-weight: 400; font-size: var(--strong); }
+.right .a { font-weight: 400; font-size: var(--body); color: var(--text3); }
+.right .a.n { font-family: var(--font-numbers); }
+.wrong .v { font-weight: 600; font-size: var(--strong); }
+.wrong .a { font-family: var(--font-numbers); font-size: var(--body); color: var(--text2); }
+footer { margin-top: 48px; color: var(--text3); font-size: var(--caption); }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Vike — the brand book</h1>
+  <nav><a href="#themes">Themes</a><a href="#status">Status</a><a href="#modes">Modes</a><a href="#maps">Maps</a><a href="#market">Market</a><a href="#heat">Heat</a><a href="#type">Type</a><a href="#rules">Rules</a><a href="#spacing">Spacing</a><a href="#values">Values</a><a href="#density">Density</a><a href="#chrome">Window bar</a><a href="#shape">Shape</a><a href="#mark">Mark</a></nav>
+  <div class="switch">
+    <label>Theme <select id="theme"><option>graphite</option><option>midnight</option><option>dusk</option><option>carbon</option></select></label>
+    <label>Text <select id="text"><option value="small">small</option><option value="standard" selected>standard</option><option value="large">large</option></select></label>
+    <label>Market <select id="market"><option>classic</option><option>tradingview</option><option>exchange</option><option>colorblind</option></select></label>
+    <label>Density <select id="density"><option>compact</option><option selected>normal</option><option>comfortable</option></select></label>
+  </div>
+</header>
+<main>
+<p class="lead" style="margin-top:22px;color:var(--text2);max-width:780px">This page is drawn from <code>crates/vike-ui-theme/ui-theme.toml</code>, the one file that holds every design value of the desktop GUI. It is regenerated by a test, so it cannot disagree with the app. The switches above change the theme, the text size and the density of the whole page the way the Appearance settings change the app.</p>
+
+<section id="themes"><h2>Themes</h2><p class="lead">Four dark themes. Each binds a background to its own accent. Graphite with green is the default.</p>
+{{THEMES}}</section>
+
+<section id="status"><h2>Status colours</h2><p class="lead">The same in every theme. A theme recolours the background, the neutrals and the accent, and never recolours "connected".</p>
+{{STATUS}}<div class="clear"></div></section>
+
+<section id="modes"><h2>Account modes</h2><p class="lead">Where an account trades. Each part of a mode's chip is named by a colour ROLE, never by a hex, so changing the colour a mode wears is one line of <code>[[mode]]</code> in <code>ui-theme.toml</code>. The chip and the venue chip's mark are drawn here from the rows the app reads, on each theme's own background.</p>
+{{MODES}}</section>
+
+<section id="maps"><h2>Maps</h2><p class="lead">Which colour, word or icon each state or kind of a mapping uses: a connection's state, a button's kind, a calendar event's importance. One row per state in <code>[[map]]</code> of <code>ui-theme.toml</code>, grouped by the mapping it belongs to, and the code binds each of its variants to a row. A colour is a ROLE, shown here as a swatch in Graphite; an icon is a key of the icon registry, shown as its glyph.</p>
+{{MAPS}}</section>
+
+<section id="market"><h2>Market colours</h2><p class="lead">What "up" and "down" look like on a candle, a depth bar and a P&amp;L. A trader picks one set; it is independent of the theme. The Market switch above recolours the page's own up and down.</p>
+{{MARKET}}</section>
+
+<section id="heat"><h2>The heat ramp</h2><p class="lead">One ramp for every theme and every market set: it says how much resting liquidity a cell held, which is neither up nor down. Left to right, a cell from empty to full.</p>
+{{HEAT}}</section>
+
+<section id="type"><h2>Type</h2><p class="lead">A size is a role. The Text size setting picks the column; every window reads its sizes from a role.</p>
+<table><thead><tr><th>Face</th><th>Weights</th><th>Used for</th></tr></thead><tbody>
+{{FONTS}}</tbody></table>
+<p></p>
+{{TYPE}}</section>
+
+<section id="rules"><h2>Rules of use</h2><p class="lead">A value says what; a rule says where.</p>
+<ul class="rules">
+{{RULES}}</ul>
+<h3>Where a weight heavier than regular is ruled</h3>
+<p class="lead">Everything else is regular. A call that draws semibold or bold must sit under one of these, or be on the debt list the gate keeps.</p>
+{{WEIGHTS}}
+<div class="dd">
+  <div class="right"><h4>Right — a venue and its account</h4>
+    <div class="row"><span class="v">Binance Spot</span><span class="a">main</span><span class="chip">DEMO</span></div>
+    <div class="row"><span class="v">Dukascopy</span><span class="a n">3709890</span><span class="chip">DEMO</span></div>
+  </div>
+  <div class="wrong"><h4>Wrong — weight and a mono name</h4>
+    <div class="row"><span class="v">Binance Spot</span><span class="a">main</span><span class="chip">DEMO</span></div>
+    <div class="row"><span class="v">Dukascopy</span><span class="a">3709890</span><span class="chip">DEMO</span></div>
+  </div>
+</div></section>
+
+<section id="spacing"><h2>Spacing, strokes and strengths</h2><p class="lead">The steps the kit and the windows draw with. A gap, a line or a mix is a name, not a number typed at the call site.</p>
+{{SCALES}}</section>
+
+<section id="values"><h2>Window values</h2><p class="lead">The measures, strengths and colours a window draws with that are not a step of the scales above, grouped by the window that owns them. Each row is drawn from its value: a bar as long as the length, a rectangle as large as the size, a wash as strong as the opacity, a swatch of the colour.</p>
+{{VALUES}}</section>
+
+<section id="density"><h2>Density</h2><p class="lead">What a trader's Density setting changes: the controls and the rows inside a window. It never changes the window bar.</p>
+{{DENSITY}}</section>
+
+<section id="chrome"><h2>The window bar</h2><p class="lead">One bar for every window, at every density.</p>
+<div class="win"><div class="bar"><span class="name">Connections</span><span class="ctls"><span class="ctl">─</span><span class="ctl">□</span><span class="ctl">✕</span></span></div><div class="body">The bar above is drawn from these numbers.</div></div>
+<p></p>
+{{CHROME}}</section>
+
+<section id="shape"><h2>Shape</h2><p class="lead">One corner radius for the whole app.</p>
+{{SHAPE}}</section>
+
+<section id="mark"><h2>The mark</h2><p class="lead">The Vike mark and its orange are drawn from <code>crates/vike-ui-theme/src/brand.rs</code>; the files are in this folder (see <code>SOURCES.md</code>). The orange is the logo's colour and never a UI accent.</p>
+<img src="mark.svg" alt="The Vike mark" width="96" height="96"> <img src="app-icon.svg" alt="The app icon" width="96" height="96">
+<p></p>
+{{BRAND}}</section>
+
+<footer>Generated — do not edit. Change <code>ui-theme.toml</code>, run <code>VIKE_REGEN_BRAND_ASSETS=1 cargo test -p vike-ui-theme --test brand_assets</code>, and look at this page.</footer>
+</main>
+<script>
+const root = document.documentElement;
+document.getElementById("theme").onchange = (e) => root.setAttribute("data-theme", e.target.value);
+document.getElementById("text").onchange = (e) => root.setAttribute("data-text-size", e.target.value);
+document.getElementById("market").onchange = (e) => root.setAttribute("data-market", e.target.value);
+document.getElementById("density").onchange = (e) => root.setAttribute("data-density", e.target.value);
+</script>
+</body>
+</html>
