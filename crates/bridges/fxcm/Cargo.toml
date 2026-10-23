@@ -1,0 +1,86 @@
+[package]
+name = "vike-fxcm"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "FXCM ForexConnect execution bridge over a C++ shim (`libfcshim.so`) opened at runtime: no stub, the same code compiles in every build."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+# The per-venue tables (`caps_for`, `fee_schedule_for`, the credential-field table ...) that left `vike-model` (decision 0162).
+vike-venues = { path = "../../vike-venues" }
+vike-exec = { path = "../../vike-exec" }
+# shared venue-bridge plumbing (venue_adapter, exec_actor) — crate-reorg Phase 3 (D4);
+# the direct-path style survives every later venue move unchanged.
+vike-bridge-core = { path = "../../vike-bridge-core" }
+# reads its `venue_setting` rows through `VenueSettings` (decision 0095) — the tier's
+# `venue.fxcm.<tier>.{url,connection}`. Already in this crate's graph through vike-bridge-core.
+vike-secrets = { path = "../../vike-secrets" }
+# CatalogProvider seam (catalog.rs): a bundled static FX/metals instrument list — no fetch, so this
+# is the crate's only vike-catalog dependency (down-only: vike-catalog depends on vike-model only,
+# never on any bridge crate). Declared unconditionally, same as this crate's `CAPS` const — pure
+# data, not gated by the `fxcm` feature.
+vike-catalog = { path = "../../vike-catalog" }
+# The keyless candle-archive HISTORY source (`src/data.rs`): the `KlineSource`/`SourceError` seam (layer 20)
+# and the `Bar` it returns (layer 5), the same two edges every kline bridge carries.
+vike-data = { path = "../../vike-data" }
+vike-marketdata = { path = "../../vike-marketdata" }
+# The UTC civil-calendar primitives (`days_from_civil`, `civil_from_days`, layer 3) the archive's ISO-week and
+# New York 17:00 arithmetic is built on; already in this crate's graph through vike-model.
+vike-util = { path = "../../vike-util" }
+# gzip decode of the archive's `.csv.gz` files: the workspace pin, pure-Rust (miniz_oxide) backend, no C/zlib.
+flate2 = { workspace = true }
+# The archive GET. The agent comes from `vike_bridge_core::http::blocking_agent`; the crate is named here only
+# for the `ureq::Agent` type the source holds (the workspace's one HTTP stack, `deny.toml` bans a second).
+ureq = { workspace = true }
+serde_json = { workspace = true } # decodes the shim's async fill/cancel/reject event envelopes
+# Promoted from dev-only: `event_mapper` now REFUSES a fill envelope carrying no `trade_id` (it could
+# not be deduplicated, so a reconnect re-surface would re-book it), and a dropped money event must be
+# visible rather than silent — every sibling bridge already logs its refusals through the facade.
+tracing = { workspace = true }
+
+[features]
+# FXCM ForexConnect native build attempt (heavy proprietary SDK): `build.rs` builds the C++ shim
+# (`src/shim/fcshim.cpp` -> `libfcshim.so` / `fcshim.dll`) ONLY with this feature on AND the SDK
+# found (FCSDK_DIR). OFF by default so CI and SDK-less builds compile no C++. The module tree
+# itself is NOT gated by this feature and compiles the SAME code in every build: the SDK is a
+# RUNTIME fact (`src/loader.rs` opens the shim), so a default (no-feature) build and `--features
+# fxcm` on a no-SDK box both find no shim and take the same refusal (`sdk_available()` false).
+fxcm = []
+
+[build-dependencies]
+cc = "1" # compiles src/shim/fcshim.cpp under --features fxcm (when the SDK is also found)
+
+[dev-dependencies]
+# Test-only: the project's filesystem layout (`vike_paths`, here its `scratch` guard or project walk): std-only.
+vike-paths = { path = "../../vike-paths" }
+# dev-only, `test-support`: `vike_secrets::smoke_directory`, the live smokes' one way to the credential store.
+# Widens the normal edge above; adds no package, so the lockfile is unchanged.
+vike-secrets = { path = "../../vike-secrets", features = ["test-support"] }
+tokio = { workspace = true }         # test-only: timeout around the ingest receiver in the live smoke
+vike-log = { path = "../../vike-log", features = ["test-support"] } # dev-only: test_init() for the live demo smoke; `capture` for the mount tests
+# dev-only, `test-support`: `vike_exec::testing::RecordingClient`, the engine double of the price lane's money test
+# (tests/fxcm_price_lane_money.rs). Widens the normal edge above; adds no package, so the lockfile is unchanged.
+vike-exec = { path = "../../vike-exec", features = ["test-support"] }
+# The venue-adapter contract's test double (`venue_adapter_fixture::AdapterFixture`, `test-support`).
+vike-bridge-core = { path = "../../vike-bridge-core", features = ["test-support"] }
+# test-only: SELF-DELETING scratch trees for the packaging fixture (tests/fcsdk_packaging.rs) and
+# the rpath link probes (tests/fcsdk_rpath_tag.rs). The hand-rolled
+# `env::temp_dir().join(format!("…-{pid}"))` spelling they used before leaked a directory on every
+# skip and every failure — and the rpath probes are mostly skips, since they need a C toolchain and
+# readelf — while a reused PID collided with the OTHER user's leftovers on the shared the CI box box,
+# where the write then failed `PermissionDenied`.
+tempfile = { workspace = true }
+# dev-only: the decoder totality harnesses (tests/decoder_never_panics.rs, src/sys_props.rs,
+# src/exec_props.rs) — arbitrary + structured shim JSON through the real envelope / reconcile
+# decoders; no panic, no event flood.
+proptest = { workspace = true }
+
+# Deliberately NOT `[lints] workspace = true`: the workspace policy forbids `unsafe_code`,
+# and this crate IS the quarantined unsafe surface (src/sys.rs FFI over the ForexConnect SDK).

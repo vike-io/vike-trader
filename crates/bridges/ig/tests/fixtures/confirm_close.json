@@ -1,0 +1,23 @@
+{
+  "_provenance": "REAL GET /confirms/{dealReference} reply captured from demo-api.ig.com on 2026-08-21, CLOSING the very position confirm_open.json opened, via POST /positions/otc + `_method: DELETE` with {dealId, direction: SELL, size: 0.1, orderType: MARKET}. Verbatim except this key. ⚠ Note `dealId`: it is DIAAAAYB6YDK2A7, the SAME id the opening confirm carried — this file is the evidence for `event_mapper::confirm_trade_id`.",
+  "date": "2026-08-21T17:18:03.001",
+  "status": "CLOSED",
+  "reason": "SUCCESS",
+  "dealStatus": "ACCEPTED",
+  "epic": "CS.D.EURUSD.MINI.IP",
+  "expiry": "-",
+  "dealReference": "YRUE8K3G8PYTYS9",
+  "dealId": "DIAAAAYB6YDK2A7",
+  "affectedDeals": [{ "dealId": "DIAAAAYB6YDK2A7", "status": "FULLY_CLOSED" }],
+  "level": 1.16782,
+  "size": 0.1,
+  "direction": "SELL",
+  "stopLevel": null,
+  "limitLevel": null,
+  "stopDistance": null,
+  "limitDistance": null,
+  "guaranteedStop": false,
+  "trailingStop": false,
+  "profit": -0.02,
+  "profitCurrency": "USD"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "msg_01AgentEvalFixtureEnd",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-sonnet-5",
+  "content": [
+    {
+      "type": "text",
+      "text": "Placed: a limit buy of 7 at 0.35, accepted by the node."
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": { "input_tokens": 2104, "output_tokens": 31 }
+}
