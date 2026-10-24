@@ -1,0 +1,8 @@
+# vike frame record v1 (vike_ui_theme::frame_record)
+# scenario: renko_volume_suppressed
+ppp 1  primitives 4  vertices 812  triangles 742
+----
+   0  clip [0 0 960 620]  tex M0  v 4  t 2  solid [0 0 960 620]  glyph -  runs 2  #161b24ff*2 #0d1117ff*2  d 262bfec614c2df93
+   1  clip [0 0 960 620]  tex M0  v 248  t 124  solid -  glyph [892 23 928 564]  runs 1  #858991ff*248  d 1fceb72a09ab634d
+   2  clip [0 0 888 588]  tex M0  v 412  t 542  solid [-1 26 889 562]  glyph -  runs 7  #0d0f1164*40 #21252cff*4 #f85249ff*18 #40ba50ff*36 #f85249ff*36 #40ba50ff*36 #f85249ff*36  d 24e0726541520da6
+   3  clip [0 0 960 620]  tex M0  v 148  t 74  solid -  glyph [9 13 434 27]  runs 8  #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*72  d a8daca81455fbae6
