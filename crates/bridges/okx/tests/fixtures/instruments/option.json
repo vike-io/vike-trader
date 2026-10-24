@@ -1,0 +1,23 @@
+{
+  "_provenance": "GET /api/v5/public/instruments?instType=OPTION&uly=BTC-USD, keyless, 2026-10-11, the first two rows; field values transcribed one by one (not a byte capture), trimmed to the keys the parsers read",
+  "code": "0",
+  "msg": "",
+  "data": [
+    {
+      "instType": "OPTION", "instId": "BTC-USD-261012-75000-C", "uly": "BTC-USD", "instFamily": "BTC-USD",
+      "baseCcy": "", "quoteCcy": "", "settleCcy": "BTC",
+      "ctVal": "1", "ctMult": "0.01", "ctValCcy": "BTC", "ctType": "inverse", "optType": "C", "stk": "75000",
+      "expTime": "1791792000000", "listTime": "1791481560312", "alias": "", "lever": "",
+      "tickSz": "0.0001", "lotSz": "1", "minSz": "1", "maxMktSz": "5000",
+      "state": "live"
+    },
+    {
+      "instType": "OPTION", "instId": "BTC-USD-261012-75000-P", "uly": "BTC-USD", "instFamily": "BTC-USD",
+      "baseCcy": "", "quoteCcy": "", "settleCcy": "BTC",
+      "ctVal": "1", "ctMult": "0.01", "ctValCcy": "BTC", "ctType": "inverse", "optType": "P", "stk": "75000",
+      "expTime": "1791792000000", "listTime": "1791481560312", "alias": "", "lever": "",
+      "tickSz": "0.0001", "lotSz": "1", "minSz": "1", "maxMktSz": "5000",
+      "state": "live"
+    }
+  ]
+}
