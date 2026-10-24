@@ -1,0 +1,23 @@
+{
+  "_provenance": "REAL GET /confirms/{dealReference} reply captured from demo-api.ig.com on 2026-08-21, opening CS.D.EURUSD.MINI.IP BUY 0.1 via POST /positions/otc with forceOpen:true. Verbatim except this key. No secret appears in an IG deal confirm: it names deal ids, an epic, a level and a size — never an account id, a token or a key.",
+  "date": "2026-08-21T17:16:47.605",
+  "status": "OPEN",
+  "reason": "SUCCESS",
+  "dealStatus": "ACCEPTED",
+  "epic": "CS.D.EURUSD.MINI.IP",
+  "expiry": "-",
+  "dealReference": "2LJZQPM3Y24TYS9",
+  "dealId": "DIAAAAYB6YDK2A7",
+  "affectedDeals": [{ "dealId": "DIAAAAYB6YDK2A7", "status": "OPENED" }],
+  "level": 1.16784,
+  "size": 0.1,
+  "direction": "BUY",
+  "stopLevel": null,
+  "limitLevel": null,
+  "stopDistance": null,
+  "limitDistance": null,
+  "guaranteedStop": false,
+  "trailingStop": false,
+  "profit": null,
+  "profitCurrency": null
+}

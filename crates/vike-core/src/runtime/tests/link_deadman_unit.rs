@@ -1,0 +1,747 @@
+use super::*;
+
+fn cfg(grace_ms: u64, venues: &[&str]) -> LinkDeadManConfig {
+    LinkDeadManConfig {
+        grace: Duration::from_millis(grace_ms),
+        action: DeadManAction::CancelAllAndHalt,
+        venues: venues.iter().map(|v| (*v).to_string()).collect(),
+    }
+}
+
+fn latch(grace_ms: u64, venues: &[&str]) -> LinkDeadMan {
+    LinkDeadMan::new(&cfg(grace_ms, venues))
+}
+
+/// No venue is idle: every armed venue's windows count (every core but a price-only one).
+fn none() -> std::collections::BTreeSet<String> {
+    std::collections::BTreeSet::new()
+}
+
+/// `check` reduced to the `(venue, symbol)` keys, in order, one per tripped WINDOW.
+fn keys(dm: &mut LinkDeadMan, now_ms: i64) -> Vec<(String, String)> {
+    dm.check(now_ms, &none()).into_iter().map(|t| (t.venue, t.symbol)).collect()
+}
+
+/// `check` reduced to `(venue, symbol, source)`.
+fn trips(dm: &mut LinkDeadMan, now_ms: i64) -> Vec<(String, String, LinkSource)> {
+    dm.check(now_ms, &none()).into_iter().map(|t| (t.venue, t.symbol, t.source)).collect()
+}
+
+/// (a) The core case: a disclosed disconnect, a grace that expires, ONE trip.
+#[test]
+fn a_disconnect_outlasting_the_grace_trips_once() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Live, 0);
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Disconnected, 100);
+
+    assert!(keys(&mut dm, 1100).is_empty(), "lag == grace is still inside it (strict >)");
+    assert_eq!(
+        keys(&mut dm, 1101),
+        vec![("binance".to_string(), "BTCUSDT".to_string())],
+        "one ms past the grace ⇒ trip"
+    );
+    assert!(keys(&mut dm, 9999).is_empty(), "no re-fire within the same outage");
+    assert!(dm.is_tripped("binance", "BTCUSDT"));
+}
+
+/// (b) The property the grace exists for: an ORDINARY reconnect is silent. A `Live` inside the
+/// window closes it, and no later sweep can trip on that outage.
+#[test]
+fn a_reconnect_inside_the_grace_is_silent() {
+    let mut dm = latch(1000, &["bybit"]);
+    dm.observe("bybit", "BTCUSDT", LinkSource::Venue, FeedStatus::Live, 0);
+    dm.observe("bybit", "BTCUSDT", LinkSource::Venue, FeedStatus::Disconnected, 100);
+    assert!(keys(&mut dm, 500).is_empty());
+    // the venue's backoff + re-dial lands well inside the window
+    assert_eq!(
+        dm.observe("bybit", "BTCUSDT", LinkSource::Venue, FeedStatus::Live, 700),
+        LinkObservation::Quiet
+    );
+    assert!(keys(&mut dm, 10_000).is_empty(), "a closed window cannot trip later");
+}
+
+/// (c) ⚠ **The rule the whole switch turns on.** `Stale` moves nothing — it neither opens a
+/// window nor closes one — because a weekend on an FX venue is disclosed as exactly this.
+#[test]
+fn stale_never_trips_and_never_clears() {
+    let mut dm = latch(1000, &["oanda"]);
+    dm.observe("oanda", "EUR_USD", LinkSource::Venue, FeedStatus::Live, 0);
+    for t in [100, 5_000, 100_000, 172_800_000] {
+        assert_eq!(
+            dm.observe("oanda", "EUR_USD", LinkSource::Venue, FeedStatus::Stale, t),
+            LinkObservation::Quiet
+        );
+        assert!(keys(&mut dm, t).is_empty(), "a 48h weekend of Stale must not trip at t={t}");
+    }
+    // ...and it did not silently CLOSE an outage either: a real disconnect after all that
+    // Stale still opens a window and still trips.
+    dm.observe("oanda", "EUR_USD", LinkSource::Venue, FeedStatus::Disconnected, 172_800_000);
+    assert!(keys(&mut dm, 172_800_500).is_empty());
+    assert_eq!(keys(&mut dm, 172_801_001).len(), 1, "a REAL disconnect still trips after Stale");
+}
+
+/// (d) ⚠ **The FIRST link death of a mount trips, with no `Live` ever observed** — the
+/// headline outage, and the one a prior-`Live` gate silently excluded. No bridge on this
+/// roster discloses `Live` on a first successful connect (`StreamHealth::recover` is a no-op
+/// with no gap open), so under that gate a socket that came up, died and never returned
+/// produced no window at all. The module doc carries the evidence.
+#[test]
+fn a_first_link_death_trips_without_any_prior_live() {
+    let mut dm = latch(1000, &["okx"]);
+    dm.observe("okx", "BTC-USDT-SWAP", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    assert!(keys(&mut dm, 500).is_empty(), "still inside the grace");
+    assert_eq!(
+        keys(&mut dm, 1001),
+        vec![("okx".to_string(), "BTC-USDT-SWAP".to_string())],
+        "a link disclosed down and never disclosed up is exactly what this switch is for"
+    );
+}
+
+/// (d2) ...and the startup dial-up the retired gate was reaching for is absorbed by the GRACE
+/// instead: a venue that fails its first connects and then comes up inside the window cancels
+/// nothing. This is the property that makes (d) safe rather than trigger-happy.
+#[test]
+fn a_startup_dial_that_succeeds_inside_the_grace_is_silent() {
+    let mut dm = latch(30_000, &["binance"]);
+    // a failed first dial is disclosed as a gap by the depth driver's `enter_gap`
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    for t in [3_000, 6_000, 9_000] {
+        dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Disconnected, t); // backoff re-dials
+        assert!(keys(&mut dm, t).is_empty());
+    }
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Live, 23_000); // one full ordinary cycle
+    assert!(keys(&mut dm, 1_000_000).is_empty(), "the link came up inside the grace");
+}
+
+/// (d3) A `Live` on a link that was never down allocates nothing — the map holds an entry per
+/// link that has actually been disclosed DOWN, not one per subscription.
+#[test]
+fn a_live_on_a_healthy_link_costs_no_state() {
+    let mut dm = latch(1000, &["binance"]);
+    for s in ["BTCUSDT", "ETHUSDT", "SOLUSDT"] {
+        assert_eq!(
+            dm.observe("binance", s, LinkSource::Venue, FeedStatus::Live, 0),
+            LinkObservation::Quiet
+        );
+    }
+    assert!(dm.links.is_empty(), "a link that never dropped is not tracked");
+}
+
+/// (e) Recovery re-arms, and says so exactly once: the `Live` that clears a TRIPPED outage
+/// reports `Recovered`, a second `Live` reports nothing, and a NEW outage trips again.
+#[test]
+fn recovery_reports_once_and_re_arms() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Live, 0);
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    assert_eq!(keys(&mut dm, 2000).len(), 1, "first outage trips");
+
+    assert_eq!(
+        dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Live, 3000),
+        LinkObservation::Recovered
+    );
+    assert_eq!(
+        dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Live, 3100),
+        LinkObservation::Quiet,
+        "a second Live is not a second recovery"
+    );
+    assert!(!dm.is_tripped("binance", "BTCUSDT"));
+
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Disconnected, 4000);
+    assert_eq!(keys(&mut dm, 5001).len(), 1, "a second outage trips again after the re-arm");
+}
+
+/// (f) A venue outside the armed set is invisible — no state, no trip. This is what makes an FX
+/// venue mounted beside an armed crypto one free rather than merely harmless.
+#[test]
+fn an_unarmed_venue_is_never_tracked() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe("ig", "IX.D.FTSE.DAILY.IP", LinkSource::Venue, FeedStatus::Live, 0);
+    dm.observe("ig", "IX.D.FTSE.DAILY.IP", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    assert!(keys(&mut dm, 10_000_000).is_empty(), "an unarmed venue can never trip");
+    assert!(dm.links.is_empty(), "...and costs no state at all");
+}
+
+/// (g) A re-disclosed gap does NOT push the deadline out. A bridge that emits a second
+/// `Disconnected` mid-outage (a per-token feed reconnecting one shard at a time) must not be
+/// able to hold the switch open forever.
+#[test]
+fn a_second_disconnect_does_not_extend_the_window() {
+    let mut dm = latch(1000, &["polymarket"]);
+    dm.observe("polymarket", "TOK", LinkSource::Venue, FeedStatus::Live, 0);
+    dm.observe("polymarket", "TOK", LinkSource::Venue, FeedStatus::Disconnected, 100);
+    for t in [200, 400, 900, 1_050] {
+        dm.observe("polymarket", "TOK", LinkSource::Venue, FeedStatus::Disconnected, t);
+    }
+    assert_eq!(
+        keys(&mut dm, 1101).len(),
+        1,
+        "the window still expires 1000 ms after the FIRST gap"
+    );
+}
+
+/// (h) Two links on one armed venue trip independently, and one venue's outage leaves another
+/// venue's link untouched — the per-key scoping the runtime's venue-scoped cancel rests on.
+#[test]
+fn links_are_tracked_per_venue_and_symbol() {
+    let mut dm = latch(1000, &["binance", "bybit"]);
+    for (v, s) in [("binance", "BTCUSDT"), ("binance", "ETHUSDT"), ("bybit", "BTCUSDT")] {
+        dm.observe(v, s, LinkSource::Venue, FeedStatus::Live, 0);
+    }
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    assert_eq!(
+        keys(&mut dm, 2000),
+        vec![("binance".to_string(), "BTCUSDT".to_string())],
+        "only the link that died trips"
+    );
+    assert!(!dm.is_tripped("binance", "ETHUSDT"));
+    assert!(!dm.is_tripped("bybit", "BTCUSDT"));
+}
+
+// ───────────────────────────── one window per SOURCE (the trade link and the strat link) ──────────
+
+use vike_venues::link_deadman::{STRAT_LINK_STREAM, TRADE_LINK_STREAM};
+
+const KEY: (&str, &str) = ("binance", "BTCUSDT");
+
+fn key() -> (String, String) {
+    (KEY.0.to_string(), KEY.1.to_string())
+}
+
+/// (s1) Sources do not erase each other, in BOTH directions. A strat-link `Live` after a VENUE
+/// `Disconnected` leaves the venue window open and it still trips; a trade-link `Live` leaves the
+/// strat window open and that one still trips.
+#[test]
+fn a_live_from_another_source_closes_nothing() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe(KEY.0, KEY.1, LinkSource::Venue, FeedStatus::Disconnected, 0);
+    assert_eq!(
+        dm.observe(KEY.0, KEY.1, LinkSource::StratLink, FeedStatus::Live, 100),
+        LinkObservation::Quiet
+    );
+    assert_eq!(
+        dm.observe(KEY.0, KEY.1, LinkSource::TradeLink, FeedStatus::Live, 200),
+        LinkObservation::Quiet
+    );
+    assert!(
+        dm.is_down(KEY.0, KEY.1, LinkSource::Venue),
+        "a foreign Live must not close the venue window"
+    );
+    assert_eq!(
+        keys(&mut dm, 1001),
+        vec![key()],
+        "the venue outage still trips after two foreign Lives"
+    );
+
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe(KEY.0, KEY.1, LinkSource::StratLink, FeedStatus::Disconnected, 0);
+    dm.observe(KEY.0, KEY.1, LinkSource::TradeLink, FeedStatus::Live, 100);
+    dm.observe(KEY.0, KEY.1, LinkSource::Venue, FeedStatus::Live, 200);
+    assert!(dm.is_down(KEY.0, KEY.1, LinkSource::StratLink));
+    assert_eq!(
+        keys(&mut dm, 1001),
+        vec![key()],
+        "the strat outage trips: no foreign Live erased it"
+    );
+}
+
+/// (s2) The trade link is a source in its own right: its `Disconnected` alone trips, and a `Live` on
+/// the SAME reserved word closes it inside the grace.
+#[test]
+fn the_trade_link_trips_on_its_own_and_its_own_live_closes_it() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe(KEY.0, KEY.1, LinkSource::TradeLink, FeedStatus::Disconnected, 0);
+    assert_eq!(keys(&mut dm, 1001), vec![key()]);
+    assert!(dm.is_tripped(KEY.0, KEY.1));
+
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe(KEY.0, KEY.1, LinkSource::TradeLink, FeedStatus::Disconnected, 0);
+    dm.observe(KEY.0, KEY.1, LinkSource::TradeLink, FeedStatus::Live, 500);
+    assert!(keys(&mut dm, 5000).is_empty(), "the trade link came back inside the grace");
+}
+
+/// (s3) ANY one source's expiry trips.
+#[test]
+fn any_one_sources_window_past_the_grace_trips() {
+    for word in ["book", TRADE_LINK_STREAM, STRAT_LINK_STREAM] {
+        let mut dm = latch(1000, &["binance"]);
+        dm.observe(KEY.0, KEY.1, LinkSource::of(word), FeedStatus::Disconnected, 0);
+        assert!(keys(&mut dm, 1000).is_empty(), "{word}: lag == grace is still inside it");
+        assert_eq!(keys(&mut dm, 1001), vec![key()], "{word}: one source is enough");
+    }
+}
+
+/// (s4) ⚠ **EACH source's window acts ONCE for its OWN outage; no other source's trip suppresses it.**
+/// The first version deduped across sources ("the set already acted") and that was the defect the
+/// review traced: a held trip of one source silenced every later outage of another. Here the second
+/// source expiring in a LATER sweep, while the first still holds its trip, IS reported; neither is
+/// reported twice for the same outage; each source's own `Live` re-arms only itself, and the
+/// recovery says whether the key as a whole is clear.
+#[test]
+fn each_source_of_one_key_is_reported_once_for_its_own_outage() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe(KEY.0, KEY.1, LinkSource::Venue, FeedStatus::Disconnected, 0);
+    dm.observe(KEY.0, KEY.1, LinkSource::StratLink, FeedStatus::Disconnected, 600);
+    assert_eq!(
+        trips(&mut dm, 1001),
+        vec![(KEY.0.to_string(), KEY.1.to_string(), LinkSource::Venue)],
+        "the venue window expires first and is reported"
+    );
+    let second = dm.check(1700, &none());
+    assert_eq!(second.len(), 1, "the strat window expires later and is reported too");
+    assert_eq!(second[0].source, LinkSource::StratLink);
+    assert_eq!(
+        second[0].also_tripped,
+        vec![LinkSource::Venue],
+        "...and the trip says a venue trip is still held"
+    );
+    for t in [1701, 5000, 99_999] {
+        assert!(keys(&mut dm, t).is_empty(), "no window is reported twice for one outage (t={t})");
+    }
+    assert!(dm.is_tripped(KEY.0, KEY.1));
+
+    // each source recovers on its OWN word; only the LAST one clears the key
+    assert_eq!(
+        dm.observe(KEY.0, KEY.1, LinkSource::Venue, FeedStatus::Live, 2000),
+        LinkObservation::RecoveredWhileAnotherSourceStaysTripped,
+        "the strat trip is still outstanding, so the key is NOT clear"
+    );
+    assert!(dm.is_tripped(KEY.0, KEY.1));
+    assert_eq!(
+        dm.observe(KEY.0, KEY.1, LinkSource::StratLink, FeedStatus::Live, 2100),
+        LinkObservation::Recovered
+    );
+    assert!(!dm.is_tripped(KEY.0, KEY.1));
+    // the venue window re-armed at its own Live, so a NEW venue outage acts again
+    dm.observe(KEY.0, KEY.1, LinkSource::TradeLink, FeedStatus::Disconnected, 3000);
+    assert_eq!(keys(&mut dm, 4001), vec![key()], "a fresh outage acts afresh");
+}
+
+/// (s4a) Two sources of one key expiring in the SAME sweep are two trips (the sweep folds them into one
+/// cancel pass per venue), in key order, each naming its source and the one tripped before it.
+#[test]
+fn two_sources_expiring_in_one_check_are_two_trips() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe(KEY.0, KEY.1, LinkSource::Venue, FeedStatus::Disconnected, 0);
+    dm.observe(KEY.0, KEY.1, LinkSource::TradeLink, FeedStatus::Disconnected, 0);
+    let got = dm.check(1001, &none());
+    assert_eq!(got.len(), 2, "one trip per window");
+    assert_eq!((got[0].source, got[1].source), (LinkSource::Venue, LinkSource::TradeLink));
+    assert!(got[0].also_tripped.is_empty(), "the first has no sibling tripped yet");
+    assert_eq!(got[1].also_tripped, vec![LinkSource::Venue]);
+    assert!(keys(&mut dm, 9999).is_empty(), "no re-fire while both stay down");
+}
+
+/// (s4c) ⚠ **THE REVIEW'S TRACE 3.** A source that never reports `Live` holds its trip for the life of
+/// the process; it must not shadow another source's outage, its recovery, or the next one.
+#[test]
+fn a_source_that_never_reports_live_shadows_nobody() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe(KEY.0, KEY.1, LinkSource::StratLink, FeedStatus::Disconnected, 0);
+    assert_eq!(keys(&mut dm, 1001), vec![key()]);
+    // ... the strat link never reports Live again. The venue socket dies, comes back, dies again:
+    for (down, up) in [(2000, 2500), (4000, 4500)] {
+        dm.observe(KEY.0, KEY.1, LinkSource::Venue, FeedStatus::Disconnected, down);
+        assert_eq!(
+            trips(&mut dm, down + 1001),
+            vec![(KEY.0.to_string(), KEY.1.to_string(), LinkSource::Venue)],
+            "venue outage at t={down} trips although the strat trip is still held"
+        );
+        assert_eq!(
+            dm.observe(KEY.0, KEY.1, LinkSource::Venue, FeedStatus::Live, up + 1500),
+            LinkObservation::RecoveredWhileAnotherSourceStaysTripped
+        );
+    }
+}
+
+/// (s4d) A down, B down, A up, B up — in BOTH orders of the two sources, and with the expiry before or
+/// after the first recovery: every window is reported exactly once, whichever source went first.
+#[test]
+fn down_down_up_up_reports_each_source_once_in_either_order() {
+    for (first, second) in [
+        (LinkSource::Venue, LinkSource::StratLink),
+        (LinkSource::StratLink, LinkSource::Venue),
+        (LinkSource::TradeLink, LinkSource::StratLink),
+    ] {
+        // both expire, then both recover
+        let mut dm = latch(1000, &["binance"]);
+        dm.observe(KEY.0, KEY.1, first, FeedStatus::Disconnected, 0);
+        dm.observe(KEY.0, KEY.1, second, FeedStatus::Disconnected, 100);
+        assert_eq!(trips(&mut dm, 1050).len(), 1, "{first:?} expires first");
+        assert_eq!(trips(&mut dm, 1150).len(), 1, "{second:?} expires next");
+        assert!(keys(&mut dm, 9000).is_empty());
+        assert_eq!(
+            dm.observe(KEY.0, KEY.1, first, FeedStatus::Live, 9100),
+            LinkObservation::RecoveredWhileAnotherSourceStaysTripped
+        );
+        assert_eq!(
+            dm.observe(KEY.0, KEY.1, second, FeedStatus::Live, 9200),
+            LinkObservation::Recovered
+        );
+        assert!(!dm.is_tripped(KEY.0, KEY.1));
+
+        // the first recovers BEFORE the second expires: the second still acts for its own outage
+        // (the review's trace 4: the result no longer depends on which arrived first)
+        let mut dm = latch(1000, &["binance"]);
+        dm.observe(KEY.0, KEY.1, first, FeedStatus::Disconnected, 0);
+        dm.observe(KEY.0, KEY.1, second, FeedStatus::Disconnected, 100);
+        assert_eq!(trips(&mut dm, 1050).len(), 1);
+        assert_eq!(
+            dm.observe(KEY.0, KEY.1, first, FeedStatus::Live, 1100),
+            LinkObservation::Recovered
+        );
+        assert_eq!(trips(&mut dm, 1150).len(), 1, "{second:?} acts for its own outage");
+        assert_eq!(
+            dm.observe(KEY.0, KEY.1, second, FeedStatus::Live, 1200),
+            LinkObservation::Recovered
+        );
+    }
+}
+
+/// (s4e) A tripped source that is re-disclosed `Disconnected` (a producer repeating itself mid-outage)
+/// is NOT re-opened and does not act again: only its own `Live` re-arms it.
+#[test]
+fn a_redisclosed_gap_after_the_trip_does_not_act_again() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe(KEY.0, KEY.1, LinkSource::Venue, FeedStatus::Disconnected, 0);
+    assert_eq!(keys(&mut dm, 1001), vec![key()]);
+    dm.observe(KEY.0, KEY.1, LinkSource::Venue, FeedStatus::Disconnected, 2000);
+    assert!(keys(&mut dm, 9000).is_empty(), "still the same outage");
+    dm.observe(KEY.0, KEY.1, LinkSource::Venue, FeedStatus::Live, 9100);
+    dm.observe(KEY.0, KEY.1, LinkSource::Venue, FeedStatus::Disconnected, 9200);
+    assert_eq!(keys(&mut dm, 10_201), vec![key()], "a new outage after its own Live acts afresh");
+}
+
+/// (s4b) Different symbols are different windows: the latch is keyed per `(venue, symbol, source)`, never per venue.
+#[test]
+fn the_window_is_per_key_not_per_venue() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    dm.observe("binance", "ETHUSDT", LinkSource::TradeLink, FeedStatus::Disconnected, 0);
+    assert_eq!(
+        keys(&mut dm, 1001),
+        vec![
+            ("binance".to_string(), "BTCUSDT".to_string()),
+            ("binance".to_string(), "ETHUSDT".to_string())
+        ]
+    );
+}
+
+/// (s5) The gap-closure invariant as the latch sees it: a `Disconnected` disclosed for a key by a
+/// source is closed by a `Live` from the SAME source, which is what a producer owes on an
+/// unsubscribe during an outage. With the closing `Live` the window is gone and nothing trips
+/// later; the debt is per source, so a `Live` from another source does not discharge it.
+#[test]
+fn a_gap_closed_by_its_own_source_after_an_unsubscribe_cannot_trip() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe(KEY.0, KEY.1, LinkSource::StratLink, FeedStatus::Disconnected, 0);
+    dm.observe(KEY.0, KEY.1, LinkSource::StratLink, FeedStatus::Live, 400);
+    assert!(!dm.is_down(KEY.0, KEY.1, LinkSource::StratLink));
+    assert!(keys(&mut dm, 1_000_000).is_empty());
+
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe(KEY.0, KEY.1, LinkSource::StratLink, FeedStatus::Disconnected, 0);
+    dm.observe(KEY.0, KEY.1, LinkSource::Venue, FeedStatus::Live, 400);
+    assert_eq!(keys(&mut dm, 1001), vec![key()], "an unclosed strat gap still trips");
+}
+
+/// (s5b) ⚠ **PINS A KNOWN LIMIT (review F5), not a wanted behaviour.** The latch has no idea which keys the
+/// core still mounts: a window opened for a key that is then unsubscribed or exited WITHOUT a closing
+/// same-source `Live` stays open and trips after the grace, cancelling the venue's book (and halting)
+/// for a key nobody watches any more. The gap-closure invariant is the producers' to keep (the
+/// docs name it); nothing here enforces it. When the latch learns to drop windows for dropped keys
+/// this test is the one that changes.
+#[test]
+fn a_window_nobody_closes_trips_even_for_a_key_that_is_gone() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe(KEY.0, KEY.1, LinkSource::StratLink, FeedStatus::Disconnected, 0);
+    // ... the key is unsubscribed here; the producer sends no `Live` ...
+    assert_eq!(keys(&mut dm, 1_000_000), vec![key()], "a false trip after the grace");
+}
+
+/// (s6) `Stale` stays inert for every source, and an unarmed venue tracks nothing for any source.
+#[test]
+fn stale_is_inert_on_every_source_and_an_unarmed_venue_tracks_nothing() {
+    let mut dm = latch(1000, &["binance"]);
+    for word in ["book", TRADE_LINK_STREAM, STRAT_LINK_STREAM] {
+        assert_eq!(
+            dm.observe(KEY.0, KEY.1, LinkSource::of(word), FeedStatus::Stale, 0),
+            LinkObservation::Quiet
+        );
+    }
+    assert!(dm.links.is_empty(), "Stale opens no window for any source");
+    assert!(keys(&mut dm, 10_000_000).is_empty());
+
+    for word in ["book", TRADE_LINK_STREAM, STRAT_LINK_STREAM] {
+        dm.observe("oanda", "EUR_USD", LinkSource::of(word), FeedStatus::Disconnected, 0);
+        dm.observe("oanda", "EUR_USD", LinkSource::of(word), FeedStatus::Live, 1);
+    }
+    assert!(dm.links.is_empty(), "an unarmed venue is dropped before any state is built");
+}
+
+/// (s7) A `Live` for a source that never went down allocates nothing, whichever source it names.
+#[test]
+fn a_live_on_a_source_that_never_dropped_costs_no_state() {
+    let mut dm = latch(1000, &["binance"]);
+    for word in ["book", TRADE_LINK_STREAM, STRAT_LINK_STREAM] {
+        assert_eq!(
+            dm.observe(KEY.0, KEY.1, LinkSource::of(word), FeedStatus::Live, 0),
+            LinkObservation::Quiet
+        );
+    }
+    assert!(dm.links.is_empty());
+}
+
+/// (s8) Decision 0169, slice S2: the account whose trade link was down when it was STOPPED discloses no
+/// `Live` ever again. Forgetting that one window keeps the grace from expiring into a trip, and
+/// leaves the venue's own socket window (shared by every account) and another symbol alone.
+#[test]
+fn forgetting_a_stopped_accounts_trade_link_closes_only_that_window() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe("binance", "BTCUSDT", LinkSource::TradeLink, FeedStatus::Disconnected, 0);
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    dm.observe("binance", "ETHUSDT", LinkSource::TradeLink, FeedStatus::Disconnected, 0);
+
+    dm.forget_trade_link("binance", "BTCUSDT");
+
+    assert!(!dm.is_down("binance", "BTCUSDT", LinkSource::TradeLink), "that window is gone");
+    assert!(dm.is_down("binance", "BTCUSDT", LinkSource::Venue), "the shared socket's is not");
+    assert!(dm.is_down("binance", "ETHUSDT", LinkSource::TradeLink), "nor another symbol's");
+    let tripped = trips(&mut dm, 5_000);
+    assert!(
+        !tripped.contains(&("binance".to_string(), "BTCUSDT".to_string(), LinkSource::TradeLink)),
+        "the forgotten window cannot trip: {tripped:?}"
+    );
+    assert_eq!(tripped.len(), 2, "the two windows that stay down still trip");
+    // Forgetting a window that was never opened is a no-op.
+    dm.forget_trade_link("bybit", "BTCUSDT");
+}
+
+/// (s9) A price-only venue that holds nothing (`idle`) is not armed: its windows are PARKED at the
+/// sweep, so it neither trips nor carries an old outage's CLOCK into the day something is admitted,
+/// while a sibling venue's window beside it trips as ever. The link is still down, so it is remembered
+/// (`dormant`), and the sweep that finds the venue holding something again opens a FRESH window from
+/// that sweep: the grace runs from the moment there is something to protect.
+#[test]
+fn an_idle_venues_windows_are_parked_and_reopen_fresh_when_the_venue_holds_something() {
+    let mut dm = latch(1000, &["binance", "okx"]);
+    dm.observe("okx", "ETH-USDT-SWAP", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    let idle: std::collections::BTreeSet<String> = ["okx".to_string()].into_iter().collect();
+
+    let got = dm.check(5_000, &idle);
+    assert_eq!(
+        got.iter().map(|t| t.venue.as_str()).collect::<Vec<_>>(),
+        vec!["binance"],
+        "only the venue that holds something trips"
+    );
+    assert!(!dm.is_down("okx", "ETH-USDT-SWAP", LinkSource::Venue), "the idle window is gone");
+    assert!(dm.is_dormant("okx", "ETH-USDT-SWAP", LinkSource::Venue), "...the link is remembered");
+    assert!(dm.check(6_000, &idle).is_empty(), "idle for as long as it likes: nothing trips");
+
+    // The venue holds something at 9_000: a fresh window opens THERE, so the old clock does not trip it…
+    assert!(dm.check(9_000, &none()).is_empty(), "the grace starts now, not at the disclosure");
+    assert!(dm.is_down("okx", "ETH-USDT-SWAP", LinkSource::Venue));
+    assert!(!dm.is_dormant("okx", "ETH-USDT-SWAP", LinkSource::Venue));
+    assert!(dm.check(9_500, &none()).is_empty(), "inside the grace of the held window");
+    // …and the link, still down, trips once the grace has run from there.
+    assert_eq!(dm.check(10_001, &none()).len(), 1, "past the grace, while held");
+}
+
+/// (s9b) The ledger of links known down while their venue was idle: a `Live` from the SAME source
+/// ends an entry (another source's does not), a stopped account's trade link forgets its entry, an
+/// unarmed venue is never remembered, and an entry never trips by itself.
+#[test]
+fn a_remembered_down_link_ends_on_its_own_live_and_never_trips_by_itself() {
+    let mut dm = latch(1000, &["okx"]);
+    dm.remember_down("okx", "ETH-USDT-SWAP", LinkSource::Venue);
+    dm.remember_down("okx", "ETH-USDT-SWAP", LinkSource::TradeLink);
+    dm.remember_down("bybit", "BTCUSDT", LinkSource::Venue);
+    assert!(!dm.is_dormant("bybit", "BTCUSDT", LinkSource::Venue), "an unarmed venue is dropped");
+
+    let idle: std::collections::BTreeSet<String> = ["okx".to_string()].into_iter().collect();
+    assert!(dm.check(1_000_000, &idle).is_empty(), "idle: remembered, never a window");
+
+    dm.observe("okx", "ETH-USDT-SWAP", LinkSource::StratLink, FeedStatus::Live, 1);
+    assert!(dm.is_dormant("okx", "ETH-USDT-SWAP", LinkSource::Venue), "another source's Live");
+    dm.observe("okx", "ETH-USDT-SWAP", LinkSource::Venue, FeedStatus::Live, 2);
+    assert!(!dm.is_dormant("okx", "ETH-USDT-SWAP", LinkSource::Venue), "its own Live ends it");
+
+    dm.forget_trade_link("okx", "ETH-USDT-SWAP");
+    assert!(!dm.is_dormant("okx", "ETH-USDT-SWAP", LinkSource::TradeLink), "a stopped account's");
+    assert!(dm.down_links("okx").is_empty());
+}
+
+/// (s9c) `down_links` is what the operator's `resume-venue` refuses on: an open window (tripped or
+/// not) and a link remembered down both count, another venue's do not, and a closed one does not.
+#[test]
+fn down_links_lists_open_windows_and_remembered_links_of_one_venue() {
+    let mut dm = latch(1000, &["binance", "okx"]);
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    dm.observe("binance", "ETHUSDT", LinkSource::StratLink, FeedStatus::Disconnected, 0);
+    dm.observe("binance", "ETHUSDT", LinkSource::StratLink, FeedStatus::Live, 10);
+    dm.remember_down("binance", "SOLUSDT", LinkSource::TradeLink);
+    dm.observe("okx", "ETH-USDT-SWAP", LinkSource::Venue, FeedStatus::Disconnected, 0);
+
+    let down = dm.down_links("binance");
+    assert_eq!(down.len(), 2, "{down:?}");
+    assert!(down.iter().any(|d| d.contains("BTCUSDT") && d.contains("Venue")), "{down:?}");
+    assert!(
+        down.iter().any(|d| d.contains("SOLUSDT") && d.contains("down while idle")),
+        "{down:?}"
+    );
+    assert!(dm.down_links("bybit").is_empty());
+}
+
+/// (s9d) A forced resume starts every open window of the venue over: one that had already TRIPPED may
+/// trip again after another grace, and a window of another venue is left alone.
+#[test]
+fn restarting_a_venues_windows_lets_a_tripped_one_trip_again() {
+    let mut dm = latch(1000, &["binance", "okx"]);
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    dm.observe("okx", "ETH-USDT-SWAP", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    assert_eq!(dm.check(2_000, &none()).len(), 2);
+    assert!(dm.check(3_000, &none()).is_empty(), "each window acts once");
+
+    dm.restart_windows("binance", 3_500);
+    assert!(dm.check(4_000, &none()).is_empty(), "500 into the restarted window");
+    let again = dm.check(4_600, &none());
+    assert_eq!(again.len(), 1, "1100 in: the restarted window trips again");
+    assert_eq!(again[0].venue, "binance", "...and okx's tripped window did not restart");
+}
+
+/// (s9e) `take_halt` hands back ONE venue's overlay (the engines and their priors) and leaves every
+/// other venue's in place; a venue the latch did not halt answers `None`.
+#[test]
+fn take_halt_removes_one_venues_overlay_only() {
+    let mut dm = latch(1000, &["binance", "okx"]);
+    dm.record_halt("binance", 0, TradingState::Reducing);
+    dm.record_halt("okx", 1, TradingState::Active);
+
+    let taken = dm.take_halt("binance").expect("binance was halted");
+    assert_eq!(taken.get(&0), Some(&TradingState::Reducing));
+    assert!(!dm.is_venue_halted("binance") && dm.is_venue_halted("okx"));
+    assert!(dm.take_halt("binance").is_none() && dm.take_halt("bybit").is_none());
+}
+
+/// (s10) The venue-scoped halt overlay (decision 0180): a halted venue is released only when NONE of
+/// its windows is down, in any source or symbol; a sibling venue's outage holds nothing of it; the
+/// FIRST prior wins; and `clear_halts` forgets everything.
+#[test]
+fn a_halted_venue_is_released_only_when_none_of_its_links_is_down() {
+    let mut dm = latch(1000, &["binance", "okx"]);
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    dm.observe("binance", "ETHUSDT", LinkSource::StratLink, FeedStatus::Disconnected, 0);
+    dm.observe("okx", "ETH-USDT-SWAP", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    assert_eq!(dm.check(2_000, &none()).len(), 3);
+    dm.record_halt("binance", 0, TradingState::Reducing);
+    dm.record_halt("binance", 0, TradingState::Halted); // a second trip keeps the FIRST prior
+    assert!(dm.is_venue_halted("binance") && !dm.is_venue_halted("okx"));
+    assert_eq!(dm.prior_of(0), Some(TradingState::Reducing));
+    assert_eq!(dm.prior_of(1), None);
+
+    // One of binance's two windows closes, the other (a different symbol and source) stays down.
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Live, 2_100);
+    assert!(dm.take_recovered().is_empty(), "a link of the venue is still down");
+    // okx coming back changes nothing for binance.
+    dm.observe("okx", "ETH-USDT-SWAP", LinkSource::Venue, FeedStatus::Live, 2_150);
+    assert!(dm.take_recovered().is_empty());
+
+    dm.observe("binance", "ETHUSDT", LinkSource::StratLink, FeedStatus::Live, 2_200);
+    let back = dm.take_recovered();
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].0, "binance");
+    assert_eq!(back[0].1.get(&0), Some(&TradingState::Reducing));
+    assert!(!dm.is_venue_halted("binance"), "released once");
+    assert!(dm.take_recovered().is_empty());
+}
+
+/// (s11) A window that is FORGOTTEN (the account was stopped on purpose) or DISCARDED (an idle price-only
+/// venue) frees the venue too: no `Live` will ever come for either.
+#[test]
+fn a_forgotten_or_discarded_window_releases_the_venue() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe("binance", "BTCUSDT", LinkSource::TradeLink, FeedStatus::Disconnected, 0);
+    assert_eq!(dm.check(2_000, &none()).len(), 1);
+    dm.record_halt("binance", 0, TradingState::Active);
+    dm.forget_trade_link("binance", "BTCUSDT");
+    assert_eq!(dm.take_recovered().len(), 1, "forgotten");
+
+    dm.observe("binance", "BTCUSDT", LinkSource::Venue, FeedStatus::Disconnected, 3_000);
+    assert_eq!(dm.check(5_000, &none()).len(), 1);
+    dm.record_halt("binance", 0, TradingState::Active);
+    let idle: std::collections::BTreeSet<String> = ["binance".to_string()].into_iter().collect();
+    let _ = dm.check(6_000, &idle);
+    assert_eq!(dm.take_recovered().len(), 1, "discarded");
+}
+
+/// (s12) A node-wide RAISE lifts the recorded priors (never lowers one), and `clear_halts` forgets all.
+#[test]
+fn raise_priors_only_raises_and_clear_halts_forgets() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.record_halt("binance", 0, TradingState::Active);
+    dm.record_halt("binance", 1, TradingState::Halted);
+    dm.raise_priors(TradingState::Reducing);
+    assert_eq!(dm.prior_of(0), Some(TradingState::Reducing));
+    assert_eq!(dm.prior_of(1), Some(TradingState::Halted), "never lowered");
+    dm.clear_halts();
+    assert!(!dm.is_venue_halted("binance"));
+    assert_eq!(dm.prior_of(0), None);
+}
+
+/// (s13) A node-wide resume forgets the halt of a venue none of whose windows is open, and KEEPS the
+/// halt of one with a window still open, the priors replaced by the operator's state. A link only
+/// remembered down across idleness keeps nothing (the sweep releases that venue anyway).
+#[test]
+fn a_node_wide_resume_keeps_only_the_halt_of_a_venue_whose_link_is_down() {
+    let mut dm = latch(1000, &["binance", "okx"]);
+    dm.observe("binance", "BTCUSDT", LinkSource::TradeLink, FeedStatus::Disconnected, 0);
+    dm.observe("okx", "ETH-USDT-SWAP", LinkSource::Venue, FeedStatus::Disconnected, 0);
+    assert_eq!(dm.check(2_000, &none()).len(), 2);
+    dm.record_halt("binance", 0, TradingState::Reducing);
+    dm.record_halt("okx", 1, TradingState::Active);
+    dm.observe("okx", "ETH-USDT-SWAP", LinkSource::Venue, FeedStatus::Live, 2_100);
+
+    let kept = dm.resume_halts(TradingState::Active);
+
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].0, "binance");
+    assert_eq!(kept[0].1.len(), 1, "the down link is named: {:?}", kept[0].1);
+    assert!(dm.is_venue_halted("binance") && !dm.is_venue_halted("okx"));
+    assert_eq!(
+        dm.prior_of(0),
+        Some(TradingState::Active),
+        "the operator's state, not the old prior"
+    );
+
+    // A link only REMEMBERED down while its venue is idle is no hold: `take_recovered` releases such a
+    // venue at the next sweep (decision 0180: "discarded as idle is a release"), so the node-wide resume
+    // does not keep it either (it would log "left halted" for a halt that ends within a sweep).
+    dm.remember_down("okx", "ETH-USDT-SWAP", LinkSource::Venue);
+    dm.record_halt("okx", 1, TradingState::Active);
+    let kept = dm.resume_halts(TradingState::Active);
+    assert_eq!(kept.len(), 1, "only binance's OPEN window keeps a halt: {kept:?}");
+    assert_eq!(kept[0].0, "binance");
+    assert!(!dm.is_venue_halted("okx"), "the parked-link venue is released by the resume");
+    assert!(dm.take_recovered().is_empty(), "binance's window is still open");
+    assert_eq!(dm.down_links("okx").len(), 1, "...and the parked link is still remembered down");
+}
+
+/// (s14) A venue-level halt with no engine behind it is a halt: `is_venue_halted` answers it, it
+/// holds no engine prior, and the venue's re-arm releases it like any other.
+#[test]
+fn a_venue_halt_without_an_engine_is_held_and_released_with_the_venue() {
+    let mut dm = latch(1000, &["binance"]);
+    dm.observe("binance", "BTCUSDT", LinkSource::TradeLink, FeedStatus::Disconnected, 0);
+    assert_eq!(dm.check(2_000, &none()).len(), 1);
+    dm.record_venue_halt("binance");
+    assert!(dm.is_venue_halted("binance"));
+    assert_eq!(dm.prior_of(0), None);
+    assert!(dm.take_recovered().is_empty(), "the link is still down");
+
+    dm.observe("binance", "BTCUSDT", LinkSource::TradeLink, FeedStatus::Live, 2_100);
+    let back = dm.take_recovered();
+    assert_eq!(back.len(), 1);
+    assert!(back[0].1.is_empty(), "no engine to restore");
+    assert!(!dm.is_venue_halted("binance"));
+}
