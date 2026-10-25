@@ -1,0 +1,288 @@
+[package]
+name = "vike-gatewayhub"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the GATEWAY daemon: the one process that owns every connection to every roster venue (docs/decisions/0164). The datahub, and in a later wave the tradehub, reach a venue only through vike-gatewayhub-client; this daemon holds the sessions, the credentials and the request budgets. It boots (command line, loopback-only bind guard, shadow request budget), requires its hub keys and serves the venue lanes of the `data` feature to its clients until it is stopped; a build without that feature links no bridge and exits 2 saying so."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `daemon` — a headless top-of-graph binary: nothing may depend on it.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+# It is a sibling of `vike-datahub` and `vike-tradehub` at 65, and like them it never names the
+# other two: `crates/vike-ops/tests/architecture/named_run_closure_gate/fences.rs`'s
+# `GATEWAYHUB_FENCE` refuses the store, the collectors and the venue mount in its closure by NAME.
+[package.metadata.vike]
+layer = 65
+
+[features]
+default = []
+# The venue bridges and the clients built on them: everything the datahub used to link behind its
+# `live-*`, `venue-*`, `backfill-serve`, `catalog-serve` and `options-serve` features, as ONE feature
+# because this daemon serves every lane or none. A default build of this crate links no bridge.
+data = [
+    "dep:vike-binance", "dep:vike-bybit", "dep:vike-okx", "dep:vike-aster", "dep:vike-hyperliquid",
+    "dep:vike-polymarket", "vike-polymarket/feeds", "dep:vike-deribit", "dep:vike-dukascopy",
+    "dep:vike-fxcm", "dep:vike-oanda",
+    # The strategy lane's additions (W10): the tick pump's ingest channel (`vike-exec`) and the three
+    # credentialed-data bridges the lane serves besides oanda.
+    "dep:vike-exec", "dep:vike-alpaca", "dep:vike-ctrader", "dep:vike-ig",
+]
+# The TESTKIT (`src/testkit.rs`): scripted data and REST lanes and a loopback gateway, so ANOTHER crate's
+# tests (the datahub's twin test) can dial a scripted gatewayhub with the real client crate. It needs no
+# bridge, so it composes with `data` or stands alone. ⚠ ONLY a `[dev-dependencies]` edge may turn it on
+# (`crates/vike-ops/tests/architecture/test_surface_gate.rs` refuses a shipped one). The forward is the
+# shared `vike_data::SinkCall` / `RecordingSink` double the kit's sink helpers are built on.
+test-support = ["vike-data/test-support"]
+# **The TRADE half** (wave 2, W8 + W9b): the order and execution sessions - `src/trade/` (the `TradeLane` seam, the
+# leases, the per-account event rings, the dispatch) and `src/server/trade.rs` (the wire adapter) - AND the
+# venue half they drive, `src/trade/adapters/` (`BridgeTrade`, the arming table, the preflight probes, the
+# adapter start; it left `vike-tradehub-core` in W9b). It links `vike-exec` (the `ExecutionClient`/
+# `ReconClient`/`EventSender` seams the lane hands back), turns on the client crate's own `trade` feature
+# (the wire mirrors, the cancel-intent conversions) and links the bridges WITH their exec halves: this
+# daemon is the one process that signs an order. `vike-bridge-core` carries `eip712` because the
+# book-identity record derives an EVM address (aster, hyperliquid). The three bridges that were optional
+# in the tradehub stay optional behind this crate's `ibkr`, `fxcm` and `polymarket` features below; a build
+# without one registers the venue `FeatureAbsent`. A default build is unchanged.
+#
+# ⚠ `trade` IMPLIES `data` (wave 2, W15b), and `ibkr`, `fxcm` and `polymarket` imply `trade`: the trade surface is
+# mounted by the wire hook next to the data lanes (`gatewayhub_cli/wire.rs`'s `serve_wire` builds the lanes first and
+# hands them to `serve_with_trade`), so a build with the trade half and no data half could not serve the trade
+# surface at all and the daemon would exit 2 at start. `--features ibkr` alone is the old tradehub's spelling of
+# "this venue", and it now builds a daemon that serves. The edge points ONE way: `data` stays free of the
+# signers (the `datahub-all` guard (E) reads `--features data`).
+trade = [
+    "data", "dep:vike-exec", "vike-gatewayhub-client/trade", "dep:vike-bridge-core", "dep:vike-paths",
+    "dep:vike-binance", "vike-binance/exec", "dep:vike-bybit", "vike-bybit/exec",
+    "dep:vike-okx", "vike-okx/exec", "dep:vike-deribit", "vike-deribit/exec",
+    "dep:vike-aster", "vike-aster/exec", "dep:vike-hyperliquid", "vike-hyperliquid/exec",
+    "dep:vike-oanda", "dep:vike-ig", "dep:vike-dukascopy", "dep:vike-ctrader", "dep:vike-alpaca",
+    "dep:vike-alerting",
+]
+# Arm the LIVE Polymarket venue (the A-S maker's native [0,1] price domain). The optional `vike-polymarket`
+# edge with that crate's own `polymarket` feature (without which its exec plane is EMPTY, and which pulls the
+# k256/keccak signing tree in). Also gates the registry row in `src/registry/trade.rs`. Orders still need
+# the full gate stack (`flags.tradehub_live` + the account's key + `flags.poly_exec`) and egress through
+# the Dublin SOCKS tunnel (US-geo-blocked otherwise).
+polymarket = ["trade", "dep:vike-polymarket", "vike-polymarket/polymarket"]
+# Arm the LIVE IBKR venue: the optional `vike-ibkr` edge with its `ibkr` umbrella (`ibkr-socket` +
+# `ibkr-cpapi`), and the `#[cfg(feature = "ibkr")]` row of `src/registry/trade.rs`. OFF, a build registers
+# ibkr `FeatureAbsent`, with no `ibapi` crate in the graph.
+ibkr = ["trade", "dep:vike-ibkr", "vike-ibkr/ibkr"]
+# Arm the LIVE FXCM venue: the optional `vike-fxcm` edge - whose own `fxcm` feature only lets `build.rs` try the
+# shim compile - and the `#[cfg(feature = "fxcm")]` row of `src/registry/trade.rs`. The SDK is opened at RUNTIME
+# (`crates/bridges/fxcm/src/loader.rs`), so the feature adds no native link. OFF, fxcm is `FeatureAbsent`.
+fxcm = ["trade", "dep:vike-fxcm", "vike-fxcm/fxcm"]
+
+[dependencies]
+# The wire this daemon serves. The PROTOCOL is `vike-gatewayhub-client`'s, as the datahub's is
+# `vike-datahub-client`'s: the server imports the schema from the client crate, so there is one
+# definition and no re-export. `data` is the data half, and every module of the client crate is
+# behind it (the server imports the whole wire from there); naming it here is also what counts it as
+# compiled by a lane (`xtask/tests/feature_lane_coverage.rs`). This edge is what carries the fences'
+# proof that the walk can find the client crate from a real consumer.
+vike-gatewayhub-client = { path = "../vike-gatewayhub-client", features = ["data"] }
+# The live-data TUBE (decision 0167): the stream frames, the per-session bounded queue, the wire sink and
+# the writer this daemon serves them with. Layer 22: no bridge, no transport crate.
+vike-market-stream = { path = "../vike-market-stream" }
+# The SHARED hub-protocol substrate: the HMAC-SHA256 nonce-challenge handshake over its domain
+# separator (`auth`) and the length-prefixed frame codec (`frame`), in the crate BELOW both node
+# protocols. This daemon authenticates its clients with its own domain and the existing read and
+# write scopes. It names no vike-* crate, so the edge adds no package any graph did not carry.
+vike-hub-proto = { path = "../vike-hub-proto" }
+# The seams the daemon implements on the venues' side: `vike_data::DataClient`, the live sink and
+# the source traits. The TRAIT crate only — this daemon names no `vike-store` (the fence above).
+vike-data = { path = "../vike-data" }
+# The domain types the wire carries.
+vike-model = { path = "../vike-model" }
+# The per-venue tables (`caps_for`, `rate_limits_for`, the credential-field table ...) that left `vike-model` (decision 0162): the request budgets are counted against them.
+vike-venues = { path = "../vike-venues" }
+# The `Instrument` and the `CatalogProvider` seam the daemon's catalog providers implement.
+vike-catalog = { path = "../vike-catalog" }
+# The option-chain snapshot the options verb carries. Layer 5, serde only; already in this graph through vike-model.
+vike-marketdata = { path = "../vike-marketdata" }
+# The STARTUP SEQUENCE's one owner (`docs/decisions/0155-every-command-line-is-read-by-clap-through-one-vike-util-cli-module.md`
+# for the command line it sits beside): this root boots through it rather than re-spelling the order.
+vike-boot = { path = "../vike-boot" }
+# The settings TYPES the boot phases take by name. Already in this graph through vike-boot.
+vike-config = { path = "../vike-config" }
+# This root's OWN credential reads. ⚠ `vike-secrets`, NOT `vike-bridge-core`: the daemon is the one
+# process that reads venue credentials (decision 0164, verdict 6), and it reads them through the
+# credential store, never through the transport stack. Already in this graph through vike-boot.
+vike-secrets = { path = "../vike-secrets" }
+# The execution seams the trade lane hands back and the sessions drive (`ExecutionClient`, `ReconClient`,
+# `EventSender` and its `event_channel`, the HALT predicate), OPTIONAL and behind `trade`. Layer 20, no
+# bridge, no transport crate; `event_channel`'s own doc names this daemon as a production caller.
+vike-exec = { path = "../vike-exec", optional = true }
+vike-log = { path = "../vike-log" } # tracing-native logging init — the BIN calls vike_log::init (see crates/vike-log)
+# The BUILD IDENTITY `--version` prints and the daemon logs on startup. A ZERO-dependency leaf.
+vike-buildinfo = { path = "../vike-buildinfo" }
+# The command line (decision 0155): derived with `clap::Parser` and read through `vike_util::cli`
+# (layer 3, the `cli` feature), the one argv layer every program shares.
+vike-util = { path = "../vike-util", features = ["cli"] }
+clap = { workspace = true }
+# tracing facade for connection-boundary spans and events (the subscriber lives in vike-log).
+tracing = { workspace = true }
+serde = { workspace = true }        # derive on the daemon's own status DTOs
+serde_json = { workspace = true }   # the frame payload codec at the decode site
+
+# THE VENUE BRIDGES, optional and behind `data` (decision 0164: this daemon is the one process that
+# owns every venue connection, so these edges LEFT `vike-datahub`, where the same rows sat behind its
+# `venue-*`/`backfill-serve`/`catalog-serve`/`options-serve` features). Every row is the datahub's own,
+# unchanged: the CEX and hyperliquid bridges FEEDS-ONLY (`default-features = false`: no signed REST
+# client, no private user-data pump, no `ws_auth`, no reconcile client, no signer in the closure),
+# polymarket through its keyless `feeds` half (the default build of that crate is empty), the rest as
+# the datahub linked them. The fence `GATEWAYHUB_FENCE` keeps `vike-store`, `vike-backfill`,
+# `vike-recorder` and `vike-tradehub-core` out of this closure; a bridge is layer 40, below this daemon.
+vike-binance = { path = "../bridges/binance", default-features = false, optional = true }
+vike-bybit = { path = "../bridges/bybit", default-features = false, optional = true }
+vike-okx = { path = "../bridges/okx", default-features = false, optional = true }
+vike-aster = { path = "../bridges/aster", default-features = false, optional = true }
+vike-hyperliquid = { path = "../bridges/hyperliquid", default-features = false, optional = true }
+vike-polymarket = { path = "../bridges/polymarket", optional = true }
+vike-deribit = { path = "../bridges/deribit", default-features = false, optional = true }
+vike-dukascopy = { path = "../bridges/dukascopy", optional = true }
+vike-fxcm = { path = "../bridges/fxcm", optional = true }
+vike-oanda = { path = "../bridges/oanda", optional = true }
+# W10 (strategy lane): the credentialed-data bridges (alpaca, ctrader, ig; oanda is above) the gatewayhub
+# logs in to as the account a strategy trades. Optional edges enabled by `data` and nothing else. (`data` also
+# turns on `vike-exec`, declared above for `trade`: the CEX tick pump's ingest channel is `event_channel`.)
+vike-alpaca = { path = "../bridges/alpaca", optional = true }
+vike-ctrader = { path = "../bridges/ctrader", optional = true }
+vike-ig = { path = "../bridges/ig", optional = true }
+
+# THE TRADE HALF'S BRIDGES (feature `trade`, wave 2 W9b): the exec halves the tradehub linked behind its registry
+# (`crates/vike-gatewayhub/src/registry/trade.rs`, deleted when the venue half moved here). Same paths as the
+# `data` rows above - one crate edge each, the `exec` feature turned on by `trade` - plus ibkr (behind this
+# crate's `ibkr` feature), the signing tree of polymarket (behind `polymarket`) and the three bridges W10's
+# strategy lane links above (ig, ctrader, alpaca), which `trade` turns on as well.
+vike-ibkr = { path = "../bridges/vike-ibkr", optional = true }
+# vike:new-venue:row {crate} = { path = "../bridges/{venue}", optional = true } # TODO(new-venue: {venue}): the bridge crates/vike-gatewayhub/src/registry/trade.rs names; add its `dep:{crate}` (and its `exec` feature) to this crate's `trade` feature
+# The venue-adapter contract (`VenueAdapter`, `AdapterInputs`, `ClockDecl`...), the account-credential loaders
+# and the net probe, WITH `eip712`: `trade/adapters/book_identity.rs` calls `eth_address_from_private_key` to
+# answer "which wallet does this account trade" for a `Named` declaration with EVM key suffixes. Every
+# bridge above already depends on it; this names it where the moved code uses it.
+vike-bridge-core = { path = "../vike-bridge-core", features = ["eip712"], optional = true }
+# `vike_paths::state_path::PROJECT_BIN_DIR`: the bin directory a bridge is handed as `ProcessFacts::bin_dir`
+# (dukascopy's JForex jar, ctrader's token store). Layer 7, std only; already in this closure through vike-boot.
+vike-paths = { path = "../vike-paths", optional = true }
+# The operator pager the hyperliquid API-wallet approval watch (`src/trade/adapters/agent_watch.rs`) tells through:
+# `webhook_configs_from_env` over the store's alerting scope and `WebhookSink::try_deliver` (Telegram / the
+# generic URL), the same two calls the `notify` verb makes. Layer 15, NO vike-* dependency in any build, and
+# `ureq` is already in this closure through the bridges; behind `trade` because only the venue half alerts.
+vike-alerting = { path = "../vike-alerting", optional = true }
+
+[dev-dependencies]
+# `vike_log::capture::captured`, the workspace's ONE scoped `tracing` capture, which the OANDA lane's
+# credential tests (`tests/oanda_credential.rs`) read the lines a read logs with. vike-log is already a
+# NORMAL dependency above; this dev edge only turns its `test-support` on for test builds, so it adds
+# no package and no shipped build compiles the capture.
+vike-log = { path = "../vike-log", features = ["test-support"] }
+# `vike_secrets::create_store` and the unjournalled account writers (behind its `test-support`), which
+# plant a REAL settings database for the same tests. vike-secrets is already a NORMAL dependency above;
+# this dev edge only turns the feature on for test builds.
+vike-secrets = { path = "../vike-secrets", features = ["test-support"] }
+# The workspace `tempfile` the credential tests plant their settings directory in (the pin the
+# datahub's, backtest's and studio's store fixtures share). Dev-only, already in the lock.
+tempfile = { workspace = true }
+# The fold the moved roster tests drive: `make_engine*`, `AdapterEnv`, `run_startup_preflight` and the
+# `VenueBackend` port, which the in-process test backend (`tests/trade_roster/support/local_backend.rs`,
+# `src/trade/adapters/testutil.rs`) implements OVER `BridgeTrade`. ⚠ A DEV edge only: the gatewayhub's NORMAL
+# closure holds no `vike-tradehub-core` (`GATEWAYHUB_FENCE` reads normal edges). `test-support` for its
+# `ScriptedBackend`-adjacent doubles.
+vike-tradehub-core = { path = "../vike-tradehub-core", features = ["test-support"] }
+# `vike_bridge_core::venue_adapter_fixture::{PlantedAdapter, PLANTED_DECLARATION}`: the one planted
+# `VenueAdapter` the contract tests plant their rows from. `test-support` implies the `full` the normal edge
+# carries; a dev edge's features reach no shipped binary.
+vike-bridge-core = { path = "../vike-bridge-core", features = ["test-support"] }
+# the planted-mount tests' exec doubles (`vike_exec::testing`) and the reconcile fakes.
+vike-exec = { path = "../vike-exec", features = ["test-support"] }
+# `DeribitOptionsProvider::with_book_summary_url` (behind vike-deribit's `test-support`), which the
+# options tests point at a loopback book summary so the persistent provider's cache is observable
+# with no network. vike-deribit is already an OPTIONAL normal dependency above with the same
+# `default-features = false`; this dev edge only turns the test feature on for test builds, so it adds
+# no package and no shipped build compiles the seam (`test_surface_gate` refuses a shipped one).
+vike-deribit = { path = "../bridges/deribit", default-features = false, features = ["test-support"] }
+# `vike_ibkr::testing::{FakeTransport, ScriptedInbound}` and `run_exec_for_test` (behind vike-ibkr's `test-support`):
+# the REAL IBKR bridge's exec loop over its no-gateway transport double, which `tests/ibkr_reconnect.rs`'s
+# `real_bridge` module drives under the gatewayhub's session (W14c B: the hold released by the bridge's own
+# `ExecLink{up:true}`). vike-ibkr is already an OPTIONAL normal dependency above (`ibkr`); this dev edge
+# (`default-features = false`, so no ibapi in a plain test build) only turns the test feature on for test
+# builds, so it adds no package and no shipped build compiles the seam.
+vike-ibkr = { path = "../bridges/vike-ibkr", default-features = false, features = ["test-support"] }
+# Self-referential dev-dep (the `vike-bridge-core` idiom): turns the `test-support` TESTKIT on for THIS
+# crate's own `tests/` targets (an integration test compiles the lib without `cfg(test)`), which is also
+# what counts the feature as compiled by a lane (`xtask/tests/feature_lane_coverage.rs`, rule 3). A
+# normal or build edge never carries it.
+# `trade` rides the same edge, so a plain test run compiles and runs the trade lane's suites and the feature
+# counts as compiled by a lane (the same rule 3).
+vike-gatewayhub = { path = ".", features = ["test-support", "trade"] }
+
+# The roster tests that moved with the venue half (wave 2, W9b): they drive the REAL bridges' arming, preflight
+# probes and adapter start, so they run where the registry is. Cargo auto-discovers only `tests/*.rs`, so each
+# binary of `tests/trade_roster/` is named here; each is its own process on purpose (the process-exclusive claim,
+# the HALT resolver and the log capture are process-global). The feature-on files carry a crate-level `#![cfg]`
+# and compile to nothing otherwise, as they did in the tradehub.
+[[test]]
+name = "mount_roster"
+path = "tests/trade_roster/mount_roster.rs"
+
+[[test]]
+name = "fxcm_adapter"
+path = "tests/trade_roster/fxcm_adapter.rs"
+
+[[test]]
+name = "ibkr_adapter"
+path = "tests/trade_roster/ibkr_adapter.rs"
+
+[[test]]
+name = "polymarket_adapter"
+path = "tests/trade_roster/polymarket_adapter.rs"
+
+[[test]]
+name = "dukascopy_sidecar_holder"
+path = "tests/trade_roster/dukascopy_sidecar_holder.rs"
+
+[[test]]
+name = "book_identity_table"
+path = "tests/trade_roster/book_identity_table.rs"
+
+[[test]]
+name = "declared_symbol_grid_wiring"
+path = "tests/trade_roster/declared_symbol_grid_wiring.rs"
+
+[[test]]
+name = "shared_book_report"
+path = "tests/trade_roster/shared_book_report.rs"
+
+[[test]]
+name = "account_credential_isolation"
+path = "tests/trade_roster/account_credential_isolation.rs"
+
+[[test]]
+name = "live_tier_not_wired_log"
+path = "tests/trade_roster/live_tier_not_wired_log.rs"
+
+[[test]]
+name = "server_time_smoke"
+path = "tests/trade_roster/server_time_smoke.rs"
+
+[[test]]
+name = "startup_preflight_smoke"
+path = "tests/trade_roster/startup_preflight_smoke.rs"
+
+[[test]]
+name = "arming_parity"
+path = "tests/trade_roster/arming_parity.rs"
+
+[[test]]
+name = "registry_shape"
+path = "tests/trade_roster/registry_shape.rs"
+
+[[test]]
+name = "unaddressable_account_silence"
+path = "tests/trade_roster/unaddressable_account_silence.rs"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is the
+# sole crate that does NOT inherit this.
+[lints]
+workspace = true
