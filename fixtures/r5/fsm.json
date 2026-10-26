@@ -1,0 +1,1262 @@
+{
+ "manifest": {
+  "exporter": "scripts/export_r5_fixtures.py",
+  "oracle": "vike-trader-app origin/main worktree",
+  "source_sha": "023d6e87ced0b495d8575fd247914e14522ccd2d",
+  "seed": 20260703,
+  "generated": "2026-07-03T18:53:00Z",
+  "float_encoding": "ieee754-f64-hex-bits"
+ },
+ "matrix": [
+  {
+   "from": "INITIALIZED",
+   "event": "OrderSubmitted",
+   "ok": true,
+   "to": "SUBMITTED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "INITIALIZED",
+   "event": "OrderAccepted",
+   "ok": false
+  },
+  {
+   "from": "INITIALIZED",
+   "event": "OrderRejected",
+   "ok": true,
+   "to": "REJECTED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "INITIALIZED",
+   "event": "OrderDenied",
+   "ok": true,
+   "to": "DENIED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "INITIALIZED",
+   "event": "OrderTriggered",
+   "ok": false
+  },
+  {
+   "from": "INITIALIZED",
+   "event": "OrderPartiallyFilled",
+   "ok": false
+  },
+  {
+   "from": "INITIALIZED",
+   "event": "OrderFilled",
+   "ok": false
+  },
+  {
+   "from": "INITIALIZED",
+   "event": "OrderCanceled",
+   "ok": false
+  },
+  {
+   "from": "INITIALIZED",
+   "event": "OrderExpired",
+   "ok": false
+  },
+  {
+   "from": "INITIALIZED",
+   "event": "OrderLiquidated",
+   "ok": false
+  },
+  {
+   "from": "INITIALIZED",
+   "event": "FillEvent",
+   "ok": false
+  },
+  {
+   "from": "SUBMITTED",
+   "event": "OrderSubmitted",
+   "ok": false
+  },
+  {
+   "from": "SUBMITTED",
+   "event": "OrderAccepted",
+   "ok": true,
+   "to": "ACCEPTED",
+   "venue_order_id": "v9",
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "SUBMITTED",
+   "event": "OrderRejected",
+   "ok": true,
+   "to": "REJECTED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "SUBMITTED",
+   "event": "OrderDenied",
+   "ok": false
+  },
+  {
+   "from": "SUBMITTED",
+   "event": "OrderTriggered",
+   "ok": false
+  },
+  {
+   "from": "SUBMITTED",
+   "event": "OrderPartiallyFilled",
+   "ok": false
+  },
+  {
+   "from": "SUBMITTED",
+   "event": "OrderFilled",
+   "ok": false
+  },
+  {
+   "from": "SUBMITTED",
+   "event": "OrderCanceled",
+   "ok": false
+  },
+  {
+   "from": "SUBMITTED",
+   "event": "OrderExpired",
+   "ok": false
+  },
+  {
+   "from": "SUBMITTED",
+   "event": "OrderLiquidated",
+   "ok": false
+  },
+  {
+   "from": "SUBMITTED",
+   "event": "FillEvent",
+   "ok": false
+  },
+  {
+   "from": "ACCEPTED",
+   "event": "OrderSubmitted",
+   "ok": false
+  },
+  {
+   "from": "ACCEPTED",
+   "event": "OrderAccepted",
+   "ok": false
+  },
+  {
+   "from": "ACCEPTED",
+   "event": "OrderRejected",
+   "ok": false
+  },
+  {
+   "from": "ACCEPTED",
+   "event": "OrderDenied",
+   "ok": false
+  },
+  {
+   "from": "ACCEPTED",
+   "event": "OrderTriggered",
+   "ok": true,
+   "to": "TRIGGERED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "ACCEPTED",
+   "event": "OrderPartiallyFilled",
+   "ok": true,
+   "to": "PARTIALLY_FILLED",
+   "venue_order_id": null,
+   "filled_qty": "3fd999999999999a",
+   "avg_fill_px": "4059200000000000"
+  },
+  {
+   "from": "ACCEPTED",
+   "event": "OrderFilled",
+   "ok": true,
+   "to": "FILLED",
+   "venue_order_id": null,
+   "filled_qty": "3fd999999999999a",
+   "avg_fill_px": "4059200000000000"
+  },
+  {
+   "from": "ACCEPTED",
+   "event": "OrderCanceled",
+   "ok": true,
+   "to": "CANCELED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "ACCEPTED",
+   "event": "OrderExpired",
+   "ok": true,
+   "to": "EXPIRED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "ACCEPTED",
+   "event": "OrderLiquidated",
+   "ok": true,
+   "to": "LIQUIDATED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "ACCEPTED",
+   "event": "FillEvent",
+   "ok": false
+  },
+  {
+   "from": "TRIGGERED",
+   "event": "OrderSubmitted",
+   "ok": false
+  },
+  {
+   "from": "TRIGGERED",
+   "event": "OrderAccepted",
+   "ok": false
+  },
+  {
+   "from": "TRIGGERED",
+   "event": "OrderRejected",
+   "ok": false
+  },
+  {
+   "from": "TRIGGERED",
+   "event": "OrderDenied",
+   "ok": false
+  },
+  {
+   "from": "TRIGGERED",
+   "event": "OrderTriggered",
+   "ok": false
+  },
+  {
+   "from": "TRIGGERED",
+   "event": "OrderPartiallyFilled",
+   "ok": true,
+   "to": "PARTIALLY_FILLED",
+   "venue_order_id": null,
+   "filled_qty": "3fd999999999999a",
+   "avg_fill_px": "4059200000000000"
+  },
+  {
+   "from": "TRIGGERED",
+   "event": "OrderFilled",
+   "ok": true,
+   "to": "FILLED",
+   "venue_order_id": null,
+   "filled_qty": "3fd999999999999a",
+   "avg_fill_px": "4059200000000000"
+  },
+  {
+   "from": "TRIGGERED",
+   "event": "OrderCanceled",
+   "ok": true,
+   "to": "CANCELED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "TRIGGERED",
+   "event": "OrderExpired",
+   "ok": true,
+   "to": "EXPIRED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "TRIGGERED",
+   "event": "OrderLiquidated",
+   "ok": true,
+   "to": "LIQUIDATED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "TRIGGERED",
+   "event": "FillEvent",
+   "ok": false
+  },
+  {
+   "from": "PARTIALLY_FILLED",
+   "event": "OrderSubmitted",
+   "ok": false
+  },
+  {
+   "from": "PARTIALLY_FILLED",
+   "event": "OrderAccepted",
+   "ok": false
+  },
+  {
+   "from": "PARTIALLY_FILLED",
+   "event": "OrderRejected",
+   "ok": false
+  },
+  {
+   "from": "PARTIALLY_FILLED",
+   "event": "OrderDenied",
+   "ok": false
+  },
+  {
+   "from": "PARTIALLY_FILLED",
+   "event": "OrderTriggered",
+   "ok": false
+  },
+  {
+   "from": "PARTIALLY_FILLED",
+   "event": "OrderPartiallyFilled",
+   "ok": true,
+   "to": "PARTIALLY_FILLED",
+   "venue_order_id": null,
+   "filled_qty": "3fd999999999999a",
+   "avg_fill_px": "4059200000000000"
+  },
+  {
+   "from": "PARTIALLY_FILLED",
+   "event": "OrderFilled",
+   "ok": true,
+   "to": "FILLED",
+   "venue_order_id": null,
+   "filled_qty": "3fd999999999999a",
+   "avg_fill_px": "4059200000000000"
+  },
+  {
+   "from": "PARTIALLY_FILLED",
+   "event": "OrderCanceled",
+   "ok": true,
+   "to": "CANCELED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "PARTIALLY_FILLED",
+   "event": "OrderExpired",
+   "ok": true,
+   "to": "EXPIRED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "PARTIALLY_FILLED",
+   "event": "OrderLiquidated",
+   "ok": true,
+   "to": "LIQUIDATED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "PARTIALLY_FILLED",
+   "event": "FillEvent",
+   "ok": false
+  },
+  {
+   "from": "FILLED",
+   "event": "OrderSubmitted",
+   "ok": false
+  },
+  {
+   "from": "FILLED",
+   "event": "OrderAccepted",
+   "ok": false
+  },
+  {
+   "from": "FILLED",
+   "event": "OrderRejected",
+   "ok": false
+  },
+  {
+   "from": "FILLED",
+   "event": "OrderDenied",
+   "ok": false
+  },
+  {
+   "from": "FILLED",
+   "event": "OrderTriggered",
+   "ok": false
+  },
+  {
+   "from": "FILLED",
+   "event": "OrderPartiallyFilled",
+   "ok": false
+  },
+  {
+   "from": "FILLED",
+   "event": "OrderFilled",
+   "ok": false
+  },
+  {
+   "from": "FILLED",
+   "event": "OrderCanceled",
+   "ok": false
+  },
+  {
+   "from": "FILLED",
+   "event": "OrderExpired",
+   "ok": false
+  },
+  {
+   "from": "FILLED",
+   "event": "OrderLiquidated",
+   "ok": false
+  },
+  {
+   "from": "FILLED",
+   "event": "FillEvent",
+   "ok": false
+  },
+  {
+   "from": "CANCELED",
+   "event": "OrderSubmitted",
+   "ok": false
+  },
+  {
+   "from": "CANCELED",
+   "event": "OrderAccepted",
+   "ok": false
+  },
+  {
+   "from": "CANCELED",
+   "event": "OrderRejected",
+   "ok": false
+  },
+  {
+   "from": "CANCELED",
+   "event": "OrderDenied",
+   "ok": false
+  },
+  {
+   "from": "CANCELED",
+   "event": "OrderTriggered",
+   "ok": false
+  },
+  {
+   "from": "CANCELED",
+   "event": "OrderPartiallyFilled",
+   "ok": false
+  },
+  {
+   "from": "CANCELED",
+   "event": "OrderFilled",
+   "ok": false
+  },
+  {
+   "from": "CANCELED",
+   "event": "OrderCanceled",
+   "ok": false
+  },
+  {
+   "from": "CANCELED",
+   "event": "OrderExpired",
+   "ok": false
+  },
+  {
+   "from": "CANCELED",
+   "event": "OrderLiquidated",
+   "ok": false
+  },
+  {
+   "from": "CANCELED",
+   "event": "FillEvent",
+   "ok": false
+  },
+  {
+   "from": "REJECTED",
+   "event": "OrderSubmitted",
+   "ok": false
+  },
+  {
+   "from": "REJECTED",
+   "event": "OrderAccepted",
+   "ok": false
+  },
+  {
+   "from": "REJECTED",
+   "event": "OrderRejected",
+   "ok": false
+  },
+  {
+   "from": "REJECTED",
+   "event": "OrderDenied",
+   "ok": false
+  },
+  {
+   "from": "REJECTED",
+   "event": "OrderTriggered",
+   "ok": false
+  },
+  {
+   "from": "REJECTED",
+   "event": "OrderPartiallyFilled",
+   "ok": false
+  },
+  {
+   "from": "REJECTED",
+   "event": "OrderFilled",
+   "ok": false
+  },
+  {
+   "from": "REJECTED",
+   "event": "OrderCanceled",
+   "ok": false
+  },
+  {
+   "from": "REJECTED",
+   "event": "OrderExpired",
+   "ok": false
+  },
+  {
+   "from": "REJECTED",
+   "event": "OrderLiquidated",
+   "ok": false
+  },
+  {
+   "from": "REJECTED",
+   "event": "FillEvent",
+   "ok": false
+  },
+  {
+   "from": "DENIED",
+   "event": "OrderSubmitted",
+   "ok": false
+  },
+  {
+   "from": "DENIED",
+   "event": "OrderAccepted",
+   "ok": false
+  },
+  {
+   "from": "DENIED",
+   "event": "OrderRejected",
+   "ok": false
+  },
+  {
+   "from": "DENIED",
+   "event": "OrderDenied",
+   "ok": false
+  },
+  {
+   "from": "DENIED",
+   "event": "OrderTriggered",
+   "ok": false
+  },
+  {
+   "from": "DENIED",
+   "event": "OrderPartiallyFilled",
+   "ok": false
+  },
+  {
+   "from": "DENIED",
+   "event": "OrderFilled",
+   "ok": false
+  },
+  {
+   "from": "DENIED",
+   "event": "OrderCanceled",
+   "ok": false
+  },
+  {
+   "from": "DENIED",
+   "event": "OrderExpired",
+   "ok": false
+  },
+  {
+   "from": "DENIED",
+   "event": "OrderLiquidated",
+   "ok": false
+  },
+  {
+   "from": "DENIED",
+   "event": "FillEvent",
+   "ok": false
+  },
+  {
+   "from": "EXPIRED",
+   "event": "OrderSubmitted",
+   "ok": false
+  },
+  {
+   "from": "EXPIRED",
+   "event": "OrderAccepted",
+   "ok": false
+  },
+  {
+   "from": "EXPIRED",
+   "event": "OrderRejected",
+   "ok": false
+  },
+  {
+   "from": "EXPIRED",
+   "event": "OrderDenied",
+   "ok": false
+  },
+  {
+   "from": "EXPIRED",
+   "event": "OrderTriggered",
+   "ok": false
+  },
+  {
+   "from": "EXPIRED",
+   "event": "OrderPartiallyFilled",
+   "ok": false
+  },
+  {
+   "from": "EXPIRED",
+   "event": "OrderFilled",
+   "ok": false
+  },
+  {
+   "from": "EXPIRED",
+   "event": "OrderCanceled",
+   "ok": false
+  },
+  {
+   "from": "EXPIRED",
+   "event": "OrderExpired",
+   "ok": false
+  },
+  {
+   "from": "EXPIRED",
+   "event": "OrderLiquidated",
+   "ok": false
+  },
+  {
+   "from": "EXPIRED",
+   "event": "FillEvent",
+   "ok": false
+  },
+  {
+   "from": "PENDING_CANCEL",
+   "event": "OrderSubmitted",
+   "ok": false
+  },
+  {
+   "from": "PENDING_CANCEL",
+   "event": "OrderAccepted",
+   "ok": false
+  },
+  {
+   "from": "PENDING_CANCEL",
+   "event": "OrderRejected",
+   "ok": false
+  },
+  {
+   "from": "PENDING_CANCEL",
+   "event": "OrderDenied",
+   "ok": false
+  },
+  {
+   "from": "PENDING_CANCEL",
+   "event": "OrderTriggered",
+   "ok": false
+  },
+  {
+   "from": "PENDING_CANCEL",
+   "event": "OrderPartiallyFilled",
+   "ok": false
+  },
+  {
+   "from": "PENDING_CANCEL",
+   "event": "OrderFilled",
+   "ok": false
+  },
+  {
+   "from": "PENDING_CANCEL",
+   "event": "OrderCanceled",
+   "ok": true,
+   "to": "CANCELED",
+   "venue_order_id": null,
+   "filled_qty": "0000000000000000",
+   "avg_fill_px": "0000000000000000"
+  },
+  {
+   "from": "PENDING_CANCEL",
+   "event": "OrderExpired",
+   "ok": false
+  },
+  {
+   "from": "PENDING_CANCEL",
+   "event": "OrderLiquidated",
+   "ok": false
+  },
+  {
+   "from": "PENDING_CANCEL",
+   "event": "FillEvent",
+   "ok": false
+  },
+  {
+   "from": "LIQUIDATED",
+   "event": "OrderSubmitted",
+   "ok": false
+  },
+  {
+   "from": "LIQUIDATED",
+   "event": "OrderAccepted",
+   "ok": false
+  },
+  {
+   "from": "LIQUIDATED",
+   "event": "OrderRejected",
+   "ok": false
+  },
+  {
+   "from": "LIQUIDATED",
+   "event": "OrderDenied",
+   "ok": false
+  },
+  {
+   "from": "LIQUIDATED",
+   "event": "OrderTriggered",
+   "ok": false
+  },
+  {
+   "from": "LIQUIDATED",
+   "event": "OrderPartiallyFilled",
+   "ok": false
+  },
+  {
+   "from": "LIQUIDATED",
+   "event": "OrderFilled",
+   "ok": false
+  },
+  {
+   "from": "LIQUIDATED",
+   "event": "OrderCanceled",
+   "ok": false
+  },
+  {
+   "from": "LIQUIDATED",
+   "event": "OrderExpired",
+   "ok": false
+  },
+  {
+   "from": "LIQUIDATED",
+   "event": "OrderLiquidated",
+   "ok": false
+  },
+  {
+   "from": "LIQUIDATED",
+   "event": "FillEvent",
+   "ok": false
+  },
+  {
+   "from": "EMULATED",
+   "event": "OrderSubmitted",
+   "ok": false
+  },
+  {
+   "from": "EMULATED",
+   "event": "OrderAccepted",
+   "ok": false
+  },
+  {
+   "from": "EMULATED",
+   "event": "OrderRejected",
+   "ok": false
+  },
+  {
+   "from": "EMULATED",
+   "event": "OrderDenied",
+   "ok": false
+  },
+  {
+   "from": "EMULATED",
+   "event": "OrderTriggered",
+   "ok": false
+  },
+  {
+   "from": "EMULATED",
+   "event": "OrderPartiallyFilled",
+   "ok": false
+  },
+  {
+   "from": "EMULATED",
+   "event": "OrderFilled",
+   "ok": false
+  },
+  {
+   "from": "EMULATED",
+   "event": "OrderCanceled",
+   "ok": false
+  },
+  {
+   "from": "EMULATED",
+   "event": "OrderExpired",
+   "ok": false
+  },
+  {
+   "from": "EMULATED",
+   "event": "OrderLiquidated",
+   "ok": false
+  },
+  {
+   "from": "EMULATED",
+   "event": "FillEvent",
+   "ok": false
+  },
+  {
+   "from": "RELEASED",
+   "event": "OrderSubmitted",
+   "ok": false
+  },
+  {
+   "from": "RELEASED",
+   "event": "OrderAccepted",
+   "ok": false
+  },
+  {
+   "from": "RELEASED",
+   "event": "OrderRejected",
+   "ok": false
+  },
+  {
+   "from": "RELEASED",
+   "event": "OrderDenied",
+   "ok": false
+  },
+  {
+   "from": "RELEASED",
+   "event": "OrderTriggered",
+   "ok": false
+  },
+  {
+   "from": "RELEASED",
+   "event": "OrderPartiallyFilled",
+   "ok": false
+  },
+  {
+   "from": "RELEASED",
+   "event": "OrderFilled",
+   "ok": false
+  },
+  {
+   "from": "RELEASED",
+   "event": "OrderCanceled",
+   "ok": false
+  },
+  {
+   "from": "RELEASED",
+   "event": "OrderExpired",
+   "ok": false
+  },
+  {
+   "from": "RELEASED",
+   "event": "OrderLiquidated",
+   "ok": false
+  },
+  {
+   "from": "RELEASED",
+   "event": "FillEvent",
+   "ok": false
+  }
+ ],
+ "vwap": [
+  {
+   "fills": [
+    [
+     2.505507,
+     62.3301
+    ],
+    [
+     1.379982,
+     119.7855
+    ],
+    [
+     0.030828,
+     83.9173
+    ],
+    [
+     0.179944,
+     74.2518
+    ],
+    [
+     0.749109,
+     105.3421
+    ],
+    [
+     0.543975,
+     135.5308
+    ]
+   ],
+   "states": [
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "40040b474107314d",
+     "avg_fill_px": "404f2a40b780346e"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "400f157b41bfbdf1",
+     "avg_fill_px": "4054af1cceb7a50e"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "400f549e01de2692",
+     "avg_fill_px": "4054afb52462502e"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "401062923e5b8562",
+     "avg_fill_px": "405497d405171831"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "401361a8ac5c13fd",
+     "avg_fill_px": "40557b1adc756c92"
+    },
+    {
+     "status": "FILLED",
+     "filled_qty": "40158eb074a771c9",
+     "avg_fill_px": "4056bb8f9824a6e0"
+    }
+   ]
+  },
+  {
+   "fills": [
+    [
+     2.508721,
+     59.3267
+    ],
+    [
+     0.702533,
+     113.1524
+    ],
+    [
+     0.03953,
+     74.9503
+    ],
+    [
+     1.791648,
+     90.8361
+    ]
+   ],
+   "states": [
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "400411dc50ce4ead",
+     "avg_fill_px": "404da9d14e3bcd36"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "4009b0a5efe93187",
+     "avg_fill_px": "4051c68b82e0760b"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "400a019b0ab2e169",
+     "avg_fill_px": "4051c98a29811ab2"
+    },
+    {
+     "status": "FILLED",
+     "filled_qty": "40142b734b51372a",
+     "avg_fill_px": "40538939aa587836"
+    }
+   ]
+  },
+  {
+   "fills": [
+    [
+     0.013072,
+     140.1925
+    ],
+    [
+     0.767886,
+     106.3127
+    ],
+    [
+     2.386541,
+     139.5805
+    ],
+    [
+     1.938001,
+     91.7348
+    ],
+    [
+     1.174216,
+     106.6765
+    ],
+    [
+     2.169422,
+     80.9952
+    ]
+   ],
+   "states": [
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "3f8ac57e23f24d90",
+     "avg_fill_px": "40618628f5c28f5c"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "3fe8fd9ba1b1960f",
+     "avg_fill_px": "405ab84e8c4beb16"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "40095709b738e6d1",
+     "avg_fill_px": "40607093ab9c2abb"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "40146c083126e979",
+     "avg_fill_px": "405d1aaadaff6d3b"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "40191e6ddf00abf8",
+     "avg_fill_px": "405ca61b211fc48c"
+    },
+    {
+     "status": "FILLED",
+     "filled_qty": "4020e5f56a7ac81e",
+     "avg_fill_px": "405a7df5e0ad70f6"
+    }
+   ]
+  },
+  {
+   "fills": [
+    [
+     2.046342,
+     117.6317
+    ],
+    [
+     2.741019,
+     78.9189
+    ],
+    [
+     1.368916,
+     134.5952
+    ],
+    [
+     0.357044,
+     88.0977
+    ],
+    [
+     1.664523,
+     104.365
+    ],
+    [
+     1.301502,
+     128.7821
+    ]
+   ],
+   "states": [
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "40005ee88df3732a",
+     "avg_fill_px": "405d686dc5d63886"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "40132641f644955c",
+     "avg_fill_px": "4057dddc2420947d"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "4018a00713f077ce",
+     "avg_fill_px": "405a0ab424f4cc8c"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "401a0da4052d666c",
+     "avg_fill_px": "4059d2539aa0c66b"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "40205b0e5e679464",
+     "avg_fill_px": "4059e060afa25c4a"
+    },
+    {
+     "status": "FILLED",
+     "filled_qty": "4022f56cd6c2efd4",
+     "avg_fill_px": "405abe7b8c5f7f7c"
+    }
+   ]
+  },
+  {
+   "fills": [
+    [
+     0.653022,
+     148.3897
+    ],
+    [
+     0.779736,
+     52.7265
+    ],
+    [
+     1.258796,
+     98.1944
+    ],
+    [
+     0.644873,
+     66.2624
+    ],
+    [
+     2.498662,
+     118.7332
+    ],
+    [
+     1.692148,
+     52.5923
+    ]
+   ],
+   "states": [
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "3fe4e58e64b23140",
+     "avg_fill_px": "40628c786c22680a"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "3ff6ec93a7115161",
+     "avg_fill_px": "405814fb64b56b7a"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "4005884d76ab5808",
+     "avg_fill_px": "40584cd9efafc9e0"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "400ab100a393ee5f",
+     "avg_fill_px": "4056ce240a25e379"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "401757219220ff54",
+     "avg_fill_px": "4059c021b70ef0df"
+    },
+    {
+     "status": "FILLED",
+     "filled_qty": "401e1be40420f6f0",
+     "avg_fill_px": "4056eadd9c2e5089"
+    }
+   ]
+  },
+  {
+   "fills": [
+    [
+     0.846468,
+     106.5338
+    ],
+    [
+     0.416272,
+     148.1318
+    ],
+    [
+     1.666917,
+     51.6932
+    ],
+    [
+     1.314802,
+     85.7392
+    ],
+    [
+     1.904648,
+     136.757
+    ]
+   ],
+   "states": [
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "3feb16440f238972",
+     "avg_fill_px": "405aa229c779a6b5"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "3ff4342edbb59ddc",
+     "avg_fill_px": "405e0fcd3ed4f2d5"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "40076ff0025bfad2",
+     "avg_fill_px": "40544f6fcda294a7"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "4010fa5375c8d9f9",
+     "avg_fill_px": "4054a89c4f657678"
+    },
+    {
+     "status": "FILLED",
+     "filled_qty": "401898af81626b2f",
+     "avg_fill_px": "4058d9834c16d2c8"
+    }
+   ]
+  },
+  {
+   "fills": [
+    [
+     0.463265,
+     53.7993
+    ],
+    [
+     1.49218,
+     76.7768
+    ]
+   ],
+   "states": [
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "3fdda6223e186983",
+     "avg_fill_px": "404ae64f765fd8ae"
+    },
+    {
+     "status": "FILLED",
+     "filled_qty": "3fff4980b242070c",
+     "avg_fill_px": "4051d5530e3536cb"
+    }
+   ]
+  },
+  {
+   "fills": [
+    [
+     1.535629,
+     115.4474
+    ],
+    [
+     0.0,
+     104.746
+    ],
+    [
+     0.31828,
+     132.6332
+    ]
+   ],
+   "states": [
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "3ff891efb6dca07f",
+     "avg_fill_px": "405cdca2339c0ebf"
+    },
+    {
+     "status": "PARTIALLY_FILLED",
+     "filled_qty": "3ff891efb6dca07f",
+     "avg_fill_px": "405cdca2339c0ebf"
+    },
+    {
+     "status": "FILLED",
+     "filled_qty": "3ffda99c7bcc2938",
+     "avg_fill_px": "405d9976a51c28d0"
+    }
+   ]
+  }
+ ]
+}

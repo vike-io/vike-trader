@@ -1,0 +1,22 @@
+[package]
+name = "vike-paths"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the PROJECT'S FILESYSTEM LAYOUT: where program-written state, the settings directory, the hist store, the live-tick store, user data, logs, bin/ and tmp/ scratch live when nobody said, and the one project-root walk every `<project>`-relative path starts from (`state_path`, `store_path`, `tick_store_path`), plus `scratch`, the owned self-deleting scratch directory and the bounded startup sweep of `<project>/tmp`. Pure with respect to the environment (a caller passes every variable in) and std-only. Extracted out of vike-model so a crate that only needs to know WHERE a file goes does not link the domain vocabulary."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `paths` — the
+# project's filesystem layout, below the domain vocabulary (10), which names it only as a
+# dev-dependency (its integration tests build in `scratch::ScratchDir`).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer. There is
+# none: the crate is std-only, and a dependency here would ride into every crate that resolves a path.
+[package.metadata.vike]
+layer = 7
+
+# No dependencies, normal or dev, by design: every module here is std-only (the walks, the resolvers,
+# the scratch guard and its tests, which mint their own temp directories rather than take `tempfile`).
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true
