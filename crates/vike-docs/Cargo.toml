@@ -1,0 +1,65 @@
+[package]
+name = "vike-docs"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The docs-data exporter: renders the CI-gated per-venue capability tables, the indicator and strategy registries and the remaining CI-gated rosters into the venues/stats/indicators/templates/rosters JSON release assets the documentation site consumes. A renderer over compile-time tables — no network, no settings, no environment reads; the `docs_data` bin is its file-writing shell."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `engine-stacked` — a
+# crate composed over a layer-30 crate.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+#
+# 35 is the ARITHMETIC FLOOR: `vike-core` at 30 is the ceiling (its `P99_BUDGET_NS`, the latency-gate
+# budget `stats.json` publishes, is declared in that library, `crates/vike-core/src/latency_budget.rs`),
+# and the layer-20 pieces (`vike-strategy`/`vike-data`/`vike-exec`/`vike-catalog`), `vike-indicators`
+# at 15 and `vike-model` at 10 sit under it. This read 25 while the budget was a copy pinned by a
+# text-parsing gate; the copy is gone, and so is the reason it could sit that low. Nothing depends on
+# this crate — its one consumer is `.github/workflows/release.yml`, which RUNS the `docs_data` bin —
+# so there is no ceiling above it to fit under.
+[package.metadata.vike]
+layer = 35
+
+[dependencies]
+# The domain vocabulary every record is rendered from: `VENUES`, `AssetClass`, `FeeSchedule`, the
+# `Event` table's authority.
+vike-model = { path = "../vike-model" }
+# The per-venue tables the exporter renders (decision 0162): `caps_for`, `venue_margin_support`,
+# `fee_schedule_for`, `amend_semantics`, `attribution_for`, and `venue_tif::venue_tif`, the TIF authority.
+vike-venues = { path = "../vike-venues" }
+# `stats.json`'s `latency_p99_budget_ns`: `vike_core::latency_budget::P99_BUDGET_NS`, the one constant
+# the latency gate (`crates/vike-core/tests/runtime_latency.rs`) asserts against. Layer 30 to this
+# crate's 35, so the edge is down-only; nothing of the fold is used.
+vike-core = { path = "../vike-core" }
+# The JSON the exporter writes (workspace-pinned).
+serde_json = { workspace = true }
+# The built-in indicator + pair registries `indicators.json` renders (layer 15).
+vike-indicators = { path = "../vike-indicators" }
+# PORTABLE_STRATEGIES / PARAM_KEYS / LIVE_CAPABLE / SIMULATOR_ONLY / SCRIPT_ONLY for
+# `templates.json` (layer 20).
+vike-strategy = { path = "../vike-strategy" }
+# `rosters.json`: the hist store's layout contract (`vike_data::store::store_kind::STORE_KINDS`). The
+# `HistStore` trait side only, so this crate never pulls `vike-store`'s Arrow/DataFusion tree.
+vike-data = { path = "../vike-data" }
+# `rosters.json`: `vike_exec::recon`'s `DivergenceKind` plus the `mode_applies` each reconcile
+# policy's verdict is COMPUTED through.
+vike-exec = { path = "../vike-exec" }
+# `rosters.json`: the per-class Symbol-picker TAB (`vike_catalog::tab_for`) — the one part of the
+# asset-class roster that is a GUI judgement rather than an instrument fact, so it stayed in the
+# catalog when `AssetClass` moved down to `vike-model`. Layer 20.
+vike-catalog = { path = "../vike-catalog" }
+# The `docs_data` bin reads its argv through `vike_util::cli` over `clap` (decision 0155): the shared command-line
+# layer (layer 3, the floor) and the derive.
+vike-util = { path = "../vike-util", features = ["cli"] }
+clap = { workspace = true }
+
+# The file-writing shell `.github/workflows/release.yml`'s "Render the docs-data assets" step runs.
+# Declared rather than left to auto-discovery so the NAME the release step spells is written down
+# beside the crate that owns it.
+[[bin]]
+name = "docs_data"
+path = "src/bin/docs_data.rs"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true
