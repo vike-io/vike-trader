@@ -1,0 +1,92 @@
+[package]
+name = "vike-gatewayhub-client"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the LIGHT client half of the vike-gatewayhub venue gateway (the one daemon that owns every venue connection, docs/decisions/0164): the wire protocol and the remote seams a hub plugs in — a remote vike_data::DataClient, remote history, catalog, options and family sources. Links no bridge, no vike-bridge-core and no HTTP, WebSocket or TLS crate. The wave-1 DATA surface lives behind the `data` feature, the wave-2 TRADE surface (the remote ExecutionClient and ReconClient the tradehub plugs in) behind `trade`."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain-stacked` — one
+# hop over the domain band: a crate composed of layer-20 pieces.
+# 25 is the rank of its SIBLING `vike-datahub-client`, over the same `vike-hub-proto` (15): the two
+# hub clients sit at the SAME rank, so neither can name the other, and `vike-gatewayhub-client`
+# re-declares what it needs from the datahub client (a credential-presence word) rather than
+# importing it. `vike-data` and `vike-catalog` (20) make 25 the arithmetic floor
+# (docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md).
+# The user-code hosts at 25 may not name it (equal rank), and
+# `crates/vike-ops/tests/architecture/named_run_closure_gate.rs` refuses it BY NAME there, as it
+# refuses this crate reaching `vike-sim` or `vike-backtest` and `vike-core` naming it
+# (docs/decisions/0091-the-live-core-names-no-transport-and-no-node-client.md).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 25
+
+[features]
+# **The DATA half** (wave 1 of docs/decisions/0164-one-daemon-owns-every-venue-connection-vike-gatewayhub.md):
+# the wire protocol, the blocking client and the remote seams the datahub's feed broker, backfill,
+# catalog, options and recorder lanes plug in. Every module of the crate is behind this feature.
+# `vike-datahub` and `vike-gatewayhub` are the consumers that turn it on.
+default = []
+data = []
+# **The TRADE half** (wave 2): the remote `ExecutionClient` and `ReconClient` the tradehub plugs in,
+# the lease link under them (reconnect, heartbeats, the NEVER-SENT queue, the event relay) and the
+# arming/preflight one-shots. Its own feature, never a mode of `data`: the tradehub links `trade`
+# alone. The WIRE (`proto`, `client`, the presence word) is shared by both and compiled when either is
+# on, so a `data`-only daemon build still decodes a trade verb and refuses it by name. Only this
+# feature pulls `vike-exec` (the `ExecutionClient`/`ReconClient` seams, the event lanes, the HALT
+# sentinel); the wire itself names no vike-exec type.
+trade = ["dep:vike-exec", "dep:vike-venues"]
+
+[dependencies]
+# The SHARED hub-protocol substrate: the HMAC-SHA256 nonce-challenge handshake generalized over
+# its domain separator (`auth`) and the length-prefixed frame codec and dial (`frame`), in the crate
+# BELOW both hub protocols. It names no vike-* crate.
+vike-hub-proto = { path = "../vike-hub-proto" }
+# The live-data TUBE (decision 0167): the stream frames and the reconnecting receiving engine
+# (`RemoteDataClient`), which this crate opens with its `GatewayOpener` (src/opener.rs). Layer 22.
+vike-market-stream = { path = "../vike-market-stream" }
+# The seams this crate implements REMOTELY: `DataClient`/`LiveDataSink` (live.rs), `KlineSource`/
+# `FundingRateSource` (source.rs) and the `StreamLabel` vocabulary. Default features: the traits
+# only, no store engine.
+vike-data = { path = "../vike-data" }
+# The domain value types the wire carries (`StreamStatus`, `DataDelay`, `Instrument`, `AssetClass`)
+# — already serde in vike-model, so the proto reuses those derives rather than growing mirrors.
+vike-model = { path = "../vike-model" }
+# The `CatalogProvider` seam `RemoteCatalog` implements, the venue-catalog grammar helpers and the
+# offline polymarket family check `RemoteRollingFamily` calls first.
+vike-catalog = { path = "../vike-catalog" }
+# The market-data vocabulary the stream frames carry (`Bar`, `QuoteTick`, `TradeTick`, `L2Book`,
+# `BookUpdate`, `OptionTicker`, `OptionChain`). Layer 5, serde only.
+vike-marketdata = { path = "../vike-marketdata" }
+# The `trade` feature's seams: `ExecutionClient`, `ReconClient`, `EventSender`/`GatewayEvent` (the
+# journal cursor's producer side), the HALT sentinel (`vike_exec::halt`). Layer 20, below this crate's
+# 25. Optional: a `data`-only build (the datahub, the daemon's data lane) does not link it through
+# this crate.
+vike-exec = { path = "../vike-exec", optional = true }
+# The reserved link words the dead-man keys its sources on (`link_deadman::TRADE_LINK_STREAM`) and
+# `Ingest::ExecLink`'s companions. Layer 12, optional: only the `trade` half names it (a dev-dependency
+# below serves the data tests).
+vike-venues = { path = "../vike-venues", optional = true }
+serde = { workspace = true }        # derive on the wire enums (proto.rs)
+serde_json = { workspace = true }   # the frame payload codec (float_roundtrip: bit-exact f64)
+# The facade only (libraries never init): link-loss and replay disclosures a reconnect makes. Already
+# in this crate's closure through vike-data.
+tracing = { workspace = true }
+# NOT here, and the fences keep it so: no bridge, no `vike-bridge-core`, no `vike-datahub-client`,
+# no `vike-secrets`, no `vike-config`, no `tungstenite`/`rustls`/`ureq`. Keys and addresses arrive as
+# parameters from the caller that reads the store.
+
+[dev-dependencies]
+# `LiveVerb`, to ask `vike_data::require_live_verb` for the canonical `Unsupported` texts the contract test
+# sends over the wire (tests/dataclient_contract.rs); the interning that needed it in src moved to the tube.
+vike-venues = { path = "../vike-venues" }
+# The shared `RecordingSink` the event round trip and the contract tests assert through.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+proptest = { workspace = true }
+# A self-deleting scratch dir for the HALT sentinel file the halt_boundary suite touches (the workspace pin).
+tempfile = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is the sole
+# crate that does NOT inherit this.
+[lints]
+workspace = true
