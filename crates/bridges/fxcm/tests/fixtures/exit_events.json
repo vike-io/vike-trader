@@ -1,0 +1,42 @@
+{
+  "_provenance": {
+    "what": "The async envelopes the C++ shim's EventListener enqueues for a trade whose stop-loss and take-profit are bound to it, in the order the VENUE delivered the rows, for three outcomes.",
+    "source": "crates/bridges/fxcm/src/shim/fcshim.cpp - EventListener::onTablesUpdates (the `canceled` arm for an Orders Delete with status C, the ClosedTrades arm for a closing fill)",
+    "how": "TRANSCRIBED from the SDK probe logs of the FXCM DEMO login (account 9, EUR, hedging, 2026-10-26; docs/ops/fxcm-forexconnect.md, 'Trade-bound stop-loss and take-profit'): the order ids, trade ids, rates and the ORDER of the rows are the measured ones. Scenario 1 is probes P1 then P2 (a partial close of a 2000 trade with both exits resting, then the stop on the remainder fires), scenario 2 probe P5 (a take-profit fires), scenario 3 the older close probe S6 (the trade closed by a market close). The envelopes are what the listener's snprintf literals make of those rows; tests/fxcm_shim_envelope_grammar.rs keeps the fill and canceled literals honest. Not a wire capture: this venue speaks a C++ SDK.",
+    "faithfulness": [
+      "`ts` is 0 in every envelope because the shim HARD-CODES 0.",
+      "In a fired exit's batch the venue's Orders Delete (status C) of the SIBLING comes BEFORE the ClosedTrades row of the fill, so the sibling's `canceled` envelope precedes the fill envelope. The exit's own Orders Update (E) and Delete (F) are an execution, not a cancel: the listener enqueues nothing for them.",
+      "The closing fill's order_id is the EXIT's own order id (ClosedTrades.CloseOrderID = the order id of the S or L that fired) and its trade_id is `<trade id>-close-<that order id>`.",
+      "A PARTIAL close splits its trade: the remainder arrives as a Trades Insert with a non-empty TradeIDOrigin, which the listener does NOT report (it is no execution), and the exits follow the remainder under their own order ids. So no envelope exists for it here.",
+      "`commission` of a closing fill is 0 (the shim books the venue's commission on the opening fill only)."
+    ]
+  },
+  "scenarios": {
+    "a_partial_close_then_the_stop_on_the_remainder_fires_and_the_venue_deletes_the_take_profit": {
+      "routes": { "416154900": "entry", "416154905": "close", "416154904": "stop", "416154901": "take-profit" },
+      "envelopes": [
+        { "kind": "fill", "order_id": "416154900", "trade_id": "186983141", "instrument": "EUR/USD", "side": "B", "amount": 2000, "rate": 1.119560, "commission": 0.000000, "ts": 0 },
+        { "kind": "fill", "order_id": "416154905", "trade_id": "186983141-close-416154905", "instrument": "EUR/USD", "side": "S", "amount": 1000, "rate": 1.119500, "commission": 0.000000, "ts": 0 },
+        { "kind": "canceled", "order_id": "416154901", "ts": 0 },
+        { "kind": "fill", "order_id": "416154904", "trade_id": "186983241-close-416154904", "instrument": "EUR/USD", "side": "S", "amount": 1000, "rate": 1.119360, "commission": 0.000000, "ts": 0 }
+      ]
+    },
+    "the_take_profit_fires_and_the_venue_deletes_the_stop": {
+      "routes": { "416154913": "entry", "416154926": "take-profit", "416154929": "stop" },
+      "envelopes": [
+        { "kind": "fill", "order_id": "416154913", "trade_id": "186983145", "instrument": "EUR/USD", "side": "B", "amount": 2000, "rate": 1.119430, "commission": 0.000000, "ts": 0 },
+        { "kind": "canceled", "order_id": "416154929", "ts": 0 },
+        { "kind": "fill", "order_id": "416154926", "trade_id": "186983145-close-416154926", "instrument": "EUR/USD", "side": "S", "amount": 2000, "rate": 1.119220, "commission": 0.000000, "ts": 0 }
+      ]
+    },
+    "the_trade_closed_by_a_market_close_takes_both_exits_with_it": {
+      "routes": { "416154073": "entry", "416154195": "stop", "416154193": "take-profit", "416154199": "close" },
+      "envelopes": [
+        { "kind": "fill", "order_id": "416154073", "trade_id": "186983022", "instrument": "EUR/USD", "side": "B", "amount": 1000, "rate": 1.120450, "commission": 0.000000, "ts": 0 },
+        { "kind": "canceled", "order_id": "416154195", "ts": 0 },
+        { "kind": "canceled", "order_id": "416154193", "ts": 0 },
+        { "kind": "fill", "order_id": "416154199", "trade_id": "186983022-close-416154199", "instrument": "EUR/USD", "side": "S", "amount": 1000, "rate": 1.120220, "commission": 0.000000, "ts": 0 }
+      ]
+    }
+  }
+}

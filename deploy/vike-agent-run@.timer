@@ -1,0 +1,55 @@
+# vike-agent-run@.timer — the cadence for vike-agent-run@.service. `%i` is the TASK.
+# Install beside the service (same root substitution — this file names no path), then enable ONE
+# instance per task you want run:
+#
+#   sudo systemctl enable --now vike-agent-run@node-review.timer
+#   sudo systemctl enable --now vike-agent-run@risk-review.timer
+#   systemctl list-timers 'vike-agent-run@*'
+#
+# `vike-agent-run tasks` prints the task names this template's `%i` accepts.
+#
+# ⚠ THE CADENCE IS THE OPERATOR'S CALL AND THIS FILE IS ONLY A STARTING POINT, but two properties of
+# it are not cosmetic:
+#
+#   1. EVERY FIRING COSTS A MODEL. Unlike the cohort collector's timer — whose windows are idempotent
+#      on a fixed grid, so an extra firing writes nothing and costs one metered request — a run here
+#      hands a fresh prompt to a fresh session and is billed for it. There is no idempotency to lean
+#      on and none is possible: the answer to "is anything wrong with my node" is different every
+#      time it is asked, which is the whole point. Fire this hourly and you are buying twenty-four
+#      sessions a day.
+#   2. A RUN IS NOT A WATCHDOG. Whatever cadence you choose, this is a review that happens on a
+#      schedule, not an alert that fires on a condition. The things that must be noticed in seconds
+#      — a dropped venue link, a stuck order, a breached limit — are the daemon's own kill switches
+#      and dead-man, and none of them is delegated to this. Read docs/ops/kill-switches.md before
+#      treating a nightly agent review as coverage of anything.
+#
+# ⚠ THE DEFAULT BELOW IS DAILY, JUST BEFORE THE WORKING DAY, deliberately: the record this leaves is
+# a thing a person reads with coffee, so it is written shortly before they would read it rather than
+# at some hour chosen for the machine's convenience. The one machine constraint that DID shape it is
+# the same one the cohort collector's timer names — unattended-upgrades restarts services on this
+# fleet in the 06:00-07:00 window, so a firing inside it can meet a daemon that is mid-restart and
+# record a node-is-down review that says nothing about the node. 05:40 clears it.
+
+[Unit]
+Description=daily unattended agent session for %i
+
+[Timer]
+# UTC explicitly. A local-time trigger on a box in another zone drifts across the boundary the
+# note above is measured from, and the record's own stamps are UTC — a schedule in a second time
+# base makes "which firing produced this record" a subtraction. A timezone suffix needs systemd
+# >= 240; the latency box/the CI box run 255.
+OnCalendar=*-*-* 05:40:00 UTC
+# Spread, so a fleet of boxes does not open a model connection in the same second. Smaller than the
+# collector's because this is one request rather than a metered batch, and because the window before
+# the working day is the point.
+RandomizedDelaySec=300
+# ⚠ Persistent= is DELIBERATELY ABSENT, and this is the one line where this timer differs from every
+# other in this directory. `Persistent=true` runs a firing missed while the box was down — right for
+# a collector, whose windows are fixed and whose data is still there to fetch. A review is about the
+# node's state NOW: replaying yesterday's missed session at boot spends a model to produce a record
+# stamped today about a moment that has passed, and files it beside the real ones. A missed review is
+# a review that did not happen, and the honest record of it is its absence.
+Unit=vike-agent-run@%i.service
+
+[Install]
+WantedBy=timers.target

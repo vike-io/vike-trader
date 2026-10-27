@@ -1,0 +1,37 @@
+# vike-notify-user@.service — USER-scope OnFailure= notifier template.
+# Install to ~/.config/systemd/user/vike-notify@.service (note: WITHOUT the `-user` infix — the
+# filename in this repo is disambiguated only so the two templates can sit side by side under
+# deploy/), then `systemctl --user daemon-reload`.
+#
+# WHY A SECOND COPY: a systemd USER manager cannot start a unit owned by the SYSTEM manager, so
+# `OnFailure=vike-notify@%n.service` inside a user unit resolves against the user manager and needs
+# this template to exist there. Production work is split across both scopes on these boxes —
+# poly-l2-monitor, poly-export, poly-http, quality-gate and the gh-runners are user units on the latency box;
+# vike-ci-poll is one on the CI box — so covering only /etc/systemd/system would leave them unwatched.
+#
+# Same binary, same contract, same anti-storm limiters as the system twin
+# (`crates/vike-tradehub/src/notify_cli.rs`), and the same two credential rows in the project's
+# settings database. Two differences: `--user`, so the failed unit's verdict is read from the USER
+# manager (`systemctl --user show`; the system manager answers defaults for a unit it does not
+# have), and no sandbox beyond what a user manager can apply.
+#
+# ⚠ EVERY PATH BELOW IS THE PLACEHOLDER PROJECT ROOT /srv/vike-<unit> — substitute it exactly as
+# the system twin's header says (`sed "s,/srv/vike-<unit>,$R,g"`, then grep for what was missed).
+
+[Unit]
+Description=vike-notify — report failure of %i to Telegram (user scope)
+
+[Service]
+Type=oneshot
+ExecStart=/srv/vike-<unit>/bin/vike-backend notify --user %i
+SyslogIdentifier=vike-notify
+
+# The one bootstrap pointer: which project's settings database (credentials and state) to use.
+# No `EnvironmentFile=`, no other `Environment=` line.
+Environment=VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings
+
+TimeoutStartSec=30
+
+# User-manager units cannot use the system hardening set (no privileges to drop), but these apply.
+NoNewPrivileges=true
+PrivateTmp=true

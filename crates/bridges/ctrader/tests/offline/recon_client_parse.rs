@@ -1,0 +1,435 @@
+//! Pure parse tests for the cTrader `ReconClient` report parsers (ReconFactory seam, wave-2 task
+//! 6) — NO network: builds the already-decoded prost structs directly (cTrader is protobuf, not
+//! REST/JSON, so there is no wire body to feed a JSON parser) and feeds them straight to
+//! `vike_ctrader::recon_client`'s pure `parse_*` functions. Asserts the tricky bits the module doc
+//! calls out: unsigned-volume-plus-tradeSide -> signed qty, the client-order-id fallback to
+//! `tradeData.label`, fill-progress-derived `PARTIALLY_FILLED`, and the commission
+//! descale-and-negate.
+
+use vike_ctrader::proto::{
+    ProtoOaDeal, ProtoOaOrder, ProtoOaOrderStatus, ProtoOaOrderType, ProtoOaPosition,
+    ProtoOaTradeData, ProtoOaTradeSide,
+};
+use vike_ctrader::recon_client::{
+    RawPosition, net_positions, parse_balance, parse_fills, parse_orders, parse_positions,
+    parse_raw_positions,
+};
+use vike_ctrader::symbols::SymbolMap;
+use vike_model::events::{LiquiditySide, PositionSide};
+
+fn symbols() -> SymbolMap {
+    use vike_ctrader::proto::{ProtoOaLightSymbol, ProtoOaSymbol};
+    SymbolMap::from_symbols(
+        &[
+            ProtoOaLightSymbol {
+                symbol_id: 1,
+                symbol_name: Some("EURUSD".to_string()),
+                enabled: Some(true),
+                ..Default::default()
+            },
+            ProtoOaLightSymbol {
+                symbol_id: 2,
+                symbol_name: Some("GBPUSD".to_string()),
+                enabled: Some(true),
+                ..Default::default()
+            },
+        ],
+        &[
+            ProtoOaSymbol { symbol_id: 1, digits: 5, pip_position: 4, ..Default::default() },
+            ProtoOaSymbol { symbol_id: 2, digits: 5, pip_position: 4, ..Default::default() },
+        ],
+    )
+}
+
+fn trade_data(symbol_id: i64, volume: i64, side: ProtoOaTradeSide) -> ProtoOaTradeData {
+    ProtoOaTradeData { symbol_id, volume, trade_side: side as i32, ..Default::default() }
+}
+
+// --- parse_orders --------------------------------------------------------------------------
+
+#[test]
+fn parses_resting_order_every_field() {
+    let order = ProtoOaOrder {
+        order_id: 42,
+        trade_data: ProtoOaTradeData {
+            label: Some("client-coid-1".to_string()),
+            ..trade_data(1, 1000, ProtoOaTradeSide::Buy)
+        },
+        order_type: ProtoOaOrderType::Limit as i32,
+        order_status: ProtoOaOrderStatus::OrderStatusAccepted as i32,
+        execution_price: Some(1.0950),
+        executed_volume: Some(0),
+        utc_last_update_timestamp: Some(1_700_000_000_000),
+        ..Default::default()
+    };
+    let r = parse_orders(&[order], &symbols());
+    assert_eq!(r.len(), 1);
+    let o = &r[0];
+    assert_eq!(o.venue, "ctrader");
+    assert_eq!(o.symbol, "EURUSD");
+    assert_eq!(o.venue_order_id.as_str(), "42");
+    assert_eq!(
+        o.client_order_id.as_deref(),
+        Some("client-coid-1"),
+        "falls back to trade_data.label"
+    );
+    assert_eq!(o.side, 1, "Buy -> +1");
+    assert_eq!(o.order_type, vike_model::OrderType::Limit);
+    assert_eq!(o.qty, 10.0, "1000 cents -> 10.00 units");
+    assert_eq!(o.filled_qty, 0.0);
+    assert_eq!(o.avg_px, 1.0950);
+    assert_eq!(o.status, vike_model::OrderStatus::Accepted);
+    assert_eq!(o.ts, 1_700_000_000_000);
+}
+
+#[test]
+fn client_order_id_field_takes_precedence_over_label() {
+    let order = ProtoOaOrder {
+        client_order_id: Some("dedicated-coid".to_string()),
+        trade_data: ProtoOaTradeData {
+            label: Some("fallback-label".to_string()),
+            ..trade_data(1, 100, ProtoOaTradeSide::Sell)
+        },
+        order_status: ProtoOaOrderStatus::OrderStatusAccepted as i32,
+        ..Default::default()
+    };
+    let r = parse_orders(&[order], &symbols());
+    assert_eq!(r[0].client_order_id.as_deref(), Some("dedicated-coid"));
+    assert_eq!(r[0].side, -1, "Sell -> -1");
+}
+
+#[test]
+fn absent_client_order_id_and_label_normalizes_to_none() {
+    let order = ProtoOaOrder {
+        trade_data: trade_data(1, 100, ProtoOaTradeSide::Buy),
+        order_status: ProtoOaOrderStatus::OrderStatusAccepted as i32,
+        ..Default::default()
+    };
+    let r = parse_orders(&[order], &symbols());
+    assert_eq!(r[0].client_order_id, None);
+}
+
+#[test]
+fn accepted_with_partial_fill_progress_derives_partially_filled() {
+    let order = ProtoOaOrder {
+        trade_data: trade_data(1, 1000, ProtoOaTradeSide::Buy),
+        order_status: ProtoOaOrderStatus::OrderStatusAccepted as i32,
+        executed_volume: Some(400),
+        ..Default::default()
+    };
+    let r = parse_orders(&[order], &symbols());
+    assert_eq!(r[0].status, vike_model::OrderStatus::PartiallyFilled);
+    assert_eq!(r[0].filled_qty, 4.0);
+}
+
+#[test]
+fn every_terminal_status_normalizes() {
+    for (status, want) in [
+        (ProtoOaOrderStatus::OrderStatusFilled, vike_model::OrderStatus::Filled),
+        (ProtoOaOrderStatus::OrderStatusRejected, vike_model::OrderStatus::Rejected),
+        (ProtoOaOrderStatus::OrderStatusExpired, vike_model::OrderStatus::Expired),
+        (ProtoOaOrderStatus::OrderStatusCancelled, vike_model::OrderStatus::Canceled),
+    ] {
+        let order = ProtoOaOrder {
+            trade_data: trade_data(1, 100, ProtoOaTradeSide::Buy),
+            order_status: status as i32,
+            ..Default::default()
+        };
+        let r = parse_orders(&[order], &symbols());
+        assert_eq!(r[0].status, want, "{status:?}");
+    }
+}
+
+#[test]
+fn parse_orders_resolves_symbol_name_from_the_symbol_map() {
+    let order = ProtoOaOrder {
+        trade_data: trade_data(2, 100, ProtoOaTradeSide::Buy),
+        order_status: ProtoOaOrderStatus::OrderStatusAccepted as i32,
+        ..Default::default()
+    };
+    let r = parse_orders(&[order], &symbols());
+    assert_eq!(r[0].symbol, "GBPUSD");
+}
+
+// --- parse_positions -----------------------------------------------------------------------
+
+#[test]
+fn parses_long_position() {
+    let pos = ProtoOaPosition {
+        position_id: 1,
+        trade_data: trade_data(1, 500, ProtoOaTradeSide::Buy),
+        price: Some(1.10),
+        utc_last_update_timestamp: Some(123),
+        ..Default::default()
+    };
+    let r = parse_positions(&[pos], &symbols());
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].symbol, "EURUSD");
+    assert_eq!(r[0].position_side, PositionSide::Long);
+    assert_eq!(r[0].qty, 5.0);
+    assert_eq!(r[0].avg_px, 1.10);
+    assert_eq!(r[0].ts, 123);
+}
+
+#[test]
+fn parses_short_position_as_negative_qty() {
+    let pos = ProtoOaPosition {
+        position_id: 2,
+        trade_data: trade_data(1, 300, ProtoOaTradeSide::Sell),
+        ..Default::default()
+    };
+    let r = parse_positions(&[pos], &symbols());
+    assert_eq!(r[0].position_side, PositionSide::Short);
+    assert_eq!(r[0].qty, -3.0, "unsigned wire volume + SELL -> negative");
+}
+
+// --- net_positions -------------------------------------------------------------------------
+
+fn leg(
+    position_id: i64,
+    volume: i64,
+    side: ProtoOaTradeSide,
+    price: Option<f64>,
+    ts: i64,
+) -> ProtoOaPosition {
+    ProtoOaPosition {
+        position_id,
+        trade_data: trade_data(1, volume, side),
+        price,
+        utc_last_update_timestamp: Some(ts),
+        ..Default::default()
+    }
+}
+
+fn netted(legs: &[ProtoOaPosition]) -> Vec<vike_model::PositionStatusReport> {
+    net_positions(&parse_positions(legs, &symbols()))
+}
+
+#[test]
+fn net_positions_of_one_direction_is_one_both_row_with_a_weighted_price() {
+    use ProtoOaTradeSide::Buy;
+    let r = netted(&[
+        leg(1, 100, Buy, Some(1.10), 5),
+        leg(2, 300, Buy, Some(1.20), 9),
+        leg(3, 0, Buy, Some(9.99), 99), // the empty position a pending order makes
+    ]);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert_eq!(
+        (r[0].symbol.as_str(), r[0].position_side, r[0].qty),
+        ("EURUSD", PositionSide::Both, 4.0)
+    );
+    assert!((r[0].avg_px - 1.175).abs() < 1e-12, "{}", r[0].avg_px);
+    assert_eq!(r[0].ts, 9, "the newest leg's");
+}
+
+#[test]
+fn net_positions_of_shorts_carries_the_sign_in_qty() {
+    let r = netted(&[
+        leg(1, 100, ProtoOaTradeSide::Sell, Some(1.0), 1),
+        leg(2, 100, ProtoOaTradeSide::Sell, Some(2.0), 2),
+    ]);
+    assert_eq!((r[0].position_side, r[0].qty, r[0].avg_px), (PositionSide::Both, -2.0, 1.5));
+}
+
+/// A leg with no usable price makes the merged price "unknown" (`0.0`), never a blend with a zero:
+/// `resolve` refuses to book a position at an average price of zero.
+#[test]
+fn net_positions_with_an_unpriced_leg_has_no_price() {
+    use ProtoOaTradeSide::Buy;
+    let r = netted(&[leg(1, 100, Buy, Some(1.10), 1), leg(2, 100, Buy, None, 2)]);
+    assert_eq!((r[0].qty, r[0].avg_px), (2.0, 0.0));
+}
+
+#[test]
+fn net_positions_with_no_exposure_is_empty() {
+    assert!(netted(&[]).is_empty());
+    assert!(netted(&[leg(1, 0, ProtoOaTradeSide::Buy, None, 1)]).is_empty());
+}
+
+/// Both directions stay two rows, each summed: the book has no key for a pair, and the rows sum to the net.
+#[test]
+fn net_positions_of_both_directions_is_a_long_row_and_a_short_row() {
+    use ProtoOaTradeSide::{Buy, Sell};
+    let r = netted(&[
+        leg(1, 100, Buy, Some(1.10), 1),
+        leg(2, 200, Buy, Some(1.30), 2),
+        leg(3, 100, Sell, Some(1.25), 3),
+    ]);
+    let rows: Vec<_> = r.iter().map(|p| (p.position_side, p.qty, p.ts)).collect();
+    assert_eq!(rows, [(PositionSide::Long, 3.0, 2), (PositionSide::Short, -1.0, 3)]);
+    assert!((r[0].avg_px - (1.10 + 2.0 * 1.30) / 3.0).abs() < 1e-12);
+    assert_eq!(r.iter().map(|p| p.qty).sum::<f64>(), 2.0);
+}
+
+// --- parse_raw_positions (close_all input) -------------------------------------------------
+
+#[test]
+fn parse_raw_positions_keeps_position_id_side_and_volume() {
+    // The whole point vs. parse_positions: the raw numeric `position_id` (which the
+    // `PositionStatusReport` output has no field for) survives — it is what `close_all` closes by.
+    let long = ProtoOaPosition {
+        position_id: 700_001,
+        trade_data: trade_data(1, 100_000, ProtoOaTradeSide::Buy),
+        ..Default::default()
+    };
+    let short = ProtoOaPosition {
+        position_id: 700_002,
+        trade_data: trade_data(1, 50_000, ProtoOaTradeSide::Sell),
+        ..Default::default()
+    };
+    let r = parse_raw_positions(&[long, short], &symbols());
+    assert_eq!(
+        r,
+        vec![
+            RawPosition { position_id: 700_001, symbol: "EURUSD".into(), side: 1, volume: 100_000 },
+            RawPosition { position_id: 700_002, symbol: "EURUSD".into(), side: -1, volume: 50_000 },
+        ]
+    );
+}
+
+#[test]
+fn parse_raw_positions_drops_zero_volume_placeholder() {
+    // A CREATED placeholder (a pending order's empty position) has zero volume — nothing to flatten.
+    let empty = ProtoOaPosition {
+        position_id: 700_003,
+        trade_data: trade_data(1, 0, ProtoOaTradeSide::Buy),
+        ..Default::default()
+    };
+    assert!(parse_raw_positions(&[empty], &symbols()).is_empty());
+}
+
+#[test]
+fn parse_raw_positions_resolves_symbol_name() {
+    let pos = ProtoOaPosition {
+        position_id: 700_004,
+        trade_data: trade_data(2, 10_000, ProtoOaTradeSide::Buy),
+        ..Default::default()
+    };
+    assert_eq!(parse_raw_positions(&[pos], &symbols())[0].symbol, "GBPUSD");
+}
+
+// --- parse_fills ---------------------------------------------------------------------------
+
+fn deal(symbol_id: i64, status: vike_ctrader::proto::ProtoOaDealStatus) -> ProtoOaDeal {
+    ProtoOaDeal {
+        deal_id: 900,
+        order_id: 42,
+        symbol_id,
+        volume: 1000,
+        filled_volume: 1000,
+        trade_side: ProtoOaTradeSide::Buy as i32,
+        deal_status: status as i32,
+        execution_price: Some(1.095),
+        execution_timestamp: 1_700_000_000_000,
+        commission: Some(-3),
+        money_digits: Some(2),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn parses_filled_deal_every_field() {
+    let d = deal(1, vike_ctrader::proto::ProtoOaDealStatus::Filled);
+    let r = parse_fills(&[d], 1, "EURUSD", 2);
+    assert_eq!(r.len(), 1);
+    let f = &r[0];
+    assert_eq!(f.venue, "ctrader");
+    assert_eq!(f.symbol, "EURUSD");
+    assert_eq!(f.trade_id.as_str(), "900");
+    assert_eq!(f.venue_order_id.as_str(), "42");
+    assert_eq!(f.client_order_id, None, "ProtoOADeal carries no client-order-id field");
+    assert_eq!(f.side, 1, "Buy -> +1");
+    assert_eq!(f.last_qty, 10.0);
+    assert_eq!(f.last_px, 1.095);
+    assert_eq!(f.commission, 0.03, "-3 raw / 10^2, negated -> +0.03 cost");
+    assert_eq!(f.commission_asset, "");
+    assert_eq!(f.liquidity_side, LiquiditySide::Unknown);
+    assert_eq!(f.ts, 1_700_000_000_000);
+}
+
+/// A reconcile fill of a foreign-quoted CLOSE carries the same commission the live fill does: the deal's own
+/// plus the venue's conversion fee (`pnlConversionFee`, a cost whichever sign it comes in).
+#[test]
+fn a_closing_deals_conversion_fee_is_part_of_the_reported_commission() {
+    let mut d = deal(1, vike_ctrader::proto::ProtoOaDealStatus::Filled);
+    d.close_position_detail = Some(vike_ctrader::proto::ProtoOaClosePositionDetail {
+        pnl_conversion_fee: Some(-7),
+        money_digits: Some(2),
+        ..Default::default()
+    });
+    let r = parse_fills(&[d], 1, "EURUSD", 2);
+    assert!((r[0].commission - 0.10).abs() < 1e-12, "{}", r[0].commission);
+    assert_eq!(r[0].commission_asset, "", "the account's own currency");
+}
+
+#[test]
+fn partially_filled_deal_is_kept() {
+    let d = deal(1, vike_ctrader::proto::ProtoOaDealStatus::PartiallyFilled);
+    let r = parse_fills(&[d], 1, "EURUSD", 2);
+    assert_eq!(r.len(), 1);
+}
+
+#[test]
+fn rejected_deals_are_dropped() {
+    for status in [
+        vike_ctrader::proto::ProtoOaDealStatus::Rejected,
+        vike_ctrader::proto::ProtoOaDealStatus::InternallyRejected,
+        vike_ctrader::proto::ProtoOaDealStatus::Error,
+    ] {
+        let d = deal(1, status);
+        let r = parse_fills(&[d], 1, "EURUSD", 2);
+        assert!(r.is_empty(), "{status:?} must never surface as a fill");
+    }
+}
+
+#[test]
+fn parse_fills_filters_out_other_symbol_ids() {
+    let d = deal(2, vike_ctrader::proto::ProtoOaDealStatus::Filled);
+    let r = parse_fills(&[d], 1, "EURUSD", 2);
+    assert!(r.is_empty());
+}
+
+#[test]
+fn deal_own_money_digits_takes_precedence_over_account_level() {
+    // deal.money_digits = Some(2) above; the account-level fallback (passed as the last param
+    // here) is a DIFFERENT value (4) — the deal's own field must win.
+    let d = deal(1, vike_ctrader::proto::ProtoOaDealStatus::Filled);
+    let r = parse_fills(&[d], 1, "EURUSD", 4);
+    assert_eq!(r[0].commission, 0.03, "deal.money_digits=2 wins over the account-level 4");
+}
+
+#[test]
+fn falls_back_to_account_level_money_digits_when_deal_omits_it() {
+    let mut d = deal(1, vike_ctrader::proto::ProtoOaDealStatus::Filled);
+    d.money_digits = None;
+    let r = parse_fills(&[d], 1, "EURUSD", 2);
+    assert_eq!(r[0].commission, 0.03);
+}
+
+fn trader(balance: i64, money_digits: Option<u32>) -> vike_ctrader::proto::ProtoOaTrader {
+    vike_ctrader::proto::ProtoOaTrader { balance, money_digits, ..Default::default() }
+}
+
+#[test]
+fn parse_balance_descales_by_the_traders_own_money_digits() {
+    assert_eq!(parse_balance(&trader(1_000_067, Some(2)), Some("USD")), Ok(10_000.67));
+    assert_eq!(parse_balance(&trader(1_000_067, Some(4)), Some("usd")), Ok(100.0067));
+    assert_eq!(parse_balance(&trader(-250, Some(2)), Some("USD")), Ok(-2.5), "a debit stays one");
+}
+
+/// The vendor documents no default for `moneyDigits`: an absent one is a refusal in words, never a scale
+/// of 0 (which would read a true 2 a hundred times too large).
+#[test]
+fn parse_balance_refuses_an_absent_money_digits() {
+    let refusal = parse_balance(&trader(1_000_067, None), Some("USD")).expect_err("no scale");
+    assert!(refusal.contains("moneyDigits"), "{refusal}");
+}
+
+/// The balance is a bare number: only the currency the engine's ledger is guaranteed to share is adopted.
+#[test]
+fn parse_balance_refuses_a_deposit_it_cannot_call_usd() {
+    let eur = parse_balance(&trader(1_000_067, Some(2)), Some("EUR")).expect_err("EUR");
+    assert!(eur.contains("deposit currency is EUR"), "{eur}");
+    let unknown = parse_balance(&trader(1_000_067, Some(2)), None).expect_err("unnamed");
+    assert!(unknown.contains("deposit currency is unknown"), "{unknown}");
+}
