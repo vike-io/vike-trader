@@ -1,0 +1,138 @@
+//! Dukascopy reconcile seam end-to-end: the fake bridge's `netting` mode keeps the Java sidecar's position-per-order book
+//! and ANSWERS the `recon` question from it, and the [`DukascopyReconClient`] derived from the running exec client must
+//! report EXACTLY the venue's net position and its open orders through the whole netting lifecycle: open, blend,
+//! partial net-close (the re-anchor case) and full close (a flat row). No Java, no network; the fake bridge speaks the real
+//! stdio protocol, so every fetch here is a real `recon` command over a real pipe to a real child process.
+//!
+//! `tests/dukascopy_recon_leg.rs` holds the rest of the leg (each answer shape, every failure, the adapter's hand-out).
+
+use std::assert_matches;
+use std::time::{Duration, Instant};
+
+use vike_dukascopy::{DukascopyConfig, DukascopyExecutionClient, DukascopyReconClient};
+use vike_exec::recon::ReconClient;
+use vike_exec::{ExecutionClient, Ingest, event_channel};
+use vike_model::{OrderRequest, PositionStatusReport};
+
+const BRIDGE: &str = env!("CARGO_BIN_EXE_fake_jforex_bridge");
+
+fn config() -> DukascopyConfig {
+    DukascopyConfig {
+        login: "test-login".into(),
+        password: "test-password".into(),
+        server: String::new(),
+        ledger_mount: None,
+    }
+}
+
+/// A market order the netting fake fills at `px` (it reads `price` as the fill price).
+fn order(coid: &str, side: i32, qty: f64, px: f64, ts: i64) -> OrderRequest {
+    OrderRequest {
+        data_delay: None,
+        account: None,
+        combo_legs: Vec::new(),
+        client_order_id: coid.into(),
+        venue: "dukascopy".into(),
+        symbol: "EURUSD".into(),
+        side,
+        qty,
+        order_type: vike_model::OrderType::Market,
+        price: Some(px),
+        trigger_price: None,
+        reduce_only: false,
+        time_in_force: Default::default(),
+        gtd_expiry: None,
+        ts,
+        parent_order_id: None,
+        linked_order_ids: vec![],
+        order_list_id: None,
+        contingency_type: None,
+        weight: 0.0,
+        stop: None,
+        trail: None,
+        extreme: None,
+        on_close: false,
+        margin_mode: None,
+        trigger_by: None,
+    }
+}
+
+/// Drain `n` events off the ingest lane (keeps the reader thread's bounded `blocking_send` moving
+/// so it reaches the trailing `position` lines), failing loudly after 10s each.
+fn drain(rx: &mut tokio::sync::mpsc::Receiver<Ingest>, n: usize) {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+    for _ in 0..n {
+        let ingest = rt
+            .block_on(async { tokio::time::timeout(Duration::from_secs(10), rx.recv()).await })
+            .expect("timed out waiting for event")
+            .expect("ingest channel closed");
+        assert_matches!(ingest, Ingest::Event(_), "expected Ingest::Event, got {ingest:?}");
+    }
+}
+
+/// Poll the reconcile client until `symbol`'s reported net qty matches `want_qty`. Each poll is a real question to the
+/// fake sidecar, which answers from its book; the events that moved the book were drained first, so the first poll
+/// normally agrees, and the bounded poll is the honest race-free wait for the re-anchor legs' trailing lines.
+fn wait_for_qty(recon: &DukascopyReconClient, symbol: &str, want_qty: f64) -> PositionStatusReport {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let reports = recon.fetch_position_status_reports().expect("position fetch");
+        if let Some(r) = reports.iter().find(|r| r.symbol == symbol)
+            && (r.qty - want_qty).abs() < 1e-6
+        {
+            return r.clone();
+        }
+        assert!(Instant::now() < deadline, "timed out waiting for {symbol} qty={want_qty}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+#[test]
+fn recon_client_tracks_venue_net_position_through_netting() {
+    let (events, mut rx) = event_channel(64);
+    let mut client = DukascopyExecutionClient::spawn_with_program(
+        BRIDGE,
+        &["netting".into()],
+        &config(),
+        events,
+    )
+    .expect("ready");
+    let recon = client.recon_client();
+
+    // A venue that holds nothing, and a client that has heard of no symbol, reports nothing: an ANSWER, not an error.
+    assert_eq!(recon.fetch_order_status_reports(0), Ok(Vec::new()));
+    assert_eq!(recon.fetch_fill_reports(0), Ok(Vec::new()));
+    assert_eq!(recon.fetch_position_status_reports(), Ok(Vec::new()));
+
+    // 1) Short 1000 @ 100, then short 1000 @ 110 → venue net short 2000, signed-weighted avg 105.
+    client.submit(&order("c1", -1, 1000.0, 100.0, 1));
+    drain(&mut rx, 4); // Submitted, Accepted, Fill, OrderFilled
+    client.submit(&order("c2", -1, 1000.0, 110.0, 2));
+    drain(&mut rx, 4);
+    let r = wait_for_qty(&recon, "EURUSD", -2000.0);
+    assert_eq!(r.venue, "dukascopy");
+    assert_eq!(r.avg_px, 105.0);
+    // Two FILLED orders are two open positions, not two resting orders: they are fills (the position's entries) and no order.
+    assert_eq!(recon.fetch_order_status_reports(0), Ok(Vec::new()));
+    let fills = recon.fetch_fill_reports(0).expect("fills");
+    assert_eq!(fills.len(), 2, "{fills:?}");
+    assert!(fills.iter().all(|f| f.side == -1 && f.last_qty == 1000.0 && f.venue == "dukascopy"));
+
+    // 2) Buy 1000 @ 108 nets against order A. Venue truth: remainder short 1000 at B's own basis
+    //    110 (the exact netting attribution the position line carries + the re-anchor pair fold).
+    client.submit(&order("c3", 1, 1000.0, 108.0, 3));
+    drain(&mut rx, 6); // …+ 2 re-anchor legs
+    let r = wait_for_qty(&recon, "EURUSD", -1000.0);
+    assert_eq!(r.avg_px, 110.0);
+    assert_eq!(recon.fetch_fill_reports(0).expect("fills").len(), 1, "one open order is left");
+
+    // 3) Buy 1000 @ 112 fully closes the remainder → the venue lists no order, and the client states EURUSD FLAT
+    //    (it heard of the symbol from the fills): the row `vike_exec::recon::diff` needs to see a position closed.
+    client.submit(&order("c4", 1, 1000.0, 112.0, 4));
+    drain(&mut rx, 4);
+    let r = wait_for_qty(&recon, "EURUSD", 0.0);
+    assert_eq!(r.avg_px, 0.0);
+    assert_eq!(recon.fetch_fill_reports(0), Ok(Vec::new()));
+
+    client.detach();
+}

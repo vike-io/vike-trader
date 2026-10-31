@@ -1,0 +1,40 @@
+{
+  "retCode": 0,
+  "retMsg": "OK",
+  "result": {
+    "category": "spot",
+    "list": [
+      {
+        "symbolId": 18,
+        "symbol": "DOGEUSDT",
+        "baseCoin": "DOGE",
+        "quoteCoin": "USDT",
+        "innovation": "0",
+        "status": "Trading",
+        "marginTrading": "utaOnly",
+        "stTag": "0",
+        "lotSizeFilter": {
+          "basePrecision": "0.1",
+          "quotePrecision": "0.000001",
+          "minOrderQty": "0.1",
+          "maxOrderQty": "14000000",
+          "minOrderAmt": "5",
+          "maxOrderAmt": "4000000",
+          "maxLimitOrderQty": "14000000",
+          "maxMarketOrderQty": "6800000",
+          "postOnlyMaxLimitOrderSize": "70000000"
+        },
+        "priceFilter": {
+          "tickSize": "0.00001"
+        },
+        "riskParameters": {
+          "priceLimitRatioX": "0.005",
+          "priceLimitRatioY": "0.01"
+        },
+        "symbolType": "",
+        "xstockMultiplier": "1"
+      }
+    ],
+    "nextPageCursor": ""
+  }
+}

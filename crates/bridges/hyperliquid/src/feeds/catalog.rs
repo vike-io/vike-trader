@@ -1,0 +1,561 @@
+//! Hyperliquid instrument catalog — `HyperliquidCatalog: vike_catalog::CatalogProvider`, the
+//! venue's contribution to the chart's cross-venue Symbol picker. The HL twin of the Bybit/OKX
+//! `*Catalog` providers: an `Enumerable` provider over the keyless `meta` (perp) + `spotMeta`
+//! (spot) universe, mapped to [`Instrument`]s that carry a typed [`Contract`] (decision 0126):
+//!
+//! - a perp (core or HIP-3) is `Contract::Perp` — `Margining::Linear`, settled in `PERP_QUOTE`
+//!   (`USDC`), funding every [`FUNDING_INTERVAL_MS`], no settlement clock the payload states;
+//! - a spot pair is `Contract::CryptoSpot`.
+//!
+//! **The three identities ride on the row** (`Instrument.wire`), so no consumer parses a symbol to
+//! learn them: `asset_id` = the ORDER asset id [`Symbology`] already resolved (core perp = the
+//! `meta.universe` array position, delisted rows included; spot = `10000 + pairIndex`; HIP-3 =
+//! `100000 + dexIndex * 10000 + index`), `coin` = the venue's WS/info string (`"BTC"`, `"@107"`,
+//! `"test:ABC"`), `group` = the HIP-3 deployer dex (`None` for core perps and spot). **The grid is
+//! decided once**: `properties` is `crate::feeds::instruments`'s `properties_for` over the same
+//! [`InstrumentRef`] the exec path derives its grid from, so identity and grid share one source.
+//! HIP-4 outcome markets (`crate::exec::outcome_settlement`) are NOT catalogued here.
+//!
+//! Unlike Bybit/binance — where a spot and its perp SHARE one exchange symbol (`BTCUSDT`) and the
+//! perp needs a `.P` suffix to stay distinct — HL's unified symbols are already in disjoint
+//! namespaces: a perp is the bare coin (`"BTC"`), a spot pair is `"BASE/QUOTE"` (`"HYPE/USDC"`), so
+//! their [`Instrument::id`]s (`BTC.HYPERLIQUID` vs `HYPE/USDC.HYPERLIQUID`) never collide and no
+//! suffix is applied.
+//!
+//! The universe is sourced through [`crate::feeds::instruments::HyperliquidInstruments::load`] (two keyless
+//! `/info` reads) and its resolved [`Symbology`] — we REUSE [`InstrumentRef`] rather than re-parsing
+//! the meta JSON. The pure `Symbology → Vec<Instrument>` conversion ([`instruments_from_symbology`])
+//! is split from the networked load so it's fixture-testable with NO network (the `Symbology::from_meta`
+//! seam), mirroring the parse/fetch split in the Bybit/OKX catalog modules. Symbology rules:
+//! `docs/research/2026-07-16-hyperliquid-adapters/README.md` §5.
+
+use vike_bridge_core::transport::VenueApiError;
+use vike_catalog::{CatalogError, CatalogMode, CatalogProvider};
+use vike_model::{AssetClass, Contract, Instrument, Margining, PerpSpec, WireIds};
+
+use crate::base::config::{Network, Product};
+use crate::base::consts::{FUNDING_INTERVAL_MS, VENUE};
+use crate::base::symbology::{InstrumentRef, Symbology, parse_perp_dexs};
+use crate::base::transport::HyperliquidTransport;
+use crate::feeds::instruments::{HyperliquidInstruments, properties_for};
+
+/// Every Hyperliquid perpetual is USD-denominated and USDC-margined/settled, and its unified symbol
+/// drops the quote (`"BTC"`, not `"BTCUSD"`). It is the perp's `PerpSpec::settle` and also its
+/// catalog quote, so a quote-currency search still finds perps and the picker shows a settlement
+/// currency. `meta` carries no per-row settle field: this is the venue-wide constant.
+const PERP_QUOTE: &str = "USDC";
+
+/// The venue word on the row of a DELISTED perp (`meta.universe[].isDelisted`, carried by name): the
+/// gatewayhub's symbol-facts verb refuses such a coin (decision 0174). `gatewayhub`'s
+/// `symbol_facts` reads the same spelling, and a feature-gated test there holds the two equal.
+pub const VENUE_WORD_DELISTED: &str = "isDelisted";
+
+/// The venue word on the row of a perp whose cross margin is unavailable (`onlyIsolated`, or a
+/// `marginMode` of `strictIsolated` / `noCross`): the account's cross-margin engine cannot hold it, so
+/// the symbol-facts verb refuses it by name. A delisted row says [`VENUE_WORD_DELISTED`] instead.
+pub const VENUE_WORD_ISOLATED_ONLY: &str = "onlyIsolated";
+
+/// The typed [`Contract`] for one resolved row. The class comes from the venue's own split of its
+/// metadata endpoint ([`Product`]: `meta` vs `spotMeta`), never from the symbol text.
+fn contract_for(inst: &InstrumentRef) -> Contract {
+    match inst.product {
+        Product::Perp => Contract::Perp(PerpSpec {
+            // Every HL perp is USDC-margined and quoted in USD: linear, by the venue's definition.
+            margining: Margining::Linear,
+            settle: PERP_QUOTE.to_string(),
+            // HL sizes a perp in the base coin with no contract multiplier, so there is no
+            // separate contract-value currency to state.
+            value_ccy: None,
+            funding_interval_ms: Some(FUNDING_INTERVAL_MS),
+            // `meta` publishes no next-funding / settlement timestamp.
+            settling_ms: None,
+        }),
+        Product::Spot => Contract::CryptoSpot,
+    }
+}
+
+/// Convert one resolved [`InstrumentRef`] into a catalog [`Instrument`]: the typed contract
+/// ([`contract_for`]), `base`/`quote` read off the payload by [`Symbology`] (perp quote =
+/// [`PERP_QUOTE`]), the three wire identities, and the order-placement grid from
+/// `crate::feeds::instruments`'s `properties_for` — the SAME derivation the exec path uses.
+fn instrument_from_ref(inst: &InstrumentRef) -> Instrument {
+    let quote = inst.quote.clone().unwrap_or_else(|| PERP_QUOTE.to_string());
+    let row =
+        Instrument::new(VENUE, inst.symbol.clone(), inst.base.clone(), quote, contract_for(inst))
+            // HIP-3 rows keep their deployer dex as the display description too; a core perp/spot row
+            // leaves it empty (`""`), as before.
+            .with_description(inst.dex.clone().unwrap_or_default())
+            .with_properties(properties_for(inst))
+            .with_wire(WireIds {
+                asset_id: Some(u64::from(inst.asset_id)),
+                coin: Some(inst.coin.clone()),
+                group: inst.dex.clone(),
+            });
+    // A row the account cannot open the plain way says so in the venue's own word; every other row
+    // states none, byte-identical to before. Informational: only the symbol-facts verb reads it.
+    match (inst.delisted, inst.only_isolated || inst.no_cross) {
+        (true, _) => row.with_venue_word(VENUE_WORD_DELISTED),
+        (false, true) => row.with_venue_word(VENUE_WORD_ISOLATED_ONLY),
+        (false, false) => row,
+    }
+}
+
+/// Map a resolved [`Symbology`] into the venue's catalog [`Instrument`]s (perps then spot, in the
+/// symbology's insertion order). Pure — the fixture seam that keeps the mapping testable off a
+/// synthetic `meta`/`spotMeta` via [`Symbology::from_meta`], with no network.
+pub fn instruments_from_symbology(symbology: &Symbology) -> Vec<Instrument> {
+    symbology.iter().map(instrument_from_ref).collect()
+}
+
+/// The Hyperliquid venue's [`CatalogProvider`] contribution: crypto spot (`BASE/QUOTE`) + crypto
+/// perp (`BTC`), both bulk-enumerable off the keyless `meta` + `spotMeta` reads. Holds the target
+/// [`Network`] (mainnet by default — the picker's live universe; testnet for the demo universe) and
+/// whether the HIP-3 builder dexs join the universe ([`Self::with_hip3`]).
+pub struct HyperliquidCatalog {
+    network: Network,
+    hip3: bool,
+}
+
+impl HyperliquidCatalog {
+    /// A mainnet catalog — the picker's default universe, core markets only.
+    pub fn new() -> Self {
+        HyperliquidCatalog { network: Network::Mainnet, hip3: false }
+    }
+
+    /// A catalog over an explicit network (`Network::Testnet` for the demo universe), core markets
+    /// only.
+    pub fn for_network(network: Network) -> Self {
+        HyperliquidCatalog { network, hip3: false }
+    }
+
+    /// Fold HIP-3 builder-dex perps into the listed universe — the caller's resolved
+    /// `flags.hyperliquid_hip3` (decision 0095). Off unless set.
+    #[must_use]
+    pub fn with_hip3(mut self, hip3: bool) -> Self {
+        self.hip3 = hip3;
+        self
+    }
+
+    /// Whether this catalog lists HIP-3 builder-dex perps.
+    #[must_use]
+    pub fn hip3(&self) -> bool {
+        self.hip3
+    }
+
+    /// **The rows of ONE builder dex, read with that dex's own `meta` alone** (decision 0218): the symbol-facts verb's
+    /// way to answer `dex:COIN` with no dependence on the `flags.hyperliquid_hip3` universe flag (which folds EVERY
+    /// dex, hundreds on the testnet). Two keyless reads on `network`: `perpDexs` (for the dex's position, which is the
+    /// multiplier of its asset ids) and `meta` with the `dex` param. A dex that is not listed answers an EMPTY list,
+    /// "no such symbol", never an error; a read that fails is an `Err`.
+    pub fn dex_instruments(network: Network, dex: &str) -> Result<Vec<Instrument>, CatalogError> {
+        let transport = HyperliquidTransport::new(network);
+        Self::dex_instruments_via(dex, |body| transport.info(body))
+    }
+
+    /// [`Self::dex_instruments`] over an `/info` fetch seam (no network in a test).
+    pub(crate) fn dex_instruments_via<F>(
+        dex: &str,
+        fetch: F,
+    ) -> Result<Vec<Instrument>, CatalogError>
+    where
+        F: Fn(&serde_json::Value) -> Result<serde_json::Value, VenueApiError>,
+    {
+        let failed = |what: &str, e: VenueApiError| CatalogError(format!("{VENUE} {what}: {e}"));
+        let listed = fetch(&serde_json::json!({ "type": "perpDexs" }))
+            .map_err(|e| failed("perpDexs read", e))?;
+        let Some(found) = parse_perp_dexs(&listed).into_iter().find(|d| d.name == dex) else {
+            return Ok(Vec::new());
+        };
+        let meta = fetch(&serde_json::json!({ "type": "meta", "dex": found.name }))
+            .map_err(|e| failed("builder-dex meta read", e))?;
+        let mut symbology = Symbology::default();
+        symbology.extend_with_perp_dex(&meta, found.index, &found.name);
+        Ok(instruments_from_symbology(&symbology))
+    }
+
+    /// [`CatalogProvider::list_instruments`]'s body over an `/info` fetch seam, so what the HIP-3
+    /// switch does to the universe is observable with NO network: two keyless reads (`meta` +
+    /// `spotMeta`) via the canonical universe loader, plus — with `self.hip3` — the builder dexs'
+    /// `perpDexs` and per-dex `meta` reads, then the pure Symbology → Instrument conversion.
+    fn list_via<F>(&self, fetch: F) -> Result<Vec<Instrument>, CatalogError>
+    where
+        F: Fn(&serde_json::Value) -> Result<serde_json::Value, VenueApiError>,
+    {
+        let universe = HyperliquidInstruments::load_from(fetch, None, self.hip3)
+            .map_err(|e| CatalogError(format!("{VENUE} meta/spotMeta load: {e}")))?;
+        Ok(instruments_from_symbology(universe.symbology()))
+    }
+}
+
+impl Default for HyperliquidCatalog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CatalogProvider for HyperliquidCatalog {
+    fn venue(&self) -> &str {
+        VENUE
+    }
+    fn asset_classes(&self) -> &[AssetClass] {
+        &[AssetClass::CryptoSpot, AssetClass::CryptoPerp]
+    }
+    fn mode(&self) -> CatalogMode {
+        CatalogMode::Enumerable
+    }
+    fn list_instruments(&self) -> Result<Vec<Instrument>, CatalogError> {
+        // Two keyless `/info` reads (meta + spotMeta) via the canonical universe loader, then the
+        // pure Symbology → Instrument conversion (`list_via`, which takes the `/info` fetch as a
+        // seam so a test can watch the request set). A fresh transport/gate is fine: this is a
+        // one-shot startup bulk fetch, not on the exec/feed IP-budget hot path. With `self.hip3`,
+        // the loader ALSO folds in builder-deployed HIP-3 perp dexs (dex-qualified `{dex}:{coin}`
+        // rows, dex-tagged in `description`); off ⇒ core-only, byte-identical to the pre-HIP-3
+        // catalog. The HIP-3 answer is `self.hip3`, the same flag the daemon's start reads
+        // (decision 0095: the datahub hands its resolved `flags.hyperliquid_hip3` to `with_hip3`).
+        let transport = HyperliquidTransport::new(self.network);
+        self.list_via(|body| transport.info(body))
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use std::cell::RefCell;
+
+    use super::*;
+    use serde_json::json;
+
+    /// Synthetic core `meta` (BTC/ETH perps).
+    fn core_meta() -> serde_json::Value {
+        json!({
+            "universe": [
+                {"name": "BTC", "szDecimals": 5, "maxLeverage": 40},
+                {"name": "ETH", "szDecimals": 4, "maxLeverage": 25}
+            ]
+        })
+    }
+
+    /// Synthetic `spotMeta` (PURR/USDC & HYPE-via-`@107` spot).
+    fn core_spot() -> serde_json::Value {
+        json!({
+            "tokens": [
+                {"name": "USDC", "szDecimals": 8, "index": 0},
+                {"name": "PURR", "szDecimals": 0, "index": 1},
+                {"name": "HYPE", "szDecimals": 2, "index": 150}
+            ],
+            "universe": [
+                {"name": "PURR/USDC", "tokens": [1, 0], "index": 0, "isCanonical": true},
+                {"name": "@107", "tokens": [150, 0], "index": 107, "isCanonical": true}
+            ]
+        })
+    }
+
+    /// Synthetic `meta`/`spotMeta` mirroring the `symbology`/`instruments` fixtures — drives the
+    /// catalog mapping with NO network.
+    fn symbology() -> Symbology {
+        Symbology::from_meta(&core_meta(), &core_spot())
+    }
+
+    #[test]
+    fn every_instrument_is_venue_tagged_hyperliquid() {
+        let out = instruments_from_symbology(&symbology());
+        assert_eq!(out.len(), 4, "BTC + ETH perps, PURR/USDC + HYPE/USDC spot");
+        assert!(out.iter().all(|i| i.venue == "hyperliquid"), "every row is venue-tagged");
+    }
+
+    /// The exact contract every HL perp row carries: linear, USDC-settled, hourly funding.
+    fn hl_perp() -> Contract {
+        Contract::Perp(PerpSpec {
+            margining: Margining::Linear,
+            settle: "USDC".to_string(),
+            value_ccy: None,
+            funding_interval_ms: Some(3_600_000),
+            settling_ms: None,
+        })
+    }
+
+    #[test]
+    fn perp_maps_to_a_linear_usdc_perp_with_bare_symbol_and_usdc_quote() {
+        let out = instruments_from_symbology(&symbology());
+        let btc = out.iter().find(|i| i.raw_symbol == "BTC").expect("BTC perp");
+        assert_eq!(btc.contract, hl_perp());
+        assert_eq!(btc.asset_class(), AssetClass::CryptoPerp);
+        assert_eq!(btc.settle_asset(), Some("USDC"));
+        assert_eq!(btc.base, "BTC");
+        assert_eq!(btc.quote, "USDC");
+        // No `.P` suffix — the bare coin is already a distinct id namespace from any spot pair.
+        assert_eq!(btc.id(), "BTC.HYPERLIQUID");
+        // The three identities ride on the row: order asset id = array position, coin = name.
+        assert_eq!(
+            btc.wire,
+            WireIds { asset_id: Some(0), coin: Some("BTC".to_string()), group: None }
+        );
+        assert_eq!(out.iter().find(|i| i.raw_symbol == "ETH").unwrap().wire.asset_id, Some(1));
+        assert_eq!(btc.contract_type, None, "HL publishes no contract-type word");
+    }
+
+    /// A delisted perp still occupies its `meta.universe` slot, so the order asset id of every row
+    /// after it is its ARRAY POSITION — the scheme `Symbology::load_perps` owns; the catalog only
+    /// carries it.
+    #[test]
+    fn a_delisted_perp_keeps_its_index_and_the_rows_after_it_keep_theirs() {
+        let meta = json!({"universe": [
+            {"name": "BTC", "szDecimals": 5, "maxLeverage": 40},
+            {"name": "OLD", "szDecimals": 1, "maxLeverage": 3, "isDelisted": true},
+            {"name": "ETH", "szDecimals": 4, "maxLeverage": 25}
+        ]});
+        let out = instruments_from_symbology(&Symbology::from_meta(&meta, &json!({})));
+        let ids: Vec<_> = out.iter().map(|i| (i.raw_symbol.as_str(), i.wire.asset_id)).collect();
+        assert_eq!(ids, [("BTC", Some(0)), ("OLD", Some(1)), ("ETH", Some(2))]);
+    }
+
+    /// Identity and grid are decided once: the catalog row's `properties` IS the exec-path grid
+    /// `HyperliquidInstruments` derives from the same payload, not a `Default` placeholder.
+    #[test]
+    fn the_catalog_grid_is_the_exec_grid() {
+        let out = instruments_from_symbology(&symbology());
+        let fetch = |body: &serde_json::Value| -> Result<serde_json::Value, VenueApiError> {
+            Ok(match body.get("type").and_then(|t| t.as_str()) {
+                Some("meta") => core_meta(),
+                Some("spotMeta") => core_spot(),
+                _ => json!({}),
+            })
+        };
+        let exec = HyperliquidInstruments::load_from(fetch, None, false).expect("loads");
+        for row in &out {
+            assert_eq!(
+                Some(&row.properties),
+                exec.properties(&row.raw_symbol),
+                "{}",
+                row.raw_symbol
+            );
+        }
+        // BTC: szDecimals 5 → step 1e-5, tick 10^-(6-5) = 0.1, the venue's $10 floor.
+        let btc = out.iter().find(|i| i.raw_symbol == "BTC").unwrap();
+        assert_eq!(btc.properties.step_size, crate::feeds::instruments::pow10_neg(5));
+        assert_eq!(btc.properties.tick_size, crate::feeds::instruments::pow10_neg(1));
+        assert_eq!(btc.properties.min_notional, crate::base::consts::MIN_NOTIONAL_USD);
+        assert_eq!(btc.properties.asset_class, Some(AssetClass::CryptoPerp));
+    }
+
+    #[test]
+    fn spot_maps_to_cryptospot_with_token_base_quote_and_its_wire_ids() {
+        let out = instruments_from_symbology(&symbology());
+        // `@107` resolves to the unified symbol HYPE/USDC (positional base/quote via token indices).
+        let hype = out.iter().find(|i| i.raw_symbol == "HYPE/USDC").expect("HYPE/USDC spot");
+        assert_eq!(hype.contract, Contract::CryptoSpot);
+        assert_eq!(hype.asset_class(), AssetClass::CryptoSpot);
+        assert_eq!(hype.base, "HYPE");
+        assert_eq!(hype.quote, "USDC");
+        assert_eq!(hype.id(), "HYPE/USDC.HYPERLIQUID");
+        assert_eq!(
+            hype.wire,
+            WireIds { asset_id: Some(10_107), coin: Some("@107".to_string()), group: None },
+            "spot asset id = 10000 + pair index; coin = the `@N` wire string"
+        );
+        // PURR/USDC (the one literal-name spot pair) maps identically; its coin is the literal.
+        let purr = out.iter().find(|i| i.raw_symbol == "PURR/USDC").expect("PURR/USDC spot");
+        assert_eq!(purr.contract, Contract::CryptoSpot);
+        assert_eq!(purr.base, "PURR");
+        assert_eq!(purr.quote, "USDC");
+        assert_eq!(
+            purr.wire,
+            WireIds { asset_id: Some(10_000), coin: Some("PURR/USDC".to_string()), group: None }
+        );
+    }
+
+    #[test]
+    fn provider_declares_enumerable_crypto_spot_and_perp() {
+        let cat = HyperliquidCatalog::new();
+        assert_eq!(cat.venue(), "hyperliquid");
+        assert_eq!(cat.mode(), CatalogMode::Enumerable);
+        assert_eq!(cat.asset_classes(), &[AssetClass::CryptoSpot, AssetClass::CryptoPerp]);
+        // Enumerable ⇒ the defaulted live-search seam is empty.
+        assert!(cat.search_remote("btc", &Default::default()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn core_rows_have_no_dex_description_byte_identical() {
+        // Every pre-HIP-3 row leaves `description` empty (byte-identical to before this change).
+        let out = instruments_from_symbology(&symbology());
+        assert!(out.iter().all(|i| i.description.is_empty()), "no core row is dex-tagged");
+        assert!(out.iter().all(|i| i.wire.group.is_none()), "no core row has a wire group");
+        let btc = out.iter().find(|i| i.raw_symbol == "BTC").unwrap();
+        assert_eq!(btc.base, "BTC", "a core perp base is the whole symbol (no `:`)");
+    }
+
+    #[test]
+    fn hip3_perp_maps_with_bare_base_and_dex_tagged_description() {
+        let mut s = symbology();
+        // Fold a builder dex "test" (perp_dex_index 1) with one market test:ABC.
+        s.extend_with_perp_dex(
+            &json!({"universe": [{"name": "test:ABC", "szDecimals": 2, "maxLeverage": 10}]}),
+            1,
+            "test",
+        );
+        let out = instruments_from_symbology(&s);
+        let abc = out.iter().find(|i| i.raw_symbol == "test:ABC").expect("test:ABC row");
+        assert_eq!(abc.contract, hl_perp(), "a HIP-3 perp is the same linear USDC perp");
+        assert_eq!(abc.base, "ABC", "the `{{dex}}:` prefix is stripped for the searchable base");
+        assert_eq!(abc.quote, "USDC");
+        assert_eq!(abc.description, "test", "row tagged with its deployer dex");
+        assert_eq!(
+            abc.wire,
+            WireIds {
+                asset_id: Some(110_000),
+                coin: Some("test:ABC".to_string()),
+                group: Some("test".to_string()),
+            },
+            "HIP-3 asset id = 100000 + dexIndex*10000 + index; the dex is the wire group"
+        );
+        // The dex-qualified raw_symbol keeps the id distinct from any core coin.
+        assert_eq!(abc.id(), "test:ABC.HYPERLIQUID");
+        // The core rows are still present and untagged.
+        assert_eq!(out.iter().filter(|i| i.description.is_empty()).count(), 4);
+    }
+
+    /// Decision 0095: the HIP-3 universe is the CALLER's resolved `flags.hyperliquid_hip3` — the
+    /// datahub passes it — and a plain construction lists the core universe only.
+    ///
+    /// ⚠ **Observed through the listing, not the getter.** This test used to assert `hip3()` after
+    /// `with_hip3`, a setter and its getter, which stays green when [`HyperliquidCatalog::list_via`]
+    /// stops passing the flag on. Here the catalog lists over a fake `/info` fetch (the seam
+    /// `list_instruments` runs over the real transport) and the test reads the REQUESTS it made and
+    /// the ROWS it returned: a plain catalog asks for `meta` + `spotMeta` and returns the core
+    /// universe; one built with `with_hip3(true)` also asks `perpDexs` and each builder dex's
+    /// `meta`, and returns the dex-tagged rows.
+    #[test]
+    fn the_hip3_universe_is_the_callers_choice() {
+        let calls = RefCell::new(Vec::<String>::new());
+        let fetch = |body: &serde_json::Value| -> Result<serde_json::Value, VenueApiError> {
+            let ty = body.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let dex = body.get("dex").and_then(|d| d.as_str()).map(str::to_string);
+            calls.borrow_mut().push(match &dex {
+                Some(d) => format!("meta:{d}"),
+                None => ty.clone(),
+            });
+            Ok(match (ty.as_str(), dex.as_deref()) {
+                ("meta", None) => core_meta(),
+                ("spotMeta", _) => core_spot(),
+                ("perpDexs", _) => {
+                    json!([null, {"name": "test", "fullName": "test dex", "deployer": "0xabc"}])
+                }
+                ("meta", Some("test")) => {
+                    json!({"universe": [{"name": "test:ABC", "szDecimals": 2, "maxLeverage": 10}]})
+                }
+                _ => json!({}),
+            })
+        };
+
+        // A plain construction — and one over the testnet — is the core universe only.
+        for plain in [HyperliquidCatalog::new(), HyperliquidCatalog::for_network(Network::Testnet)]
+        {
+            calls.borrow_mut().clear();
+            let core = plain.list_via(fetch).expect("the core universe lists");
+            assert_eq!(*calls.borrow(), ["meta", "spotMeta"], "OFF asks for the core reads only");
+            assert_eq!(core.len(), 4, "BTC + ETH perps, PURR/USDC + HYPE/USDC spot");
+            assert!(core.iter().all(|i| i.description.is_empty()), "no builder-dex row");
+        }
+
+        // The caller's choice adds the builder dexs.
+        calls.borrow_mut().clear();
+        let catalog = HyperliquidCatalog::new().with_hip3(true);
+        assert!(catalog.hip3());
+        let all = catalog.list_via(fetch).expect("the HIP-3 universe lists");
+        assert_eq!(
+            *calls.borrow(),
+            ["meta", "spotMeta", "perpDexs", "meta:test"],
+            "ON also reads the builder dexs"
+        );
+        assert_eq!(all.len(), 5, "the four core rows plus the builder dex's market");
+        let abc = all.iter().find(|i| i.raw_symbol == "test:ABC").expect("the dex-qualified row");
+        assert_eq!(abc.description, "test", "tagged with its deployer dex");
+
+        // …and the setter is a plain switch: the same catalog turned back off lists core only.
+        calls.borrow_mut().clear();
+        let back_off = catalog.with_hip3(false).list_via(fetch).expect("core again");
+        assert_eq!(*calls.borrow(), ["meta", "spotMeta"]);
+        assert_eq!(back_off.len(), 4);
+    }
+
+    /// **One builder dex is read ALONE** (decision 0218): `perpDexs` for its position, then its own `meta`, and the
+    /// rows carry the HIP-3 asset ids of THAT position, the dex as their wire group and the isolated-only word. A
+    /// dex the venue does not list answers an empty list after the one read, and a failed read is an error.
+    #[test]
+    fn one_builder_dex_is_read_alone_with_its_own_asset_ids() {
+        let calls = RefCell::new(Vec::<String>::new());
+        let fetch = |body: &serde_json::Value| -> Result<serde_json::Value, VenueApiError> {
+            let ty = body.get("type").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let dex = body.get("dex").and_then(|d| d.as_str()).map(str::to_string);
+            calls.borrow_mut().push(match &dex {
+                Some(d) => format!("meta:{d}"),
+                None => ty.clone(),
+            });
+            Ok(match (ty.as_str(), dex.as_deref()) {
+                ("perpDexs", _) => json!([
+                    null,
+                    {"name": "test", "fullName": "test dex", "deployer": "0xabc"},
+                    {"name": "other", "fullName": "other dex", "deployer": "0xdef"}
+                ]),
+                ("meta", Some("other")) => json!({"universe": [
+                    {"name": "other:XYZ", "szDecimals": 2, "maxLeverage": 5, "onlyIsolated": true,
+                     "marginMode": "strictIsolated"},
+                    {"name": "other:CROSS", "szDecimals": 1, "maxLeverage": 10}
+                ]}),
+                _ => json!({}),
+            })
+        };
+        let rows = HyperliquidCatalog::dex_instruments_via("other", fetch).expect("the dex lists");
+        assert_eq!(
+            *calls.borrow(),
+            ["perpDexs", "meta:other"],
+            "two reads, never the whole universe"
+        );
+        let xyz = rows.iter().find(|i| i.raw_symbol == "other:XYZ").expect("other:XYZ");
+        assert_eq!(xyz.wire.asset_id, Some(120_000), "100000 + dex position 2 * 10000 + index 0");
+        assert_eq!(xyz.wire.group.as_deref(), Some("other"));
+        assert_eq!(xyz.contract_type.as_deref(), Some(VENUE_WORD_ISOLATED_ONLY));
+        let cross = rows.iter().find(|i| i.raw_symbol == "other:CROSS").expect("other:CROSS");
+        assert_eq!(cross.wire.asset_id, Some(120_001));
+        assert_eq!(cross.contract_type, None, "a cross-capable dex coin states no word");
+
+        calls.borrow_mut().clear();
+        let none = HyperliquidCatalog::dex_instruments_via("nodex", fetch).expect("no such dex");
+        assert!(none.is_empty(), "a dex the venue does not list answers no rows");
+        assert_eq!(*calls.borrow(), ["perpDexs"], "and reads nothing more");
+
+        let down = |_: &serde_json::Value| -> Result<serde_json::Value, VenueApiError> {
+            Err(VenueApiError { code: 0, msg: "refused".to_string() })
+        };
+        assert!(HyperliquidCatalog::dex_instruments_via("other", down).is_err());
+    }
+
+    /// A perp the account cannot trade the plain way carries the venue's own word on its row, and a
+    /// plain row carries none (byte-identical to before): the gatewayhub's symbol-facts verb reads the
+    /// word to refuse an isolated-only or a delisted coin by name (decision 0174).
+    #[test]
+    fn an_isolated_only_or_delisted_perp_carries_the_venues_word_and_a_plain_one_none() {
+        let meta = json!({"universe": [
+            {"name": "BTC", "szDecimals": 5, "maxLeverage": 40},
+            {"name": "RLB", "szDecimals": 0, "maxLeverage": 3, "onlyIsolated": true},
+            {"name": "STRICT", "szDecimals": 0, "maxLeverage": 3, "marginMode": "strictIsolated"},
+            {"name": "NOCROSS", "szDecimals": 0, "maxLeverage": 3, "marginMode": "noCross"},
+            {"name": "OLD", "szDecimals": 1, "maxLeverage": 3, "isDelisted": true,
+             "onlyIsolated": true}
+        ]});
+        let out = instruments_from_symbology(&Symbology::from_meta(&meta, &core_spot()));
+        let word = |symbol: &str| {
+            out.iter()
+                .find(|i| i.raw_symbol == symbol)
+                .unwrap_or_else(|| panic!("{symbol}"))
+                .contract_type
+                .as_deref()
+        };
+        assert_eq!(word("BTC"), None);
+        assert_eq!(word("RLB"), Some(VENUE_WORD_ISOLATED_ONLY));
+        assert_eq!(word("STRICT"), Some(VENUE_WORD_ISOLATED_ONLY));
+        assert_eq!(word("NOCROSS"), Some(VENUE_WORD_ISOLATED_ONLY));
+        assert_eq!(word("OLD"), Some(VENUE_WORD_DELISTED), "delisted outranks isolated-only");
+        assert_eq!(word("HYPE/USDC"), None, "a spot pair carries no such word");
+        assert_eq!((VENUE_WORD_DELISTED, VENUE_WORD_ISOLATED_ONLY), ("isDelisted", "onlyIsolated"));
+    }
+}

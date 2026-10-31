@@ -1,0 +1,118 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "PERCENTAGE",
+   "value": 5.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "PERCENTAGE",
+   "value": 5.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 0.01
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": "VOD",
+  "contractSize": null,
+  "controlledRiskAllowed": true,
+  "country": "GB",
+  "currencies": [
+   {
+    "baseExchangeRate": 0.7464338,
+    "code": "GBP",
+    "exchangeRate": 1.0,
+    "isDefault": false,
+    "symbol": "\u00a3"
+   }
+  ],
+  "epic": "KA.D.VOD.CASH.IP",
+  "expiry": "-",
+  "expiryDetails": null,
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "PERCENTAGE",
+   "value": 0.3
+  },
+  "lotSize": 0.01,
+  "marginDepositBands": [
+   {
+    "currency": "GBP",
+    "margin": 20,
+    "max": 800000,
+    "min": 0
+   },
+   {
+    "currency": "GBP",
+    "margin": 20,
+    "max": 4000000,
+    "min": 800000
+   },
+   {
+    "currency": "GBP",
+    "margin": 40,
+    "max": 8000000,
+    "min": 4000000
+   },
+   {
+    "currency": "GBP",
+    "margin": 75,
+    "max": null,
+    "min": 8000000
+   }
+  ],
+  "marginFactor": 20,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "VOD-UK",
+  "name": "Vodafone Group PLC",
+  "newsCode": "VOD.L",
+  "onePipMeans": null,
+  "openingHours": null,
+  "rolloverDetails": null,
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 100.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": false,
+  "type": "SHARES",
+  "unit": "SHARES",
+  "valueOfOnePip": null
+ },
+ "snapshot": {
+  "bid": null,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 2,
+  "delayTime": 0,
+  "high": 119.2,
+  "low": null,
+  "marketStatus": "EDITS_ONLY",
+  "netChange": 2.1,
+  "offer": null,
+  "percentageChange": 1.8,
+  "scalingFactor": 1,
+  "updateTime": "17:00:01"
+ }
+}

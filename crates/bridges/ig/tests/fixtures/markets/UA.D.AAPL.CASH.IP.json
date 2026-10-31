@@ -1,0 +1,120 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 150.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "PERCENTAGE",
+   "value": 90.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "PERCENTAGE",
+   "value": 10.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 50.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": "AAPL",
+  "contractSize": null,
+  "controlledRiskAllowed": true,
+  "country": "US",
+  "currencies": [
+   {
+    "baseExchangeRate": 1.0,
+    "code": "USD",
+    "exchangeRate": 0.66,
+    "isDefault": true,
+    "symbol": "$"
+   }
+  ],
+  "epic": "UA.D.AAPL.CASH.IP",
+  "expiry": "-",
+  "expiryDetails": null,
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "PERCENTAGE",
+   "value": 0.3
+  },
+  "lotSize": 0.01,
+  "marginDepositBands": [
+   {
+    "currency": "USD",
+    "margin": 2.78,
+    "max": 7300,
+    "min": 0
+   },
+   {
+    "currency": "USD",
+    "margin": 10,
+    "max": 36500,
+    "min": 7300
+   },
+   {
+    "currency": "USD",
+    "margin": 40,
+    "max": 73000,
+    "min": 36500
+   },
+   {
+    "currency": "USD",
+    "margin": 75,
+    "max": null,
+    "min": 73000
+   }
+  ],
+  "marginFactor": 2.785,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "AAPL-US",
+  "name": "Apple Inc (24 Hours)",
+  "newsCode": "AAPL.O",
+  "onePipMeans": null,
+  "openingHours": null,
+  "rolloverDetails": null,
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 100.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MIN KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE",
+   "Please note US (24 Hours) shares close early at 22:00 UK time on Friday evenings."
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": false,
+  "type": "SHARES",
+  "unit": "SHARES",
+  "valueOfOnePip": null
+ },
+ "snapshot": {
+  "bid": null,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 3,
+  "delayTime": 0,
+  "high": 352.79,
+  "low": 341.34,
+  "marketStatus": "TRADEABLE",
+  "netChange": -4.88,
+  "offer": null,
+  "percentageChange": -1.4,
+  "scalingFactor": 100,
+  "updateTime": "19:44:29"
+ }
+}

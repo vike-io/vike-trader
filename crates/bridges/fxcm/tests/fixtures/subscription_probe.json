@@ -1,0 +1,32 @@
+{
+  "measured": "2026-10-26 on the CI box, FXCM DEMO login (account currency EUR), through a throwaway probe built on the SDK's NonTableManagerSamples/SubscriptionStatus request. The rows are the shim's `fc_offers` shape, taken from the table as it stood before the probe wrote anything (497 rows: T=17 V=6 D=474).",
+  "offers": [
+    {"instrument":"EUR/USD","bid":1.12092,"ask":1.12100,"digits":5,"instrument_type":1,"contract_currency":"EUR","contract_multiplier":1.0,"subscription":"V","trading_status":"O","bid_tradable":"T","ask_tradable":"T","base_unit":1000,"quote_age_ms":150},
+    {"instrument":"USD/JPY","bid":157.134,"ask":157.143,"digits":3,"instrument_type":1,"contract_currency":"USD","contract_multiplier":1.0,"subscription":"T","trading_status":"O","bid_tradable":"T","ask_tradable":"T","base_unit":1000,"quote_age_ms":150},
+    {"instrument":"EUR/GBP","bid":0.83900,"ask":0.83911,"digits":5,"instrument_type":1,"contract_currency":"EUR","contract_multiplier":1.0,"subscription":"V","trading_status":"O","bid_tradable":"T","ask_tradable":"T","base_unit":1000,"quote_age_ms":150},
+    {"instrument":"EUR/JPY","bid":176.162,"ask":176.189,"digits":3,"instrument_type":1,"contract_currency":"EUR","contract_multiplier":1.0,"subscription":"V","trading_status":"O","bid_tradable":"T","ask_tradable":"T","base_unit":1000,"quote_age_ms":150},
+    {"instrument":"CHF/JPY","bid":190.502,"ask":190.534,"digits":3,"instrument_type":1,"contract_currency":"CHF","contract_multiplier":1.0,"subscription":"D","trading_status":"O","bid_tradable":"T","ask_tradable":"T","base_unit":1000,"quote_age_ms":150}
+  ],
+  "answers": [
+    {
+      "what": "SetSubscriptionStatus T on EUR/GBP (was V): FXCM answered with a CommandResponse 0.197 s after the send, and the Offers update (subscription T) arrived at the same moment, on every session of the login",
+      "code": 0,
+      "text": "T"
+    },
+    {
+      "what": "SetSubscriptionStatus T on EUR/USD (was V): CommandResponse 0.287 s after the send",
+      "code": 0,
+      "text": "T"
+    },
+    {
+      "what": "a request naming an OfferID the table does not hold never leaves the request factory (IO2GRequestFactory::getLastError)",
+      "code": -5,
+      "text": "OfferID or Symbol is absent."
+    },
+    {
+      "what": "the answer when the row has NOT settled inside the budget (a shape; observed: NZD/JPY, was D, read D right after FXCM's answer and T one second later, which is why the shim reads the row until it settles)",
+      "code": -9,
+      "text": "D"
+    }
+  ]
+}

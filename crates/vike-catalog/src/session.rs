@@ -1,0 +1,331 @@
+//! The `(venue, asset-class) -> SessionCalendar` resolution — the keying authority for the ONE
+//! session/market-hours law.
+//!
+//! The pure law and its rows live one layer down, in [`vike_venues::session`], which takes the
+//! resolved [`SessionCalendar`] as a caller-supplied parameter (see that module's doc); THIS is the
+//! caller that supplies it.
+//!
+//! ⚠ **This doc used to say `vike-model` CANNOT own the map, because [`AssetClass`] was a
+//! `vike-catalog` concept and `vike-catalog -> vike-model` is down-only. That reason is DEAD** —
+//! the taxonomy moved to `vike-model` (`crates/vike-model/src/instrument/asset_class.rs`) so the hist store
+//! could name it, and both halves of the key are now visible one layer down. Nothing forces this
+//! resolver up here any more; it stays because it is a CATALOG table and because moving it is a
+//! behaviour change, not because the layering refuses the alternative. ⚠ Do not cite this module
+//! as the layering precedent it was cited as — `docs/decisions/0061` leaned on exactly that
+//! sentence, and its second reason (nothing forces a per-venue table into the vocabulary crate) is
+//! the one that survived.
+//!
+//! ## Why venue alone is not the key
+//!
+//! [`vike_venues::session_for`] keys by venue and is deliberately fail-permissive for the mixed
+//! venues, because venue alone cannot pick a session: **Alpaca** trades cash equities AND 24/7
+//! crypto on one venue, and **IBKR** is a global multi-asset book. The fix is to key by
+//! (venue, asset-class) — `(alpaca, CryptoSpot)` is 24/7 while `(alpaca, Equity)` is the US regular
+//! session — which is exactly what [`session_calendar_for`] does.
+//!
+//! ## Fail-permissive, never over-block
+//!
+//! Every combination this resolver cannot pin answers [`SessionCalendar::ALWAYS_OPEN`]. Under-
+//! blocking (closed time looking open) is the pre-existing no-gate behavior; OVER-blocking would
+//! silently delete real in-session fills and corrupt a backtest, so an unmodeled market is left
+//! open. In particular a **non-US equity on IBKR** cannot have its region inferred from
+//! (venue, asset-class), so it resolves open — a per-symbol override (`EngineParams::session_calendars`)
+//! supplies the real regional session.
+//!
+//! ## Deferred (see `vike_venues::session`'s module doc)
+//!
+//! Holiday calendars, non-US regional equity sessions, and listed-derivative (CME/CBOE) extended
+//! hours are follow-ups. Until their rows land in `vike-model`, they resolve fail-permissive here.
+
+use vike_venues::SessionCalendar;
+use vike_venues::session::{
+    CRYPTO_24_7, FX_WEEK, US_EQUITY_REGULAR, is_crypto_native, session_for,
+};
+
+use crate::symbol::fiat_code;
+use vike_model::AssetClass;
+
+// The venues whose LISTED DERIVATIVES (options/futures) and index products trade continuously
+// because the venue itself is a 24/7 crypto-native exchange (Deribit options, for instance) are
+// `vike_venues::session::is_crypto_native`'s set — the ONE copy, shared with the venue-only
+// default `session_for`. This file used to carry its own list of the six, and spelling one here
+// again is what `the_derivative_rule_reads_the_one_crypto_native_set` refuses.
+// vike:new-venue:note decide `{venue}`'s (venue, asset-class) rows: give it an Equity/Etf arm if it lists cash equities in a modelled region. Whether its LISTED DERIVATIVES trade 24/7 is NOT decided here: it follows vike_venues::session::is_crypto_native, the one set `session_for` shares, so classify the venue THERE. NOTHING here iterates the roster, so an unclassified venue silently answers ALWAYS_OPEN — fail-permissive by design, and therefore invisible: crates/vike-catalog/src/session.rs's `session_calendar_for`
+
+/// The [`SessionCalendar`] for an instrument identified by its `venue` slug and [`AssetClass`] —
+/// the ONE (venue, asset-class) keying site. Pure and total: an unmodeled pair answers
+/// [`SessionCalendar::ALWAYS_OPEN`] (fail-permissive, never over-block — see the module doc).
+///
+/// This resolves the venue-alone defect: `(alpaca, CryptoSpot)` and `(alpaca, Equity)` return
+/// different calendars off the same venue, which venue-only keying ([`vike_venues::session_for`])
+/// cannot do.
+pub fn session_calendar_for(venue: &str, class: AssetClass) -> SessionCalendar {
+    use AssetClass::*;
+    match class {
+        // Continuously-traded markets — no weekly close, venue-independent.
+        CryptoSpot | CryptoPerp | CryptoFuture | PredictionMarket => CRYPTO_24_7,
+        // Spot FX and CFDs — the FX week (Sun 21:00 -> Fri 22:00 UTC, DST-union).
+        Fx | Cfd => FX_WEEK,
+        // Cash equities / ETFs — a regional REGULAR session, chosen by venue. Only the US session
+        // is modeled, and only for venues confident to be US: Alpaca is US-only, so it is safe;
+        // IBKR is global, so an IBKR equity's region is NOT inferable here — fail-permissive, and
+        // a per-symbol override supplies the real session. (This asymmetry is the whole point of
+        // keying by BOTH venue and class, then still allowing a per-symbol escape.)
+        Equity | Etf => match venue {
+            "alpaca" => US_EQUITY_REGULAR,
+            _ => SessionCalendar::ALWAYS_OPEN,
+        },
+        // Bonds, funds, warrants and spot commodities: no session is modelled for any of them on
+        // any venue, so they resolve fail-permissive rather than borrow the cash-equity row.
+        Bond | Fund | Warrant | Commodity => SessionCalendar::ALWAYS_OPEN,
+        // Listed options / futures / index products: 24/7 on crypto-native venues (Deribit
+        // options, perps' index products). Every OTHER listed-derivative session (CME/CBOE regular
+        // + extended hours) is a documented follow-up — fail-permissive rather than approximate it
+        // with the cash-equity row (which would over-block their long trading days).
+        // A venue-listed combo trades when its legs do, so it keys like them.
+        Option | Future | Index | Combo => {
+            if is_crypto_native(venue) {
+                CRYPTO_24_7
+            } else {
+                SessionCalendar::ALWAYS_OPEN
+            }
+        }
+    }
+}
+
+/// **The asset class a symbol's NAME proves on `venue`, asked for one purpose: its session.** The live
+/// door's closed-market note has a venue and a symbol and no instrument row, so this reads the class
+/// off them where (and only where) the name settles it, and answers `None` everywhere else, which the
+/// note takes as "no calendar known: say nothing" (a guess would put a false sentence in front of an
+/// operator). Feed the class to [`session_calendar_for`] for the row.
+///
+/// - **A currency pair on a venue whose whole book runs the FX week** (the venues
+///   [`vike_venues::session::session_for`] gives [`FX_WEEK`], read from there, not listed here):
+///   [`AssetClass::Fx`]. A pair is a `.`-separated token that is six letters naming two fiat codes
+///   once `/`, `_` and `-` are dropped (`EURUSD`, `EUR/USD`, `EUR_USD`, an IG epic's
+///   `CS.D.EURUSD.CFD.IP`). An index, a metal, an oil or a share CFD on the same broker has hours of
+///   its own and is NOT FX-week, so it gets `None`.
+/// - **alpaca**: a `BASE/QUOTE` name is a coin ([`AssetClass::CryptoSpot`], always open), any other
+///   name a US share or ETF ([`AssetClass::Equity`]). The door admits nothing else on it
+///   (`Spelling::AssetSymbol`).
+/// - **Everything else: `None`.** In particular IBKR (a global book: a stock's region is not in its
+///   name, `session_calendar_for`'s own rule), the crypto exchanges (always open, so nothing to say)
+///   and Polymarket.
+#[must_use]
+pub fn session_class_of(venue: &str, symbol: &str) -> Option<AssetClass> {
+    if venue == "alpaca" {
+        return Some(if symbol.contains('/') {
+            AssetClass::CryptoSpot
+        } else {
+            AssetClass::Equity
+        });
+    }
+    (session_for(venue) == FX_WEEK && is_currency_pair(symbol)).then_some(AssetClass::Fx)
+}
+
+/// Whether `symbol` names a spot currency pair: some `.`-separated token of it is six ASCII letters
+/// that are two [`fiat_code`]s once `/`, `_` and `-` are dropped.
+fn is_currency_pair(symbol: &str) -> bool {
+    symbol.split('.').any(|token| {
+        let pair: String = token.chars().filter(|c| !matches!(c, '/' | '_' | '-')).collect();
+        pair.len() == 6
+            && pair.is_ascii()
+            && fiat_code(&pair[..3]).is_some()
+            && fiat_code(&pair[3..]).is_some()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Epoch-ms for a UTC instant from vike-model's own civil math (no chrono).
+    fn ms(y: i64, mo: u32, d: u32, h: i64) -> i64 {
+        vike_util::calendar::days_from_civil(y, mo, d) * 86_400_000 + h * 3_600_000
+    }
+
+    #[test]
+    fn alpaca_crypto_and_equity_resolve_to_different_calendars() {
+        // THE fix: one venue, two asset classes, two sessions.
+        assert_eq!(session_calendar_for("alpaca", AssetClass::CryptoSpot), CRYPTO_24_7);
+        assert_eq!(session_calendar_for("alpaca", AssetClass::Equity), US_EQUITY_REGULAR);
+        assert_ne!(
+            session_calendar_for("alpaca", AssetClass::CryptoSpot),
+            session_calendar_for("alpaca", AssetClass::Equity),
+            "alpaca crypto must NOT share the equity session (the venue-alone defect)"
+        );
+
+        // and it bites at a real instant: on a Saturday the equity leg is CLOSED, the crypto leg OPEN
+        let sat = ms(2024, 1, 6, 12); // 2024-01-06 is a Saturday
+        assert!(!session_calendar_for("alpaca", AssetClass::Equity).is_open(sat));
+        assert!(session_calendar_for("alpaca", AssetClass::CryptoSpot).is_open(sat));
+    }
+
+    #[test]
+    fn ibkr_keys_by_class_and_is_fail_permissive_on_ambiguous_region() {
+        // FX and crypto legs of a global book resolve confidently...
+        assert_eq!(session_calendar_for("ibkr", AssetClass::Fx), FX_WEEK);
+        assert_eq!(session_calendar_for("ibkr", AssetClass::CryptoPerp), CRYPTO_24_7);
+        // ...but an IBKR equity's region is not inferable from (venue, class): fail-permissive, so
+        // a non-US listing is never over-blocked. The per-symbol override is the escape hatch.
+        assert_eq!(session_calendar_for("ibkr", AssetClass::Equity), SessionCalendar::ALWAYS_OPEN);
+    }
+
+    #[test]
+    fn continuous_markets_are_24_7_regardless_of_venue() {
+        for (v, c) in [
+            ("binance", AssetClass::CryptoSpot),
+            ("bybit", AssetClass::CryptoPerp),
+            ("okx", AssetClass::CryptoFuture),
+            ("polymarket", AssetClass::PredictionMarket),
+            ("hyperliquid", AssetClass::CryptoPerp),
+        ] {
+            assert_eq!(session_calendar_for(v, c), CRYPTO_24_7, "{v}/{c:?}");
+        }
+    }
+
+    #[test]
+    fn fx_and_cfd_are_the_fx_week() {
+        for v in ["dukascopy", "oanda", "ig", "fxcm", "ctrader"] {
+            assert_eq!(session_calendar_for(v, AssetClass::Fx), FX_WEEK, "{v} Fx");
+            assert_eq!(session_calendar_for(v, AssetClass::Cfd), FX_WEEK, "{v} Cfd");
+        }
+    }
+
+    #[test]
+    fn deribit_options_are_24_7_but_a_us_listed_option_is_fail_permissive() {
+        assert_eq!(session_calendar_for("deribit", AssetClass::Option), CRYPTO_24_7);
+        // listed equity options / index futures elsewhere: not modeled ⇒ fail-permissive
+        assert_eq!(session_calendar_for("ibkr", AssetClass::Option), SessionCalendar::ALWAYS_OPEN);
+        assert_eq!(session_calendar_for("cme", AssetClass::Future), SessionCalendar::ALWAYS_OPEN);
+        assert_eq!(session_calendar_for("alpaca", AssetClass::Index), SessionCalendar::ALWAYS_OPEN);
+    }
+
+    /// The decision-0126 classes: a combo keys like its legs, the rest are unmodelled everywhere.
+    #[test]
+    fn the_0126_classes_resolve() {
+        assert_eq!(session_calendar_for("deribit", AssetClass::Combo), CRYPTO_24_7);
+        assert_eq!(session_calendar_for("ibkr", AssetClass::Combo), SessionCalendar::ALWAYS_OPEN);
+        for class in
+            [AssetClass::Bond, AssetClass::Fund, AssetClass::Warrant, AssetClass::Commodity]
+        {
+            for venue in ["ibkr", "alpaca", "deribit"] {
+                assert_eq!(
+                    session_calendar_for(venue, class),
+                    SessionCalendar::ALWAYS_OPEN,
+                    "{venue} {class:?}"
+                );
+            }
+        }
+    }
+
+    /// The derivative classes follow `vike_venues::session::is_crypto_native` and nothing
+    /// else: a crypto exchange's options/futures/index/combo are the 24/7 row and every other
+    /// roster venue's are not modelled. Written against the roster so a new venue is judged here
+    /// too. ⚠ `CRYPTO_24_7` equals `SessionCalendar::ALWAYS_OPEN` by value today, so this asserts
+    /// the CONTRACT (it bites the day the two differ) and the set itself is pinned by name in
+    /// `vike-model`'s `the_crypto_native_set_is_pinned_and_polymarket_is_the_one_24_7_book_outside_it`.
+    #[test]
+    fn the_derivative_rule_reads_the_one_crypto_native_set() {
+        for &venue in vike_model::VENUES {
+            let want =
+                if is_crypto_native(venue) { CRYPTO_24_7 } else { SessionCalendar::ALWAYS_OPEN };
+            for class in
+                [AssetClass::Option, AssetClass::Future, AssetClass::Index, AssetClass::Combo]
+            {
+                assert_eq!(session_calendar_for(venue, class), want, "{venue} {class:?}");
+            }
+        }
+    }
+
+    /// polymarket: a 24/7 book by venue ([`vike_venues::session_for`]) that is NOT crypto-native —
+    /// it lists no derivatives, and its outcome contracts are 24/7 by CLASS for every venue.
+    #[test]
+    fn polymarket_is_24_7_by_class_not_by_the_crypto_native_set() {
+        assert!(!is_crypto_native("polymarket"));
+        assert_eq!(vike_venues::session_for("polymarket"), CRYPTO_24_7);
+        assert_eq!(session_calendar_for("polymarket", AssetClass::PredictionMarket), CRYPTO_24_7);
+        assert_eq!(
+            session_calendar_for("polymarket", AssetClass::Option),
+            SessionCalendar::ALWAYS_OPEN,
+            "a derivative class on polymarket is not modelled: the set that makes derivatives 24/7 \
+             is the crypto EXCHANGES'"
+        );
+    }
+
+    /// THE guard against the copy this file used to carry: the production half of this file names
+    /// no crypto-native exchange as a string literal. The venue set has one owner, and a second
+    /// list here would be a set that can drift from `vike-model`'s — the very thing it replaced.
+    #[test]
+    fn this_file_spells_no_crypto_native_venue_in_code() {
+        let src = include_str!("session.rs");
+        let production = src.split("#[cfg(test)]").next().expect("split yields a first part");
+        for venue in ["deribit", "binance", "bybit", "okx", "aster", "hyperliquid"] {
+            let quoted = format!("\"{venue}\"");
+            assert!(
+                !production.contains(&quoted),
+                "{quoted} is spelled in `vike-catalog`'s session.rs: the crypto-native set is \
+                 `vike_venues::session::is_crypto_native`'s alone"
+            );
+        }
+    }
+
+    /// The note's class from a NAME: a currency pair on the five FX-week brokers in each broker's own
+    /// spelling, and nothing the name does not prove.
+    #[test]
+    fn a_currency_pair_on_an_fx_week_broker_is_fx_and_nothing_else_is_guessed() {
+        for (venue, symbol) in [
+            ("dukascopy", "EUR/USD"),
+            ("fxcm", "EUR/USD"),
+            ("fxcm", "USDJPY"),
+            ("oanda", "EUR_USD"),
+            ("ctrader", "EURUSD"),
+            ("ig", "CS.D.EURUSD.CFD.IP"),
+            ("ig", "CS.D.USDJPY.MINI.IP"),
+        ] {
+            assert_eq!(session_class_of(venue, symbol), Some(AssetClass::Fx), "{venue} {symbol}");
+            assert_eq!(
+                session_calendar_for(venue, session_class_of(venue, symbol).unwrap()),
+                FX_WEEK,
+                "{venue} {symbol}: the class resolves to the FX week"
+            );
+        }
+        // an index, a metal, an oil, a share CFD, a crypto CFD or a broker suffix: hours of their
+        // own (or a spelling this does not read): never FX-week by guess
+        for (venue, symbol) in [
+            ("oanda", "SPX500_USD"),
+            ("oanda", "XAU_USD"),
+            ("ctrader", "XAUUSD"),
+            ("ctrader", "BTCUSD"),
+            ("dukascopy", "BRENT.CMD/USD"),
+            ("ig", "IX.D.DAX.DAILY.IP"),
+            ("fxcm", "EURUSDm"),
+        ] {
+            assert_eq!(session_class_of(venue, symbol), None, "{venue} {symbol}");
+        }
+    }
+
+    /// A venue whose book is not the FX week is never classified FX, whatever the name says, and a
+    /// mixed or crypto venue says nothing: IBKR's region is not in a stock's name.
+    #[test]
+    fn only_the_fx_week_brokers_and_alpaca_have_a_class_from_a_name() {
+        for venue in
+            ["binance", "bybit", "okx", "deribit", "hyperliquid", "aster", "polymarket", "ibkr"]
+        {
+            assert_eq!(session_class_of(venue, "EURUSD"), None, "{venue}");
+            assert_eq!(session_class_of(venue, "AAPL.SMART.USD"), None, "{venue}");
+        }
+        assert_eq!(session_class_of("alpaca", "AAPL"), Some(AssetClass::Equity));
+        assert_eq!(session_class_of("alpaca", "BRK.B"), Some(AssetClass::Equity));
+        assert_eq!(session_class_of("alpaca", "BTC/USD"), Some(AssetClass::CryptoSpot));
+    }
+
+    #[test]
+    fn unknown_venue_and_class_pair_is_always_open() {
+        assert_eq!(
+            session_calendar_for("mystery", AssetClass::Equity),
+            SessionCalendar::ALWAYS_OPEN,
+            "an unmodeled (venue, class) must never block"
+        );
+    }
+}

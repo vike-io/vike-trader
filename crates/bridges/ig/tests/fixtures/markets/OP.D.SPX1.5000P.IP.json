@@ -1,0 +1,121 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 0.0
+  },
+  "marketOrderPreference": "NOT_AVAILABLE",
+  "maxStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 1000.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "PERCENTAGE",
+   "value": 2.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 0.1
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 10000000000.0
+  },
+  "trailingStopsPreference": "NOT_AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": null,
+  "contractSize": "100",
+  "controlledRiskAllowed": true,
+  "country": "US",
+  "currencies": [
+   {
+    "baseExchangeRate": 1.0,
+    "code": "USD",
+    "exchangeRate": 0.66,
+    "isDefault": true,
+    "symbol": "$"
+   }
+  ],
+  "epic": "OP.D.SPX1.5000P.IP",
+  "expiry": "NOV-26",
+  "expiryDetails": {
+   "lastDealingDate": "2026-11-19T21:15",
+   "settlementInfo": "Trading in SPX options will cease on the day preceding the settlement day.The settlement, SET, is calculated using the opening price in the primary market of each component security on the expiry date."
+  },
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": null,
+   "value": 0
+  },
+  "lotSize": 100.0,
+  "marginDepositBands": [
+   {
+    "currency": "USD",
+    "margin": 0.5,
+    "max": 13.55,
+    "min": 0
+   },
+   {
+    "currency": "USD",
+    "margin": 1,
+    "max": 67.75,
+    "min": 13.55
+   },
+   {
+    "currency": "USD",
+    "margin": 3,
+    "max": 108.4,
+    "min": 67.75
+   },
+   {
+    "currency": "USD",
+    "margin": 15,
+    "max": null,
+    "min": 108.4
+   }
+  ],
+  "marginFactor": 0.5,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "US500",
+  "name": "US 500 5000 Put",
+  "newsCode": null,
+  "onePipMeans": "1 Index Point",
+  "openingHours": null,
+  "rolloverDetails": null,
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 50.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": false,
+  "streamingPricesAvailable": true,
+  "type": "UNKNOWN",
+  "unit": "CONTRACTS",
+  "valueOfOnePip": "100.00"
+ },
+ "snapshot": {
+  "bid": 0.75,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 2,
+  "delayTime": 0,
+  "high": 272.16,
+  "low": 0.01,
+  "marketStatus": "TRADEABLE",
+  "netChange": 7595.88,
+  "offer": 1.35,
+  "percentageChange": -2.04,
+  "scalingFactor": 1,
+  "updateTime": "19:51:22"
+ }
+}
