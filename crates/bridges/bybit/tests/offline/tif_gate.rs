@@ -1,0 +1,220 @@
+//! tif step-2 submit-gate pins (offline): a TIF bybit cannot express (GTD/Day) yields the
+//! emitter-split pair `[OrderSubmitted, OrderRejected]` and the wire is NEVER touched — on the
+//! single submit and per-order inside the native create-batch (denied orders are partitioned out
+//! of the wire chunk; supported ones still batch). The mapped GTC/IOC/FOK wire strings and the
+//! default-TIF byte-identity are pinned in `r6_bybit_parity.rs` against the golden fixture.
+
+use std::assert_matches;
+use std::sync::Mutex;
+
+use serde_json::{Value, json};
+use vike_bridge_core::rest::VenueRest;
+use vike_bridge_core::signer::BybitV5Signer;
+use vike_bridge_core::transport::VenueApiError;
+use vike_bybit::perp::BybitPerpRest;
+use vike_bybit::transport::BybitTransport;
+use vike_model::events::Event;
+use vike_model::{OrderRequest, SymbolProperties, TimeInForce};
+use vike_secrets::credentials::Credentials;
+
+fn signer() -> BybitV5Signer {
+    BybitV5Signer::new(
+        &Credentials {
+            api_key: "k".to_string().into(),
+            api_secret: "s".to_string().into(),
+            passphrase: None,
+        },
+        || 0,
+    )
+}
+
+/// A transport that PANICS on any wire touch — proves the deny gate returns before the POST.
+struct NoWire;
+impl BybitTransport for NoWire {
+    fn signed(
+        &self,
+        _base: &str,
+        path: &str,
+        _method: &str,
+        _params: &[(&str, Value)],
+        _signer: &BybitV5Signer,
+    ) -> Result<Value, VenueApiError> {
+        panic!("denied TIF must never reach the wire ({path})");
+    }
+}
+
+/// Captures the signed params and acks every order — for the mixed-batch partition pin.
+struct Capture {
+    calls: Mutex<Vec<Vec<(String, Value)>>>,
+}
+impl BybitTransport for Capture {
+    fn signed(
+        &self,
+        _base: &str,
+        _path: &str,
+        _method: &str,
+        params: &[(&str, Value)],
+        _signer: &BybitV5Signer,
+    ) -> Result<Value, VenueApiError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(params.iter().map(|(k, v)| (k.to_string(), v.clone())).collect());
+        let n = params
+            .iter()
+            .find(|(k, _)| *k == "request")
+            .and_then(|(_, v)| v.as_array().map(Vec::len))
+            .unwrap_or(1);
+        let acks: Vec<Value> = (0..n).map(|i| json!({ "orderId": format!("oid-{i}") })).collect();
+        let exts: Vec<Value> = (0..n).map(|_| json!({ "code": 0, "msg": "OK" })).collect();
+        Ok(json!({
+            "retCode": 0, "retMsg": "OK",
+            "result": { "list": acks },
+            "retExtInfo": { "list": exts },
+        }))
+    }
+}
+
+fn make<T: BybitTransport>(transport: T) -> BybitPerpRest<T> {
+    BybitPerpRest {
+        category: vike_bybit::data::Category::Linear,
+        signer: signer(),
+        transport,
+        base_url: "https://unused.invalid".to_string(),
+        symbol: "BTCUSDT".to_string(),
+        properties: SymbolProperties::default(),
+        leverage: 1.0,
+    }
+}
+
+// Per venue: `crates/bridges/binance/tests/offline/tif_gate.rs`'s `limit_req` differs in `venue`,
+// `crates/bridges/okx/tests/offline/tif_gate.rs`'s also in `symbol` and `qty`.
+fn limit_req(coid: &str, tif: TimeInForce) -> OrderRequest {
+    OrderRequest {
+        client_order_id: coid.to_string(),
+        venue: "bybit".to_string(),
+        symbol: "BTCUSDT".to_string(),
+        side: 1,
+        qty: 0.01,
+        order_type: vike_model::OrderType::Limit,
+        price: Some(50000.0),
+        time_in_force: tif,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn submit_denies_gtd_and_day_without_touching_the_wire() {
+    let client = make(NoWire);
+    for (coid, tif) in [("c-gtd", TimeInForce::Gtd), ("c-day", TimeInForce::Day)] {
+        let events = VenueRest::submit_order(&client, &limit_req(coid, tif));
+        assert_eq!(events.len(), 2, "{coid}: exactly the emitter-split pair: {events:?}");
+        assert_matches!(&events[0], Event::OrderSubmitted(s) if s.client_order_id == coid);
+        match &events[1] {
+            Event::OrderRejected(r) => {
+                assert_eq!(r.client_order_id, coid);
+                assert!(r.reason.contains("not supported on bybit"), "loud deny: {}", r.reason);
+            }
+            other => panic!("{coid}: expected terminal OrderRejected, got {other:?}"),
+        }
+    }
+}
+
+/// A mixed batch partitions: the denied order is terminally rejected and never enters the wire
+/// chunk; the supported orders still batch (ONE wire call whose request array carries only the
+/// two supported coids, with their honored TIFs).
+#[test]
+fn batch_partitions_denied_tifs_out_of_the_wire_chunk() {
+    let client = make(Capture { calls: Mutex::new(Vec::new()) });
+    let requests = vec![
+        limit_req("c-ok-1", TimeInForce::Gtc),
+        limit_req("c-bad", TimeInForce::Day),
+        limit_req("c-ok-2", TimeInForce::Fok),
+    ];
+    let events = client.submit_batch(&requests);
+    let rejected: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::OrderRejected(r) => Some(r.client_order_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rejected, ["c-bad"], "only the denied TIF is rejected");
+    let accepted: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::OrderAccepted(a) => Some(a.client_order_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(accepted, ["c-ok-1", "c-ok-2"], "the supported orders still batch");
+
+    let calls = client.transport.calls.lock().unwrap();
+    assert_eq!(calls.len(), 1, "one wire chunk for the two supported orders");
+    let batch = calls[0].iter().find(|(k, _)| k == "request").map(|(_, v)| v.clone()).unwrap();
+    let coids: Vec<_> = batch
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o.get("orderLinkId").and_then(|v| v.as_str()).unwrap().to_string())
+        .collect();
+    assert_eq!(coids, ["c-ok-1", "c-ok-2"], "the denied order never reaches the wire");
+    let tifs: Vec<_> = batch
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o.get("timeInForce").and_then(|v| v.as_str()).unwrap().to_string())
+        .collect();
+    assert_eq!(tifs, ["GTC", "FOK"], "honored TIFs ride the wire");
+}
+
+/// POST-ONLY rides V5's own `timeInForce=PostOnly` on a limit order (the family's row, no special
+/// casing), and a post-only order that is not a LIMIT order is denied before the wire: the flag would
+/// be dropped and the order would take liquidity.
+#[test]
+fn post_only_rides_the_wire_as_post_only_and_a_market_one_is_denied() {
+    let client = make(NoWire);
+    let params = client.build_order_params(&limit_req("c-po", TimeInForce::PostOnly));
+    let tif = params.iter().find(|(k, _)| *k == "timeInForce").map(|(_, v)| v.clone());
+    assert_eq!(tif, Some(json!("PostOnly")));
+
+    let mut market = limit_req("c-po-mkt", TimeInForce::PostOnly);
+    market.order_type = vike_model::OrderType::Market;
+    market.price = None;
+    let events = VenueRest::submit_order(&client, &market);
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_matches!(
+        &events[1], Event::OrderRejected(r) if r.reason.contains("PostOnly needs a limit order"),
+        "{events:?}"
+    );
+}
+
+/// The venue ACCEPTS a crossing post-only order and then ends it (`rejectReason`
+/// `EC_PostOnlyWillTakeLiquidity`): the order stream's row becomes the typed terminal, an
+/// `OrderCanceled` (the state machine allows a reject before the accept only), whatever status word
+/// the venue used. Any other cancel keeps its own reason.
+#[test]
+fn a_crossing_post_only_order_the_venue_ends_is_a_typed_cancel() {
+    for status in ["Cancelled", "Rejected"] {
+        let row = json!({
+            "orderLinkId": "c-po", "orderId": "o1", "orderStatus": status,
+            "rejectReason": "EC_PostOnlyWillTakeLiquidity", "cancelType": "CancelByUser",
+            "updatedTime": "5"
+        });
+        let mapped = vike_bybit::event_mapper::map_order(&row, "bybit", "BTCUSDT");
+        assert_matches!(
+            mapped.as_slice(),
+            [Event::OrderCanceled(c)] if c.is_post_only_cross() && c.client_order_id == "c-po",
+            "{status}: {mapped:?}"
+        );
+    }
+    let plain = json!({
+        "orderLinkId": "c-x", "orderStatus": "Cancelled", "cancelType": "CancelByUser",
+        "rejectReason": "EC_NoError", "updatedTime": "5"
+    });
+    let mapped = vike_bybit::event_mapper::map_order(&plain, "bybit", "BTCUSDT");
+    assert_matches!(
+        mapped.as_slice(),
+        [Event::OrderCanceled(c)] if !c.is_post_only_cross() && c.reason == "CancelByUser"
+    );
+}

@@ -1,0 +1,329 @@
+//! Deribit crypto-options chain provider (public REST, no API key) — ports
+//! `vike-trader-app data/options/deribit.py`. This is the READ side (chain snapshots for the
+//! options grid); order entry stays on the `DeribitRest` / `ExecutionClient` path.
+//!
+//! One `get_book_summary_by_currency` call returns the whole chain for a currency
+//! (bid/ask/mark/mark_iv/OI/volume/underlying_price). Pure parse helpers take the raw
+//! `result` rows and are unit-tested with captured payloads (the venue-mapper anatomy); the
+//! HTTP method is a thin shell with a short cache so `list_expiries` + `fetch_chain` share a
+//! single request. The chain snapshot types (`OptionChain`, `Expiry`, `StrikeRow`, `OptionQuote`,
+//! `OptionKind`) are `vike-marketdata`'s, the venue-free feed vocabulary (decision 0126); the
+//! pricing (`enrich_quote`) and the calendar constructor (`make_expiry`) are
+//! `vike-options`' (the layering twin of `options/deribit.py` importing `options/{model,greeks}`).
+//! The opt-in `kind=chain` RECORDING of a fetched chain is not here: the bridge hands back the chain
+//! and the daemon that owns the store records it (`crates/vike-datahub/src/options/deribit.rs`'s
+//! `record_chain`).
+//!
+//! Contract notes:
+//! - ⚠ **`parse_instrument_name` reads identity from the NAME, and here that is the only source.**
+//!   Everywhere else this crate takes strike, right and expiry from the instrument payload
+//!   (`crates/bridges/deribit/src/catalog.rs`'s `contract_of`), but a
+//!   `get_book_summary_by_currency` row carries `instrument_name`, prices, IV, OI and volume and
+//!   NO `strike`, `option_type` or `expiration_timestamp` — so the name is all there is to group
+//!   by. Replacing it would mean a second request (`public/get_instruments`) joined by name per
+//!   chain fetch; until that is wanted, this parser stays.
+//! - It accepts BOTH shapes: legacy coin-settled "BTC-27JUN26-100000-C" and USDC-margined
+//!   "SOL_USDC-26JUN26-90-P" (the `_USD[CT]` settlement suffix is dropped so the base normalizes to
+//!   "SOL"). It is deliberately LOOSER than `client.rs`'s exec-side `option_base_asset` (decimal
+//!   strikes, settlement suffix), which is now only that parser's fallback for a row publishing no
+//!   `base_currency`.
+//! - Coin-settled premiums arrive in COIN units → scaled to USD by the row's underlying price
+//!   (fallback: chain spot); the USDC book already quotes USD → passed through unscaled. This path
+//!   decides the unit per BOOK (`book_currency`); the live `markprice`/`ticker` folds in
+//!   `vike-options` decide it per OPTION, from the settlement currency the instrument payload
+//!   carries (`crates/vike-options/src/chain/index.rs`'s `OptionIndex`). The two agree
+//!   because the USDC book holds exactly the USDC-settled options; a streamed and a re-polled
+//!   premium disagreeing means they stopped agreeing.
+//! - `r` (risk-free) is threaded explicitly (the Python twin uses its import-time env default;
+//!   pass 0.0 to match — see vike-options `greeks`).
+//! - `instrument_name` is carried VERBATIM on every quote (the `_USDC` suffix is not
+//!   reconstructable from parsed fields) so the arm/trade path can use the exact venue id.
+
+use std::collections::{BTreeSet, HashMap};
+
+use indexmap::IndexMap;
+use serde_json::Value;
+
+use vike_marketdata::{Expiry, OptionChain, OptionKind, OptionQuote, StrikeRow, UnderlyingKind};
+use vike_options::{enrich_quote, limit_strikes, make_expiry, years_to_expiry};
+
+const BASE: &str = "https://www.deribit.com/api/v2/public/get_book_summary_by_currency";
+const CACHE_TTL_MS: i64 = 5_000;
+
+/// Currency to query Deribit's book-summary with: BTC/ETH have their own coin-settled books;
+/// the altcoins (SOL, and others as they're added) are listed only under the shared USDC book.
+/// Twin of `_BOOK_CURRENCY` (`dict.get(u, u)` — unknown coins query their own name).
+fn book_currency(underlying: &str) -> &str {
+    match underlying {
+        "SOL" => "USDC",
+        other => other,
+    }
+}
+
+/// `"BTC-27JUN26-100000-C"` → `("BTC", "2026-06-27", 100000.0, Call)`; `None` if not an
+/// option. Twin of `parse_instrument_name` (regex
+/// `^([A-Z]+)(?:_USD[CT])?-(\d{1,2})([A-Z]{3})(\d{2})-(\d+(?:\.\d+)?)-([CP])$`, hand-rolled —
+/// no regex dep), including the reject-non-month-token gate. Name-derived ON PURPOSE: its input,
+/// a book-summary row, publishes no strike, right or expiry field (module doc).
+pub fn parse_instrument_name(name: &str) -> Option<(String, String, f64, OptionKind)> {
+    let parts: Vec<&str> = name.split('-').collect();
+    if parts.len() != 4 {
+        return None;
+    }
+    let (head, expiry, strike_s, cp) = (parts[0], parts[1], parts[2], parts[3]);
+    // base: [A-Z]+ with an optional _USDC/_USDT settlement suffix (captured and discarded)
+    let base = head.strip_suffix("_USDC").or_else(|| head.strip_suffix("_USDT")).unwrap_or(head);
+    if base.is_empty() || !base.bytes().all(|b| b.is_ascii_uppercase()) {
+        return None;
+    }
+    // expiry: \d{1,2} [A-Z]{3} \d{2}
+    if !expiry.is_ascii() || expiry.len() < 6 || expiry.len() > 7 {
+        return None;
+    }
+    let (day_s, rest) = expiry.split_at(expiry.len() - 5);
+    let (mon_s, yy_s) = rest.split_at(3);
+    if !day_s.bytes().all(|b| b.is_ascii_digit()) || !yy_s.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let month: u32 = match mon_s {
+        "JAN" => 1,
+        "FEB" => 2,
+        "MAR" => 3,
+        "APR" => 4,
+        "MAY" => 5,
+        "JUN" => 6,
+        "JUL" => 7,
+        "AUG" => 8,
+        "SEP" => 9,
+        "OCT" => 10,
+        "NOV" => 11,
+        "DEC" => 12,
+        _ => return None, // any [A-Z]{3} shape reaches here; reject non-month tokens
+    };
+    let day: u32 = day_s.parse().ok()?;
+    // a name the calendar does not have ("31FEB26", "00JAN26") would panic `make_expiry` downstream
+    let year: i32 = 2000 + yy_s.parse::<i32>().ok()?;
+    if !(1..=days_in_month(year, month)).contains(&day) {
+        return None;
+    }
+    // strike: \d+(\.\d+)? (shape-checked — f64::parse alone would admit "1e5"/"inf")
+    let (int_p, frac_p) = match strike_s.find('.') {
+        Some(i) => (&strike_s[..i], Some(&strike_s[i + 1..])),
+        None => (strike_s, None),
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if !digits(int_p) || !frac_p.is_none_or(digits) {
+        return None;
+    }
+    let strike: f64 = strike_s.parse().ok()?;
+    let kind = OptionKind::from_cp(cp)?;
+    Some((base.to_string(), format!("20{yy_s}-{month:02}-{day:02}"), strike, kind))
+}
+
+/// Days in a Gregorian month (`month` is 1..=12).
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        2 if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    }
+}
+
+/// Distinct option expiries present in a book-summary payload, ascending — twin of
+/// `list_expiries_from_summary`. When `currency` is given (e.g. "SOL"), only that base coin's
+/// instruments count — the shared USDC book mixes several coins, so without this filter SOL's
+/// expiries would pick up BTC/ETH/XRP dates.
+pub fn list_expiries_from_summary(
+    rows: &[Value],
+    now_ms: i64,
+    currency: Option<&str>,
+) -> Vec<Expiry> {
+    let mut dates: BTreeSet<String> = BTreeSet::new(); // ISO strings: lexicographic == ascending
+    for r in rows {
+        let name = r.get("instrument_name").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some((base, date_iso, _, _)) = parse_instrument_name(name)
+            && (currency.is_none() || currency == Some(base.as_str()))
+        {
+            dates.insert(date_iso);
+        }
+    }
+    dates.into_iter().map(|d| make_expiry(&d, now_ms)).collect()
+}
+
+/// Deribit quotes option premiums in coin units (fractions of BTC/ETH/SOL); scale to USD by
+/// the underlying price so they line up with the USD Theor/Strike/Distance columns. Twin of
+/// `_usd` — a falsy scale (0.0, "no underlying to scale by") yields absent, never zero.
+fn usd(v: Option<f64>, scale: f64) -> Option<f64> {
+    if scale == 0.0 {
+        return None;
+    }
+    v.map(|x| x * scale)
+}
+
+/// Group a book-summary payload into an [`OptionChain`] for one expiry, greeks enriched —
+/// twin of `build_chain_from_summary`.
+///
+/// `usd_quoted` selects the premium unit convention: the coin-settled BTC/ETH books quote
+/// premiums in COIN units (scaled to USD by the underlying price), while the USDC-margined
+/// altcoin book (SOL etc.) already quotes premiums in USD — those pass through unscaled.
+pub fn build_chain_from_summary(
+    currency: &str,
+    rows: &[Value],
+    expiry_iso: &str,
+    now_ms: i64,
+    usd_quoted: bool,
+    r: f64,
+) -> OptionChain {
+    let t = years_to_expiry(expiry_iso, now_ms);
+    let mut spot: Option<f64> = None;
+    // Python: insertion-ordered dict keyed by strike, `sorted(items)` at the end — mirrored as
+    // IndexMap + final sort (strikes are finite-positive; total_cmp == numeric order).
+    let mut by_strike: IndexMap<u64, StrikeRow> = IndexMap::new();
+    for row in rows {
+        let name = row.get("instrument_name").and_then(|v| v.as_str()).unwrap_or("");
+        let Some((base, e_iso, strike, kind)) = parse_instrument_name(name) else { continue };
+        // The USDC book mixes coins (BTC_USDC/SOL_USDC/XRP_USDC); keep only the requested coin.
+        if base != currency || e_iso != expiry_iso {
+            continue;
+        }
+        let f = |k: &str| row.get(k).and_then(|v| v.as_f64());
+        if spot.is_none() {
+            spot = f("underlying_price"); // first-seen row sets the chain spot
+        }
+        // Coin-settled premiums arrive in coin units -> scale to USD by this row's underlying
+        // price (fall back to the chain spot). USDC-margined premiums are already USD -> 1.0.
+        // Greeks/Theor come from IV+spot, so this only affects the dollar columns.
+        let scale =
+            if usd_quoted { 1.0 } else { f("underlying_price").unwrap_or(spot.unwrap_or(0.0)) };
+        let q = OptionQuote {
+            bid: usd(f("bid_price"), scale),
+            ask: usd(f("ask_price"), scale),
+            mark: usd(f("mark_price"), scale),
+            iv: f("mark_iv").map(|iv| iv / 100.0), // mark_iv % -> decimal
+            open_interest: f("open_interest"),
+            volume: f("volume"),
+            instrument_name: Some(name.to_string()),
+            ..OptionQuote::new(strike, kind)
+        };
+        let q = enrich_quote(q, spot, t, r);
+        let slot = by_strike.entry(strike.to_bits()).or_insert(StrikeRow {
+            strike,
+            call: None,
+            put: None,
+        });
+        match kind {
+            OptionKind::Call => slot.call = Some(q),
+            OptionKind::Put => slot.put = Some(q),
+        }
+    }
+    let mut chain_rows: Vec<StrikeRow> = by_strike.into_values().collect();
+    chain_rows.sort_by(|a, b| a.strike.total_cmp(&b.strike));
+    OptionChain {
+        underlying: currency.to_string(),
+        underlying_kind: UnderlyingKind::Crypto,
+        underlying_price: spot,
+        expiry: make_expiry(expiry_iso, now_ms),
+        asof_ms: now_ms,
+        source: "deribit".to_string(),
+        rows: chain_rows,
+    }
+}
+
+use vike_model::now_ms;
+
+/// Options provider for Deribit BTC/ETH/SOL options — twin of `DeribitOptionsProvider`
+/// (name "deribit", asset class crypto). Keyless public REST; a 5s cache means
+/// `list_expiries` + N×`fetch_chain` in one refresh pass share a single HTTP call.
+pub struct DeribitOptionsProvider {
+    agent: ureq::Agent,
+    /// The book-summary endpoint: mainnet [`BASE`] always, except under `with_book_summary_url`
+    /// (`test-support` only: a test standing a loopback server where Deribit goes).
+    summary_url: String,
+    cache: HashMap<String, (i64, Vec<Value>)>, // book -> (fetched_ms, result rows)
+}
+
+impl Default for DeribitOptionsProvider {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DeribitOptionsProvider {
+    pub fn new() -> Self {
+        // A keyless public GET: it follows redirects ON PURPOSE and to the shared stated limit (ureq's
+        // own default of ten was never a decision), unlike the venue's signed calls, which follow none
+        // (`vike_bridge_core::http`'s module doc). Its own builder, not the shared public agent, only
+        // because it keeps ureq's status-as-error default: a 429 or 5xx is an `Err` here.
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .max_redirects(vike_bridge_core::http::PUBLIC_GET_MAX_REDIRECTS)
+            .build()
+            .into();
+        Self { agent, summary_url: BASE.to_string(), cache: HashMap::new() }
+    }
+
+    /// Point the book-summary read at `url` instead of mainnet [`BASE`] (the query string is
+    /// appended as for `BASE`). ⚠ TEST-ONLY, and not by convention: it exists only under this
+    /// crate's `test-support` feature, which only a dev edge turns on
+    /// (`crates/vike-ops/tests/architecture/test_surface_gate.rs` refuses a shipped one), so no
+    /// shipped binary contains it and `summary_url` is `BASE` in every production provider. It is
+    /// how `crates/vike-gatewayhub/tests/rest_lane_surfaces.rs` drives the gatewayhub's real
+    /// options lane against canned payloads.
+    #[cfg(feature = "test-support")]
+    pub fn with_book_summary_url(mut self, url: impl Into<String>) -> Self {
+        self.summary_url = url.into();
+        self
+    }
+
+    pub fn list_underlyings(&self) -> [&'static str; 3] {
+        ["BTC", "ETH", "SOL"]
+    }
+
+    /// The (cached) raw `result` rows for an underlying's book.
+    fn summary(&mut self, underlying: &str, now_ms: i64) -> Result<&[Value], String> {
+        let book = book_currency(underlying).to_string();
+        let fresh = self.cache.get(&book).is_some_and(|(ts, _)| now_ms - ts < CACHE_TTL_MS);
+        if !fresh {
+            let url = format!("{}?currency={book}&kind=option", self.summary_url);
+            let mut resp =
+                self.agent.get(&url).call().map_err(|e| format!("deribit book summary: {e}"))?;
+            let body = resp
+                .body_mut()
+                .read_to_string()
+                .map_err(|e| format!("deribit book summary read: {e}"))?;
+            let v: Value = serde_json::from_str(&body)
+                .map_err(|e| format!("deribit book summary json: {e}"))?;
+            let rows = v.get("result").and_then(|r| r.as_array()).cloned().unwrap_or_default();
+            self.cache.insert(book.clone(), (now_ms, rows));
+        }
+        Ok(self.cache.get(&book).map(|(_, rows)| rows.as_slice()).unwrap_or(&[]))
+    }
+
+    /// Distinct expiries for an underlying, ascending.
+    pub fn list_expiries(&mut self, underlying: &str) -> Result<Vec<Expiry>, String> {
+        let now = now_ms();
+        let rows = self.summary(underlying, now)?;
+        Ok(list_expiries_from_summary(rows, now, Some(underlying)))
+    }
+
+    /// One expiry's chain, greeks enriched, optionally windowed to ±`strikes` around spot.
+    pub fn fetch_chain(
+        &mut self,
+        underlying: &str,
+        expiry_iso: &str,
+        strikes: Option<usize>,
+        r: f64,
+    ) -> Result<OptionChain, String> {
+        let now = now_ms();
+        // SOL (and other altcoins) live in the shared USDC book — premiums already USD.
+        let usd_quoted = book_currency(underlying) == "USDC";
+        let rows = self.summary(underlying, now)?;
+        let chain = build_chain_from_summary(underlying, rows, expiry_iso, now, usd_quoted, r);
+        Ok(limit_strikes(chain, strikes))
+    }
+}
+
+#[path = "chain_tests.rs"]
+#[cfg(test)]
+mod chain_tests;

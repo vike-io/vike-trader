@@ -1,0 +1,119 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 50.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "PERCENTAGE",
+   "value": 90.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "POINTS",
+   "value": 30.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 0.1
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 12.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": null,
+  "contractSize": "1",
+  "controlledRiskAllowed": true,
+  "country": "US",
+  "currencies": [
+   {
+    "baseExchangeRate": 1.0,
+    "code": "USD",
+    "exchangeRate": 0.66,
+    "isDefault": true,
+    "symbol": "$"
+   }
+  ],
+  "epic": "IX.D.DOW.BMU.IP",
+  "expiry": "-",
+  "expiryDetails": null,
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "POINTS",
+   "value": 4
+  },
+  "lotSize": 1.0,
+  "marginDepositBands": [
+   {
+    "currency": "USD",
+    "margin": 0.5,
+    "max": 170,
+    "min": 0
+   },
+   {
+    "currency": "USD",
+    "margin": 1,
+    "max": 850,
+    "min": 170
+   },
+   {
+    "currency": "USD",
+    "margin": 3,
+    "max": 1360,
+    "min": 850
+   },
+   {
+    "currency": "USD",
+    "margin": 15,
+    "max": null,
+    "min": 1360
+   }
+  ],
+  "marginFactor": 0.5,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "WALL",
+  "name": "Wall Street Cash ($1)",
+  "newsCode": ".DJI",
+  "onePipMeans": "1 Index Point",
+  "openingHours": null,
+  "rolloverDetails": null,
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 50.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MIN KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": true,
+  "type": "INDICES",
+  "unit": "CONTRACTS",
+  "valueOfOnePip": "1.00"
+ },
+ "snapshot": {
+  "bid": 51788.7,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 1,
+  "delayTime": 0,
+  "high": 52508.2,
+  "low": 51564.3,
+  "marketStatus": "TRADEABLE",
+  "netChange": -549.9,
+  "offer": 51791.1,
+  "percentageChange": -1.05,
+  "scalingFactor": 1,
+  "updateTime": "19:51:55"
+ }
+}

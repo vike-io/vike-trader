@@ -1,0 +1,53 @@
+{
+  "result": {
+    "category": "inverse",
+    "list": [
+      {
+        "adlRankIndicator": 2,
+        "autoAddMargin": 0,
+        "avgPrice": "76790.17085813",
+        "breakEvenPrice": "76876.68075297",
+        "bustPrice": "",
+        "createdTime": "1793390316499",
+        "cumRealisedPnl": "-0.00000006",
+        "curRealisedPnl": "-0.00000006",
+        "isReduceOnly": false,
+        "leverage": "10",
+        "leverageSysUpdatedTime": "",
+        "liqPrice": "3.65900275",
+        "liqPriceByMp": "",
+        "markPrice": "76788.95",
+        "mmrSysUpdatedTime": "",
+        "netDeltaRatio": "",
+        "openTime": 1793390319513,
+        "positionBalance": "0",
+        "positionIM": "0.00001048",
+        "positionIMByMp": "0.00001048",
+        "positionIdx": 0,
+        "positionMM": "0.00000058",
+        "positionMMByMp": "0.00000058",
+        "positionStatus": "Normal",
+        "positionValue": "0.00010418",
+        "riskId": 1,
+        "riskLimitValue": "150",
+        "seq": 140718364130539,
+        "sessionAvgPrice": "",
+        "side": "Buy",
+        "size": "8",
+        "stopLoss": "",
+        "symbol": "BTCUSD",
+        "takeProfit": "",
+        "tpslMode": "Full",
+        "tradeMode": 0,
+        "trailingStop": "0",
+        "unrealisedPnl": "0",
+        "updatedTime": "1793390319513"
+      }
+    ],
+    "nextPageCursor": "BTCUSD%2C1793390319513%2C0"
+  },
+  "retCode": 0,
+  "retExtInfo": {},
+  "retMsg": "OK",
+  "time": 1793390322699
+}

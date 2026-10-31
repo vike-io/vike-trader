@@ -1,0 +1,7 @@
+{
+  "result": {},
+  "retCode": 110101,
+  "retExtInfo": {},
+  "retMsg": "Trading contracts under Cross and Portfolio modes requires enabling the settlement asset as collateral.",
+  "time": 1793390101811
+}

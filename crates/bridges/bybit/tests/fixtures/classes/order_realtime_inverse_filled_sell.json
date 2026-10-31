@@ -1,0 +1,61 @@
+{
+  "result": {
+    "category": "inverse",
+    "list": [
+      {
+        "avgPrice": "76789.6",
+        "blockTradeId": "",
+        "cancelType": "UNKNOWN",
+        "closeOnTrigger": false,
+        "createType": "CreateByUser",
+        "createdTime": "1793390323047",
+        "cumExecFee": "0.00000006",
+        "cumExecQty": "8",
+        "cumExecValue": "0.00010418",
+        "cumFeeDetail": {
+          "BTC": "0.00000006"
+        },
+        "isLeverage": "",
+        "lastPriceOnCreated": "76789.6",
+        "leavesQty": "0",
+        "leavesValue": "0",
+        "marketUnit": "",
+        "orderId": "e597a3ad-bae8-41d6-8b6b-1ce6319c5c29",
+        "orderIv": "",
+        "orderLinkId": "bbcls-3-390322958",
+        "orderStatus": "Filled",
+        "orderType": "Market",
+        "parentOrderLinkId": "",
+        "placeType": "",
+        "positionIdx": 0,
+        "price": "74483.4",
+        "qty": "8",
+        "reduceOnly": true,
+        "rejectReason": "EC_NoError",
+        "side": "Sell",
+        "slLimitPrice": "0",
+        "slTriggerBy": "",
+        "smpGroup": "0",
+        "smpOrderId": "",
+        "smpType": "None",
+        "stopLoss": "",
+        "stopOrderType": "",
+        "symbol": "BTCUSD",
+        "takeProfit": "",
+        "timeInForce": "IOC",
+        "tpLimitPrice": "0",
+        "tpTriggerBy": "",
+        "tpslMode": "",
+        "triggerBy": "",
+        "triggerDirection": 0,
+        "triggerPrice": "",
+        "updatedTime": "1793390323048"
+      }
+    ],
+    "nextPageCursor": "e597a3ad-bae8-41d6-8b6b-1ce6319c5c29%3A1793390323047%2Ce597a3ad-bae8-41d6-8b6b-1ce6319c5c29%3A1793390323047"
+  },
+  "retCode": 0,
+  "retExtInfo": {},
+  "retMsg": "OK",
+  "time": 1793390324900
+}

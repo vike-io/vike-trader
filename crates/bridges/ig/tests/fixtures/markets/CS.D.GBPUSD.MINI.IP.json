@@ -1,0 +1,119 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 30.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "PERCENTAGE",
+   "value": 75.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "POINTS",
+   "value": 8.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 0.04
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 4.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": "GBPUSD",
+  "contractSize": "10000",
+  "controlledRiskAllowed": true,
+  "country": null,
+  "currencies": [
+   {
+    "baseExchangeRate": 1.0,
+    "code": "USD",
+    "exchangeRate": 0.66,
+    "isDefault": true,
+    "symbol": "$"
+   }
+  ],
+  "epic": "CS.D.GBPUSD.MINI.IP",
+  "expiry": "-",
+  "expiryDetails": null,
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "POINTS",
+   "value": 2.5
+  },
+  "lotSize": 1.0,
+  "marginDepositBands": [
+   {
+    "currency": "USD",
+    "margin": 0.5,
+    "max": 500,
+    "min": 0
+   },
+   {
+    "currency": "USD",
+    "margin": 1,
+    "max": 2500,
+    "min": 500
+   },
+   {
+    "currency": "USD",
+    "margin": 3,
+    "max": 4000,
+    "min": 2500
+   },
+   {
+    "currency": "USD",
+    "margin": 15,
+    "max": null,
+    "min": 4000
+   }
+  ],
+  "marginFactor": 0.5,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "GBPUSD",
+  "name": "GBP/USD Mini",
+  "newsCode": "GBP=",
+  "onePipMeans": "0.0001 USD/GBP",
+  "openingHours": null,
+  "rolloverDetails": null,
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 50.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MIN KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": true,
+  "type": "CURRENCIES",
+  "unit": "CONTRACTS",
+  "valueOfOnePip": "1.00"
+ },
+ "snapshot": {
+  "bid": 1.33912,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 5,
+  "delayTime": 0,
+  "high": 1.34343,
+  "low": 1.33673,
+  "marketStatus": "TRADEABLE",
+  "netChange": 0.0015,
+  "offer": 1.33921,
+  "percentageChange": 0.11,
+  "scalingFactor": 10000,
+  "updateTime": "19:44:36"
+ }
+}

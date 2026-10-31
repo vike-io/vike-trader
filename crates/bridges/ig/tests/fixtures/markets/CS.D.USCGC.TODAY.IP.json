@@ -1,0 +1,122 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 4.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "PERCENTAGE",
+   "value": 75.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "POINTS",
+   "value": 2.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 0.1
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": "GOLD",
+  "contractSize": "100",
+  "controlledRiskAllowed": true,
+  "country": null,
+  "currencies": [
+   {
+    "baseExchangeRate": 1.0,
+    "code": "USD",
+    "exchangeRate": 0.66,
+    "isDefault": true,
+    "symbol": "$"
+   }
+  ],
+  "epic": "CS.D.USCGC.TODAY.IP",
+  "expiry": "DFB",
+  "expiryDetails": {
+   "lastDealingDate": "2029-04-06T18:00",
+   "settlementInfo": "DFBs settle on the Last Dealing Day basis the middle of the IG price at 20:00, plus or minus half the IG spread."
+  },
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "POINTS",
+   "value": 1
+  },
+  "lotSize": 100.0,
+  "marginDepositBands": [
+   {
+    "currency": "USD",
+    "margin": 0.5,
+    "max": 23,
+    "min": 0
+   },
+   {
+    "currency": "USD",
+    "margin": 1,
+    "max": 46,
+    "min": 23
+   },
+   {
+    "currency": "USD",
+    "margin": 3,
+    "max": 69,
+    "min": 46
+   },
+   {
+    "currency": "USD",
+    "margin": 7.5,
+    "max": null,
+    "min": 69
+   }
+  ],
+  "marginFactor": 0.5,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "GC",
+  "name": "Spot Gold",
+  "newsCode": "GOL",
+  "onePipMeans": "1 $/Troy Ounce",
+  "openingHours": null,
+  "rolloverDetails": null,
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 50.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MIN KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": false,
+  "type": "CURRENCIES",
+  "unit": "CONTRACTS",
+  "valueOfOnePip": "100.00"
+ },
+ "snapshot": {
+  "bid": null,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 2,
+  "delayTime": 0,
+  "high": null,
+  "low": null,
+  "marketStatus": "TRADEABLE",
+  "netChange": null,
+  "offer": null,
+  "percentageChange": null,
+  "scalingFactor": 1,
+  "updateTime": null
+ }
+}
