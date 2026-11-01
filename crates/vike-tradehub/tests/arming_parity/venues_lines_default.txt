@@ -1,0 +1,244 @@
+===== nothing: the whole table =====
+settings: /project/settings
+
+VENUE        ACCOUNT  TIER     EFFECTIVE  ENGINE  BLOCK
+alpaca       -        -        -          no      NoAccountRow
+aster        -        -        -          no      NoAccountRow
+binance      -        -        -          no      NoAccountRow
+bybit        -        -        -          no      NoAccountRow
+ctrader      -        -        -          no      NoAccountRow
+deribit      -        -        -          no      NoAccountRow
+dukascopy    -        -        -          no      NoAccountRow
+fxcm         -        -        -          no      NoAccountRow
+hyperliquid  -        -        -          no      NoAccountRow
+ibkr         -        -        -          no      NoAccountRow
+ig           -        -        -          no      NoAccountRow
+oanda        -        -        -          no      NoAccountRow
+okx          -        -        -          no      NoAccountRow
+polymarket   -        -        -          no      NoAccountRow
+
+14 row(s) over 14 venue(s) — 0 live, 0 demo, 0 paper, 14 not running
+===== nothing: --blocked, no credential store read =====
+settings: NONE FOUND — no account runs, whatever a file says
+credentials: NO STORE READ — every row below reads `NoCredentials` for that one reason, not fourteen. `vike-cli secrets path` prints where one would go.
+
+VENUE        ACCOUNT  TIER     EFFECTIVE  ENGINE  BLOCK
+alpaca       -        -        -          no      NoAccountRow
+aster        -        -        -          no      NoAccountRow
+binance      -        -        -          no      NoAccountRow
+bybit        -        -        -          no      NoAccountRow
+ctrader      -        -        -          no      NoAccountRow
+deribit      -        -        -          no      NoAccountRow
+dukascopy    -        -        -          no      NoAccountRow
+fxcm         -        -        -          no      NoAccountRow
+hyperliquid  -        -        -          no      NoAccountRow
+ibkr         -        -        -          no      NoAccountRow
+ig           -        -        -          no      NoAccountRow
+oanda        -        -        -          no      NoAccountRow
+okx          -        -        -          no      NoAccountRow
+polymarket   -        -        -          no      NoAccountRow
+
+14 row(s) over 14 venue(s) — 0 live, 0 demo, 0 paper, 14 not running
+===== everything-demo: the whole table =====
+settings: /project/settings
+
+VENUE        ACCOUNT  TIER     EFFECTIVE  ENGINE  BLOCK
+alpaca       -        demo     demo       yes     None
+aster        -        demo     demo       yes     None
+binance      -        demo     demo       yes     None
+bybit        -        demo     demo       yes     None
+ctrader      -        demo     demo       yes     None
+deribit      -        demo     demo       yes     None
+dukascopy    -        demo     demo       yes     None
+fxcm         -        demo     -          no      FeatureAbsent
+hyperliquid  -        demo     demo       yes     None
+ibkr         -        demo     -          no      FeatureAbsent
+ig           -        demo     demo       yes     None
+oanda        -        demo     demo       yes     None
+okx          -        demo     demo       yes     None
+polymarket   -        demo     -          no      FeatureAbsent
+
+-- why these do not run at the tier their account row states ---------
+  fxcm  (account row id 7)
+     this gatewayhub build has no fxcm arm (its cargo feature is off), so fxcm does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+  ibkr  (account row id 10)
+     this gatewayhub build has no ibkr arm (its cargo feature is off), so ibkr does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+  polymarket  (account row id 9)
+     this gatewayhub build has no polymarket arm (its cargo feature is off), so polymarket does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+
+14 row(s) over 14 venue(s) — 0 live, 11 demo, 0 paper, 3 not running
+===== everything-demo: --blocked, no credential store read =====
+settings: NONE FOUND — no account runs, whatever a file says
+credentials: NO STORE READ — every row below reads `NoCredentials` for that one reason, not fourteen. `vike-cli secrets path` prints where one would go.
+
+VENUE        ACCOUNT  TIER     EFFECTIVE  ENGINE  BLOCK
+alpaca       -        demo     demo       yes     None
+aster        -        demo     demo       yes     None
+binance      -        demo     demo       yes     None
+bybit        -        demo     demo       yes     None
+ctrader      -        demo     demo       yes     None
+deribit      -        demo     demo       yes     None
+dukascopy    -        demo     demo       yes     None
+fxcm         -        demo     -          no      FeatureAbsent
+hyperliquid  -        demo     demo       yes     None
+ibkr         -        demo     -          no      FeatureAbsent
+ig           -        demo     demo       yes     None
+oanda        -        demo     demo       yes     None
+okx          -        demo     demo       yes     None
+polymarket   -        demo     -          no      FeatureAbsent
+
+-- why these do not run at the tier their account row states ---------
+  fxcm  (account row id 7)
+     this gatewayhub build has no fxcm arm (its cargo feature is off), so fxcm does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+  ibkr  (account row id 10)
+     this gatewayhub build has no ibkr arm (its cargo feature is off), so ibkr does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+  polymarket  (account row id 9)
+     this gatewayhub build has no polymarket arm (its cargo feature is off), so polymarket does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+
+14 row(s) over 14 venue(s) — 0 live, 11 demo, 0 paper, 3 not running
+===== everything-demo+dukascopy-alt: the whole table =====
+settings: /project/settings
+
+VENUE        ACCOUNT  TIER     EFFECTIVE  ENGINE  BLOCK
+alpaca       -        demo     demo       yes     None
+aster        -        demo     demo       yes     None
+binance      -        demo     demo       yes     None
+bybit        -        demo     demo       yes     None
+ctrader      -        demo     demo       yes     None
+deribit      -        demo     demo       yes     None
+dukascopy    -        demo     -          no      SidecarHeldElsewhere
+dukascopy    ALT      demo     demo       yes     None
+fxcm         -        demo     -          no      FeatureAbsent
+hyperliquid  -        demo     demo       yes     None
+ibkr         -        demo     -          no      FeatureAbsent
+ig           -        demo     demo       yes     None
+oanda        -        demo     demo       yes     None
+okx          -        demo     demo       yes     None
+polymarket   -        demo     -          no      FeatureAbsent
+
+-- why these do not run at the tier their account row states ---------
+  dukascopy  (account row id 8)
+     dukascopy cannot be armed and does not run: this process opens ONE dukascopy broker session and another dukascopy account holds it. Nothing about this account's credentials, its tier or its row is wrong — it lost a process-wide resource: an active labelled dukascopy account takes the session, and with none the DEFAULT account keeps it (`vike-cli secrets account deactivate --id <N>` on the other one hands it over). To trade both at once, give the second account its own project folder (its own settings directory and credential store) and run a second process there
+  fxcm  (account row id 7)
+     this gatewayhub build has no fxcm arm (its cargo feature is off), so fxcm does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+  ibkr  (account row id 10)
+     this gatewayhub build has no ibkr arm (its cargo feature is off), so ibkr does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+  polymarket  (account row id 9)
+     this gatewayhub build has no polymarket arm (its cargo feature is off), so polymarket does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+
+dukascopy: 2 accounts — 0 live, 1 demo, 0 paper, 1 not running
+15 row(s) over 14 venue(s) — 0 live, 11 demo, 0 paper, 4 not running
+===== everything-demo+dukascopy-alt: --blocked, no credential store read =====
+settings: NONE FOUND — no account runs, whatever a file says
+credentials: NO STORE READ — every row below reads `NoCredentials` for that one reason, not fourteen. `vike-cli secrets path` prints where one would go.
+
+VENUE        ACCOUNT  TIER     EFFECTIVE  ENGINE  BLOCK
+alpaca       -        demo     demo       yes     None
+aster        -        demo     demo       yes     None
+binance      -        demo     demo       yes     None
+bybit        -        demo     demo       yes     None
+ctrader      -        demo     demo       yes     None
+deribit      -        demo     demo       yes     None
+dukascopy    -        demo     -          no      SidecarHeldElsewhere
+dukascopy    ALT      demo     demo       yes     None
+fxcm         -        demo     -          no      FeatureAbsent
+hyperliquid  -        demo     demo       yes     None
+ibkr         -        demo     -          no      FeatureAbsent
+ig           -        demo     demo       yes     None
+oanda        -        demo     demo       yes     None
+okx          -        demo     demo       yes     None
+polymarket   -        demo     -          no      FeatureAbsent
+
+-- why these do not run at the tier their account row states ---------
+  dukascopy  (account row id 8)
+     dukascopy cannot be armed and does not run: this process opens ONE dukascopy broker session and another dukascopy account holds it. Nothing about this account's credentials, its tier or its row is wrong — it lost a process-wide resource: an active labelled dukascopy account takes the session, and with none the DEFAULT account keeps it (`vike-cli secrets account deactivate --id <N>` on the other one hands it over). To trade both at once, give the second account its own project folder (its own settings directory and credential store) and run a second process there
+  fxcm  (account row id 7)
+     this gatewayhub build has no fxcm arm (its cargo feature is off), so fxcm does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+  ibkr  (account row id 10)
+     this gatewayhub build has no ibkr arm (its cargo feature is off), so ibkr does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+  polymarket  (account row id 9)
+     this gatewayhub build has no polymarket arm (its cargo feature is off), so polymarket does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+
+dukascopy: 2 accounts — 0 live, 1 demo, 0 paper, 1 not running
+15 row(s) over 14 venue(s) — 0 live, 11 demo, 0 paper, 4 not running
+===== everything-live: the whole table =====
+settings: /project/settings
+
+VENUE        ACCOUNT  TIER     EFFECTIVE  ENGINE  BLOCK
+alpaca       -        live     -          no      LiveTierNotWired
+aster        -        live     live       yes     None
+binance      -        live     live       yes     None
+bybit        -        live     live       yes     None
+ctrader      -        live     -          no      LiveTierNotWired
+deribit      -        live     -          no      LiveTierNotWired
+dukascopy    -        live     -          no      LiveTierNotWired
+fxcm         -        live     -          no      FeatureAbsent
+hyperliquid  -        live     live       yes     None
+ibkr         -        live     -          no      FeatureAbsent
+ig           -        live     -          no      LiveTierNotWired
+oanda        -        live     -          no      LiveTierNotWired
+okx          -        live     live       yes     None
+polymarket   -        live     -          no      FeatureAbsent
+
+-- why these do not run at the tier their account row states ---------
+  alpaca  (account row id 12)
+     alpaca has a LIVE-tier credential set stored, but alpaca's mount arm does not select it — the arm mounts only its demo tier, or its live tier refused this account under one of its own rules (the daemon's log names which) — so alpaca does NOT RUN whatever its tier says. Nothing was signed and no order can reach the live account. To trade the demo account, store its demo-tier keys — and where alpaca refuses to choose a tier while a live set is stored (oanda), remove the live-tier keys too. `vike-cli secrets list` names what the store holds
+  ctrader  (account row id 11)
+     ctrader has a LIVE-tier credential set stored, but ctrader's mount arm does not select it — the arm mounts only its demo tier, or its live tier refused this account under one of its own rules (the daemon's log names which) — so ctrader does NOT RUN whatever its tier says. Nothing was signed and no order can reach the live account. To trade the demo account, store its demo-tier keys — and where ctrader refuses to choose a tier while a live set is stored (oanda), remove the live-tier keys too. `vike-cli secrets list` names what the store holds
+  deribit  (account row id 4)
+     deribit has a LIVE-tier credential set stored, but deribit's mount arm does not select it — the arm mounts only its demo tier, or its live tier refused this account under one of its own rules (the daemon's log names which) — so deribit does NOT RUN whatever its tier says. Nothing was signed and no order can reach the live account. To trade the demo account, store its demo-tier keys — and where deribit refuses to choose a tier while a live set is stored (oanda), remove the live-tier keys too. `vike-cli secrets list` names what the store holds
+  dukascopy  (account row id 8)
+     dukascopy has a LIVE-tier credential set stored, but dukascopy's mount arm does not select it — the arm mounts only its demo tier, or its live tier refused this account under one of its own rules (the daemon's log names which) — so dukascopy does NOT RUN whatever its tier says. Nothing was signed and no order can reach the live account. To trade the demo account, store its demo-tier keys — and where dukascopy refuses to choose a tier while a live set is stored (oanda), remove the live-tier keys too. `vike-cli secrets list` names what the store holds
+  fxcm  (account row id 7)
+     this gatewayhub build has no fxcm arm (its cargo feature is off), so fxcm does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+  ibkr  (account row id 10)
+     this gatewayhub build has no ibkr arm (its cargo feature is off), so ibkr does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+  ig  (account row id 6)
+     ig has a LIVE-tier credential set stored, but ig's mount arm does not select it — the arm mounts only its demo tier, or its live tier refused this account under one of its own rules (the daemon's log names which) — so ig does NOT RUN whatever its tier says. Nothing was signed and no order can reach the live account. To trade the demo account, store its demo-tier keys — and where ig refuses to choose a tier while a live set is stored (oanda), remove the live-tier keys too. `vike-cli secrets list` names what the store holds
+  oanda  (account row id 5)
+     oanda has a LIVE-tier credential set stored, but oanda's mount arm does not select it — the arm mounts only its demo tier, or its live tier refused this account under one of its own rules (the daemon's log names which) — so oanda does NOT RUN whatever its tier says. Nothing was signed and no order can reach the live account. To trade the demo account, store its demo-tier keys — and where oanda refuses to choose a tier while a live set is stored (oanda), remove the live-tier keys too. `vike-cli secrets list` names what the store holds
+  polymarket  (account row id 9)
+     this gatewayhub build has no polymarket arm (its cargo feature is off), so polymarket does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+
+14 row(s) over 14 venue(s) — 5 live, 0 demo, 0 paper, 9 not running
+===== everything-live: --blocked, no credential store read =====
+settings: NONE FOUND — no account runs, whatever a file says
+credentials: NO STORE READ — every row below reads `NoCredentials` for that one reason, not fourteen. `vike-cli secrets path` prints where one would go.
+
+VENUE        ACCOUNT  TIER     EFFECTIVE  ENGINE  BLOCK
+alpaca       -        live     -          no      LiveTierNotWired
+aster        -        live     live       yes     None
+binance      -        live     live       yes     None
+bybit        -        live     live       yes     None
+ctrader      -        live     -          no      LiveTierNotWired
+deribit      -        live     -          no      LiveTierNotWired
+dukascopy    -        live     -          no      LiveTierNotWired
+fxcm         -        live     -          no      FeatureAbsent
+hyperliquid  -        live     live       yes     None
+ibkr         -        live     -          no      FeatureAbsent
+ig           -        live     -          no      LiveTierNotWired
+oanda        -        live     -          no      LiveTierNotWired
+okx          -        live     live       yes     None
+polymarket   -        live     -          no      FeatureAbsent
+
+-- why these do not run at the tier their account row states ---------
+  alpaca  (account row id 12)
+     alpaca has a LIVE-tier credential set stored, but alpaca's mount arm does not select it — the arm mounts only its demo tier, or its live tier refused this account under one of its own rules (the daemon's log names which) — so alpaca does NOT RUN whatever its tier says. Nothing was signed and no order can reach the live account. To trade the demo account, store its demo-tier keys — and where alpaca refuses to choose a tier while a live set is stored (oanda), remove the live-tier keys too. `vike-cli secrets list` names what the store holds
+  ctrader  (account row id 11)
+     ctrader has a LIVE-tier credential set stored, but ctrader's mount arm does not select it — the arm mounts only its demo tier, or its live tier refused this account under one of its own rules (the daemon's log names which) — so ctrader does NOT RUN whatever its tier says. Nothing was signed and no order can reach the live account. To trade the demo account, store its demo-tier keys — and where ctrader refuses to choose a tier while a live set is stored (oanda), remove the live-tier keys too. `vike-cli secrets list` names what the store holds
+  deribit  (account row id 4)
+     deribit has a LIVE-tier credential set stored, but deribit's mount arm does not select it — the arm mounts only its demo tier, or its live tier refused this account under one of its own rules (the daemon's log names which) — so deribit does NOT RUN whatever its tier says. Nothing was signed and no order can reach the live account. To trade the demo account, store its demo-tier keys — and where deribit refuses to choose a tier while a live set is stored (oanda), remove the live-tier keys too. `vike-cli secrets list` names what the store holds
+  dukascopy  (account row id 8)
+     dukascopy has a LIVE-tier credential set stored, but dukascopy's mount arm does not select it — the arm mounts only its demo tier, or its live tier refused this account under one of its own rules (the daemon's log names which) — so dukascopy does NOT RUN whatever its tier says. Nothing was signed and no order can reach the live account. To trade the demo account, store its demo-tier keys — and where dukascopy refuses to choose a tier while a live set is stored (oanda), remove the live-tier keys too. `vike-cli secrets list` names what the store holds
+  fxcm  (account row id 7)
+     this gatewayhub build has no fxcm arm (its cargo feature is off), so fxcm does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+  ibkr  (account row id 10)
+     this gatewayhub build has no ibkr arm (its cargo feature is off), so ibkr does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+  ig  (account row id 6)
+     ig has a LIVE-tier credential set stored, but ig's mount arm does not select it — the arm mounts only its demo tier, or its live tier refused this account under one of its own rules (the daemon's log names which) — so ig does NOT RUN whatever its tier says. Nothing was signed and no order can reach the live account. To trade the demo account, store its demo-tier keys — and where ig refuses to choose a tier while a live set is stored (oanda), remove the live-tier keys too. `vike-cli secrets list` names what the store holds
+  oanda  (account row id 5)
+     oanda has a LIVE-tier credential set stored, but oanda's mount arm does not select it — the arm mounts only its demo tier, or its live tier refused this account under one of its own rules (the daemon's log names which) — so oanda does NOT RUN whatever its tier says. Nothing was signed and no order can reach the live account. To trade the demo account, store its demo-tier keys — and where oanda refuses to choose a tier while a live set is stored (oanda), remove the live-tier keys too. `vike-cli secrets list` names what the store holds
+  polymarket  (account row id 9)
+     this gatewayhub build has no polymarket arm (its cargo feature is off), so polymarket does not run here — the account row is still valid, and a gatewayhub build that HAS the feature will honour it
+
+14 row(s) over 14 venue(s) — 5 live, 0 demo, 0 paper, 9 not running

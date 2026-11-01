@@ -1,0 +1,16 @@
+[
+  {
+    "venue": "binance",
+    "symbol": "BTCUSDT",
+    "trade_id": "t-ext-1",
+    "venue_order_id": "v-ext-1",
+    "client_order_id": null,
+    "side": 1,
+    "last_qty": 0.5,
+    "last_px": 30000.0,
+    "commission": 0.03,
+    "commission_asset": "USDT",
+    "liquidity_side": "taker",
+    "ts": 1000
+  }
+]

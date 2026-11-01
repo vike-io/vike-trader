@@ -1,0 +1,16 @@
+{
+ "manifest": {
+  "exporter": "scripts/export_r5_fixtures.py",
+  "oracle": "vike-trader-app origin/main worktree",
+  "source_sha": "023d6e87ced0b495d8575fd247914e14522ccd2d",
+  "seed": 20260703,
+  "generated": "2026-07-03T18:53:01Z",
+  "float_encoding": "ieee754-f64-hex-bits"
+ },
+ "delivered": [
+  "e1",
+  "e2",
+  "e3",
+  "e4"
+ ]
+}

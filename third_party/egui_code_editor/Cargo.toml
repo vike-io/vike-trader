@@ -1,0 +1,38 @@
+# TEMPORARY in-tree copy of egui_code_editor 0.4.2 (MIT, https://github.com/p4ymak/egui_code_editor), changed
+# ONLY to depend on egui 0.37 (this manifest, and `src/completer/mod.rs`'s one `Id::new` -> `Id::unique`).
+# Upstream has no release for egui 0.37 yet (its last release, 0.4.2, requires
+# egui ^0.36), and two egui versions in the tree make vike-studio's editor fail with a `Ui` type mismatch.
+# DELETE this directory, the root `[patch.crates-io]` row and the root `exclude` row the day upstream
+# publishes an egui-0.37 release, and bump `egui_code_editor` in the root `[workspace.dependencies]`.
+[package]
+edition = "2024"
+name = "egui_code_editor"
+version = "0.4.2"
+authors = ["Roman Chumak <p4ymak@yandex.ru>"]
+description = "egui Code Editor widget with numbered lines, syntax highlighting and auto-completion.."
+readme = "README.md"
+license = "MIT"
+repository = "https://github.com/p4ymak/egui_code_editor"
+
+[features]
+default = ["egui", "editor"]
+editor = []
+egui = ["dep:egui", "dep:opener"]
+serde = ["dep:serde"]
+
+[lib]
+name = "egui_code_editor"
+path = "src/lib.rs"
+doctest = false
+
+[dependencies.egui]
+version = "0.37"
+optional = true
+
+[dependencies.opener]
+version = "0.8.5"
+optional = true
+
+[dependencies.serde]
+version = "1"
+optional = true

@@ -1,0 +1,91 @@
+//! Reconciliation-activation LIVE demo smoke (Deribit sibling of `okx_reconcile_smoke.rs` in
+//! `vike-okx` / `binance_reconcile_smoke.rs` in `vike-binance`): proves the real
+//! `DeribitReconClient` — the client `vike_deribit::adapter::DeribitVenueAdapter` wires up for a live
+//! deribit start, which reconciles by default since 2026-09-06 — actually AUTHS, FETCHES, and
+//! PARSES against the live Deribit TESTNET (demo) JSON-RPC WS, not just the fixture bodies
+//! `tests/offline/recon_client_parse.rs` exercises offline. (⚠ This named `vike-app`'s
+//! `make_engine`, behind `VIKE_RECONCILE=1`, until 2026-09-28.)
+//!
+//! Constructed exactly like that start: `DeribitReconClient::connect(&creds, SYMBOL)`
+//! — a DEDICATED authed order-WS (its own socket, isolated from any exec order path), on TESTNET.
+//!
+//!     cargo test -p vike-deribit --test deribit_smokes -- --ignored --nocapture deribit_reconcile_smoke::
+//!
+//! READ-ONLY, double-gated exactly like every other `*_smoke.rs` in this crate (network +
+//! the default DEMO account's creds in the store; self-skips with a `tracing::warn!` when absent —
+//! see `deribit_smoke.rs`). No order-placing variant. It covers the full `ReconClient` read
+//! surface — `fetch_order_status_reports` / `fetch_fill_reports` / `fetch_position_status_reports` /
+//! `fetch_balance` — asserting each SUCCEEDS and parses into plausible, internally-consistent
+//! values against the live venue.
+
+use crate::demo_creds::load_demo_creds;
+use vike_deribit::DeribitReconClient;
+use vike_exec::recon::ReconClient;
+
+const SYMBOL: &str = "BTC-PERPETUAL";
+
+#[test]
+#[ignore = "network + demo creds — run manually (see module doc)"]
+fn deribit_reconcile_fetch_smoke() {
+    vike_log::test_init();
+    let Some(creds) = load_demo_creds() else { return };
+
+    // Dedicated-socket recon client: opens + auths its OWN testnet order-WS (blocking).
+    let Some(client) = DeribitReconClient::connect(&creds, SYMBOL) else {
+        panic!("DeribitReconClient::connect failed — demo order-WS auth did not succeed");
+    };
+
+    // 1) open orders — Ok even when flat (empty slice); every returned row parses.
+    let orders = client.fetch_order_status_reports(0).expect("fetch_order_status_reports");
+    for o in &orders {
+        assert_eq!(o.venue, "deribit");
+        assert!(o.qty >= 0.0, "order qty is non-negative: {o:?}");
+        assert!(o.side == 1 || o.side == -1, "order side is ±1: {o:?}");
+    }
+    tracing::info!(target: "vike_deribit", n = orders.len(), "open orders fetched + parsed");
+
+    // 2) recent fills within a 24h lookback — Ok even when none; every row parses.
+    let since = vike_model::now_ms() - 24 * 60 * 60 * 1_000;
+    let fills = client.fetch_fill_reports(since).expect("fetch_fill_reports");
+    for f in &fills {
+        assert_eq!(f.venue, "deribit");
+        assert!(f.last_qty > 0.0, "fill qty is positive: {f:?}");
+        assert!(f.last_px > 0.0, "fill price is positive: {f:?}");
+        assert!(f.side == 1 || f.side == -1, "fill side is ±1: {f:?}");
+    }
+    tracing::info!(target: "vike_deribit", n = fills.len(), "fills fetched + parsed");
+
+    // 2b) TRADE-ID EVIDENCE across currencies (any-symbol, `docs/ops/deribit-any-symbol-plan.md`): the
+    // engine's fill dedup is keyed by `trade_id` ALONE, so two instruments in different settlement
+    // currencies must never produce one string. Admit one instrument per currency family (read-only:
+    // `admit_symbol` only widens what the next fetch reads), then PRINT every id with its instrument
+    // and print any id that two instruments share. Output only: nothing here asserts.
+    for symbol in ["ETH-PERPETUAL", "BTC_USDC-PERPETUAL", "ETH_USDC-PERPETUAL"] {
+        client.admit_symbol(symbol);
+    }
+    let wide = client.fetch_fill_reports(since).expect("fetch_fill_reports over the admitted set");
+    let mut owner: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    for f in &wide {
+        println!("TRADE-ID {} <- {}", f.trade_id.as_str(), f.symbol);
+        if let Some(first) = owner.insert(f.trade_id.as_str().to_string(), f.symbol.clone())
+            && first != f.symbol
+        {
+            println!("TRADE-ID COLLISION {} on {first} AND {}", f.trade_id.as_str(), f.symbol);
+        }
+    }
+    println!("TRADE-ID summary: {} fills, {} distinct ids", wide.len(), owner.len());
+
+    // 3) option positions for the currency — Ok even when flat.
+    let positions = client.fetch_position_status_reports().expect("fetch_position_status_reports");
+    for p in &positions {
+        assert_eq!(p.venue, "deribit");
+    }
+    tracing::info!(target: "vike_deribit", n = positions.len(), "positions fetched + parsed");
+
+    // 4) account balance — the demo account always reports a summary; some non-negative equity.
+    let balance = client.fetch_balance().expect("fetch_balance");
+    tracing::info!(target: "vike_deribit", ?balance, "balance fetched");
+    if let Some(b) = balance {
+        assert!(b.is_finite(), "balance is a finite number: {b}");
+    }
+}

@@ -1,0 +1,122 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 320.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "PERCENTAGE",
+   "value": 75.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "PERCENTAGE",
+   "value": 10.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 0.001
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "PERCENTAGE",
+   "value": 1.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 20.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": "BTC",
+  "contractSize": "1",
+  "controlledRiskAllowed": true,
+  "country": null,
+  "currencies": [
+   {
+    "baseExchangeRate": 1.0,
+    "code": "USD",
+    "exchangeRate": 0.66,
+    "isDefault": true,
+    "symbol": "$"
+   }
+  ],
+  "epic": "CS.D.BITCOIN.CFD.IP",
+  "expiry": "-",
+  "expiryDetails": null,
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "POINTS",
+   "value": 90
+  },
+  "lotSize": 1.0,
+  "marginDepositBands": [
+   {
+    "currency": "USD",
+    "margin": 10,
+    "max": 9,
+    "min": 0
+   },
+   {
+    "currency": "USD",
+    "margin": 15,
+    "max": 18,
+    "min": 9
+   },
+   {
+    "currency": "USD",
+    "margin": 30,
+    "max": 27,
+    "min": 18
+   },
+   {
+    "currency": "USD",
+    "margin": 75,
+    "max": null,
+    "min": 27
+   }
+  ],
+  "marginFactor": 10,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "BITCOIN",
+  "name": "Bitcoin ($1)",
+  "newsCode": "BTC=",
+  "onePipMeans": "1",
+  "openingHours": null,
+  "rolloverDetails": null,
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 100.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MIN KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE",
+   "There is a limit of \u00a35,000,000 notional value per client across all cryptocurrencies.",
+   "Any client with a notional size above this limit is at risk of having their cryptocurrency positions reduced.",
+   "Quoted 24/7"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": true,
+  "type": "CURRENCIES",
+  "unit": "CONTRACTS",
+  "valueOfOnePip": "1.00"
+ },
+ "snapshot": {
+  "bid": 76476,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 0,
+  "delayTime": 0,
+  "high": 79674,
+  "low": 76146,
+  "marketStatus": "TRADEABLE",
+  "netChange": -2283,
+  "offer": 76521,
+  "percentageChange": -2.9,
+  "scalingFactor": 1,
+  "updateTime": "19:44:25"
+ }
+}

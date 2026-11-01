@@ -1,0 +1,53 @@
+[package]
+name = "vike-alpaca"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "Alpaca Broker API venue bridge — OAuth2 Bearer REST exec + market-data WS. US equities + crypto, single pinned account_id."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+# The per-venue tables (`caps_for`, `fee_schedule_for`, the credential-field table ...) that left `vike-model` (decision 0162).
+vike-venues = { path = "../../vike-venues" }
+# The pure helpers (decision 0141, layer 3) this crate calls: `calendar`.
+vike-util = { path = "../../vike-util" }
+# The market-data vocabulary (`Bar`, the tick types, `L2Book`, `BookUpdate`, `OptionKind`, ...):
+# spelled `vike_marketdata::X` everywhere -- vike-model names but does not re-export it (0067).
+vike-marketdata = { path = "../../vike-marketdata" }
+vike-exec = { path = "../../vike-exec" }
+vike-data = { path = "../../vike-data" }
+vike-bridge-core = { path = "../../vike-bridge-core" }
+# The credential half that moved down out of vike-bridge-core (docs/decisions/0135): the
+# `vike_secrets::account_credentials` view of the mounted account's fields, plus `key_permissions`,
+# `venue_passphrase` or `account_directory` where this bridge names them. Already in this crate's graph
+# through vike-bridge-core, so it adds no package.
+vike-secrets = { path = "../../vike-secrets" }
+vike-catalog = { path = "../../vike-catalog" }
+serde_json = { workspace = true }
+ureq = { workspace = true }          # blocking Bearer REST + the SSE /v2/events/trades reader
+tungstenite = { workspace = true }   # market-data WebSocket
+tracing = { workspace = true }       # boundary/fault diagnostics only (never hot-path)
+
+[dev-dependencies]
+# dev-only, `test-support`: `vike_secrets::smoke_directory`, the live smokes' one way to the credential store.
+# Widens the normal edge above; adds no package, so the lockfile is unchanged.
+vike-secrets = { path = "../../vike-secrets", features = ["test-support"] }
+# `vike_exec::testing`'s doubles for this crate's tests — compiled only under vike-exec's
+# `test-support`, which a DEV edge may turn on and the normal edge above may not.
+vike-exec = { path = "../../vike-exec", features = ["test-support"] }
+tokio = { workspace = true }         # ExecActor-wiring test drains a tokio mpsc Ingest receiver
+vike-log = { path = "../../vike-log", features = ["test-support"] } # test_init() for live-smoke diagnostics; `capture` for the mount tests
+# The venue-adapter contract's test double (`venue_adapter_fixture::AdapterFixture`, `test-support`).
+vike-bridge-core = { path = "../../vike-bridge-core", features = ["test-support"] }
+# dev-only: the decoder totality harness (tests/decoder_never_panics.rs) — arbitrary + structured JSON
+# through the real WS / SSE / reconcile decoders; no panic, no event flood.
+proptest = { workspace = true }
+
+[lints]
+workspace = true

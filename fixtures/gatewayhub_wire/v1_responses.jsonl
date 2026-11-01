@@ -1,0 +1,40 @@
+{"Welcome":{"proto_version":1,"features":["gatewayhub","gw_data","gw_fetch","md_venue=binance","cd_venue=oanda"],"nonce":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]}}
+{"AuthOk":{"scope":"Write"}}
+{"AuthDenied":{"reason":"bad mac"}}
+"Pong"
+{"Error":"gatewayhub: venue `foo` is not served by this daemon"}
+{"DataOpened":{"session":3,"epoch":14,"heartbeat_ms":15000}}
+{"OptionsFeedOpened":{"epoch":14,"heartbeat_ms":15000}}
+{"FetchProgress":{"rid":7,"state":"Queued","pages":0,"rows":0,"elapsed_ms":12,"next_in_ms":5000}}
+{"FetchProgress":{"rid":7,"state":"Running","pages":2,"rows":1000,"elapsed_ms":3012,"next_in_ms":5000}}
+{"FetchPage":{"rid":7,"page":0,"rows":{"Bars":[{"ts":1,"open":1.0,"high":2.0,"low":0.5,"close":1.5,"volume":10.0,"funding":null,"bid":null,"ask":null,"symbol":null}]}}}
+{"FetchPage":{"rid":8,"page":0,"rows":{"Funding":[{"ts_ms":1,"rate":0.0001,"premium":null},{"ts_ms":2,"rate":-0.0002,"premium":0.5}]}}}
+{"FetchPage":{"rid":9,"page":0,"rows":{"Quotes":[{"ts":1,"local_ts":2,"bid":1.0,"ask":1.5,"bid_size":3.0,"ask_size":4.0,"symbol":"EURUSD"}]}}}
+{"FetchPage":{"rid":10,"page":0,"rows":{"Instruments":[]}}}
+{"FetchDone":{"rid":7,"pages":3,"rows":1500}}
+{"FetchFailed":{"rid":7,"failure":{"Fetch":"venue fetch: HTTP 429"}}}
+{"FetchFailed":{"rid":7,"failure":{"Refused":"no such pair"}}}
+{"FetchCancelled":{"rid":7}}
+{"CatalogDescribed":{"asset_classes":["CryptoSpot","CryptoPerp"],"mode":"Enumerable"}}
+{"CatalogDescribed":{"asset_classes":["Equity"],"mode":"QueryBacked"}}
+{"OptionsReplied":{"Underlyings":["BTC","ETH","SOL"]}}
+{"OptionsReplied":{"Expiries":[{"date":"2026-10-30","dte":17,"label":"30 Oct"}]}}
+{"OptionsReplied":{"Chain":{"underlying":"BTC","underlying_kind":"crypto","underlying_price":null,"expiry":{"date":"2026-10-30","dte":17,"label":"30 Oct"},"asof_ms":1,"source":"deribit","rows":[]}}}
+{"FamilyResolved":{"symbols":["a","b"]}}
+{"PresenceIs":{"presence":"NotNeeded"}}
+{"PresenceIs":{"presence":"Present"}}
+{"PresenceIs":{"presence":"Absent"}}
+{"PresenceIs":{"presence":"Unreadable"}}
+{"PresenceIs":{"presence":"NotChecked"}}
+{"StatusIs":{"epoch":1,"started_ms":2,"uptime_ms":3,"connections":4,"stream_sessions":5,"fetches_running":6,"md_venues":["binance"],"cd_venues":["oanda"],"budget":[{"venue":"binance","host":"fapi","scope":"ip","class":"live","used":10,"cap":2400,"window_ms":60000,"would_throttle":0}]}}
+{"ArmingTable":{"facts":{"binance":{"adapter_present":true,"addresses_accounts":true,"takes_recon_trigger":false,"grid_source":"InHand","process_exclusive":null,"clock_decl_word":"measured"},"dukascopy":{"adapter_present":true,"addresses_accounts":true,"takes_recon_trigger":false,"grid_source":"NoGrid","process_exclusive":"jforex-sidecar","clock_decl_word":"none"},"hyperliquid":{"adapter_present":true,"addresses_accounts":true,"takes_recon_trigger":false,"grid_source":"PerSymbolFetch","process_exclusive":null,"clock_decl_word":"not-checked"}},"rows":[{"venue":"binance","label":null,"tier":"demo","effective":"demo","block_word":"none","account_ids":[3],"book":"spot"},{"venue":"dukascopy","label":"ALT","tier":null,"effective":null,"block_word":"sidecar held elsewhere","account_ids":[],"book":null}]}}
+{"PreflightLegs":{"legs":[{"Clock":{"venue":"binance","leg":{"ServerTime":{"server_ms":1700000000010,"local_ms":1700000000012,"rtt_ms":4}}}},{"Credential":{"venue":"binance","label":null,"leg":"Accepted"}},{"Identity":{"venue":"binance","label":"ALT","book":"spot"}},{"Network":{"reading":"Alive"}}]}}
+{"PreflightLegs":{"legs":[{"Clock":{"venue":"okx","leg":{"Unreachable":"timed out"}}},{"Credential":{"venue":"okx","label":null,"leg":{"Rejected":"50111 invalid key"}}},{"Credential":{"venue":"bybit","label":null,"leg":{"Unanswered":{"waited_ms":3000,"detail":"no answer from the credential probe"}}}},{"Network":{"reading":"Unknown"}},{"Network":{"reading":{"Dead":"no resolver"}}},{"Clock":{"venue":"ig","leg":"NotChecked"}},{"Clock":{"venue":"polymarket","leg":"UnmeasuredRisk"}},{"Identity":{"venue":"oanda","label":null,"book":null}}]}}
+{"TradeOpened":{"gw_epoch":9007199254740993,"lease_epoch":3,"received_through_cseq":17,"project_token":"0123456789abcdef","heartbeat_ms":2000,"event_ring_floor":5}}
+{"LeaseHeld":{"holder_key_id":"nk-0123456789abcdef","since_ms":1700000000000}}
+{"TradeRefused":{"block_word":"tier conflict","text":"binance account ALT is armed at demo and the lease asked for live"}}
+{"PreflightLegs":{"legs":[],"plan":{"clock_risks":{"binance":{"class":"SignedTimestamp","remedy":"sync the host clock (NTP / w32tm) - this venue rejects a signed request outside its recv window"},"hyperliquid":{"class":"NonceWindow","remedy":"sync the host clock (NTP / w32tm) - this venue binds the clock into the order nonce"},"deribit":{"class":"NoTimestamp","remedy":"sync the host clock (NTP / w32tm) - this venue's auth stamps no timestamp"}},"wired_clock_reads":3,"credential_venues":["binance","hyperliquid"]}}}
+{"PreflightLegs":{"legs":[{"Clock":{"venue":"ig","leg":"NotChecked","reason":"ig publishes no server-time endpoint"}},{"Clock":{"venue":"polymarket","leg":"UnmeasuredRisk","reason":"polymarket publishes no server-time endpoint","at_stake":"its L1 signature binds the timestamp into every order"}}]}}
+{"PreflightLegs":{"legs":[{"Network":{"reading":"Alive","rounds":7}}]}}
+{"PreflightLegs":{"legs":[{"Network":{"reading":{"Dead":"the network probe saw the internet down"},"since_ms":1700000000000}}]}}
+{"TradeOpened":{"gw_epoch":9007199254740993,"lease_epoch":3,"received_through_cseq":17,"project_token":"0123456789abcdef","heartbeat_ms":2000}}

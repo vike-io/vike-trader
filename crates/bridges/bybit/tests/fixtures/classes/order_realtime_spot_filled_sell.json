@@ -1,0 +1,62 @@
+{
+  "result": {
+    "category": "spot",
+    "list": [
+      {
+        "activationPrice": "0",
+        "avgPrice": "0.07548",
+        "basePrice": "0.07548",
+        "blockTradeId": "",
+        "cancelType": "UNKNOWN",
+        "closeOnTrigger": false,
+        "createdTime": "1793390085639",
+        "cumExecFee": "0.025482048",
+        "cumExecQty": "337.6",
+        "cumExecValue": "25.482048",
+        "cumFeeDetail": {
+          "USDT": "0.025482048"
+        },
+        "isLeverage": "0",
+        "lastPriceOnCreated": "",
+        "leavesQty": "0",
+        "leavesValue": "0.000000",
+        "marketUnit": "baseCoin",
+        "orderId": "2337519892024265984",
+        "orderIv": "",
+        "orderLinkId": "bbcls-4-390085550",
+        "orderStatus": "Filled",
+        "orderType": "Market",
+        "placeType": "",
+        "positionIdx": 0,
+        "price": "0",
+        "qty": "337.6",
+        "reduceOnly": false,
+        "rejectReason": "EC_NoError",
+        "side": "Sell",
+        "slLimitPrice": "0",
+        "slTriggerBy": "",
+        "smpGroup": "0",
+        "smpOrderId": "",
+        "smpType": "None",
+        "stopLoss": "0",
+        "stopOrderType": "",
+        "symbol": "DOGEUSDT",
+        "takeProfit": "0",
+        "timeInForce": "IOC",
+        "tpLimitPrice": "0",
+        "tpTriggerBy": "",
+        "trailingPercentage": "0",
+        "trailingValue": "0",
+        "triggerBy": "",
+        "triggerDirection": 0,
+        "triggerPrice": "0.00000",
+        "updatedTime": "1793390085639"
+      }
+    ],
+    "nextPageCursor": "2337519892024265984%3A1793390085639%2C2337519892024265984%3A1793390085639"
+  },
+  "retCode": 0,
+  "retExtInfo": {},
+  "retMsg": "OK",
+  "time": 1793390087493
+}

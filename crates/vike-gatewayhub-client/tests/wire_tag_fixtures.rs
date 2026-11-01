@@ -1,0 +1,311 @@
+#![cfg(any(feature = "data", feature = "trade"))]
+//! THE WIRE'S BYTES, PINNED BY COMMITTED FIXTURES OUTSIDE `crates/`.
+//!
+//! The serde tags ARE the wire: a variant renamed in `src/proto.rs` is a protocol break that compiles
+//! clean and passes every round-trip test, because both ends of a round trip move together. The
+//! fixtures are what does not move with the edit: the `v1_*.jsonl` files of `fixtures/gatewayhub_wire/`, one JSON
+//! frame BODY per line (the framing is `write_frame`'s, exercised below), kept under `fixtures/` so a
+//! rename pass over `crates/` cannot reach them. (`vike-datahub-client`'s fixtures are length-prefixed
+//! captures of a deployed peer; this protocol has no deployed peer yet, so its goldens are authored
+//! once at inception, line-delimited so they can be read and reviewed as text. The first deployed
+//! daemon's captures join them as `v1_*` additions, never replacements. The `stream` class's frames are the
+//! tube's: their goldens are `fixtures/stream_wire/`, read by
+//! `crates/vike-market-stream/tests/stream_tag_fixtures.rs`.)
+//!
+//! Nothing in this file spells an expected VARIANT tag (`SITES` says only WHERE each enum sits inside a
+//! frame, as the goldens already have it). Three checks, all against the fixtures:
+//!
+//! * **decode** — every golden frame decodes into this build's type;
+//! * **re-encode** — this build still PRODUCES every key and value the golden carries (a SUBSET check,
+//!   so an additive field is allowed and a renamed one never is);
+//! * **coverage** — every variant of every wire enum declared in `src/proto.rs` (and the presence
+//!   word in `src/credential.rs`) appears in a fixture AT ITS ENUM'S OWN POSITION in a frame (`SITES`),
+//!   so a new variant cannot ship uncaptured, and one that reuses another enum's variant name is not
+//!   covered by that enum's frames.
+//!
+//! The TRADE class adds two frame files of its own beside the request and response ones: `v1_trade_up.jsonl`
+//! (what a client writes on an open lease: `TradeUp`) and `v1_trade_down.jsonl` (what the daemon writes back:
+//! `TradeDown`), and the mirror DTOs of `src/proto/backend_dto.rs` are covered where they sit inside those
+//! frames and the `Response`s (a `*` segment in a site walks every element of an array or every value of a
+//! map).
+//!
+//! plus the decode-vs-drop pair: an unknown variant from a newer peer is a decode ERROR (a bad
+//! request, not a bad connection), and an unknown FIELD on a reply is ignored (no
+//! `deny_unknown_fields` on a reply).
+
+use std::io::{Cursor, ErrorKind};
+use std::path::PathBuf;
+
+use vike_gatewayhub_client::proto::{
+    OptionsFeedDown, Request, Response, TradeDown, TradeUp, read_frame_raw, write_frame,
+};
+use vike_hub_proto::test_support::{Goldens, Site};
+
+const REQUESTS: &str = "fixtures/gatewayhub_wire/v1_requests.jsonl";
+const RESPONSES: &str = "fixtures/gatewayhub_wire/v1_responses.jsonl";
+const FEED_DOWN: &str = "fixtures/gatewayhub_wire/v1_feed_down.jsonl";
+const TRADE_UP: &str = "fixtures/gatewayhub_wire/v1_trade_up.jsonl";
+const TRADE_DOWN: &str = "fixtures/gatewayhub_wire/v1_trade_down.jsonl";
+
+/// The sources whose wire enums the coverage check reads, as repo-relative paths in `const`s so the
+/// path-key gate sees them.
+const PROTO_SRC: &str = "crates/vike-gatewayhub-client/src/proto.rs";
+const CREDENTIAL_SRC: &str = "crates/vike-gatewayhub-client/src/credential.rs";
+const TRADE_SRC: &str = "crates/vike-gatewayhub-client/src/proto/trade.rs";
+const DTO_SRC: &str = "crates/vike-gatewayhub-client/src/proto/backend_dto.rs";
+
+/// Every wire enum, by the file that declares it. A new wire enum joins this list or its variants are
+/// pinned by nothing — the `every_wire_enum_in_the_source_is_listed` check below refuses that.
+const WIRE_ENUMS: &[(&str, &[&str])] = &[
+    (
+        PROTO_SRC,
+        &[
+            "Request",
+            "FetchWhat",
+            "OptionIndexKind",
+            "OptionsCall",
+            "OptionsReply",
+            "OptionsFeedSpec",
+            "WireTab",
+            "WireCatalogMode",
+            "Response",
+            "FetchState",
+            "FetchFailure",
+            "FetchRows",
+            "OptionsFeedDown",
+        ],
+    ),
+    (CREDENTIAL_SRC, &["CredentialPresence"]),
+    (
+        TRADE_SRC,
+        &["WireCancelIntent", "DetachPhase", "ResolveState", "TradeBye", "TradeUp", "TradeDown"],
+    ),
+    (
+        DTO_SRC,
+        &[
+            "GridSource",
+            "NetReading",
+            "ClockLeg",
+            "ClockRiskClass",
+            "PreflightStep",
+            "CredentialLeg",
+            "LegResult",
+            "Withhold",
+            "AdapterReply",
+            "ReconKind",
+            "WireFeeSchedule",
+            "ReconPayload",
+        ],
+    ),
+];
+
+/// The goldens, read under the repository root this binary was built in (the shared checks live in
+/// `crates/vike-hub-proto/src/test_support.rs`, compiled once for every protocol tag suite).
+fn goldens() -> Goldens {
+    Goldens::at(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
+#[test]
+fn the_golden_requests_decode_and_re_encode() {
+    goldens().assert_round_trip::<Request>(REQUESTS, 41, PROTO_SRC);
+}
+
+#[test]
+fn the_golden_responses_decode_and_re_encode() {
+    goldens().assert_round_trip::<Response>(RESPONSES, 40, PROTO_SRC);
+}
+
+#[test]
+fn the_golden_feed_frames_decode_and_re_encode() {
+    goldens().assert_round_trip::<OptionsFeedDown>(FEED_DOWN, 4, PROTO_SRC);
+}
+
+#[test]
+fn the_golden_trade_up_frames_decode_and_re_encode() {
+    goldens().assert_round_trip::<TradeUp>(TRADE_UP, 28, PROTO_SRC);
+}
+
+#[test]
+fn the_golden_trade_down_frames_decode_and_re_encode() {
+    goldens().assert_round_trip::<TradeDown>(TRADE_DOWN, 39, PROTO_SRC);
+}
+
+/// **Every wire enum's golden sites.** A variant is covered only by a frame that carries it AT ITS
+/// ENUM'S OWN POSITION: `StreamDown::Quote` is the top-level tag of a stream-down frame, and the
+/// `"Quote"` a `Gap` frame carries under `verb` is `GapVerb::Quote`, a different variant of a
+/// different enum that must not stand in for it. (A text search for the quoted name, over all the
+/// fixtures at once, did exactly that: `StreamDown::{Seed, BarClose, Quote, Trade, Book, BookDelta}`
+/// were "covered" by `GapVerb`, and `StreamDown::{Heartbeat, Bye}` by `OptionsFeedDown`.)
+///
+/// A new wire enum joins `WIRE_ENUMS` AND this table, or `every_wire_enum_has_a_golden_site` refuses it.
+const SITES: &[(&str, &[Site])] = &[
+    ("Request", &[Site { file: REQUESTS, path: &[] }]),
+    (
+        "FetchWhat",
+        &[
+            Site { file: REQUESTS, path: &["Fetch", "what"] },
+            Site { file: REQUESTS, path: &["FetchCredentialed", "what"] },
+        ],
+    ),
+    (
+        "OptionIndexKind",
+        &[Site { file: REQUESTS, path: &["Fetch", "what", "OptionIndex", "kind"] }],
+    ),
+    ("OptionsCall", &[Site { file: REQUESTS, path: &["OptionsRest", "call"] }]),
+    ("OptionsReply", &[Site { file: RESPONSES, path: &["OptionsReplied"] }]),
+    ("OptionsFeedSpec", &[Site { file: REQUESTS, path: &["OptionsFeedOpen", "feed"] }]),
+    ("WireTab", &[Site { file: REQUESTS, path: &["Fetch", "what", "CatalogSearch", "tab"] }]),
+    ("WireCatalogMode", &[Site { file: RESPONSES, path: &["CatalogDescribed", "mode"] }]),
+    ("Response", &[Site { file: RESPONSES, path: &[] }]),
+    ("FetchState", &[Site { file: RESPONSES, path: &["FetchProgress", "state"] }]),
+    ("FetchFailure", &[Site { file: RESPONSES, path: &["FetchFailed", "failure"] }]),
+    ("FetchRows", &[Site { file: RESPONSES, path: &["FetchPage", "rows"] }]),
+    ("OptionsFeedDown", &[Site { file: FEED_DOWN, path: &[] }]),
+    ("CredentialPresence", &[Site { file: RESPONSES, path: &["PresenceIs", "presence"] }]),
+    // ---- the trade class: the lease frames
+    ("TradeUp", &[Site { file: TRADE_UP, path: &[] }]),
+    ("TradeDown", &[Site { file: TRADE_DOWN, path: &[] }]),
+    (
+        "WireCancelIntent",
+        &[
+            Site { file: TRADE_UP, path: &["Cancel", "intent"] },
+            Site { file: TRADE_UP, path: &["CancelBatch", "intent"] },
+        ],
+    ),
+    ("DetachPhase", &[Site { file: TRADE_UP, path: &["Detach", "phase"] }]),
+    (
+        "ResolveState",
+        &[Site { file: TRADE_DOWN, path: &["OrdersResolved", "results", "*", "state"] }],
+    ),
+    ("TradeBye", &[Site { file: TRADE_DOWN, path: &["Bye"] }]),
+    // ---- the trade class: the mirror DTOs, where they sit
+    (
+        "GridSource",
+        &[Site { file: RESPONSES, path: &["ArmingTable", "facts", "*", "grid_source"] }],
+    ),
+    ("LegResult", &[Site { file: RESPONSES, path: &["PreflightLegs", "legs", "*"] }]),
+    (
+        "ClockLeg",
+        &[Site { file: RESPONSES, path: &["PreflightLegs", "legs", "*", "Clock", "leg"] }],
+    ),
+    (
+        "CredentialLeg",
+        &[Site { file: RESPONSES, path: &["PreflightLegs", "legs", "*", "Credential", "leg"] }],
+    ),
+    (
+        "NetReading",
+        &[Site { file: RESPONSES, path: &["PreflightLegs", "legs", "*", "Network", "reading"] }],
+    ),
+    ("PreflightStep", &[Site { file: REQUESTS, path: &["PreflightQuery", "step"] }]),
+    (
+        "ClockRiskClass",
+        &[Site { file: RESPONSES, path: &["PreflightLegs", "plan", "clock_risks", "*", "class"] }],
+    ),
+    ("Withhold", &[Site { file: TRADE_UP, path: &["AdapterStart", "withhold"] }]),
+    ("AdapterReply", &[Site { file: TRADE_DOWN, path: &["AdapterReply", "reply"] }]),
+    ("ReconKind", &[Site { file: TRADE_UP, path: &["Recon", "kind"] }]),
+    ("ReconPayload", &[Site { file: TRADE_DOWN, path: &["ReconReply", "payload"] }]),
+    ("WireFeeSchedule", &[Site { file: TRADE_DOWN, path: &["ReconReply", "payload", "FeeRates"] }]),
+];
+
+/// Every variant of every wire enum appears in a golden frame **at that enum's own position**. The
+/// check is keyed on `(enum, variant)`: a same-named variant of another enum, or the same word in
+/// another position, covers nothing.
+#[test]
+fn every_wire_variant_is_covered_by_the_fixtures() {
+    goldens().assert_every_variant_is_covered(WIRE_ENUMS, SITES, "fixtures/gatewayhub_wire/");
+}
+
+/// `SITES` and `WIRE_ENUMS` name the same enums, so a coverage row cannot be forgotten or left behind.
+#[test]
+fn every_wire_enum_has_a_golden_site() {
+    goldens().assert_every_enum_has_a_golden_site(WIRE_ENUMS, SITES);
+}
+
+/// The list above is complete: every `pub enum` in `proto.rs` and the two trade wire files that derives
+/// `Serialize` is named in it (or is one of the few that serialize as a DTO inside another and are covered
+/// through it).
+#[test]
+fn every_wire_enum_in_the_source_is_listed() {
+    let mut unlisted = Vec::new();
+    for file in [PROTO_SRC, TRADE_SRC, DTO_SRC] {
+        let src = goldens().read_text(file);
+        let listed = WIRE_ENUMS
+            .iter()
+            .find(|(f, _)| *f == file)
+            .map(|(_, names)| *names)
+            .unwrap_or_else(|| panic!("{file} has no WIRE_ENUMS row"));
+        let all: Vec<&str> = src.lines().collect();
+        for (i, line) in all.iter().enumerate() {
+            let Some(rest) = line.strip_prefix("pub enum ") else { continue };
+            let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+            let derives_serialize = all[..i]
+                .iter()
+                .rev()
+                .take_while(|l| l.starts_with("#[") || l.starts_with("///") || l.is_empty())
+                .any(|l| l.starts_with("#[derive(") && l.contains("Serialize"));
+            if derives_serialize && !listed.contains(&name.as_str()) {
+                unlisted.push(name);
+            }
+        }
+    }
+    assert!(
+        unlisted.is_empty(),
+        "wire enum(s) not in WIRE_ENUMS, so their variants are pinned by nothing: {unlisted:?}"
+    );
+}
+
+/// ATTRIBUTE lines only: a `#[serde(rename = "…")]` argument is a wire spelling, so every one the source
+/// declares must appear in a golden. (There are none today; the day one is added, it arrives with a
+/// captured frame.)
+#[test]
+fn every_serde_rename_pin_is_covered_by_the_fixtures() {
+    let goldens = goldens();
+    let src = [PROTO_SRC, TRADE_SRC, DTO_SRC].map(|f| goldens.read_text(f)).join("\n");
+    let mut frozen = String::new();
+    for rel in [REQUESTS, RESPONSES, FEED_DOWN, TRADE_UP, TRADE_DOWN] {
+        frozen.push_str(&goldens.read_text(rel));
+    }
+    const OPEN: &str = "rename = \"";
+    let mut missing = Vec::new();
+    for line in src.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("#[serde(") {
+            continue;
+        }
+        let mut rest = trimmed;
+        while let Some(i) = rest.find(OPEN) {
+            rest = &rest[i + OPEN.len()..];
+            let Some(end) = rest.find('"') else { break };
+            let pin = &rest[..end];
+            if !frozen.contains(&format!("\"{pin}\"")) {
+                missing.push(pin.to_string());
+            }
+            rest = &rest[end..];
+        }
+    }
+    assert!(missing.is_empty(), "rename pin(s) no golden frame carries: {missing:?}");
+}
+
+#[test]
+fn an_unknown_variant_is_a_decode_error_and_an_unknown_reply_field_is_ignored() {
+    // A verb from a newer client: the server reads raw, fails to decode, answers Error and KEEPS the
+    // connection (decode-vs-drop) — so decoding must fail cleanly, not panic.
+    assert!(serde_json::from_str::<Request>(r#"{"FromTheFuture":{"x":1}}"#).is_err());
+    // A reply may grow a field: an old client must still read it (no `deny_unknown_fields`).
+    let grown = r#"{"FetchDone":{"rid":1,"pages":0,"rows":0,"checksum":"abc"}}"#;
+    assert!(serde_json::from_str::<Response>(grown).is_ok());
+}
+
+/// The frame codec is `vike_hub_proto::frame`'s: a golden written and read back is the same bytes.
+#[test]
+fn a_frame_is_a_big_endian_length_then_the_body() {
+    let mut wire = Vec::new();
+    write_frame(&mut wire, &Request::Ping).unwrap();
+    assert_eq!(&wire[..4], &(u32::try_from(wire.len() - 4).unwrap()).to_be_bytes());
+    assert_eq!(&wire[4..], br#""Ping""#);
+    let mut cursor = Cursor::new(wire);
+    assert_eq!(read_frame_raw(&mut cursor).unwrap(), br#""Ping""#);
+    let eof = read_frame_raw(&mut cursor).unwrap_err();
+    assert_eq!(eof.kind(), ErrorKind::UnexpectedEof, "a clean end of stream is UnexpectedEof");
+}
