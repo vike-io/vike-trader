@@ -1,0 +1,2 @@
+# presets-only folder for a built-in — the scan must SKIP it silently (no entry file).
+fast = 5.0

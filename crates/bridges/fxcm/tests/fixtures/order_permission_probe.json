@@ -1,0 +1,17 @@
+{
+  "measured": "2026-10-26 14:06-14:09 UTC on the FXCM DEMO login (account 9, currency EUR, hedging), market open, by a throwaway probe test (not kept) that read IO2GPermissionChecker for every forex row and placed a far BUY limit of 1000 units on 14 pairs. Account-specific tokens in the venue text are masked.",
+  "forex_rows": 48,
+  "rows_with_order_creation_disabled": ["USD/HKD"],
+  "permissions": [
+    {"instrument": "USD/HKD", "subscription": "T", "can_create_entry_order": 0, "can_create_market_open_order": 0, "can_create_market_close_order": -2, "can_change_offer_subscription": 1},
+    {"instrument": "USD/SEK", "subscription": "D", "can_create_entry_order": 1, "can_create_market_open_order": 1, "can_create_market_close_order": 1, "can_change_offer_subscription": 1},
+    {"instrument": "EUR/TRY", "subscription": "V", "can_create_entry_order": 1, "can_create_market_open_order": 1, "can_create_market_close_order": 1, "can_change_offer_subscription": 1}
+  ],
+  "permission_values": {"Disabled": 0, "Enabled": 1, "Unknown": 2, "Hidden": -2},
+  "usdhkd_placements": [
+    {"kind": "unpriced limit, 50 pips under the ask (rate 7.83997, amount 1000, base unit 1000, point 0.0001, digits 5)", "shim_code": -6, "venue_text": "Description=19915;DAS 19915: ZDas Exception\n ORA-20102: Access Violation: EUDEMO_<id>_<timestamp>_1NF phase: 2.\n", "after_ms": 4949},
+    {"kind": "limit at an explicit rate 2 percent under the bid (7.68756)", "shim_code": -6, "venue_text": "Description=19915;DAS 19915: ZDas Exception\n ORA-20102: Access Violation: EUDEMO_<id>_<timestamp>_1NF phase: 2.", "after_ms": 526}
+  ],
+  "other_exotics_accepted_and_cancelled": ["USD/SEK", "USD/NOK", "USD/ZAR", "USD/MXN", "USD/TRY", "EUR/HUF", "USD/CNH", "EUR/TRY"],
+  "note": "USD/HKD reads subscription T (the live smoke at 13:51 UTC subscribed it) and quotes normally; only the order permission is off. The subscription request itself is not refused for it (canChangeOfferSubscription reads Enabled)."
+}

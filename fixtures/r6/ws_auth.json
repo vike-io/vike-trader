@@ -1,0 +1,84 @@
+{
+ "manifest": {
+  "exporter": "scripts/export_r6_fixtures.py",
+  "oracle": "vike-trader-app origin/main worktree",
+  "source_sha": "023d6e87ced0b495d8575fd247914e14522ccd2d",
+  "generated": "2026-07-03T22:58:50Z",
+  "float_encoding": "ieee754-f64-hex-bits (inputs plain JSON numbers)"
+ },
+ "api_secret": "test-secret-1234567890",
+ "api_key": "test-key-XXXX",
+ "now_ms": 1751600000123,
+ "sign_cases": [
+  {
+   "params": [
+    [
+     "apiKey",
+     "test-key-XXXX"
+    ],
+    [
+     "recvWindow",
+     "5000"
+    ],
+    [
+     "timestamp",
+     "1751600000123"
+    ]
+   ],
+   "signature": "279d9d3ed227ea110bf12dc43efbd9e3910c4bc872a3773574e6b34c48743730"
+  },
+  {
+   "params": [
+    [
+     "timestamp",
+     "1751600000123"
+    ],
+    [
+     "apiKey",
+     "test-key-XXXX"
+    ],
+    [
+     "recvWindow",
+     "5000"
+    ]
+   ],
+   "signature": "279d9d3ed227ea110bf12dc43efbd9e3910c4bc872a3773574e6b34c48743730"
+  },
+  {
+   "params": [
+    [
+     "zeta",
+     "1"
+    ],
+    [
+     "alpha",
+     "2"
+    ],
+    [
+     "mid",
+     "x y"
+    ]
+   ],
+   "signature": "9864ab0298de2ca3ed1fdd8ef32539ab081204321d825016ad01c97fc3363606"
+  },
+  {
+   "params": [
+    [
+     "only",
+     "one"
+    ]
+   ],
+   "signature": "6c51a515f0c064685b9351bb7a4010f046b37d58ea6310bc2de12dc3569bf64e"
+  }
+ ],
+ "subscribe_request": {
+  "id": "fixedreqid123",
+  "method": "userDataStream.subscribe.signature",
+  "params": {
+   "apiKey": "test-key-XXXX",
+   "recvWindow": 5000,
+   "timestamp": 1751600000123,
+   "signature": "279d9d3ed227ea110bf12dc43efbd9e3910c4bc872a3773574e6b34c48743730"
+  }
+ }
+}

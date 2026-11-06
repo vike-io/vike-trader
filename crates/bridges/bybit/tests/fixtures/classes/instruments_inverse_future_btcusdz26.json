@@ -1,0 +1,59 @@
+{
+  "retCode": 0,
+  "retMsg": "OK",
+  "result": {
+    "category": "inverse",
+    "list": [
+      {
+        "symbol": "BTCUSDZ26",
+        "contractType": "InverseFutures",
+        "status": "Trading",
+        "baseCoin": "BTC",
+        "quoteCoin": "USD",
+        "launchTime": "1781251200000",
+        "deliveryTime": "1798185600000",
+        "deliveryFeeRate": "0.0005",
+        "priceScale": "2",
+        "leverageFilter": {
+          "minLeverage": "1",
+          "maxLeverage": "100.00",
+          "leverageStep": "0.01"
+        },
+        "priceFilter": {
+          "minPrice": "0.50",
+          "maxPrice": "9999999.00",
+          "tickSize": "0.50"
+        },
+        "lotSizeFilter": {
+          "maxOrderQty": "5000000",
+          "minOrderQty": "1",
+          "qtyStep": "1",
+          "postOnlyMaxOrderQty": "5000000",
+          "maxMktOrderQty": "1000000",
+          "minNotionalValue": "5"
+        },
+        "unifiedMarginTrade": true,
+        "fundingInterval": 0,
+        "settleCoin": "BTC",
+        "copyTrading": "none",
+        "upperFundingRate": "0",
+        "lowerFundingRate": "0",
+        "isPreListing": false,
+        "preListingInfo": null,
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "displayName": "BTCUSD1225",
+        "symbolType": "",
+        "forbidUplWithdrawal": false,
+        "symbolId": 2708,
+        "fullName": "Bitcoin",
+        "marketRegion": "",
+        "underlyingTicker": "",
+        "tags": []
+      }
+    ],
+    "nextPageCursor": ""
+  }
+}

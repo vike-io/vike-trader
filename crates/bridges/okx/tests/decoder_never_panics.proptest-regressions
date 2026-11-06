@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ee32c15a3ee04076c968796d03a42cc59e84fde9aef4382004a0e12621b27b17 # shrinks to row = Object {"cancelSource": Number(17085593270), "sz": String("NaN")}, ct = 0.01
+cc e16500301536d440dd164eb123e414cf5e5c154bcd0c8d28a5b98ae11bbe0dba # shrinks to body = Object {"data": Array [Object {"avgPx": Number(-5625), "cancelSource": String("?𝕆ѨJ𝍮q\u{827}ዎpౝ.4꩙"), "category": String("normal"), "fillMarkPx": Number(8779729457155047917), "markPx": Number(-4.3990740788903267e+238), "sz": Number(-6.145660464967966e+239)}]}, ct = 2.2974067137306074e194

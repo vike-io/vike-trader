@@ -1,0 +1,214 @@
+{
+ "manifest": {
+  "exporter": "scripts/export_r6_fixtures.py",
+  "oracle": "vike-trader-app origin/main worktree",
+  "source_sha": "023d6e87ced0b495d8575fd247914e14522ccd2d",
+  "generated": "2026-07-03T22:58:50Z",
+  "float_encoding": "ieee754-f64-hex-bits (inputs plain JSON numbers)"
+ },
+ "api_key": "test-key-XXXX",
+ "api_secret": "test-secret-1234567890",
+ "now_ms": 1751600000123,
+ "cases": [
+  {
+   "offset_ms": 0,
+   "params": [
+    [
+     "symbol",
+     "BTCUSDT"
+    ],
+    [
+     "side",
+     "BUY"
+    ],
+    [
+     "type",
+     "LIMIT"
+    ],
+    [
+     "quantity",
+     "0.00100000"
+    ],
+    [
+     "newClientOrderId",
+     "deadbeef0"
+    ],
+    [
+     "newOrderRespType",
+     "ACK"
+    ],
+    [
+     "timeInForce",
+     "GTC"
+    ],
+    [
+     "price",
+     "50000.00"
+    ]
+   ],
+   "query": "symbol=BTCUSDT&side=BUY&type=LIMIT&quantity=0.00100000&newClientOrderId=deadbeef0&newOrderRespType=ACK&timeInForce=GTC&price=50000.00&timestamp=1751600000123&recvWindow=5000&signature=941587fe510ea6fd688ed3183b9ec317cca91eb1ea9626e470ac503fd4e40766",
+   "headers": {
+    "X-MBX-APIKEY": "test-key-XXXX"
+   }
+  },
+  {
+   "offset_ms": 0,
+   "params": [
+    [
+     "symbol",
+     "BTCUSDT"
+    ],
+    [
+     "origClientOrderId",
+     "deadbeef0"
+    ]
+   ],
+   "query": "symbol=BTCUSDT&origClientOrderId=deadbeef0&timestamp=1751600000123&recvWindow=5000&signature=b7f54716e3cc0802422be8c7c67c431cfd7cf625f1e62f495341a62fbdcef8af",
+   "headers": {
+    "X-MBX-APIKEY": "test-key-XXXX"
+   }
+  },
+  {
+   "offset_ms": 0,
+   "params": [],
+   "query": "timestamp=1751600000123&recvWindow=5000&signature=05d03e03d6072d6ba7e8ce9e3fc1305f2e6d6cde17aec4b025c1fa46c81c85eb",
+   "headers": {
+    "X-MBX-APIKEY": "test-key-XXXX"
+   }
+  },
+  {
+   "offset_ms": 0,
+   "params": [
+    [
+     "symbol",
+     "ETHUSDT"
+    ]
+   ],
+   "query": "symbol=ETHUSDT&timestamp=1751600000123&recvWindow=5000&signature=a4dd29e89bbe120a83bce9b94a093e6a46602c2498614e8f185fde078a0a9208",
+   "headers": {
+    "X-MBX-APIKEY": "test-key-XXXX"
+   }
+  },
+  {
+   "offset_ms": 0,
+   "params": [
+    [
+     "a b",
+     "c d"
+    ],
+    [
+     "x",
+     "1/2&3=4"
+    ],
+    [
+     "keep",
+     "A-Z_a.z~9"
+    ]
+   ],
+   "query": "a+b=c+d&x=1%2F2%263%3D4&keep=A-Z_a.z~9&timestamp=1751600000123&recvWindow=5000&signature=c26221bb6ebce4b1e06e7f877882ee310f443cfe7a92ab779c48d8157533dcd5",
+   "headers": {
+    "X-MBX-APIKEY": "test-key-XXXX"
+   }
+  },
+  {
+   "offset_ms": -1234,
+   "params": [
+    [
+     "symbol",
+     "BTCUSDT"
+    ],
+    [
+     "side",
+     "BUY"
+    ],
+    [
+     "type",
+     "LIMIT"
+    ],
+    [
+     "quantity",
+     "0.00100000"
+    ],
+    [
+     "newClientOrderId",
+     "deadbeef0"
+    ],
+    [
+     "newOrderRespType",
+     "ACK"
+    ],
+    [
+     "timeInForce",
+     "GTC"
+    ],
+    [
+     "price",
+     "50000.00"
+    ]
+   ],
+   "query": "symbol=BTCUSDT&side=BUY&type=LIMIT&quantity=0.00100000&newClientOrderId=deadbeef0&newOrderRespType=ACK&timeInForce=GTC&price=50000.00&timestamp=1751599998889&recvWindow=5000&signature=997a8129f576d64fc9660b1a5cbacc73c435d225cec058c8bec0d95c848d21ab",
+   "headers": {
+    "X-MBX-APIKEY": "test-key-XXXX"
+   }
+  },
+  {
+   "offset_ms": -1234,
+   "params": [
+    [
+     "symbol",
+     "BTCUSDT"
+    ],
+    [
+     "origClientOrderId",
+     "deadbeef0"
+    ]
+   ],
+   "query": "symbol=BTCUSDT&origClientOrderId=deadbeef0&timestamp=1751599998889&recvWindow=5000&signature=bc024a3f521d3860d3066b9b1ff36bedb0557aabcaaf18d555cac3d26d4d90e2",
+   "headers": {
+    "X-MBX-APIKEY": "test-key-XXXX"
+   }
+  },
+  {
+   "offset_ms": -1234,
+   "params": [],
+   "query": "timestamp=1751599998889&recvWindow=5000&signature=dbfad0256f12b719257ad5a655564d6f8788097ba4b0c3f9a560e59ac820cb92",
+   "headers": {
+    "X-MBX-APIKEY": "test-key-XXXX"
+   }
+  },
+  {
+   "offset_ms": -1234,
+   "params": [
+    [
+     "symbol",
+     "ETHUSDT"
+    ]
+   ],
+   "query": "symbol=ETHUSDT&timestamp=1751599998889&recvWindow=5000&signature=ee4c5d3e40ba1c1428b86630725cf23e3519f0bf8640e928df1543f14c6a806c",
+   "headers": {
+    "X-MBX-APIKEY": "test-key-XXXX"
+   }
+  },
+  {
+   "offset_ms": -1234,
+   "params": [
+    [
+     "a b",
+     "c d"
+    ],
+    [
+     "x",
+     "1/2&3=4"
+    ],
+    [
+     "keep",
+     "A-Z_a.z~9"
+    ]
+   ],
+   "query": "a+b=c+d&x=1%2F2%263%3D4&keep=A-Z_a.z~9&timestamp=1751599998889&recvWindow=5000&signature=a6e5cc4202169009126929611a26ffef9550b24996fd814a58df2b353ea8ce35",
+   "headers": {
+    "X-MBX-APIKEY": "test-key-XXXX"
+   }
+  }
+ ]
+}

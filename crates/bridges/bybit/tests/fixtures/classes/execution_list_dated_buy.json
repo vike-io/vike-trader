@@ -1,0 +1,45 @@
+{
+  "result": {
+    "category": "linear",
+    "list": [
+      {
+        "blockTradeId": "",
+        "closedSize": "0",
+        "createType": "CreateByUser",
+        "execFee": "0.01227397",
+        "execFeeV2": "0.01227397",
+        "execId": "44cfdbee-e7b0-4779-b166-e562fa4b3752",
+        "execPrice": "2231.63",
+        "execQty": "0.01",
+        "execTime": "1793390093415",
+        "execType": "Trade",
+        "execValue": "22.3163",
+        "extraFees": "",
+        "feeCurrency": "USDT",
+        "feeRate": "0.00055",
+        "indexPrice": "",
+        "isMaker": false,
+        "leavesQty": "0",
+        "markIv": "",
+        "markPrice": "2242.67",
+        "marketUnit": "",
+        "orderId": "2b687b23-c8b4-4fc1-b00e-e2b10d3f0a56",
+        "orderLinkId": "bbcls-7-390093324",
+        "orderPrice": "2354.96",
+        "orderQty": "0.01",
+        "orderType": "Market",
+        "seq": 140718364116394,
+        "side": "Buy",
+        "stopOrderType": "UNKNOWN",
+        "symbol": "ETHUSDT-06NOV26",
+        "tradeIv": "",
+        "underlyingPrice": ""
+      }
+    ],
+    "nextPageCursor": "16175015%3A1%2C16175015%3A1"
+  },
+  "retCode": 0,
+  "retExtInfo": {},
+  "retMsg": "OK",
+  "time": 1793390098628
+}
