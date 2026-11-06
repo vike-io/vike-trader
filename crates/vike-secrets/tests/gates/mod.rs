@@ -1,0 +1,8 @@
+//! The source-ratchet gates over this crate's `src/` and DDL:
+//! `cargo test -p vike-secrets --test secrets -- gates::`.
+
+mod ddl_parser;
+mod null_discriminator;
+mod settings_sections;
+mod sqlite_sequence;
+mod store_link;

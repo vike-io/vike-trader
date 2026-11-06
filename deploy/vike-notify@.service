@@ -1,0 +1,83 @@
+# vike-notify@.service — SYSTEM-scope OnFailure= notifier template.
+#
+# Attach to a production unit by adding ONE line to its [Unit] section:
+#     OnFailure=vike-notify@%n.service
+# `%n` expands to the failing unit's own name, which arrives here as `%i`.
+#
+# It runs `vike-backend notify %i` (`crates/vike-tradehub/src/notify_cli.rs` is the contract and the
+# anti-storm design). That replaced the bash pager `deploy/vike-notify` on 2026-10-12: the Telegram
+# bot credentials are no longer an `EnvironmentFile=` but two rows of the PROJECT's settings
+# database, read by the binary itself (no setting or credential lives in a file, decision 0111):
+#
+#     vike-cli secrets set VIKE_ALERT_TELEGRAM_TOKEN      # value on stdin, never argv
+#     vike-cli secrets set VIKE_ALERT_TELEGRAM_CHAT_ID
+#
+# ⚠ EVERY PATH BELOW IS THE PLACEHOLDER PROJECT ROOT /srv/vike-<unit>. Substitute the root of the
+# project whose settings database holds those two keys — on a box with one project, that project —
+# and check nothing was missed:
+#
+#   R=/your/project/root
+#   sed "s,/srv/vike-<unit>,$R,g" deploy/vike-notify@.service > /tmp/vike-notify@.service
+#   grep -n /srv/vike-<unit> /tmp/vike-notify@.service    # must print NOTHING
+#   sudo install -Dm644 /tmp/vike-notify@.service /etc/systemd/system/vike-notify@.service
+#   sudo systemctl daemon-reload
+#
+# A SYSTEM install also wants `User=`/`Group=` of the project's owner added (deliberately not
+# shipped, as in every unit here): the pager writes its state under the project, and a root-owned
+# file there is one the project's own daemons cannot later rewrite.
+#
+# ⚠ There is deliberately NO `OnFailure=` in THIS unit: a notifier that notified about its own
+# failure would recurse. Its failures surface through `systemctl --failed` instead (the binary exits
+# non-zero when delivery fails, when the keys are absent and when the store will not open) plus the
+# breadcrumb file `<project>/settings/state/notify/last_error`.
+#
+# ⚠ There is deliberately NO `ExecStartPre=…/vike-cli config check` either, unlike the daemon units:
+# a pre-flight that refused would turn "a unit died" into "the pager did not start", which pages
+# nobody. The binary refuses what it cannot work with itself, loudly and with exit 1.
+#
+# ⚠ systemd starts an OnFailure= unit as an INDEPENDENT job. It does not gate, delay or serialize
+# with the failing unit's own `Restart=`, so attaching this cannot slow a service's recovery. The
+# `TimeoutStartSec=` below and the binary's own bounded retries (no attempt starts that could
+# overrun 26 s) bound it regardless.
+#
+# The USER-scope twin is deploy/vike-notify-user@.service — a systemd USER manager cannot start a
+# system unit, so user units need their own copy.
+
+[Unit]
+Description=vike-notify — report failure of %i to Telegram
+# Do not let a notification attempt fire before the network is plausibly up at boot.
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/srv/vike-<unit>/bin/vike-backend notify %i
+SyslogIdentifier=vike-notify
+
+# The ONE bootstrap pointer every unit here carries: which project's settings database (and so
+# which credential store and which state directory) this pager uses. No `EnvironmentFile=` and no
+# other `Environment=` line: the credentials are rows of that database, and the anti-storm limits
+# are constants in the binary, not knobs — a flapping unit's cooldown grows by itself.
+Environment=VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings
+
+# Bounded: a hung notifier must never accumulate.
+TimeoutStartSec=30
+
+# --- hardening ------------------------------------------------------------------------------------
+# This unit reads a bot token from the settings database and makes an outbound HTTPS call. It needs
+# no privilege beyond that.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+# ONE write grant: the program-written state root, where the pager keeps `notify/` (its per-unit
+# cooldowns, the hourly ledger, `last_ok`, `last_error`). The settings database itself is only READ.
+ReadWritePaths=/srv/vike-<unit>/settings/state

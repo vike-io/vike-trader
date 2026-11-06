@@ -1,0 +1,2 @@
+{"MdSubscribe":{"specs":[{"venue":"oanda","symbol":"EUR_USD","lane":"Quotes"}]}}
+{"MdUpdate":{"session":"0000000000000000000000000000002a","add":[{"venue":"ibkr","symbol":"AAPL","lane":"Quotes"}],"remove":[{"venue":"oanda","symbol":"EUR_USD","lane":"Quotes"}]}}

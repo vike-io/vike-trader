@@ -1,0 +1,5 @@
+{"MdSubscribed":{"session":"0000000000000000000000000000002a","accepted":[{"venue":"oanda","symbol":"EUR_USD","lane":"Quotes","depth_levels":50}],"refused":[[{"venue":"ig","symbol":"CS.D.EURUSD.CFD.IP","lane":"Quotes"},"NotHeld"]],"heartbeat_ms":15000}}
+{"Md":{"Quote":{"venue":"oanda","symbol":"EUR_USD","bid":1.07123,"ask":1.07131,"bid_size":0.0,"ask_size":0.0,"venue_ts":1793000000000,"age_ms":0,"seq":7}}}
+{"Md":{"Quote":{"venue":"ibkr","symbol":"AAPL","bid":190.1,"ask":190.2,"bid_size":100.0,"ask_size":200.0,"venue_ts":1793000000000,"age_ms":1500,"delay":{"Delayed":{"lag_ms":900000}},"seq":8}}}
+{"Md":{"Quote":{"venue":"ibkr","symbol":"AAPL","bid":190.1,"ask":190.2,"bid_size":100.0,"ask_size":200.0,"venue_ts":1793000000000,"age_ms":1500,"delay":"Frozen","seq":9}}}
+{"Md":{"Status":{"venue":"oanda","symbol":"EUR_USD","lane":"Quotes","status":{"GapStart":{"at_ts_ms":1793000000000}}}}}

@@ -1,0 +1,26 @@
+{
+  "result": {
+    "list": [
+      {
+        "availableToBorrow": "300",
+        "borrowAmount": "0",
+        "borrowUsageRate": "0",
+        "borrowable": true,
+        "collateralRatio": "0.98",
+        "collateralSwitch": true,
+        "currency": "BTC",
+        "freeBorrowAmount": "0",
+        "freeBorrowingAmount": "",
+        "freeBorrowingLimit": "0.1",
+        "hourlyBorrowRate": "0.00000055",
+        "marginCollateral": true,
+        "maxBorrowingAmount": "300",
+        "otherBorrowAmount": "0"
+      }
+    ]
+  },
+  "retCode": 0,
+  "retExtInfo": {},
+  "retMsg": "OK",
+  "time": 1793390315425
+}

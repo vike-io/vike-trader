@@ -1,0 +1,15 @@
+{
+  "_provenance": "GET /api/v5/public/instruments?instType=SPOT&instId=BTC-USDT, keyless, 2026-10-11; field values transcribed one by one (not a byte capture), trimmed to the keys the parsers read",
+  "code": "0",
+  "msg": "",
+  "data": [
+    {
+      "instType": "SPOT", "instId": "BTC-USDT", "uly": "", "instFamily": "",
+      "baseCcy": "BTC", "quoteCcy": "USDT", "settleCcy": "",
+      "ctVal": "", "ctMult": "", "ctValCcy": "", "ctType": "", "optType": "", "stk": "",
+      "expTime": "", "listTime": "1611907686000", "alias": "", "lever": "10",
+      "tickSz": "0.1", "lotSz": "0.00000001", "minSz": "0.00001", "maxMktSz": "1000000",
+      "state": "live"
+    }
+  ]
+}
