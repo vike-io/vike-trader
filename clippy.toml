@@ -1,0 +1,13 @@
+# clippy's per-workspace knobs. Read by every `cargo clippy` in this tree (CI's 19 suites included).
+#
+# too_many_arguments fires at 8+ parameters by default. This workspace writes plain functions with
+# 8-10 parameters on purpose (venue request builders, spawn helpers, wire encoders), and the default
+# produced 162 suppressions, 64% of every lint suppression in the tree. MEASURED 2026-10-10 on
+# e4e12b402 (all 19 `just clippy` suites for N=10, the roster suite for the others), counting the
+# existing suppressions that stop firing:
+#   N=8   about 53      N=10   about 117      N=12   about 127
+# 10 keeps the lint meaningful for the long signatures (11+ parameters, a struct is due) and removes
+# the noise below it. The suppressions this makes dead are deleted by the `#[allow]` -> `#[expect]`
+# cleanup that follows, which finds them as unfulfilled expectations.
+# Plan: docs/superpowers/plans/2026-10-09-rust-practices-from-the-apollo-skill.md (Task 2).
+too-many-arguments-threshold = 10

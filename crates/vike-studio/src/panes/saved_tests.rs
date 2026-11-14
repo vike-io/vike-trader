@@ -1,0 +1,316 @@
+use super::*;
+use vike_analytics::report::{DAILY_PERIODS_PER_YEAR, periods_per_year_for_interval};
+use vike_model::params::ParamValue;
+
+/// The factor a 1m slice earns — DERIVED, never written as a number here, so these tests
+/// exercise the same function the pane does rather than a second copy of the arithmetic.
+fn periods_per_year_1m() -> f64 {
+    periods_per_year_for_interval("1m")
+}
+
+fn strat(name: &str, code: &str) -> SavedStrategy {
+    SavedStrategy::rhai(name, code)
+}
+
+/// MIGRATION GATE: an existing `studio_strategies.json` written before native strategies
+/// existed has NO `source`/`native`/`params` keys. It must still load, keep its code, and be
+/// treated as Rhai — the entire back-compat contract of this file format in one test.
+#[test]
+fn legacy_file_without_a_source_field_loads_as_rhai() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("studio_strategies.json");
+    // Byte-for-byte the shape `save_strategies` used to emit.
+    std::fs::write(
+        &path,
+        r#"[
+  {
+    "name": "sma-cross",
+    "code": "fn on_bar() {}"
+  }
+]"#,
+    )
+    .unwrap();
+
+    let loaded = load_strategies(&path).expect("the file reads");
+
+    assert_eq!(loaded.len(), 1, "the legacy entry must survive the migration");
+    assert_eq!(loaded[0].name, "sma-cross");
+    assert_eq!(loaded[0].code, "fn on_bar() {}", "its script must be untouched");
+    assert_eq!(loaded[0].source, StrategySource::Rhai, "a missing source key means Rhai");
+    assert!(loaded[0].native.is_empty());
+    assert!(loaded[0].params.is_empty());
+    assert_eq!(
+        loaded[0].spec(),
+        StrategySpec::rhai("fn on_bar() {}"),
+        "and it still RUNS as the Rhai script it always was"
+    );
+}
+
+/// A native entry round-trips through the file, and its `spec()` carries the typed params —
+/// the forward half of the migration.
+#[test]
+fn native_entry_round_trips_and_specs_with_typed_params() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("studio_strategies.json");
+    let entry = SavedStrategy::native(
+        "hold-2",
+        "buy_hold",
+        vec![("size".into(), "2".into()), ("symbol".into(), "BTCUSDT".into())],
+    );
+    save_strategies(&path, std::slice::from_ref(&entry)).unwrap();
+    let loaded = load_strategies(&path).expect("the file reads");
+    assert_eq!(loaded, vec![entry]);
+
+    match loaded[0].spec() {
+        StrategySpec::File { file: name, params } => {
+            assert_eq!(name, "buy_hold");
+            assert_eq!(params.get("size").and_then(ParamValue::as_integer), Some(2));
+            assert_eq!(params.get("symbol").and_then(ParamValue::as_str), Some("BTCUSDT"));
+        }
+        other => panic!("expected a native spec, got {other:?}"),
+    }
+}
+
+/// A mixed file (one legacy-shaped Rhai row + one native row) loads both, each with the right
+/// source — the realistic post-upgrade file.
+#[test]
+fn mixed_legacy_and_native_file_loads_both() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("studio_strategies.json");
+    std::fs::write(
+        &path,
+        r#"[
+  { "name": "old", "code": "fn on_bar() {}" },
+  { "name": "new", "code": "", "source": "native", "native": "buy_hold",
+    "params": [["size", "1"]] }
+]"#,
+    )
+    .unwrap();
+    let loaded = load_strategies(&path).expect("the file reads");
+    assert_eq!(loaded.len(), 2);
+    assert_eq!(loaded[0].source, StrategySource::Rhai);
+    assert_eq!(loaded[1].source, StrategySource::Native);
+    assert_eq!(loaded[1].native, "buy_hold");
+    assert_eq!(loaded[1].params, vec![("size".to_string(), "1".to_string())]);
+}
+
+#[test]
+fn save_then_load_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("studio_strategies.json");
+    let list =
+        vec![strat("sma-cross", "fn on_bar(strategy) {}"), strat("rsi-mean-revert", "let x = 1;")];
+
+    save_strategies(&path, &list).unwrap();
+    let loaded = load_strategies(&path).expect("the file reads");
+
+    assert_eq!(loaded, list);
+}
+
+#[test]
+fn load_of_a_missing_path_is_an_empty_vec_not_a_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("does_not_exist.json");
+    assert_eq!(load_strategies(&path), Ok(Vec::new()));
+}
+
+/// A file that does not parse is REFUSED with its reason rather than read as empty: an empty list
+/// was the answer, and the next Save wrote over every row the file held.
+#[test]
+fn load_of_a_corrupt_file_is_refused_not_read_as_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("garbage.json");
+    std::fs::write(&path, "{ not: valid json ]]]").unwrap();
+    let hint = load_strategies(&path).expect_err("refused");
+    assert!(hint.contains("could not be read") && hint.contains("nothing is saved"), "{hint}");
+}
+
+/// **An old file with the retired Rust tag is refused with a one-line hint, never converted**, and
+/// the pane that loaded it keeps nothing to write over it: its Rhai rows are still on disk, intact.
+#[test]
+fn a_file_with_the_retired_rust_tag_is_refused_with_a_hint_and_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("studio_strategies.json");
+    let old = format!(
+        r#"[
+  {{ "name": "keep-me", "code": "fn on_bar() {{}}" }},
+  {{ "name": "built", "code": "", "source": "{RETIRED_RUST_TAG}" }}
+]"#
+    );
+    std::fs::write(&path, &old).unwrap();
+    let hint = load_strategies(&path).expect_err("refused, not converted");
+    assert!(
+        hint.contains(&format!("`{RETIRED_RUST_TAG}` row")) && hint.contains("delete that row"),
+        "{hint}"
+    );
+    assert_eq!(hint.lines().count(), 1, "one line: {hint}");
+    let pane = SavedPane::load(&path);
+    assert!(pane.strategies.is_empty());
+    assert_eq!(pane.refused.as_deref(), Some(hint.as_str()));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), old, "the file is left as it was");
+}
+
+#[test]
+fn save_overwrites_an_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("studio_strategies.json");
+    save_strategies(&path, &[strat("a", "1")]).unwrap();
+    save_strategies(&path, &[strat("b", "2")]).unwrap();
+    assert_eq!(load_strategies(&path), Ok(vec![strat("b", "2")]));
+}
+
+fn result(equity_curve: Vec<f64>, n_trades: usize) -> BacktestResult {
+    let final_equity = *equity_curve.last().unwrap();
+    BacktestResult { equity_curve, final_equity, n_trades, ..Default::default() }
+}
+
+#[test]
+fn comparison_rows_sorts_by_sharpe_descending_and_carries_fields() {
+    // a strongly uptrending curve (high sharpe), a flat/noisy one (low/negative sharpe).
+    let good = result(vec![100.0, 105.0, 110.0, 116.0, 123.0, 131.0], 4);
+    let bad = result(vec![100.0, 98.0, 101.0, 97.0, 100.0, 96.0], 9);
+    let results =
+        vec![("bad".to_string(), Ok(bad.clone())), ("good".to_string(), Ok(good.clone()))];
+
+    let rows = comparison_rows(&results, periods_per_year_1m(), |_| StrategySource::Rhai);
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].name, "good", "higher sharpe should rank first");
+    assert_eq!(rows[1].name, "bad");
+    assert!(report(&rows[0]).sharpe > report(&rows[1]).sharpe);
+    assert_eq!(report(&rows[0]).final_equity, *good.equity_curve.last().unwrap());
+    assert_eq!(report(&rows[0]).n_trades, 4);
+    assert_eq!(report(&rows[1]).n_trades, 9);
+}
+
+/// The ran row's report, which every one of these tests expects to exist.
+fn report(row: &CompareRow) -> &BacktestReport {
+    row.outcome.as_ref().expect("the row ran")
+}
+
+/// D8: a compare row prints the Performance tab's text for the same run — the catalog's units,
+/// a drawdown as the positive fraction the catalog stores (`25.0000%`, not `-25.0%`).
+#[test]
+fn a_compare_rows_cells_are_the_performance_tabs_cells() {
+    let r = result(vec![100.0, 120.0, 90.0, 110.0], 3);
+    let rows = comparison_rows(&[("dd".to_string(), Ok(r.clone()))], periods_per_year_1m(), |_| {
+        StrategySource::Rhai
+    });
+    let perf = crate::panes::results::perf_rows(&r, periods_per_year_1m());
+    let want: Vec<String> = COMPARE_IDS
+        .iter()
+        .map(|id| perf.iter().find(|(k, _)| k == id).unwrap().1.clone())
+        .collect();
+    assert_eq!(compare_cells(report(&rows[0])).to_vec(), want);
+    assert_eq!(compare_cells(report(&rows[0]))[2], "25.0000%");
+}
+
+#[test]
+fn comparison_rows_puts_nan_sharpe_last() {
+    // an equity curve with a NaN point (e.g. a div-by-zero upstream) makes every return NaN,
+    // so `sharpe` (metrics.rs) itself comes back NaN — a flat curve is NOT this case; `sharpe`
+    // explicitly guards zero variance to 0.0, not NaN (see metrics.rs's own doc).
+    let broken = result(vec![100.0, f64::NAN, 100.0], 0);
+    let trending = result(vec![100.0, 102.0, 104.5, 107.0], 2);
+    let results = vec![("broken".to_string(), Ok(broken)), ("trending".to_string(), Ok(trending))];
+
+    let rows = comparison_rows(&results, periods_per_year_1m(), |_| StrategySource::Rhai);
+
+    assert_eq!(rows[0].name, "trending");
+    assert_eq!(rows[1].name, "broken");
+    assert!(report(&rows[1]).sharpe.is_nan());
+}
+
+#[test]
+fn comparison_rows_on_empty_input_is_empty() {
+    assert!(comparison_rows(&[], periods_per_year_1m(), |_| StrategySource::Rhai).is_empty());
+}
+
+/// The compare table's half of the annualization fix, in two claims that must BOTH hold.
+///
+/// The values MOVE with the factor — a 1m comparison is on a `sqrt(1440) ≈ 37.9x` larger scale
+/// than the daily one this function used to hard-code, which is the whole defect — and the
+/// ORDER does not, because a positive constant multiplier cannot reorder anything. Without the
+/// second half, a future "simplification" back to a fixed constant would look harmless: the
+/// table would still rank correctly while every number in it disagreed with the Performance
+/// tab beside it.
+#[test]
+fn the_ranking_is_identical_on_any_factor_while_the_values_move() {
+    let good = result(vec![100.0, 105.0, 110.0, 116.0, 123.0, 131.0], 4);
+    let bad = result(vec![100.0, 98.0, 101.0, 97.0, 100.0, 96.0], 9);
+    let results = vec![("bad".to_string(), Ok(bad)), ("good".to_string(), Ok(good))];
+
+    let daily = comparison_rows(&results, DAILY_PERIODS_PER_YEAR, |_| StrategySource::Rhai);
+    let minute = comparison_rows(&results, periods_per_year_1m(), |_| StrategySource::Rhai);
+
+    let daily_names: Vec<&str> = daily.iter().map(|r| r.name.as_str()).collect();
+    let minute_names: Vec<&str> = minute.iter().map(|r| r.name.as_str()).collect();
+    assert_eq!(daily_names, minute_names, "the factor must not reorder the table");
+
+    let scale = (periods_per_year_1m() / DAILY_PERIODS_PER_YEAR).sqrt();
+    for (d, m) in daily.iter().zip(&minute) {
+        let name = &d.name;
+        let (d, m) = (report(d), report(m));
+        let ratio = m.sharpe / d.sharpe;
+        assert!((ratio - scale).abs() < 1e-9, "{name}: Sharpe scaled {ratio}, want {scale}");
+        // ...and nothing else in the row is annualized, so nothing else may move.
+        assert_eq!(d.final_equity, m.final_equity);
+        assert_eq!(d.max_drawdown, m.max_drawdown);
+        assert_eq!(d.n_trades, m.n_trades);
+    }
+}
+
+/// Hand-verified against `metrics::max_drawdown`'s own contract (running-peak fractional
+/// decline, NOT a negative number): peak hits 120 after the second point, then the deepest
+/// dip to 90 is `(120-90)/120 == 0.25`; the later partial recovery to 110 is a smaller
+/// drawdown (`(120-110)/120 ≈ 0.083`) so 0.25 stays the worst.
+#[test]
+fn comparison_rows_computes_max_drawdown_correctly() {
+    let r = result(vec![100.0, 120.0, 90.0, 110.0], 3);
+    let results = vec![("dd-check".to_string(), Ok(r))];
+
+    let rows = comparison_rows(&results, periods_per_year_1m(), |_| StrategySource::Rhai);
+
+    assert_eq!(rows.len(), 1);
+    let drawdown = report(&rows[0]).max_drawdown;
+    assert!((drawdown - 0.25).abs() < 1e-12, "max_drawdown = {drawdown}");
+}
+
+/// A successful row carries the full equity curve (for the sparkline); a failed row carries
+/// none.
+#[test]
+fn comparison_rows_carries_the_equity_curve_for_successful_rows() {
+    let curve = vec![100.0, 101.0, 99.0, 103.0];
+    let r = result(curve.clone(), 1);
+    let results = vec![("ok".to_string(), Ok(r)), ("broken".to_string(), Err("boom".to_string()))];
+
+    let rows = comparison_rows(&results, periods_per_year_1m(), |_| StrategySource::Rhai);
+
+    let ok_row = rows.iter().find(|r| r.name == "ok").unwrap();
+    assert_eq!(ok_row.equity, curve);
+    let failed_row = rows.iter().find(|r| r.name == "broken").unwrap();
+    assert!(failed_row.equity.is_empty());
+}
+
+/// A strategy that failed to compile/run is surfaced as a row with `outcome: Err(..)` rather
+/// than silently dropped, and sorts after every successful row regardless of the successful
+/// rows' Sharpe ranking.
+#[test]
+fn comparison_rows_surfaces_a_failed_strategy_and_sorts_it_last() {
+    let good = result(vec![100.0, 105.0, 110.0, 116.0], 2);
+    let results = vec![
+        ("broken".to_string(), Err("compile error: unexpected token".to_string())),
+        ("good".to_string(), Ok(good)),
+    ];
+
+    let rows = comparison_rows(&results, periods_per_year_1m(), |_| StrategySource::Rhai);
+
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].name, "good", "the successful row ranks first");
+    assert!(rows[0].outcome.is_ok());
+    assert_eq!(rows[1].name, "broken");
+    assert_eq!(
+        rows[1].outcome.as_ref().err().map(String::as_str),
+        Some("compile error: unexpected token")
+    );
+}

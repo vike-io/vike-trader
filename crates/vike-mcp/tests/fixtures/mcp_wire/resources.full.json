@@ -1,0 +1,125 @@
+{
+  "argv": [
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "resources.full",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "resources/list",
+        "params": {}
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "resources": [
+            {
+              "description": "The live vike-tradehub's orders, positions, per-venue equity and recent events — the same payload the node_snapshot tool returns, `bars` left out. ⚠ Top-level `positions`, `balance` and `trading_state` are the PRIMARY engine's alone and `equity_total` covers only its currency group, so on a node with several accounts read `venues[].positions` before calling anything flat. Requires --node + VIKE_TRADEHUB_OBSERVE_KEY; reading it is what opens the connection.",
+              "mimeType": "application/json",
+              "name": "Node snapshot",
+              "uri": "vike://node/snapshot"
+            },
+            {
+              "description": "Whatever the run_backtest tool last returned IN THIS SESSION. Per-process: there is no report store, so a fresh session serves an error rather than an older run's report.",
+              "mimeType": "application/json",
+              "name": "Last backtest report",
+              "uri": "vike://backtest/last"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "resources/read",
+        "params": {
+          "uri": "vike://backtest/last"
+        }
+      }
+    },
+    {
+      "recv": {
+        "error": {
+          "code": -32002,
+          "message": "no backtest has run in this session yet — call the run_backtest tool first. This resource is per-process: there is no report store, so it is empty in a fresh session even if a backtest ran in an earlier one."
+        },
+        "id": 2,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "resources/read",
+        "params": {
+          "uri": "vike://node/snapshot"
+        }
+      }
+    },
+    {
+      "recv": {
+        "error": {
+          "code": -32002,
+          "message": "no vike-tradehub configured — pass `--node <host:port>` to read node state"
+        },
+        "id": 3,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "resources/read",
+        "params": {
+          "uri": "vike://nope"
+        }
+      }
+    },
+    {
+      "recv": {
+        "error": {
+          "code": -32002,
+          "message": "unknown resource uri: \"vike://nope\" — call resources/list for what this server serves"
+        },
+        "id": 4,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "send": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "resources/read",
+        "params": {}
+      }
+    },
+    {
+      "recv": {
+        "error": {
+          "code": -32002,
+          "message": "unknown resource uri: \"\" — call resources/list for what this server serves"
+        },
+        "id": 5,
+        "jsonrpc": "2.0"
+      }
+    }
+  ],
+  "what": "`resources/list` and `resources/read` under one scope"
+}

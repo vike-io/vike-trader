@@ -1,0 +1,66 @@
+[package]
+name = "vike-telegram"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the Telegram control channel as its own process (`vike-backend telegram`): a chat line becomes the CLI's verb, previewed by the node and sent on confirm over the tradehub's control wire, the one door every remote surface reaches. It holds no core, no venue session and no venue key; the tradehub links none of it (docs/decisions/0256)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier
+# `engine-stacked`, beside `vike-cli` and `vike-mcp`: one hop over `vike-client` at 30, and under the
+# multicall dispatcher `vike-backend` (68), the one crate that takes a normal edge to it. Equal rank
+# with the two other programs refuses an edge between them, and the tradehub (65) must not depend on
+# it: a chat surface is a client of the node, never a part of it.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 35
+
+[dependencies]
+# The CLI's verb vocabulary (`verbs::Verb`, the order client id mint, the ack-wait words), the hub keyring and
+# the fold of a boot: the client half this program shares with `vike-cli` and `vike-mcp`.
+vike-client = { path = "../vike-client" }
+# The boot CALL stays in each program (`crates/vike-client/CLAUDE.md`), and so do the stop handlers.
+vike-boot = { path = "../vike-boot" }
+# The node: the wire vocabulary, `preview_command`, `snapshot_once`, `TradehubControlHandle`.
+vike-tradehub-client = { path = "../vike-tradehub-client" }
+# The Telegram Bot API's URL and body shapes and the no-redirect agent, spelled once there for both
+# Telegram senders (`crates/vike-alerting/src/delivery/telegram.rs`).
+vike-alerting = { path = "../vike-alerting" }
+# `CredentialKeyScope` and the boot's `CredentialStore` handle: the one scoped read of the channel's rows.
+vike-secrets = { path = "../vike-secrets" }
+# The subscriber this program holds, and `poller`'s stop-aware sleep.
+vike-log = { path = "../vike-log" }
+# `side_from_word`, the book token reader, `ledger_sums`, `OrderStatus`, the clock.
+vike-model = { path = "../vike-model" }
+# `fmt_number` (the CLI's number text), `hex`, and `cli` (decision 0155).
+vike-utility = { path = "../vike-utility", features = ["cli"] }
+vike-buildinfo = { path = "../vike-buildinfo" } # `--version`'s build identity
+clap = { workspace = true }
+serde_json = { workspace = true } # the `getUpdates` body
+# The `getUpdates` long-poll's own agent (`vike_alerting::no_redirect_agent` builds it). Not a new
+# crate in any graph that links `vike-alerting`; the ONE workspace HTTP stack (`deny.toml`'s
+# `[bans].deny` refuses a second).
+ureq = { workspace = true }
+rand = { workspace = true } # the confirm token's CSPRNG bytes
+tracing = { workspace = true }
+
+[dev-dependencies]
+# A REAL paper node on loopback (`vike_tradehub::{server, publish}` over
+# `vike_tradehub_core::test_support::paper_maker`), the harness `vike-cli`'s and `vike-mcp`'s node tests
+# stand up: `tests/telegram_control/node_wire.rs` drives this program's production deps against it.
+# DEV edges (the layer gate reads normal edges only).
+vike-tradehub = { path = "../vike-tradehub" }
+vike-tradehub-core = { path = "../vike-tradehub-core", features = ["test-support"] } # `test_support::paper_maker`: the node the hub tests stand up
+# The spread maker FILE that node mounts (`SpreadMaker::from_params`, handed to `paper_maker_core`): the
+# shipped file compiled in the dev-only check crate, which no binary links.
+vike-strategies-check = { path = "../vike-strategies-check" }
+vike-hub-protocol = { path = "../vike-hub-protocol" } # `HubKeys` for that node
+# `capture` (the node's audit records) and `loopback` (the redirect double).
+vike-log = { path = "../vike-log", features = ["test-support"] }
+tempfile = { workspace = true }
+# `confirm.rs`'s `the_confirm_store_is_not_serializable` names serde's traits to prove the store has neither.
+serde = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

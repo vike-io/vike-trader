@@ -1,0 +1,83 @@
+//! **One roster venue, as the composition root hands it to this crate.** `vike_tradehub::registry`'s
+//! `REGISTRY` is a table of these; every function here that dispatches on a venue takes that
+//! table rather than naming a venue itself (docs/decisions/0096).
+
+use vike_bridge_core::venue_adapter::{
+    BookIdentityRule, ClockDeclaration, VenueAdapter, VenueAdapterDeclaration,
+};
+
+/// Why a `FeatureAbsent` venue has no clock leg — [`ABSENT_CLOCK`]'s reason, named so the clock
+/// read can answer `NotChecked` with it directly.
+pub(crate) const ABSENT_CLOCK_REASON: &str = "this gatewayhub build does not compile the venue's bridge (its Cargo feature is off), so nothing \
+     here can mount it live and there is no clock leg to read";
+
+/// The clock row a `FeatureAbsent` venue answers with. Generic on purpose: the venue's own row
+/// lives in its bridge, which this build does not compile. Unobservable in production — such a
+/// venue is always paper, so the clock leg never lists it.
+pub(crate) const ABSENT_CLOCK: ClockDeclaration =
+    ClockDeclaration::NotWired { reason: ABSENT_CLOCK_REASON, unmeasured_risk: None };
+
+/// The book-identity row a `FeatureAbsent` venue answers with — `Undeterminable`, the answer
+/// that emits no shared-book warning. Unobservable in production: `effective_book` answers `None`
+/// for a paper account before it reads a row, and such a venue is always paper.
+pub(crate) const ABSENT_BOOK: BookIdentityRule = BookIdentityRule::Undeterminable {
+    why: "this gatewayhub build does not compile the venue's bridge (its Cargo feature is off), so no \
+          account of it can arm and nothing here can read its credential shape",
+};
+
+/// One row per `vike_model::VENUES` id.
+#[derive(Clone, Copy)]
+pub enum VenueAdapterRow {
+    /// The venue's bridge implements the mount contract.
+    Adapter(&'static dyn VenueAdapter),
+    /// This build does not compile the venue's bridge: `feature` is off. The arming screen reads
+    /// `FeatureAbsent` and the mount is paper — the same answer in every build.
+    FeatureAbsent { venue: &'static str, feature: &'static str },
+}
+
+impl VenueAdapterRow {
+    /// The venue id this row answers for.
+    #[must_use]
+    pub fn venue(&self) -> &'static str {
+        match *self {
+            VenueAdapterRow::Adapter(m) => m.venue(),
+            VenueAdapterRow::FeatureAbsent { venue, .. } => venue,
+        }
+    }
+}
+
+impl std::fmt::Debug for VenueAdapterRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VenueAdapterRow::Adapter(m) => write!(f, "Adapter({})", m.venue()),
+            VenueAdapterRow::FeatureAbsent { venue, feature } => {
+                write!(f, "FeatureAbsent({venue}, feature `{feature}`)")
+            }
+        }
+    }
+}
+
+/// The row for `venue`, or `None` for an id the registry does not carry (a test's `"sim"`).
+#[must_use]
+pub fn row_of(
+    registry: &'static [VenueAdapterRow],
+    venue: &str,
+) -> Option<&'static VenueAdapterRow> {
+    registry.iter().find(|r| r.venue() == venue)
+}
+
+/// One field of `venue`'s declaration, `absent` for a row whose bridge this build does not compile (no
+/// declaration to read: the generic answer), `None` for an id the registry does not carry (a test's
+/// `"sim"`, a paper id). `book_identity_rule_for` and `clock_declaration` read theirs through it.
+pub(crate) fn declared<T>(
+    registry: &'static [VenueAdapterRow],
+    venue: &str,
+    field: impl FnOnce(VenueAdapterDeclaration) -> T,
+    absent: T,
+) -> Option<T> {
+    match row_of(registry, venue) {
+        Some(VenueAdapterRow::Adapter(row)) => Some(field(row.declaration())),
+        Some(VenueAdapterRow::FeatureAbsent { .. }) => Some(absent),
+        None => None,
+    }
+}

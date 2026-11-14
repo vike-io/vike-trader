@@ -1,0 +1,590 @@
+#!/usr/bin/env bash
+# vike-sidecars — what the server install runs BESIDE its daemons, from the app folder, with no unit file,
+# nothing in /etc and no root (decision 0260): the IBKR DEMO gateways and the Polymarket SOCKS tunnel. Each
+# keeps the rules its systemd unit carried, row by row in SIDECAR_RULES:
+#
+#   ibkr-gateway       deploy/vike-ibkr-gateway.service       IB Gateway under IBC (socket API 127.0.0.1:4102)
+#   ibkr-cpapi         deploy/vike-ibkr-cpapi.service         the Client Portal Gateway's JVM (127.0.0.1:5000)
+#   ibkr-cpapi-login   deploy/vike-ibkr-cpapi-login.service   its login, held open, bound to the JVM
+#   poly-tunnel        vike-poly-tunnel.service (untracked)   ssh -N -D 127.0.0.1:1080 to the EU egress host,
+#                                                             dialled where the venue.polymarket.tunnel_* rows say
+#
+#     vike-sidecars [--project DIR] start          start each sidecar of this box that is not running, then
+#                                                  hold while an IBKR one is starting (as systemctl start does)
+#     vike-sidecars [--project DIR] stop           stop them, the tunnel first; each SIGTERM, 90 s, SIGKILL
+#     vike-sidecars [--project DIR] restart NAME   forget NAME's starts (systemctl reset-failed), start it again
+#     vike-sidecars [--project DIR] status         each sidecar's last state
+#     vike-sidecars [--project DIR] wait           hold while an IBKR sidecar is starting, at most WAIT_CAP s
+#     vike-sidecars [--project DIR] install        the @reboot line in this user's crontab
+#
+# Installed at <project>/bin/vike-sidecars beside vikectl, the project is the folder above it; only that copy
+# starts anything (a loop and the @reboot line name it, and each deploy replaces it).
+#
+# ## Who calls it — the same calls in both server modes (container and host)
+#
+#   * `start` before the supervisor starts: vikectl's `sup_start` (up, deploy, rollback) in either mode. A
+#     deploy stops and starts the supervisor and leaves a running sidecar alone, as the gatewayhub's
+#     `Wants=` left a running gateway.
+#   * `stop` after the supervisor stopped: vikectl down. The tradehub and the gatewayhub stop BEFORE the
+#     gateways, the reverse of the gatewayhub's `After=`.
+#   * `wait` from `entrypoint.sh --server` (the container's start, or host mode's user unit), before its
+#     first daemon: that IS the gatewayhub's `After=` on the IBKR units, kept on every cold start, a reboot
+#     included (Docker or linger brings the supervisor back by itself, and cron's @reboot line starts these
+#     at the same moment): the roster starts once each IBKR gateway this box runs answers, failed or was
+#     skipped, so IBKR mounts against a logged-in gateway (a gateway that is not up at the tradehub's first
+#     open leaves the account NOT RUNNING).
+#   * `install` from vikectl install: `@reboot bash <this file> start` in the app user's crontab.
+#
+# ## Why on the HOST, as the app user's own processes, in both modes
+#
+# Outside the supervisor's container AND outside host mode's user unit: stopping either (every deploy does)
+# takes everything inside it, where the gatewayhub's `Wants=` left a running gateway alone; a gateway
+# restart is a fresh IBKR login.
+#
+# The units were deliberately UNSANDBOXED host programs, and these are third-party ones: a JVM with its JIT,
+# an X server from a sysroot `build-sysroot.sh` unpacked from the HOST's packages, a headless Chrome, the
+# host's OpenSSH. Inside the container they would run on another userland with a read-only root, no
+# capability and no-new-privileges, and the release image has no ssh, curl, pgrep or font (measured: the
+# v0.1.51 image, trixie), and no passwd entry for the app uid, which OpenSSH refuses to run without. The
+# image installs no package (0026, `the_image_installs_no_packages`) and COPIES only the release's own
+# bytes, which carry no OpenSSH: an ssh in the image would make the release ship and patch a third-party
+# binary. On the host they run with the same binaries, libraries, /tmp and user as their units did; only
+# the supervisor changed.
+#
+# ## The rules (each a copy, compared by crates/vike-ops/tests/container_deploy/deploy_layout_gate/sidecars.rs)
+#
+#   restart   RestartSec=
+#   always    yes = Restart=always (an exit 0 is restarted too); no = Restart=on-failure
+#   prevent   RestartPreventExitStatus= (- for none): that exit of the main process ends the restarts
+#   burst     StartLimitBurst= starts in `window` = StartLimitIntervalSec= seconds; every start counts, the
+#             restarts too, as systemd counts them, BUT a skipped one: past it the sidecar stays failed
+#             until 'restart NAME' (systemctl reset-failed). A skip is not a start (systemd counts it): three
+#             deploys in six hours on a box that does not run the sidecar left it failed, so it would not start
+#             once the box did (ibkr-gateway, 2026-11-08)
+#   start     TimeoutStartSec=: the condition, the pre-start and the post-start steps end inside it
+#   bound     BindsTo=: started after that row is READY (its post-start step passed), stopped before it
+#             whenever it stops or restarts, and asked to start again after each of its starts (its Wants=)
+#   gate      yes = the gatewayhub's After= names it: `wait` holds the roster while it starts
+#
+# A start runs ExecCondition= FIRST, before the start limit is asked (0 run, 1-254 skip: nothing starts,
+# not a failure, not counted, and `skipped` whatever the count holds; 255 or a kill fail it, counted),
+# ExecStartPre=, the main process, ExecStartPost= (READY when it passes; a failure kills the main process
+# and fails the start), every step with the unit's environment only (systemd's PATH, the user's HOME,
+# VIKE_SETTINGS_DIR=<project>/settings and the row's own Environment=) in the project folder. A stop, and
+# every end of the main process, takes EVERY process the sidecar started, a detached one (the X server's
+# setsid) included, as the unit's cgroup did: each carries VIKE_SIDECAR=<name>@<project> in its
+# environment, which a process keeps across setsid, and that is what is signalled (SIGTERM,
+# TimeoutStopSec=, SIGKILL); the project in it keeps two app folders of one user apart.
+#
+# ⚠ A credential value never passes through here: the IBKR logins are read from the settings database by
+# the vike-cli verbs the scripts run, and the tunnel's private key stays in its file (ssh reads it).
+#
+# ## The tunnel's destination is five settings rows, read through the released vike-cli
+#
+# `venue.polymarket.tunnel_{host,port,user,host_key,key_file}` (declared in
+# crates/vike-venues/src/venue_fields.rs, none a secret), read at every start with `vike-cli config show`
+# and handed to ssh as `-o` options: the unit's `-i` and `ubuntu@<host>` become IdentityFile, User, Port and
+# the host, and its pinned `UserKnownHostsFile=` file becomes the `tunnel_host_key` row, which ssh is
+# given as its ONLY known host key (`KnownHostsCommand`, every known_hosts file `none`). The unit's other
+# options are copied as they were. No `tunnel_host` row, or `none`: this box runs no tunnel.
+set -uo pipefail
+
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+readonly SELF
+# systemd's PATH for a system unit's processes: a sidecar never inherits its caller's (cron's, a shell's).
+readonly UNIT_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# TimeoutStopSec=: none of the units sets one, so systemd's default.
+readonly STOP_WINDOW=90
+# The longest `wait` holds: an IBKR row's 60 s restart delay plus its 240 s start window.
+readonly WAIT_CAP=300
+readonly LOG_CAP=10485760
+
+# The tunnel's row is the box unit's own (`systemctl show`, read 2026-11-08): RestartSec=5 and systemd's
+# default start limit, StartLimitBurst=5 in StartLimitIntervalSec=10s, which its 5 s delay never reaches.
+# name              restart  always  prevent  burst  window  start  bound       gate
+readonly SIDECAR_RULES='
+ibkr-gateway        60       yes     2        3      21600   240    -           yes
+ibkr-cpapi          60       yes     2        3      21600   120    -           yes
+ibkr-cpapi-login    300      no      -        3      21600   240    ibkr-cpapi  yes
+poly-tunnel         5        yes     -        5      10      -      -           no
+'
+
+# Each row's command lines, one argv word per line, as its unit's ExecCondition=, ExecStartPre=,
+# ExecStart= and ExecStartPost= spelled them with this project in place of the units' placeholder root,
+# and its own Environment= lines beside VIKE_SETTINGS_DIR.
+sidecar_cmd() {
+  local gw="$PROJECT/bin/ibkr-gateway" cp="$PROJECT/bin/ibkr-cpapi"
+  case "$1:$2" in
+    ibkr-gateway:condition) printf '%s\n' "$gw/start-gateway.sh" --check ;;
+    ibkr-gateway:pre) printf '%s\n' "$gw/start-xvfb.sh" ;;
+    ibkr-gateway:main) printf '%s\n' "$gw/start-gateway.sh" --foreground ;;
+    ibkr-gateway:post) printf '%s\n' "$gw/wait-gateway.sh" ;;
+    ibkr-cpapi:condition | ibkr-cpapi-login:condition) printf '%s\n' "$cp/start-gateway.sh" --check ;;
+    ibkr-cpapi:main) printf '%s\n' "$cp/start-gateway.sh" --foreground ;;
+    ibkr-cpapi:post) printf '%s\n' "$cp/start-gateway.sh" --wait ;;
+    ibkr-cpapi-login:main) printf '%s\n' "$PROJECT/bin/vike-cli" secrets ibkr-cp-login ;;
+    ibkr-cpapi-login:post) printf '%s\n' "$cp/start-gateway.sh" --wait-login ;;
+    ibkr-cpapi-login:env) printf '%s\n' KEEPALIVE=1 ;;
+    poly-tunnel:condition) printf '%s\n' bash "$SELF" --project "$PROJECT" tunnel-configured ;;
+    poly-tunnel:main)
+      tunnel_rows
+      printf '%s\n' ssh -N -D 127.0.0.1:1080 -o IdentitiesOnly=yes -o "IdentityFile=$T_KEY_FILE" \
+        -o UserKnownHostsFile=none -o GlobalKnownHostsFile=none -o "KnownHostsCommand=/bin/echo %H $T_HOST_KEY" \
+        -o StrictHostKeyChecking=yes -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
+        -o ServerAliveCountMax=3 -o "User=$T_USER" -o "Port=$T_PORT" "$T_HOST"
+      ;;
+  esac
+}
+
+# One row's value out of `vike-cli config show`'s venue table (`  <key>  <value>  <origin>`); empty for
+# the table's `-` (no row and no default).
+row_value() {
+  awk -v k="venue.polymarket.$2" '$1 == k { $1 = ""; $NF = ""; gsub(/^ +| +$/, ""); if ($0 != "-") print; exit }' <<< "$1"
+}
+# The tunnel's five rows, through the project's released vike-cli under the unit's environment only.
+tunnel_rows() {
+  local rows=""
+  if [ -x "$PROJECT/bin/vike-cli" ]; then
+    rows="$(env -i PATH="$UNIT_PATH" HOME="${HOME:-/}" VIKE_SETTINGS_DIR="$PROJECT/settings" \
+      "$PROJECT/bin/vike-cli" config show --filter venue.polymarket.tunnel_ 2> /dev/null)"
+  fi
+  T_HOST="$(row_value "$rows" "tunnel_host")"
+  T_PORT="$(row_value "$rows" "tunnel_port")"
+  T_USER="$(row_value "$rows" "tunnel_user")"
+  T_HOST_KEY="$(row_value "$rows" "tunnel_host_key")"
+  T_KEY_FILE="$(row_value "$rows" "tunnel_key_file")"
+}
+
+say() { printf '%s\n' "$*"; }
+die() {
+  printf 'vike-sidecars: %s\n' "$*" >&2
+  exit 2
+}
+
+names() { awk 'NF { print $1 }' <<< "$SIDECAR_RULES"; }
+read_rule() {
+  local n r a p b w s bo g
+  while read -r n r a p b w s bo g; do
+    [ "$n" = "$1" ] || continue
+    R_RESTART=$r R_ALWAYS=$a R_PREVENT=$p R_BURST=$b R_WINDOW=$w R_START=$s R_BOUND=$bo R_GATE=$g
+    return 0
+  done <<< "$SIDECAR_RULES"
+  return 1
+}
+bound_to() { awk -v p="$1" 'NF && $8 == p { print $1 }' <<< "$SIDECAR_RULES"; }
+
+# The tunnel is this box's: a `tunnel_host` row, and the three rows it cannot dial without. `none` turns a
+# box's tunnel off (`config unset` removes no venue row). A key file that cannot be read is left to ssh,
+# which fails and is retried, as the unit's ssh was.
+tunnel_configured() {
+  local missing=""
+  tunnel_rows
+  if [ -z "$T_HOST" ] || [ "$T_HOST" = none ]; then
+    say "venue.polymarket.tunnel_host is ${T_HOST:-not set}: this box runs no tunnel"
+    return 1
+  fi
+  [ -n "$T_USER" ] || missing="$missing tunnel_user"
+  [ -n "$T_HOST_KEY" ] || missing="$missing tunnel_host_key"
+  [ -n "$T_KEY_FILE" ] || missing="$missing tunnel_key_file"
+  [ -z "$missing" ] || { say "venue.polymarket.tunnel_host is set but not:$missing, so no tunnel"; return 1; }
+  command -v ssh > /dev/null || { say "no ssh client on this host"; return 1; }
+}
+
+# The sidecar is on this box, as a unit file was or was not installed: its scripts are in the project
+# (the deploy installs them), or, for the tunnel, its rows exist.
+installed() {
+  if [ "$1" = poly-tunnel ]; then tunnel_configured > /dev/null; else [ -x "$(sidecar_cmd "$1" condition | head -n 1)" ]; fi
+}
+system_unit_active() { command -v systemctl > /dev/null && systemctl is-active --quiet "vike-$1.service" 2> /dev/null; }
+
+# ── state ────────────────────────────────────────────────────────────────────────────────────────────
+# <DIR>/<name>.state is one line, "<boot id> <state> <loop pid> <epoch>", written only by that sidecar's
+# loop: starting | ready | restarting | skipped | failed | exited | stopped. The boot id tells `wait` a
+# line of THIS boot from one left by the last (the kernel's, the same inside a container). <name>.launch
+# exists from the moment a loop is asked for until that loop has written its first line, so a `wait` right
+# behind a `start` never reads the line the LAST loop left.
+boot_id() { cat /proc/sys/kernel/random/boot_id 2> /dev/null || echo unknown; }
+set_state() {
+  printf '%s %s %s %s\n' "$(boot_id)" "$2" "$$" "$(date +%s)" > "$DIR/$1.state.tmp" && mv -f "$DIR/$1.state.tmp" "$DIR/$1.state"
+}
+field_of() { awk -v f="$2" '{ print $f }' "$DIR/$1.state" 2> /dev/null; }
+# Its loop runs: the loop holds <name>.lock for its whole life (and no child of it holds the descriptor).
+supervised() { [ -e "$DIR/$1.lock" ] && ! flock -n "$DIR/$1.lock" true 2> /dev/null; }
+ready_now() { [ "$(field_of "$1" 1)" = "$(boot_id)" ] && [ "$(field_of "$1" 2)" = ready ]; }
+
+# A loop is asked to stop by <DIR>/<name>.stop, never by a signal: a trap that runs while bash is reading a
+# $(...) breaks that read (measured: "unexpected EOF while looking for matching ')'", bash 5.2, the loop
+# dead with its sidecar running). A SIGTERM from outside (a shutdown) still raises the flag through a trap.
+stopping() {
+  [ "$STOPPING" = 0 ] || return 0
+  [ -e "$DIR/$NAME.stop" ] && STOPPING=1
+}
+# A wait that a stop never cuts short: the stop's own waits for processes and loops to go.
+pause() { sleep "$1" 9>&-; }
+# A wait a stop cuts short (within a second): between attempts, while a step runs.
+nap() {
+  local end=$(($(date +%s) + $1))
+  while ! stopping && [ "$(date +%s)" -lt "$end" ]; do pause 1; done
+  return 0
+}
+
+# Every live process whose environment carries sidecar $1's mark: ONE grep over every environ this user
+# may read (another user's is refused to it), not one per process.
+marked() { grep -lzx -- "VIKE_SIDECAR=$1@$PROJECT" /proc/[0-9]*/environ 2> /dev/null | cut -d/ -f3; }
+# KillMode=control-group with TimeoutStopSec=: SIGTERM to all of them, up to $2 s, then SIGKILL.
+kill_marked() {
+  local pids deadline
+  pids="$(marked "$1")"
+  [ -n "$pids" ] || return 0
+  # shellcheck disable=SC2086 # one pid per word
+  kill -TERM $pids 2> /dev/null
+  deadline=$(($(date +%s) + $2))
+  while [ -n "$(marked "$1")" ] && [ "$(date +%s)" -lt "$deadline" ]; do pause 1; done
+  pids="$(marked "$1")"
+  [ -n "$pids" ] || return 0
+  log "processes outlived the ${2} s stop window: SIGKILL ($(printf '%s ' $pids))"
+  # shellcheck disable=SC2086
+  kill -KILL $pids 2> /dev/null
+}
+
+# Ask a sidecar's loop to stop and wait for it to let go of its lock (its stop window and its bound row's).
+# A loop asked for and not yet holding its lock is waited for first, or it would start after this stop; a
+# loop that outlives the wait still finds the request (it is removed only by the next loop's start).
+stop_loop() {
+  local deadline
+  deadline=$(($(date +%s) + 30))
+  while [ -e "$DIR/$1.launch" ] && [ "$(date +%s)" -lt "$deadline" ]; do pause 1; done
+  supervised "$1" || return 0
+  : > "$DIR/$1.stop"
+  deadline=$(($(date +%s) + 2 * STOP_WINDOW + 10))
+  while supervised "$1" && [ "$(date +%s)" -lt "$deadline" ]; do pause 1; done
+}
+
+launch_loop() {
+  : > "$DIR/$1.launch"
+  setsid nohup bash "$SELF" --project "$PROJECT" run "$1" 9>&- >> "$DIR/$1.log" 2>&1 < /dev/null &
+}
+
+# ── the loop: one per sidecar, the unit's life ───────────────────────────────────────────────────────
+NAME=""
+LOG=/dev/null
+STOPPING=0
+SPAWNED=0
+log() { printf '%s vike-sidecars[%s]: %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$NAME" "$*" >> "$LOG"; }
+
+# Start argv in the background as the unit started its processes: its environment only, in the project.
+spawn() {
+  local envs=() home user shell lang
+  mapfile -t envs < <(sidecar_cmd "$NAME" env)
+  IFS=: read -r _ _ _ _ _ home shell < <(getent passwd "$(id -u)" 2> /dev/null)
+  user="$(id -un 2> /dev/null)"
+  lang="$(sed -n 's/^LANG=//p' /etc/locale.conf /etc/default/locale 2> /dev/null | head -n 1 | tr -d '"')"
+  (umask 0022 && cd "$PROJECT" && exec env -i PATH="$UNIT_PATH" HOME="${home:-${HOME:-/}}" USER="$user" LOGNAME="$user" \
+    SHELL="${shell:-/bin/sh}" LANG="${lang:-C.UTF-8}" VIKE_SETTINGS_DIR="$PROJECT/settings" VIKE_SIDECAR="$NAME@$PROJECT" \
+    ${envs[@]+"${envs[@]}"} "$@") 9>&- >> "$LOG" 2>&1 < /dev/null &
+  SPAWNED=$!
+}
+# A child's exit status, polled each second (bash keeps a reaped child's status for `wait`); 143 when this
+# loop is asked to stop first.
+await() {
+  while kill -0 "$1" 2> /dev/null; do
+    stopping && return 143
+    pause 1
+  done
+  wait "$1" 2> /dev/null
+}
+# Start step $1 of the row inside the start window ending at $2 (- for none); SPAWNED=0 when it has none.
+launch_step() {
+  local argv=() left
+  SPAWNED=0
+  mapfile -t argv < <(sidecar_cmd "$NAME" "$1")
+  [ "${#argv[@]}" -gt 0 ] || return 0
+  if [ "$2" = - ]; then
+    spawn "${argv[@]}"
+    return 0
+  fi
+  left=$(($2 - $(date +%s)))
+  [ "$left" -gt 0 ] || return 124
+  spawn timeout -k 5 "$left" "${argv[@]}"
+}
+# Run step $1 to its end; its status (0 when the row has no such step).
+run_step() {
+  launch_step "$1" "$2" || return $?
+  [ "$SPAWNED" != 0 ] || return 0
+  await "$SPAWNED"
+}
+# StartLimitBurst= in StartLimitIntervalSec=: may one more start happen now? Counted when it may.
+start_allowed() {
+  [ "$R_BURST" != - ] || return 0
+  local now kept f="$DIR/$NAME.starts"
+  now=$(date +%s)
+  kept="$(awk -v c=$((now - R_WINDOW)) '$1 > c' "$f" 2> /dev/null)"
+  [ "$(grep -c . <<< "$kept")" -lt "$R_BURST" ] || return 1
+  { [ -z "$kept" ] || printf '%s\n' "$kept"; printf '%s\n' "$now"; } > "$f"
+}
+rotate_log() {
+  # shortcut: one 10 MiB generation kept, checked at each start; a size-driven rotation if one run outgrows it.
+  [ "$(stat -c %s "$LOG" 2> /dev/null || echo 0)" -lt "$LOG_CAP" ] || mv -f "$LOG" "$LOG.1"
+}
+# Log, THEN write the state: whoever sees a state can read the line that says why.
+settle() {
+  log "$2"
+  set_state "$NAME" "$1"
+}
+# A failed start: what it started goes, and the row's RestartSec= (both policies restart a failure).
+retry() {
+  kill_marked "$NAME" "$STOP_WINDOW"
+  settle restarting "$1: restarted in $R_RESTART s"
+  nap "$R_RESTART"
+}
+
+supervise() {
+  local rc deadline main post argv=() bound
+  bound="$(bound_to "$NAME")"
+  while ! stopping; do
+    rotate_log
+    if [ "$R_BOUND" != - ] && ! ready_now "$R_BOUND"; then
+      settle stopped "not started: $R_BOUND is not ready (BindsTo=)"
+      return
+    fi
+    set_state "$NAME" starting
+    deadline=-
+    [ "$R_START" = - ] || deadline=$(($(date +%s) + R_START))
+    run_step condition "$deadline"
+    rc=$?
+    ! stopping || break
+    # The condition is asked before the start limit, so a skip is never counted and never reads failed.
+    case "$rc" in
+      0 | 124 | 126 | 127 | 255) ;;
+      *)
+        if [ "$rc" -le 128 ]; then
+          settle skipped "skipped: its condition says this box does not run it (exit $rc); nothing started, not counted toward StartLimitBurst="
+          return
+        fi
+        ;;
+    esac
+    if ! start_allowed; then
+      settle failed "FAILED: $R_BURST starts in $R_WINDOW s (StartLimitBurst=); it stays down until 'vike-sidecars restart $NAME'"
+      return
+    fi
+    case "$rc" in
+      0) ;;
+      124 | 126 | 127 | 255) retry "its condition could not be answered (exit $rc)"; continue ;;
+      *) retry "its condition was killed (exit $rc)"; continue ;;
+    esac
+    run_step pre "$deadline"
+    rc=$?
+    ! stopping || break
+    [ "$rc" = 0 ] || { retry "its pre-start step failed (exit $rc)"; continue; }
+    mapfile -t argv < <(sidecar_cmd "$NAME" main)
+    spawn "${argv[@]}"
+    main=$SPAWNED
+    log "started (pid $main): ${argv[*]}"
+    launch_step post "$deadline" || { retry "no time left for its post-start step"; continue; }
+    post=$SPAWNED
+    while [ "$post" != 0 ] && kill -0 "$post" 2> /dev/null && kill -0 "$main" 2> /dev/null && ! stopping; do
+      nap 1
+    done
+    ! stopping || break
+    if kill -0 "$main" 2> /dev/null; then
+      if [ "$post" != 0 ]; then
+        await "$post"
+        rc=$?
+        [ "$rc" = 0 ] || { retry "its post-start step failed (exit $rc), so the start failed"; continue; }
+      fi
+      settle ready "ready"
+      [ -z "$bound" ] || supervised "$bound" || launch_loop "$bound"
+      await "$main"
+      rc=$?
+      ! stopping || break
+    else
+      await "$main"
+      rc=$?
+      ! stopping || break
+      log "it ended before it was ready"
+    fi
+    [ -z "$bound" ] || stop_loop "$bound"
+    kill_marked "$NAME" "$STOP_WINDOW"
+    if [ "$rc" = "$R_PREVENT" ]; then
+      settle failed "FAILED: exited $rc, not restarted (RestartPreventExitStatus=$rc); 'vike-sidecars restart $NAME' once mended"
+      return
+    fi
+    if [ "$rc" = 0 ] && [ "$R_ALWAYS" != yes ]; then
+      settle exited "exited 0: not restarted (Restart=on-failure)"
+      return
+    fi
+    settle restarting "exited $rc: restarted in $R_RESTART s"
+    nap "$R_RESTART"
+  done
+  log "stopping"
+  [ -z "$bound" ] || stop_loop "$bound"
+  kill_marked "$NAME" "$STOP_WINDOW"
+  settle stopped "stopped"
+}
+
+cmd_run() {
+  NAME="${1:-}"
+  read_rule "$NAME" || die "run: no sidecar named '$NAME'"
+  LOG="$DIR/$NAME.log"
+  exec 9>> "$DIR/$NAME.lock"
+  if ! flock -n 9; then
+    rm -f "$DIR/$NAME.launch"
+    exit 0
+  fi
+  trap 'STOPPING=1' TERM INT
+  # A stop asked of the LAST loop is spent; one asked of this loop comes only once .launch is gone.
+  rm -f "$DIR/$NAME.stop"
+  set_state "$NAME" starting
+  rm -f "$DIR/$NAME.launch"
+  # Only a loop that died without its stop leaves marked processes, and THIS loop owns the name now.
+  kill_marked "$NAME" "$STOP_WINDOW"
+  supervise
+}
+
+# ── the commands ─────────────────────────────────────────────────────────────────────────────────────
+cmd_start() {
+  local name
+  for name in $(names); do
+    read_rule "$name"
+    installed "$name" || continue
+    if system_unit_active "$name"; then
+      say "$name: its system unit vike-$name.service runs it; not started here"
+      continue
+    fi
+    # A bound row is started by its row after each of that row's starts; here only when that row is ready.
+    if [ "$R_BOUND" != - ] && ! ready_now "$R_BOUND"; then continue; fi
+    supervised "$name" || launch_loop "$name"
+  done
+  cmd_wait
+}
+
+cmd_wait() {
+  local boot deadline name pending said="" b st
+  boot="$(boot_id)"
+  deadline=$(($(date +%s) + WAIT_CAP))
+  while :; do
+    pending=""
+    for name in $(names); do
+      read_rule "$name"
+      [ "$R_GATE" = yes ] || continue
+      if [ -e "$DIR/$name.launch" ]; then
+        pending="$pending $name"
+        continue
+      fi
+      [ -f "$DIR/$name.state" ] || continue
+      read -r b st _ < "$DIR/$name.state"
+      if [ "$R_BOUND" != - ]; then ready_now "$R_BOUND" || continue; fi
+      if [ "$b" = "$boot" ]; then
+        case "$st" in starting | restarting) pending="$pending $name" ;; esac
+      else
+        # It ran when the box went down: its first start of this boot is coming.
+        case "$st" in starting | restarting | ready) pending="$pending $name" ;; esac
+      fi
+    done
+    [ -n "$pending" ] || return 0
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      say "vike-sidecars: still starting after $WAIT_CAP s:$pending; the daemons start without them" >&2
+      return 0
+    fi
+    if [ "$pending" != "$said" ]; then
+      say "vike-sidecars: waiting for$pending (the gatewayhub starts after the IBKR gateway is up)"
+      said="$pending"
+    fi
+    nap 2
+  done
+}
+
+cmd_stop() {
+  local name
+  for name in $(names | tac); do stop_loop "$name"; done
+  # What a loop killed by hand left behind.
+  NAME=stop
+  for name in $(names); do kill_marked "$name" "$STOP_WINDOW"; done
+  say "sidecars stopped"
+}
+
+cmd_restart() {
+  local name="${1:-}"
+  read_rule "$name" || die "restart: no sidecar named '$name' ($(names | tr '\n' ' '))"
+  installed "$name" || die "restart: $name is not on this box (its scripts, or for the tunnel its ssh Host block)"
+  stop_loop "$name"
+  rm -f "$DIR/$name.starts"
+  launch_loop "$name"
+  say "$name: its starts forgotten and started again; 'vike-sidecars status' shows it"
+}
+
+cmd_status() {
+  local name st on
+  for name in $(names); do
+    on=absent
+    if installed "$name"; then on=installed; fi
+    if supervised "$name"; then on=supervised; fi
+    st="$(field_of "$name" 2)"
+    printf '%-17s %-11s %s\n' "$name" "$on" "${st:-never started}"
+  done
+}
+
+cmd_install() {
+  local line="@reboot bash $SELF --project $PROJECT start # vike-sidecars"
+  if crontab -l 2> /dev/null | grep -qF '# vike-sidecars'; then
+    say "the crontab already starts the sidecars at boot"
+    return 0
+  fi
+  { crontab -l 2> /dev/null; printf '%s\n' "$line"; } | crontab - || die "could not add the @reboot line to the crontab"
+  say "the sidecars start at boot from this user's crontab"
+}
+
+# One line per row: its rule, then each step's argv, for the gate that compares them with the units.
+cmd_rules() {
+  local name field
+  for name in $(names); do
+    read_rule "$name"
+    say "$name rule $R_RESTART $R_ALWAYS $R_PREVENT $R_BURST $R_WINDOW $R_START $R_BOUND $R_GATE"
+    for field in condition pre main post env; do
+      say "$name $field $(sidecar_cmd "$name" "$field" | tr '\n' ' ')"
+    done
+  done
+}
+
+PROJECT=""
+DIR=""
+main() {
+  # This file's own state and logs are the app user's alone; the sidecars get systemd's 0022 (spawn).
+  umask 0077
+  if [ "${1:-}" = --project ]; then
+    PROJECT="${2:-}"
+    shift 2 || die "--project needs a directory"
+  fi
+  local cmd="${1:-}"
+  shift || true
+  if [ -z "$PROJECT" ] && [ "$(basename "$(dirname "$SELF")")" = bin ]; then PROJECT="$(dirname "$(dirname "$SELF")")"; fi
+  [ -n "$PROJECT" ] || die "no project: pass --project <the app folder> (or run the copy in <project>/bin)"
+  case "$PROJECT" in /*) ;; *) die "--project must be an absolute path: '$PROJECT'" ;; esac
+  PROJECT="${PROJECT%/}"
+  DIR="$PROJECT/settings/state/sidecars"
+  case "$cmd" in
+    rules) cmd_rules; return ;;
+    wait) cmd_wait; return ;;
+    status) cmd_status; return ;;
+    tunnel-configured) tunnel_configured; return ;;
+  esac
+  # A loop and the @reboot line run THIS file, so it must be the project's own copy, the one each deploy
+  # replaces: a copy elsewhere (a checkout, a test's) starts nothing.
+  if ! [ "$SELF" -ef "$PROJECT/bin/vike-sidecars" ]; then
+    case "$cmd" in
+      start) say "vike-sidecars: $SELF is not $PROJECT/bin/vike-sidecars, so it starts nothing"; return 0 ;;
+      restart | install | run) die "$cmd runs only from the project's own copy, $PROJECT/bin/vike-sidecars" ;;
+    esac
+  fi
+  mkdir -p "$DIR" || die "could not create $DIR"
+  case "$cmd" in
+    start) cmd_start ;;
+    stop) cmd_stop ;;
+    restart) cmd_restart "$@" ;;
+    install) cmd_install ;;
+    run) cmd_run "$@" ;;
+    *) sed -n '2,17p' "$SELF"; exit 2 ;;
+  esac
+}
+
+main "$@"

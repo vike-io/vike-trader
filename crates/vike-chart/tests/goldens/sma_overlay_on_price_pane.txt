@@ -1,0 +1,11 @@
+# vike frame record v1 (vike_ui_theme::frame_record)
+# scenario: sma_overlay_on_price_pane
+ppp 1  primitives 7  vertices 4148  triangles 4946
+----
+   0  clip [0 0 960 620]  tex M0  v 4  t 2  solid [0 0 960 620]  glyph -  runs 2  #161b24ff*2 #0d1117ff*2  d 262bfec614c2df93
+   1  clip [0 0 960 620]  tex M0  v 400  t 200  solid -  glyph [892 4 928 453]  runs 3  #595c61ab*160 #858991ff*24 #595c61ab*216  d ccf8ca7f4fdc71f9
+   2  clip [0 0 888 457]  tex M0  v 2924  t 3874  solid [-1 -1 889 458]  glyph -  runs 18  #08090a3d*72 #21252cff*8 #40ba50ff*54 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*72 #40ba50ff*90 #f85249ff*54  +..  d 22ca4484a740eb7b
+   3  clip [0 0 960 620]  tex M0  v 216  t 152  solid [-1 376 961 461]  glyph [9 13 925 388]  runs 11  #f85249ff*20 #000000ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*20 #e7ecf4ff*4 #f85249ff*72 #2f343cff*4  d 7b7647f93c8a8c12
+   4  clip [0 0 960 620]  tex M0  v 28  t 14  solid -  glyph [684 511 904 598]  runs 1  #858991ff*28  d 6515b9f736a8a65a
+   5  clip [0 462 888 588]  tex M0  v 504  t 630  solid [-1 462 889 590]  glyph -  runs 16  #10111578*4 #21252cff*8 #2d8238b3*12 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*16 #2d8238b3*20 #ae3933b3*12  d a989bd8dab57089a
+   6  clip [0 0 960 620]  tex M0  v 72  t 74  solid [889 485 914 503]  glyph [6 469 907 497]  runs 3  #9aa4b1ff*24 #f85249ff*20 #000000ff*8  d cfa3eb7fd84729e9

@@ -1,0 +1,329 @@
+{
+  "argv": [
+    "--profile",
+    "read-only",
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "tools_list.read-only",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/list",
+        "params": {}
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "tools": [
+            {
+              "annotations": {
+                "idempotentHint": true,
+                "openWorldHint": false,
+                "readOnlyHint": true
+              },
+              "description": "Compile a Rhai strategy; returns {ok, error?}. Compile IS validation. Offline — no server.",
+              "inputSchema": {
+                "properties": {
+                  "script": {
+                    "description": "Rhai strategy source",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "script"
+                ],
+                "type": "object"
+              },
+              "name": "validate_strategy"
+            },
+            {
+              "annotations": {
+                "idempotentHint": true,
+                "openWorldHint": false,
+                "readOnlyHint": true
+              },
+              "description": "Read back the tunable param(name, default) knobs a Rhai strategy declares — the exact keys a profile's [strategy.params] or a [paramscan] grid may override, in declaration order. Call it on a script you WROTE as well as one you were handed: it runs the script's TOP LEVEL only, so a param() inside on_bar() is NOT REPORTED here (a sweep can still drive such a knob by name — but nothing tells you it is there), and compiling clean says nothing about it. Offline — no server.",
+              "inputSchema": {
+                "properties": {
+                  "script": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "script"
+                ],
+                "type": "object"
+              },
+              "name": "discover_params"
+            },
+            {
+              "annotations": {
+                "idempotentHint": true,
+                "openWorldHint": false,
+                "readOnlyHint": true
+              },
+              "description": "List starter Rhai strategies as {name, code} — each parameterized via param() so it drops straight into run_sweep. Offline — no server.",
+              "inputSchema": {
+                "properties": {},
+                "type": "object"
+              },
+              "name": "list_templates"
+            },
+            {
+              "annotations": {
+                "idempotentHint": true,
+                "openWorldHint": false,
+                "readOnlyHint": true
+              },
+              "description": "List the HOST-BOUND indicators a Rhai strategy can actually call — what the vike-rhai host registers, which is not every vike-indicators registry name; a script calling an unbound one compiles and then fails on every bar. No arguments returns the compact roster (name + category). Pass `category` for one family in full, or `name` for one indicator in full — its parameters with defaults and its output line — which also answers WHY a registry name is not callable. The roster is not repeated in this text on purpose: it is long, and a description is sent whether you call the tool or not.",
+              "inputSchema": {
+                "properties": {
+                  "category": {
+                    "description": "one family, in full — the `category` value the roster reports (case-insensitive)",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "one indicator, in full (its parameters with defaults, and the value it returns) — or, for a registry name the host holds back, the reason",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "list_indicators"
+            },
+            {
+              "annotations": {
+                "openWorldHint": true,
+                "readOnlyHint": true
+              },
+              "description": "Run a backtest on the remote backtest daemon (`vike-backend backtesthub --addr`, dialled at --backtest-addr) from a profile TOML, optionally injecting a Rhai script. Returns the BacktestReport JSON. ONE point only: a profile with a non-empty [paramscan] table (or the legacy [paramscan] spelling) is a parameter search and the daemon REFUSES it here — send it to run_sweep. Cancellable: notifications/cancelled drops the response and closes the daemon connection, and the daemon stops loading the run's series once it sees the connection gone (a run already inside the engine finishes first).",
+              "inputSchema": {
+                "properties": {
+                  "profile": {
+                    "type": "string"
+                  },
+                  "script": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "profile"
+                ],
+                "type": "object"
+              },
+              "name": "run_backtest"
+            },
+            {
+              "annotations": {
+                "openWorldHint": true,
+                "readOnlyHint": true
+              },
+              "description": "Run a parameter search on the remote backtest daemon (--backtest-addr) from a profile TOML with a [paramscan] table (each key overrides strategy.params.<key> across a value grid; the legacy [paramscan] spelling still loads), optionally injecting a Rhai script. DEFAULT is the exhaustive grid; `optimizer` selects a smarter search (euler = successive halving, tpe = Bayesian, genetic) and each method takes its own knob — a knob under a method that does not own it is REFUSED by name, never discarded. Returns the server-ranked ParamscanReport JSON (one row per grid point, each with its BacktestReport, best first). Cancellable: notifications/cancelled drops the response and closes the daemon connection, and the daemon stops evaluating grid points once it sees the connection gone.",
+              "inputSchema": {
+                "properties": {
+                  "euler_depth": {
+                    "description": "euler's successive-halving depth (CLI: --euler-depth). euler ONLY",
+                    "type": "integer"
+                  },
+                  "optimizer": {
+                    "description": "the search METHOD (CLI: --optimizer). grid (default) is exhaustive",
+                    "enum": [
+                      "grid",
+                      "euler",
+                      "tpe",
+                      "genetic"
+                    ],
+                    "type": "string"
+                  },
+                  "profile": {
+                    "description": "a backtest profile TOML with [data]/[strategy]/[paramscan] (+ optional [engine])",
+                    "type": "string"
+                  },
+                  "rank_by": {
+                    "description": "sharpe (default) | return | max_dd | equity | multi (the composite objective) — applied server-side",
+                    "type": "string"
+                  },
+                  "script": {
+                    "description": "optional Rhai source injected as [strategy.params].src",
+                    "type": "string"
+                  },
+                  "seed": {
+                    "description": "reproducibility seed (CLI: --seed). tpe and genetic ONLY; genetic REQUIRES it",
+                    "type": "integer"
+                  },
+                  "trials": {
+                    "description": "tpe's trial budget (CLI: --trials). tpe ONLY — refused under any other optimizer",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "profile"
+                ],
+                "type": "object"
+              },
+              "name": "run_sweep"
+            },
+            {
+              "annotations": {
+                "openWorldHint": true,
+                "readOnlyHint": true
+              },
+              "description": "Run an out-of-sample walk-forward on the remote backtest daemon (--backtest-addr) from a profile TOML with a [walkforward] table, optionally injecting a Rhai script. DEFAULT (n_splits alone) is the FIXED-parameter stability walk: every window trades the profile's own [strategy.params] and chooses nothing — do NOT report such a run as an optimization. search = \"paramscan\" in [walkforward] runs the other protocol: each window re-scores the [paramscan] grid on its OWN training half and trades only that window's winner (mode = anchored|rolling, rank_by = sharpe|return|max_dd|equity); it needs a [paramscan] table and is refused without one. Returns the stitched WalkForwardReport JSON (out-of-sample windows + out_of_sample_sharpe + walkforward_consistency) — only a window that searched carries chosen_params, which is how you tell the two runs apart. Run both on one profile: the no-search control is the only evidence that searching bought anything. Cancellable: notifications/cancelled drops the response and closes the daemon connection, and the daemon stops starting windows (and, under search = \"paramscan\", training-half grid points) once it sees the connection gone.",
+              "inputSchema": {
+                "properties": {
+                  "profile": {
+                    "description": "a backtest profile TOML with [data]/[strategy]/[walkforward] (+ optional [engine]; a [sweep] table too when [walkforward].search = \"sweep\")",
+                    "type": "string"
+                  },
+                  "script": {
+                    "description": "optional Rhai source injected as [strategy.params].src",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "profile"
+                ],
+                "type": "object"
+              },
+              "name": "run_walk_forward"
+            },
+            {
+              "annotations": {
+                "idempotentHint": true,
+                "openWorldHint": true,
+                "readOnlyHint": true
+              },
+              "description": "List the compiled native backtest strategies the remote backtest daemon offers (the names a profile's strategy.name can resolve). Requires a reachable backtest daemon (--backtest-addr).",
+              "inputSchema": {
+                "properties": {},
+                "type": "object"
+              },
+              "name": "list_strategies"
+            },
+            {
+              "annotations": {
+                "idempotentHint": true,
+                "openWorldHint": true,
+                "readOnlyHint": true
+              },
+              "description": "List the stored data series the remote vike-datahub server holds, with coverage: {kind, venue, symbol, interval, first_ts, last_ts, rows} — what a profile's [data] table can name. At most 150 rows: past that the answer carries `truncated`, `total` and a `note` naming the command that lists them all. Requires a reachable datahub (--addr).",
+              "inputSchema": {
+                "properties": {},
+                "type": "object"
+              },
+              "name": "list_series"
+            },
+            {
+              "annotations": {
+                "openWorldHint": true,
+                "readOnlyHint": true
+              },
+              "description": "Read the running vike-tradehub's live state (orders, positions, per-venue equity, recent events). An order the node HOLDS until a moment (submit_order's release_at) is not in `orders` yet: it is in `held_exits` with its `release`, and cancel_order cancels it by its order_client_id. The frame's `bars` are left out, so the answer stays small enough for a client to show. ⚠ Top-level `positions`, `balance` and `trading_state` are the PRIMARY engine's alone and `equity_total` covers only its currency group, so on a node with several accounts read `venues[].positions` before calling anything flat. Requires --node + VIKE_TRADEHUB_OBSERVE_KEY. If the result carries `pre_fold: true`, the frame holds nothing built: with `identity` present it is the placeholder the node publishes before its first fold; with `identity: null` it is this client's own placeholder, because no node frame arrived in time. Either way venues, balance, equity_total and accounts_epoch are placeholders, `venues: []` does NOT mean nothing is mounted, and `pre_fold_note` says which — call it again. If the node connection has dropped, this returns an ERROR naming it DOWN and the last frame STALE, never that frame as if live, and reconnects on the next call, so call it again rather than restarting anything. ⚠ A link that dies SILENTLY (a sleeping laptop, an ssh tunnel without ServerAliveInterval) is noticed only once the node's heartbeat has been missing for about 45 s, and never on a node too old to send one: until then the last frame is answered as live, and the frame carries no timestamp to age it by. If the picture never changes while the node should be trading, have the operator check the tunnel before trusting it.",
+              "inputSchema": {
+                "properties": {},
+                "type": "object"
+              },
+              "name": "node_snapshot"
+            },
+            {
+              "annotations": {
+                "idempotentHint": true,
+                "openWorldHint": true,
+                "readOnlyHint": true
+              },
+              "description": "Ask the running vike-tradehub WHAT IT IS RUNNING: which daemon answered (name, live/paper, build), the daemon's resolved effective-params line, and one row per strategy the node runs NOW, a mount added while it runs included and an unmounted one gone. A row carries the strategy name, that mount's params, its `mount_id` (the id unmount_strategy takes), `venue`/`symbol`/`interval`, `typed_params`, `route_key` (the account it trades), `tier` (the tier that account runs at now: paper, demo or live), `not_running` (present when the node does not run that account, so its orders are refused) and `live` (its orders reach a venue, so a demo account reads true: read `tier`; it may disagree with the daemon's own live flag). A field a node predates is absent from its rows. Read-only, over the OBSERVE scope: it can neither place nor change anything. Requires --node + VIKE_TRADEHUB_OBSERVE_KEY and a node that advertises the strategy verbs; an older node is refused CLIENT-SIDE with nothing sent.",
+              "inputSchema": {
+                "properties": {},
+                "type": "object"
+              },
+              "name": "strategy_status"
+            },
+            {
+              "annotations": {
+                "idempotentHint": true,
+                "openWorldHint": true,
+                "readOnlyHint": true
+              },
+              "description": "Read the running vike-tradehub's EFFECTIVE settings: `settings_dir`, the settings directory it resolved at boot (null = compiled-in defaults), then `rows`, one per typed key: its `section` (the key's first segment), its full dotted `key`, the effective `value` (empty = unset), its `origin`, the layer that set it (`default` or `db`), and `read_by`, what actually READS it. ⚠ A `refusal` beside them means the node could not read its settings database or does not trust it: every row may then be a compiled-in default reading `origin: default`, a ceiling as absent, so report the refusal and none of the rows. Sensitive-looking values arrive already redacted by the node. Read-only, over the OBSERVE scope. Requires --node + VIKE_TRADEHUB_OBSERVE_KEY and a node that advertises the settings-show capability; an older node is refused CLIENT-SIDE with nothing sent. `rows[].key` is the exact spelling set_setting takes.",
+              "inputSchema": {
+                "properties": {},
+                "type": "object"
+              },
+              "name": "settings_show"
+            },
+            {
+              "annotations": {
+                "idempotentHint": true,
+                "openWorldHint": true,
+                "readOnlyHint": true
+              },
+              "description": "Judge the running vike-tradehub in one call: the `vike-cli trade health --json` document. `verdict` (OK | WARN | FAIL), the `warn`, `fail` and `unknown` counts, and `checks[]`, one row per finding as {status, check, account, detail, items}: is its door ready, which accounts run and at which tier or are NOT RUNNING and why, halted or reducing venues, held reconcile rows, resting orders, positions with no price, the HALT sentinel. An UNKNOWN row is a fact the wire does not carry and names the command that answers it; it does not move the verdict. Plus `gatewayhub`, that daemon as the datahub (--addr) sees it: {via, reached, error, uptime_ms, epoch, connections, stream_sessions, fetches_running, market_data_venues, credentialed_data_venues}; it says nothing of any venue. ⚠ A dead tradehub is a RESULT here, not an error: `verdict: FAIL` and a row saying it does not answer, so read `verdict`. Read-only, over the OBSERVE scope: no command, no event. Requires --node + VIKE_TRADEHUB_OBSERVE_KEY.",
+              "inputSchema": {
+                "properties": {},
+                "type": "object"
+              },
+              "name": "health_node"
+            },
+            {
+              "annotations": {
+                "idempotentHint": true,
+                "openWorldHint": true,
+                "readOnlyHint": true
+              },
+              "description": "Read a running vike-tradehub's LIVE tearsheet: the realized round-trips the node reconstructs from the journal it is writing, as the node's own LiveTearsheet JSON. The journal never crosses the wire. `cash` and `periods_per_year` rescale the ratios; omitted, the node's own defaults apply. A node can refuse in its own words (no journal enabled, a journal it cannot read), and that is an ERROR here, never an empty tearsheet. It reads no finished backtest: that report is what run_backtest returned. Read-only, over the OBSERVE scope. Requires --node + VIKE_TRADEHUB_OBSERVE_KEY and a node that advertises the tearsheet capability; an older one is refused CLIENT-SIDE with nothing sent.",
+              "inputSchema": {
+                "properties": {
+                  "cash": {
+                    "description": "the account's starting capital, which scales the return ratios. Omitted: the node's own default",
+                    "type": "number"
+                  },
+                  "periods_per_year": {
+                    "description": "the Sharpe/Sortino/Calmar/CAGR annualization factor. Omitted: the node's own default",
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "report"
+            },
+            {
+              "annotations": {
+                "idempotentHint": true,
+                "openWorldHint": true,
+                "readOnlyHint": true
+              },
+              "description": "Say what an order client id means: who placed it (G GUI, C CLI, T Telegram, M this server, S a strategy, E the engine), the strategy and account codes, whether it opens or closes and which way, its group and role (entry, stop, take-profit) and its replacement number, as JSON with one plain-words line (`words`). Works with no node; with --node + VIKE_TRADEHUB_OBSERVE_KEY, outside --profile offline, it adds the names the node gives: the account's label, the strategy behind the code, and the group's other orders resting now. `node` says where the names came from: read, unreachable (`node_error` says why, and the names are null), none (no --node) or offline (this profile reads no node). `form` is v2, v1 (an id minted before these codes) or other (a venue's own id, a foreign order's, one typed by hand). Labels decide nothing. Read-only.",
+              "inputSchema": {
+                "properties": {
+                  "order_client_id": {
+                    "description": "the id to read, as an order, a fill or a preview shows it",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "order_client_id"
+                ],
+                "type": "object"
+              },
+              "name": "decode_order_id"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "what": "`tools/list` under one scope, whole: names, order, schemas, annotations"
+}

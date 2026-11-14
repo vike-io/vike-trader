@@ -1,0 +1,75 @@
+{
+  "argv": [
+    "--profile",
+    "read-only",
+    "--deny-tool",
+    "validate_strategy",
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "withheld.read-only-and-deny",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": "fn on_bar() { }"
+          },
+          "name": "validate_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "tool `validate_strategy` is not available: it was withheld by `--deny-tool validate_strategy`. Tools served in this session: discover_params, list_templates, list_indicators, run_backtest, run_sweep, run_walk_forward, list_strategies, list_series, node_snapshot, strategy_status, settings_show, health_node, report, decode_order_id. Only the OPERATOR can widen this, by restarting the server with `--profile full` (and without that `--deny-tool`) in the MCP client's launch command — this server cannot widen its own scope, and asking again will not change the answer.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "tool `submit_order` is not available: this server is running under the `read-only` tool profile. Tools served in this session: discover_params, list_templates, list_indicators, run_backtest, run_sweep, run_walk_forward, list_strategies, list_series, node_snapshot, strategy_status, settings_show, health_node, report, decode_order_id. Only the OPERATOR can widen this, by restarting the server with `--profile full` (and without that `--deny-tool`) in the MCP client's launch command — this server cannot widen its own scope, and asking again will not change the answer.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "what": "a withheld tool is refused by name; no preview, no token"
+}

@@ -1,0 +1,210 @@
+{
+  "argv": [
+    "--trace",
+    "--profile",
+    "read-only",
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "trace.project",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "on_disk": {
+    "files": [
+      "mcp-<yyyy-mm>.jsonl",
+      "mcp.lock"
+    ],
+    "records": [
+      {
+        "args": {
+          "qty": 1.0,
+          "side": 1,
+          "symbol": "BTCUSDT",
+          "venue": "sim"
+        },
+        "detail": "tool `submit_order` is not available: this server is running under the `read-only` tool profile. Tools served in this session: validate_strategy, discover_params, list_templates, list_indicators, run_backtest, run_sweep, run_walk_forward, list_strategies, list_series, node_snapshot, strategy_status, settings_show, health_node, report, decode_order_id. Only the OPERATOR can widen this, by restarting the server with `--profile full` (and without that `--deny-tool`) in the MCP client's launch command — this …(+79 bytes)",
+        "kind": "mcp_tool_call",
+        "proc": {
+          "bin": "<program>",
+          "pid": "<pid>",
+          "ver": "<version>"
+        },
+        "profile": "read-only",
+        "seq": 0,
+        "token": null,
+        "token_role": null,
+        "tool": "submit_order",
+        "ts_ms": "<ts_ms>",
+        "verdict": "refused",
+        "write": true
+      },
+      {
+        "args": {},
+        "detail": null,
+        "kind": "mcp_tool_call",
+        "proc": {
+          "bin": "<program>",
+          "pid": "<pid>",
+          "ver": "<version>"
+        },
+        "profile": "read-only",
+        "seq": 1,
+        "token": null,
+        "token_role": null,
+        "tool": "list_templates",
+        "ts_ms": "<ts_ms>",
+        "verdict": "ok",
+        "write": false
+      }
+    ]
+  },
+  "stderr": {
+    "<lines>": [
+      "<program>: recording the agent transcript under <scratch>/settings/state/agent",
+      ""
+    ]
+  },
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "tool `submit_order` is not available: this server is running under the `read-only` tool profile. Tools served in this session: validate_strategy, discover_params, list_templates, list_indicators, run_backtest, run_sweep, run_walk_forward, list_strategies, list_series, node_snapshot, strategy_status, settings_show, health_node, report, decode_order_id. Only the OPERATOR can widen this, by restarting the server with `--profile full` (and without that `--deny-tool`) in the MCP client's launch command — this server cannot widen its own scope, and asking again will not change the answer.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "list_templates"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "templates": [
+              {
+                "code": {
+                  "<lines>": [
+                    "",
+                    "let fast = param(\"fast\", 5.0);",
+                    "let slow = param(\"slow\", 20.0);",
+                    "fn on_bar(strategy) {",
+                    "    let f = sma(fast.to_int()); let s = sma(slow.to_int());",
+                    "    if s.is_nan() { return; }",
+                    "    if f > s { strategy.entry(\"Long\", OrderSide::Long); } else { strategy.close(\"Long\"); }",
+                    "}",
+                    ""
+                  ]
+                },
+                "name": "SMA cross"
+              },
+              {
+                "code": {
+                  "<lines>": [
+                    "",
+                    "let len = param(\"len\", 14.0);",
+                    "let lo = param(\"lo\", 30.0);",
+                    "let hi = param(\"hi\", 70.0);",
+                    "fn on_bar(strategy) {",
+                    "    let r = rsi(len.to_int());",
+                    "    if r.is_nan() { return; }",
+                    "    if r < lo && strategy.position() <= 0.0 { strategy.order(\"buy\", OrderSide::Long).size(1.0); }",
+                    "    if r > hi && strategy.position() >= 0.0 { strategy.order(\"sell\", OrderSide::Short).size(1.0); }",
+                    "}",
+                    ""
+                  ]
+                },
+                "name": "RSI reversion"
+              },
+              {
+                "code": {
+                  "<lines>": [
+                    "",
+                    "let len = param(\"len\", 20.0);",
+                    "fn on_bar(strategy) {",
+                    "    let h = sma(len.to_int());   // symmetric proxy. donchian is NOT bound: it is multi-output",
+                    "                                 // (upper/mid/lower) and the bridge binds single-output indicators",
+                    "                                 // only, so `donchian(len)` is a function-not-found at the first",
+                    "                                 // call rather than a silent upper-band read.",
+                    "    if h.is_nan() { return; }",
+                    "    if high() > h && strategy.position() <= 0.0 { strategy.order(\"buy\", OrderSide::Long).size(1.0); }",
+                    "    if low() < h && strategy.position() >= 0.0 { strategy.order(\"sell\", OrderSide::Short).size(1.0); }",
+                    "}",
+                    ""
+                  ]
+                },
+                "name": "Donchian breakout"
+              },
+              {
+                "code": {
+                  "<lines>": [
+                    "",
+                    "let fast = param(\"fast\", 5.0);",
+                    "let slow = param(\"slow\", 20.0);",
+                    "let stop_pct = param(\"stop_pct\", 2.0);",
+                    "let take_pct = param(\"take_pct\", 4.0);",
+                    "fn on_bar(strategy) {",
+                    "    let f = sma(fast.to_int()); let s = sma(slow.to_int());",
+                    "    if s.is_nan() { return; }",
+                    "    if f > s && strategy.position() <= 0.0 {",
+                    "        strategy.entry(\"Long\", OrderSide::Long);",
+                    "        strategy.exit(\"Long\").stop_pct(stop_pct).take_pct(take_pct);",
+                    "    }",
+                    "    if f < s && strategy.position() > 0.0 { strategy.close(\"Long\"); }",
+                    "}",
+                    ""
+                  ]
+                },
+                "name": "SMA cross with stop and target"
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "what": "`--trace`: `<project>/settings/state/agent`, a refusal among the records"
+}

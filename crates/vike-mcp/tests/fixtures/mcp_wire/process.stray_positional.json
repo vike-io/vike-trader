@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "stray"
+  ],
+  "case": "process.stray_positional",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 2,
+  "stderr": {
+    "<lines>": [
+      "<program>: unexpected argument '<hidden>' found",
+      "",
+      "Usage: <program> [OPTIONS]",
+      "",
+      "For more information, try '--help'.",
+      ""
+    ]
+  },
+  "stdout": "",
+  "what": "one command line, stdin closed: stdout, stderr, exit"
+}

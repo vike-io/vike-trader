@@ -1,0 +1,32 @@
+{
+  "argv": [
+    "--help"
+  ],
+  "case": "process.help",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "stdout": {
+    "<lines>": [
+      "Serve the create+backtest tools over stdio MCP (for Claude / an agent)",
+      "",
+      "Usage: <program> [OPTIONS]",
+      "",
+      "Options:",
+      "      --addr <HOST:PORT>           the vike-datahub the data tools dial [default: config.datahub_addr, then 127.0.0.1:7878]",
+      "      --backtest-addr <HOST:PORT>  the backtesthub the run_* tools dial [default: config.backtest_addr, then 127.0.0.1:7880]",
+      "      --node <HOST:PORT>           the vike-tradehub the trade tools control",
+      "      --profile <PROFILE>          which tools are served: full (the default) | read-only | offline",
+      "      --deny-tool <NAME>           withhold one tool by name; repeatable. A name this server does not serve is refused",
+      "      --trace                      record the agent transcript (arguments redacted) under <project>/settings/state/agent",
+      "      --trace-dir <DIR>            record the agent transcript exactly there",
+      "      --unattended                 no person attends this session: every set_setting is refused; other writes keep their preview gate",
+      "  -h, --help                       Print help",
+      "  -V, --version                    Print version",
+      ""
+    ]
+  },
+  "what": "the help page, on stdout"
+}

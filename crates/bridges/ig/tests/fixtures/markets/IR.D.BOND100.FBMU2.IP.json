@@ -1,0 +1,124 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 50.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "PERCENTAGE",
+   "value": 75.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "POINTS",
+   "value": 50.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 6.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 10.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": "XL",
+  "contractSize": "1",
+  "controlledRiskAllowed": true,
+  "country": "US",
+  "currencies": [
+   {
+    "baseExchangeRate": 1.0,
+    "code": "USD",
+    "exchangeRate": 0.66,
+    "isDefault": true,
+    "symbol": "$"
+   }
+  ],
+  "epic": "IR.D.BOND100.FBMU2.IP",
+  "expiry": "DEC-26",
+  "expiryDetails": {
+   "lastDealingDate": "2026-11-25T20:00",
+   "settlementInfo": "Settles based on the official closing price of the US T-Bond Futures contract as reported by CBOT on the last dealing day +/- IG dealing spread."
+  },
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "POINTS",
+   "value": 8
+  },
+  "lotSize": 1.0,
+  "marginDepositBands": [
+   {
+    "currency": "USD",
+    "margin": 0.5,
+    "max": 270,
+    "min": 0
+   },
+   {
+    "currency": "USD",
+    "margin": 1,
+    "max": 1080,
+    "min": 270
+   },
+   {
+    "currency": "USD",
+    "margin": 2.5,
+    "max": 1620,
+    "min": 1080
+   },
+   {
+    "currency": "USD",
+    "margin": 4,
+    "max": null,
+    "min": 1620
+   }
+  ],
+  "marginFactor": 0.5,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "BOND100",
+  "name": "Treasury Bond Decimalised ($1)",
+  "newsCode": "US/",
+  "onePipMeans": "1 cent",
+  "openingHours": null,
+  "rolloverDetails": {
+   "lastRolloverTime": "2026-11-25T19:45",
+   "rolloverInfo": "Usually, initial position closed at official closing level of day before last dealing day +/- closing spread; new position in next contract opened at official closing level of the new contract from same day, +/- opening spread."
+  },
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 50.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": true,
+  "type": "RATES",
+  "unit": "CONTRACTS",
+  "valueOfOnePip": "1.00"
+ },
+ "snapshot": {
+  "bid": 10777.7,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 1,
+  "delayTime": 0,
+  "high": 10784.8,
+  "low": 10762.1,
+  "marketStatus": "TRADEABLE",
+  "netChange": 15.6,
+  "offer": 10781.7,
+  "percentageChange": 0.14,
+  "scalingFactor": 1,
+  "updateTime": "19:47:50"
+ }
+}

@@ -1,0 +1,57 @@
+{
+  "arg": {
+    "channel": "orders-algo",
+    "instType": "SWAP"
+  },
+  "data": [
+    {
+      "ordIdList": [],
+      "advanceOrdType": "",
+      "tpTriggerPxType": "",
+      "ordId": "",
+      "clOrdId": "",
+      "closeFraction": "",
+      "ccy": "USDT",
+      "failCode": "51169",
+      "ordPx": "",
+      "state": "order_failed",
+      "tag": "",
+      "quickMgnType": "",
+      "slTriggerPxType": "last",
+      "advChaseParams": [],
+      "last": "80349.85",
+      "notionalUsd": "8.024912652",
+      "lever": "2",
+      "tdMode": "cross",
+      "tgtCcy": "",
+      "subAlgoIdList": [],
+      "tpOrdPx": "",
+      "actualSide": "sl",
+      "reqId": "",
+      "instType": "SWAP",
+      "triggerPx": "",
+      "reduceOnly": "true",
+      "slOrdPx": "-1",
+      "ordType": "conditional",
+      "tradeQuoteCcy": "",
+      "algoClOrdId": "b7okxtsk",
+      "cTime": "1792866797848",
+      "triggerTime": "1792866798204",
+      "tpTriggerPx": "",
+      "posSide": "net",
+      "actualPx": "",
+      "amendPxOnTriggerType": "0",
+      "side": "buy",
+      "amendResult": "",
+      "algoId": "4038759002837790721",
+      "sz": "0.01",
+      "instId": "BTC-USDT-SWAP",
+      "linkedOrd": {
+        "ordId": ""
+      },
+      "slTriggerPx": "80356",
+      "uTime": "1792866798204",
+      "actualSz": "0"
+    }
+  ]
+}

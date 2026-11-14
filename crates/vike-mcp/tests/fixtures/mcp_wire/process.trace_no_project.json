@@ -1,0 +1,17 @@
+{
+  "argv": [
+    "--trace"
+  ],
+  "case": "process.trace_no_project",
+  "env": {},
+  "exit": 2,
+  "stderr": {
+    "<lines>": [
+      "<program>: settings: no settings directory resolved — every ceiling is the compiled-in default and every venue is capped `paper`. Set VIKE_SETTINGS_DIR, or run from a project that has one.",
+      "<program>: --trace: no project directory above the working directory, so there is nowhere to write the agent transcript. Run from inside a project, set $VIKE_SETTINGS_DIR, or name a directory outright with --trace-dir <dir>.",
+      ""
+    ]
+  },
+  "stdout": "",
+  "what": "`--trace` with no project above the working directory is refused"
+}

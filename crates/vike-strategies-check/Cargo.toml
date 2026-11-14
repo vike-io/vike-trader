@@ -1,0 +1,93 @@
+[package]
+name = "vike-strategies-check"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike's check of the SHIPPED strategy files (`strategies/**` at the repository root): its tests compile every shipped file in-process as a `#[path]` module and run it on the simulator, read every file's header, and are where the strategy lab reads the files. DEV-ONLY: no crate may name it as a normal dependency, so no binary links it and no strategy is compiled into a program."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `check`,
+# the TOP rank: the down-only rule then refuses every normal edge onto this crate by arithmetic,
+# which is the whole point of it (`the_check_rank_is_the_top_rank` holds the rank on top). A
+# dev-dependency may still point here (the strategy lab's example).
+[package.metadata.vike]
+layer = 95
+
+# The library holds the gallery-born files (`src/gallery.rs`), which the strategy lab runs, and the
+# taker files (`src/takers.rs`), which the harness, hub and core tests build through `stand_in`: what
+# they name.
+[dependencies]
+# `vike_strategy::file`: the header parser (`gallery_file`'s `[run]`) and the folder scan the header
+# test runs; the library halves the taker files name (`Controller`, `ControllerHarness`, `fair_value`,
+# `TokenId`, `SignalTracker`).
+vike-strategy = { path = "../vike-strategy" }
+# What a shipped file names: `vike_model::{OrderBroker, Strategy, params}`.
+vike-model = { path = "../vike-model" }
+# `vike_marketdata::Bar`.
+vike-marketdata = { path = "../vike-marketdata" }
+# The order language a gallery-born file is written in, and its shared vocabulary (`signal`, `helpers`, `higher`, ...).
+vike-tactics = { path = "../vike-tactics" }
+# The indicators a gallery-born file reads, and `strategy_kit` (the vocabulary that reads one).
+vike-indicators = { path = "../vike-indicators" }
+# The UTC civil calendar a gallery-born file's session and month reads take (`vike_utility::calendar`).
+vike-utility = { path = "../vike-utility" }
+# The platform-independent transcendentals a gallery-born file takes (decision 0032).
+libm = { workspace = true }
+# What a taker file names beyond the files' usual surface: `strategies/funding/funding_carry.rs`
+# prices each leg's taker fee from `vike_venues::fee_schedule_for` (`strategies/pairs/pairs_zscore.rs`'s
+# `vike_indicators::pairs::HalfLife` comes with the `vike-indicators` edge above).
+vike-venues = { path = "../vike-venues" }
+# What the two maker files (`src/makers.rs`) name: the makers' maths (`vike_market_making`), their saved state's
+# serde shapes and JSON, and their edge-triggered HOLD/RESUMING and load-state `tracing` lines.
+vike-market-making = { path = "../vike-market-making" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The shared `OrderBrokerMock` double (`test-support`) the example test drives a file on, and `libm_walk`, the source
+# parser behind `tests/gallery.rs`'s platform-call scan (decision 0074).
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# `vike_marketdata::Bar`'s `test_support` bar builders.
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+# The maker files' own tests (moved from vike-market-making with the makers): the concrete `LiveBroker` they
+# mount a maker on, and the workspace's one scoped `tracing` capture their HOLD-warn tests read through.
+vike-core = { path = "../vike-core" }
+vike-log = { path = "../vike-log", features = ["test-support"] }
+# The simulator the taker files run on (`StrategyEngine` over `OrderBrokerSimulator`, `tests/takers.rs` and the
+# files' own tests); a maker backtest runs on it too (`tests/makers.rs`, with `test-support`).
+vike-simulator = { path = "../vike-simulator", features = ["test-support"] }
+# `BacktestResult`, which a run returns (named at its owner, as every caller does).
+vike-analytics = { path = "../vike-analytics" }
+# The static fee lane's break-even round trip a live mount's facts carry
+# (`maker_round_trip_fee_for`, `tests/makers/facts.rs`).
+vike-tradehub-core = { path = "../vike-tradehub-core" }
+# The files' own tests write their params tables as TOML text (`toml::from_str` into `Params`).
+toml = { workspace = true }
+# What the two research runners in `examples/` read with beyond those (they were
+# `vike-backtesthub`'s bins until plan 2b deleted the library copies of the strategies they drive):
+# `vike_backtesthub::binutil` (`CommaList`, `bin_version_line`, `routed_history`), the history route
+# and its `HistoryStore`, and their argv through `vike_utility::cli` on top of `clap`. DEV edges: an
+# example is no shipped program.
+vike-backtesthub = { path = "../vike-backtesthub" }
+vike-datahub-client = { path = "../vike-datahub-client", features = ["hist-route"] }
+vike-data = { path = "../vike-data" }
+vike-utility = { path = "../vike-utility", features = ["cli"] }
+clap = { workspace = true }
+# `cheap_np_run`'s own unit tests write their scratch window files under a temporary directory.
+tempfile = { workspace = true }
+
+[[example]]
+# Datahub-driven `cheap_np` runner: drives the REAL StrategyEngine over the ingested Polymarket tape
+# + spot series, window by window, with the shipped file's `CheapNp`. Opens no store; `--store` is
+# refused. `test = true` keeps its unit tests running (they ran with the bin's).
+name = "cheap_np_run"
+test = true
+
+[[example]]
+# Sport taker runner, with the shipped file's `SportTaker`: opens NO store (it reads the tape from
+# files) and uses no harness module.
+name = "sport_taker_run"
+
+[lints]
+workspace = true

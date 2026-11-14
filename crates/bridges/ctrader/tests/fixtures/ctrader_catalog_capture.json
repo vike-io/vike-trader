@@ -1,0 +1,1261 @@
+{
+  "asset_classes": [
+    {
+      "id": 1,
+      "name": "Forex"
+    },
+    {
+      "id": 2,
+      "name": "Metals"
+    },
+    {
+      "id": 3,
+      "name": "Indices"
+    },
+    {
+      "id": 4,
+      "name": "Oil"
+    },
+    {
+      "id": 5,
+      "name": "EU Equities (CFDs)"
+    },
+    {
+      "id": 6,
+      "name": "US Equities (CFDs)"
+    },
+    {
+      "id": 7,
+      "name": "Commodities"
+    },
+    {
+      "id": 8,
+      "name": "Cryptocurrencies"
+    },
+    {
+      "id": 9,
+      "name": "Futures"
+    },
+    {
+      "id": 10,
+      "name": "Bonds"
+    },
+    {
+      "id": 11,
+      "name": "Futures Commodities"
+    }
+  ],
+  "asset_count": 304,
+  "assets": [
+    {
+      "asset_id": 1,
+      "display_name": "AUD",
+      "name": "AUD"
+    },
+    {
+      "asset_id": 5,
+      "display_name": "EUR",
+      "name": "EUR"
+    },
+    {
+      "asset_id": 6,
+      "display_name": "GBP",
+      "name": "GBP"
+    },
+    {
+      "asset_id": 7,
+      "display_name": "HKD",
+      "name": "HKD"
+    },
+    {
+      "asset_id": 9,
+      "display_name": "JPY",
+      "name": "JPY"
+    },
+    {
+      "asset_id": 1036,
+      "display_name": "ALGO",
+      "name": "ALGO"
+    },
+    {
+      "asset_id": 16,
+      "display_name": "USD",
+      "name": "USD"
+    },
+    {
+      "asset_id": 17,
+      "display_name": "XAG",
+      "name": "XAG"
+    },
+    {
+      "asset_id": 18,
+      "display_name": "XAU",
+      "name": "XAU"
+    },
+    {
+      "asset_id": 25,
+      "display_name": "AUS200",
+      "name": "AUS200"
+    },
+    {
+      "asset_id": 26,
+      "display_name": "STOXX50",
+      "name": "STOXX50"
+    },
+    {
+      "asset_id": 27,
+      "display_name": "F40",
+      "name": "F40"
+    },
+    {
+      "asset_id": 28,
+      "display_name": "DE30",
+      "name": "DE30"
+    },
+    {
+      "asset_id": 29,
+      "display_name": "HK50",
+      "name": "HK50"
+    },
+    {
+      "asset_id": 41,
+      "display_name": "XPD",
+      "name": "XPD"
+    },
+    {
+      "asset_id": 43,
+      "display_name": "XBR",
+      "name": "XBR"
+    },
+    {
+      "asset_id": 44,
+      "display_name": "XTI",
+      "name": "XTI"
+    },
+    {
+      "asset_id": 45,
+      "display_name": "XNG",
+      "name": "XNG"
+    },
+    {
+      "asset_id": 46,
+      "display_name": "BRENT",
+      "name": "BRENT"
+    },
+    {
+      "asset_id": 47,
+      "display_name": "WTI",
+      "name": "WTI"
+    },
+    {
+      "asset_id": 50,
+      "display_name": "BTC",
+      "name": "BTC"
+    },
+    {
+      "asset_id": 52,
+      "display_name": "BCH",
+      "name": "BCH"
+    },
+    {
+      "asset_id": 53,
+      "display_name": "ETH",
+      "name": "ETH"
+    },
+    {
+      "asset_id": 54,
+      "display_name": "LTC",
+      "name": "LTC"
+    },
+    {
+      "asset_id": 1088,
+      "display_name": "Wheat_H6",
+      "name": "Wheat_H6"
+    },
+    {
+      "asset_id": 1089,
+      "display_name": "Wheat_U6",
+      "name": "Wheat_U6"
+    },
+    {
+      "asset_id": 66,
+      "display_name": "XTI",
+      "name": "XTI10043"
+    },
+    {
+      "asset_id": 1090,
+      "display_name": "Wheat_Z6",
+      "name": "Wheat_Z6"
+    },
+    {
+      "asset_id": 1091,
+      "display_name": "Wheat_N6",
+      "name": "Wheat_N6"
+    },
+    {
+      "asset_id": 1181,
+      "display_name": "DXY_H6",
+      "name": "DXY_H6"
+    },
+    {
+      "asset_id": 1182,
+      "display_name": "DXY_M6",
+      "name": "DXY_M6"
+    },
+    {
+      "asset_id": 1185,
+      "display_name": "VIX_F6",
+      "name": "VIX_F6"
+    },
+    {
+      "asset_id": 1187,
+      "display_name": "VIX_H6",
+      "name": "VIX_H6"
+    },
+    {
+      "asset_id": 1189,
+      "display_name": "VIX_K6",
+      "name": "VIX_K6"
+    },
+    {
+      "asset_id": 1197,
+      "display_name": "EURBBL_H6",
+      "name": "EURBBL_H6"
+    },
+    {
+      "asset_id": 1198,
+      "display_name": "EURBBL_M6",
+      "name": "EURBBL_M6"
+    },
+    {
+      "asset_id": 1199,
+      "display_name": "EURBBL_U6",
+      "name": "EURBBL_U6"
+    },
+    {
+      "asset_id": 1200,
+      "display_name": "EURBBL_Z6",
+      "name": "EURBBL_Z6"
+    },
+    {
+      "asset_id": 1201,
+      "display_name": "EURSCA_H6",
+      "name": "EURSCA_H6"
+    }
+  ],
+  "categories": [
+    {
+      "asset_class_id": 1,
+      "id": 1,
+      "name": "Default Category"
+    },
+    {
+      "asset_class_id": 2,
+      "id": 2,
+      "name": "Default Category"
+    },
+    {
+      "asset_class_id": 3,
+      "id": 3,
+      "name": "Default Category"
+    },
+    {
+      "asset_class_id": 4,
+      "id": 4,
+      "name": "Default Category"
+    },
+    {
+      "asset_class_id": 5,
+      "id": 5,
+      "name": "Default Category"
+    },
+    {
+      "asset_class_id": 6,
+      "id": 6,
+      "name": "Default Category"
+    },
+    {
+      "asset_class_id": 7,
+      "id": 7,
+      "name": "Default Category"
+    },
+    {
+      "asset_class_id": 8,
+      "id": 8,
+      "name": "Default Category"
+    },
+    {
+      "asset_class_id": 9,
+      "id": 9,
+      "name": "Default Category"
+    },
+    {
+      "asset_class_id": 10,
+      "id": 10,
+      "name": "Default Category"
+    },
+    {
+      "asset_class_id": 11,
+      "id": 11,
+      "name": "Default Category"
+    }
+  ],
+  "category_summary": [
+    {
+      "asset_class_id": 1,
+      "examples": [
+        "EURUSD",
+        "GBPUSD",
+        "EURJPY"
+      ],
+      "id": 1,
+      "name": "Default Category",
+      "symbols": 69
+    },
+    {
+      "asset_class_id": 2,
+      "examples": [
+        "XAUUSD",
+        "XAGUSD",
+        "XAUEUR"
+      ],
+      "id": 2,
+      "name": "Default Category",
+      "symbols": 24
+    },
+    {
+      "asset_class_id": 3,
+      "examples": [
+        "AUS200",
+        "STOXX50",
+        "F40"
+      ],
+      "id": 3,
+      "name": "Default Category",
+      "symbols": 31
+    },
+    {
+      "asset_class_id": 4,
+      "examples": [
+        "XBRUSD",
+        "XTIUSD",
+        "BRENT"
+      ],
+      "id": 4,
+      "name": "Default Category",
+      "symbols": 6
+    },
+    {
+      "asset_class_id": 5,
+      "examples": [],
+      "id": 5,
+      "name": "Default Category",
+      "symbols": 0
+    },
+    {
+      "asset_class_id": 6,
+      "examples": [],
+      "id": 6,
+      "name": "Default Category",
+      "symbols": 0
+    },
+    {
+      "asset_class_id": 7,
+      "examples": [
+        "XNGUSD"
+      ],
+      "id": 7,
+      "name": "Default Category",
+      "symbols": 1
+    },
+    {
+      "asset_class_id": 8,
+      "examples": [
+        "BTCUSD",
+        "BCHUSD",
+        "ETHUSD"
+      ],
+      "id": 8,
+      "name": "Default Category",
+      "symbols": 105
+    },
+    {
+      "asset_class_id": 9,
+      "examples": [
+        "DXY_H6",
+        "DXY_M6",
+        "VIX_F6"
+      ],
+      "id": 9,
+      "name": "Default Category",
+      "symbols": 16
+    },
+    {
+      "asset_class_id": 10,
+      "examples": [
+        "EURBBL_H6",
+        "EURBBL_M6",
+        "EURBBL_U6"
+      ],
+      "id": 10,
+      "name": "Default Category",
+      "symbols": 36
+    },
+    {
+      "asset_class_id": 11,
+      "examples": [
+        "Wheat_H6",
+        "Wheat_U6",
+        "Wheat_Z6"
+      ],
+      "id": 11,
+      "name": "Default Category",
+      "symbols": 64
+    }
+  ],
+  "full_symbol_count": 352,
+  "symbol_count": 352,
+  "symbols": [
+    {
+      "base_asset_id": 5,
+      "base_asset_name": "EUR",
+      "category_id": 1,
+      "description": "Euro vs US Dollar",
+      "full": {
+        "digits": 5,
+        "lot_size": 10000000,
+        "max_volume": 10000000000,
+        "min_volume": 100000,
+        "pip_position": 4,
+        "step_volume": 100000,
+        "swap_calculation_type": 0,
+        "swap_long": -0.8,
+        "swap_short": 0.13
+      },
+      "name": "EURUSD",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 1
+    },
+    {
+      "base_asset_id": 17,
+      "base_asset_name": "XAG",
+      "category_id": 2,
+      "description": "Silver vs Euro",
+      "full": {
+        "digits": 3,
+        "lot_size": 100000,
+        "max_volume": 10000000,
+        "min_volume": 1000,
+        "pip_position": 2,
+        "step_volume": 1000,
+        "swap_calculation_type": 0,
+        "swap_long": -0.5,
+        "swap_short": 0.32
+      },
+      "name": "XAGEUR",
+      "quote_asset_id": 5,
+      "quote_asset_name": "EUR",
+      "symbol_id": 44
+    },
+    {
+      "base_asset_id": 25,
+      "base_asset_name": "AUS200",
+      "category_id": 3,
+      "description": "Australian S&P/ASX 200 Index",
+      "full": {
+        "digits": 2,
+        "lot_size": 100,
+        "max_volume": 25000,
+        "min_volume": 10,
+        "pip_position": 1,
+        "step_volume": 10,
+        "swap_calculation_type": 0,
+        "swap_long": -22.7,
+        "swap_short": 1.19
+      },
+      "name": "AUS200",
+      "quote_asset_id": 1,
+      "quote_asset_name": "AUD",
+      "symbol_id": 10000
+    },
+    {
+      "base_asset_id": 45,
+      "base_asset_name": "XNG",
+      "category_id": 7,
+      "description": "Natural Gas",
+      "full": {
+        "digits": 3,
+        "lot_size": 1000000,
+        "max_volume": 50000000,
+        "min_volume": 500000,
+        "pip_position": 3,
+        "step_volume": 500000,
+        "swap_calculation_type": 0,
+        "swap_long": -5.08,
+        "swap_short": 3.7
+      },
+      "name": "XNGUSD",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10020
+    },
+    {
+      "base_asset_id": 46,
+      "base_asset_name": "BRENT",
+      "category_id": 4,
+      "description": "Brent Crude Oil",
+      "full": {
+        "digits": 2,
+        "lot_size": 10000,
+        "max_volume": 500000,
+        "min_volume": 10000,
+        "pip_position": 2,
+        "step_volume": 10000,
+        "swap_calculation_type": 0,
+        "swap_long": -0.205,
+        "swap_short": 0.085
+      },
+      "name": "BRENT",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10021
+    },
+    {
+      "base_asset_id": 50,
+      "base_asset_name": "BTC",
+      "category_id": 8,
+      "description": "Bitcoin",
+      "full": {
+        "digits": 2,
+        "lot_size": 100,
+        "max_volume": 1000,
+        "min_volume": 1,
+        "pip_position": 2,
+        "step_volume": 1,
+        "swap_calculation_type": 1,
+        "swap_long": -20.0,
+        "swap_short": 0.0
+      },
+      "name": "BTCUSD",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10026
+    },
+    {
+      "base_asset_id": 1088,
+      "base_asset_name": "Wheat_H6",
+      "category_id": 11,
+      "description": "Wheat -March 26 CFD",
+      "full": {
+        "digits": 2,
+        "lot_size": 400,
+        "max_volume": 200000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": null,
+        "swap_long": 0.0,
+        "swap_short": 0.0
+      },
+      "name": "Wheat_H6",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10139
+    },
+    {
+      "base_asset_id": 1181,
+      "base_asset_name": "DXY_H6",
+      "category_id": 9,
+      "description": "US Dollar Index -March 26 CFD",
+      "full": {
+        "digits": 3,
+        "lot_size": 10000,
+        "max_volume": 25000,
+        "min_volume": 100,
+        "pip_position": 3,
+        "step_volume": 100,
+        "swap_calculation_type": null,
+        "swap_long": 0.0,
+        "swap_short": 0.0
+      },
+      "name": "DXY_H6",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10232
+    },
+    {
+      "base_asset_id": 1,
+      "base_asset_name": "AUD",
+      "category_id": 1,
+      "description": "Australian vs US Dollar",
+      "full": {
+        "digits": 5,
+        "lot_size": 10000000,
+        "max_volume": 10000000000,
+        "min_volume": 100000,
+        "pip_position": 4,
+        "step_volume": 100000,
+        "swap_calculation_type": 0,
+        "swap_long": -0.22,
+        "swap_short": -0.48
+      },
+      "name": "AUDUSD",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 5
+    },
+    {
+      "base_asset_id": 17,
+      "base_asset_name": "XAG",
+      "category_id": 2,
+      "description": "Silver vs US Dollar",
+      "full": {
+        "digits": 3,
+        "lot_size": 100000,
+        "max_volume": 10000000,
+        "min_volume": 1000,
+        "pip_position": 2,
+        "step_volume": 1000,
+        "swap_calculation_type": 0,
+        "swap_long": -0.82,
+        "swap_short": 0.57
+      },
+      "name": "XAGUSD",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 42
+    },
+    {
+      "base_asset_id": 26,
+      "base_asset_name": "STOXX50",
+      "category_id": 3,
+      "description": "EURO STOXX 50 Index",
+      "full": {
+        "digits": 2,
+        "lot_size": 100,
+        "max_volume": 25000,
+        "min_volume": 10,
+        "pip_position": 1,
+        "step_volume": 10,
+        "swap_calculation_type": 0,
+        "swap_long": -12.13,
+        "swap_short": -2.91
+      },
+      "name": "STOXX50",
+      "quote_asset_id": 5,
+      "quote_asset_name": "EUR",
+      "symbol_id": 10001
+    },
+    {
+      "base_asset_id": 47,
+      "base_asset_name": "WTI",
+      "category_id": 4,
+      "description": "WTI Light Crude Oil",
+      "full": {
+        "digits": 2,
+        "lot_size": 10000,
+        "max_volume": 500000,
+        "min_volume": 10000,
+        "pip_position": 2,
+        "step_volume": 10000,
+        "swap_calculation_type": 0,
+        "swap_long": -0.205,
+        "swap_short": 0.085
+      },
+      "name": "WTI",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10022
+    },
+    {
+      "base_asset_id": 52,
+      "base_asset_name": "BCH",
+      "category_id": 8,
+      "description": "Bitcoin Cash US Dollar",
+      "full": {
+        "digits": 2,
+        "lot_size": 100,
+        "max_volume": 1000,
+        "min_volume": 1,
+        "pip_position": 2,
+        "step_volume": 1,
+        "swap_calculation_type": 1,
+        "swap_long": -20.0,
+        "swap_short": 0.0
+      },
+      "name": "BCHUSD",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10028
+    },
+    {
+      "base_asset_id": 1089,
+      "base_asset_name": "Wheat_U6",
+      "category_id": 11,
+      "description": "Wheat-September 26 CFD",
+      "full": {
+        "digits": 2,
+        "lot_size": 400,
+        "max_volume": 20000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": null,
+        "swap_long": 0.0,
+        "swap_short": 0.0
+      },
+      "name": "Wheat_U6",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10140
+    },
+    {
+      "base_asset_id": 1182,
+      "base_asset_name": "DXY_M6",
+      "category_id": 9,
+      "description": "US Dollar Index -June 26 CFD",
+      "full": {
+        "digits": 3,
+        "lot_size": 10000,
+        "max_volume": 25000,
+        "min_volume": 100,
+        "pip_position": 3,
+        "step_volume": 100,
+        "swap_calculation_type": null,
+        "swap_long": 0.0,
+        "swap_short": 0.0
+      },
+      "name": "DXY_M6",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10233
+    },
+    {
+      "base_asset_id": 6,
+      "base_asset_name": "GBP",
+      "category_id": 1,
+      "description": "British Pound vs US Dollar",
+      "full": {
+        "digits": 5,
+        "lot_size": 10000000,
+        "max_volume": 10000000000,
+        "min_volume": 100000,
+        "pip_position": 4,
+        "step_volume": 100000,
+        "swap_calculation_type": 0,
+        "swap_long": -0.48,
+        "swap_short": -0.32
+      },
+      "name": "GBPUSD",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 2
+    },
+    {
+      "base_asset_id": 18,
+      "base_asset_name": "XAU",
+      "category_id": 2,
+      "description": "Gold vs Euro",
+      "full": {
+        "digits": 2,
+        "lot_size": 10000,
+        "max_volume": 1000000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": 0,
+        "swap_long": -34.26,
+        "swap_short": 22.97
+      },
+      "name": "XAUEUR",
+      "quote_asset_id": 5,
+      "quote_asset_name": "EUR",
+      "symbol_id": 43
+    },
+    {
+      "base_asset_id": 27,
+      "base_asset_name": "F40",
+      "category_id": 3,
+      "description": "French CAC 40 Index",
+      "full": {
+        "digits": 2,
+        "lot_size": 100,
+        "max_volume": 25000,
+        "min_volume": 10,
+        "pip_position": 1,
+        "step_volume": 10,
+        "swap_calculation_type": 0,
+        "swap_long": -15.33,
+        "swap_short": -3.68
+      },
+      "name": "F40",
+      "quote_asset_id": 5,
+      "quote_asset_name": "EUR",
+      "symbol_id": 10002
+    },
+    {
+      "base_asset_id": 43,
+      "base_asset_name": "XBR",
+      "category_id": 4,
+      "description": "Brent Crude Oil",
+      "full": {
+        "digits": 3,
+        "lot_size": 10000,
+        "max_volume": 500000,
+        "min_volume": 5000,
+        "pip_position": 2,
+        "step_volume": 5000,
+        "swap_calculation_type": 0,
+        "swap_long": 15.91,
+        "swap_short": -25.99
+      },
+      "name": "XBRUSD",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10018
+    },
+    {
+      "base_asset_id": 53,
+      "base_asset_name": "ETH",
+      "category_id": 8,
+      "description": "Etherimum US Dollar",
+      "full": {
+        "digits": 2,
+        "lot_size": 100,
+        "max_volume": 1000,
+        "min_volume": 1,
+        "pip_position": 2,
+        "step_volume": 1,
+        "swap_calculation_type": 1,
+        "swap_long": -20.0,
+        "swap_short": 0.0
+      },
+      "name": "ETHUSD",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10029
+    },
+    {
+      "base_asset_id": 1090,
+      "base_asset_name": "Wheat_Z6",
+      "category_id": 11,
+      "description": "Wheat-December 26 CFD",
+      "full": {
+        "digits": 2,
+        "lot_size": 400,
+        "max_volume": 20000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": null,
+        "swap_long": 0.0,
+        "swap_short": 0.0
+      },
+      "name": "Wheat_Z6",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10141
+    },
+    {
+      "base_asset_id": 1185,
+      "base_asset_name": "VIX_F6",
+      "category_id": 9,
+      "description": "Volatility Index - January 26 CFD",
+      "full": {
+        "digits": 2,
+        "lot_size": 100,
+        "max_volume": 25000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": null,
+        "swap_long": 0.0,
+        "swap_short": 0.0
+      },
+      "name": "VIX_F6",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10234
+    },
+    {
+      "base_asset_id": 18,
+      "base_asset_name": "XAU",
+      "category_id": 2,
+      "description": "Gold vs US Dollar",
+      "full": {
+        "digits": 2,
+        "lot_size": 10000,
+        "max_volume": 1000000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": 0,
+        "swap_long": -57.03,
+        "swap_short": 39.77
+      },
+      "name": "XAUUSD",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 41
+    },
+    {
+      "base_asset_id": 28,
+      "base_asset_name": "DE30",
+      "category_id": 3,
+      "description": "German DAX 30 Index",
+      "full": {
+        "digits": 2,
+        "lot_size": 100,
+        "max_volume": 25000,
+        "min_volume": 100,
+        "pip_position": 1,
+        "step_volume": 100,
+        "swap_calculation_type": 0,
+        "swap_long": -27.17,
+        "swap_short": 0.66
+      },
+      "name": "DE30",
+      "quote_asset_id": 5,
+      "quote_asset_name": "EUR",
+      "symbol_id": 10003
+    },
+    {
+      "base_asset_id": 44,
+      "base_asset_name": "XTI",
+      "category_id": 4,
+      "description": "WTI Light Crude Oil",
+      "full": {
+        "digits": 3,
+        "lot_size": 10000,
+        "max_volume": 500000,
+        "min_volume": 5000,
+        "pip_position": 2,
+        "step_volume": 5000,
+        "swap_calculation_type": 0,
+        "swap_long": 12.95,
+        "swap_short": -21.25
+      },
+      "name": "XTIUSD",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10019
+    },
+    {
+      "base_asset_id": 54,
+      "base_asset_name": "LTC",
+      "category_id": 8,
+      "description": "Litecoin US Dollar",
+      "full": {
+        "digits": 2,
+        "lot_size": 100,
+        "max_volume": 1000,
+        "min_volume": 1,
+        "pip_position": 2,
+        "step_volume": 1,
+        "swap_calculation_type": 1,
+        "swap_long": -20.0,
+        "swap_short": 0.0
+      },
+      "name": "LTCUSD",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10030
+    },
+    {
+      "base_asset_id": 1091,
+      "base_asset_name": "Wheat_N6",
+      "category_id": 11,
+      "description": "Wheat-July 26 CFD",
+      "full": {
+        "digits": 2,
+        "lot_size": 400,
+        "max_volume": 20000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": null,
+        "swap_long": 0.0,
+        "swap_short": 0.0
+      },
+      "name": "Wheat_N6",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10142
+    },
+    {
+      "base_asset_id": 1187,
+      "base_asset_name": "VIX_H6",
+      "category_id": 9,
+      "description": "Volatility Index - March 26 CFD",
+      "full": {
+        "digits": 2,
+        "lot_size": 100,
+        "max_volume": 25000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": null,
+        "swap_long": 0.0,
+        "swap_short": 0.0
+      },
+      "name": "VIX_H6",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10235
+    },
+    {
+      "base_asset_id": 29,
+      "base_asset_name": "HK50",
+      "category_id": 3,
+      "description": "Chinese Hang Seng 50 Index",
+      "full": {
+        "digits": 2,
+        "lot_size": 100,
+        "max_volume": 25000,
+        "min_volume": 10,
+        "pip_position": 1,
+        "step_volume": 10,
+        "swap_calculation_type": 0,
+        "swap_long": -48.5,
+        "swap_short": -8.98
+      },
+      "name": "HK50",
+      "quote_asset_id": 7,
+      "quote_asset_name": "HKD",
+      "symbol_id": 10004
+    },
+    {
+      "base_asset_id": 41,
+      "base_asset_name": "XPD",
+      "category_id": 2,
+      "description": "Palladium",
+      "full": {
+        "digits": 2,
+        "lot_size": 10000,
+        "max_volume": 1000000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": 0,
+        "swap_long": -19.69,
+        "swap_short": 6.38
+      },
+      "name": "XPDUSD",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10016
+    },
+    {
+      "base_asset_id": 66,
+      "base_asset_name": "XTI10043",
+      "category_id": 4,
+      "description": "XTIUSD $100 Rebased",
+      "full": {
+        "digits": 2,
+        "lot_size": 10000,
+        "max_volume": 1000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": 0,
+        "swap_long": -3.2,
+        "swap_short": 1.34
+      },
+      "name": "USCrude100",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10043
+    },
+    {
+      "base_asset_id": 1036,
+      "base_asset_name": "ALGO",
+      "category_id": 8,
+      "description": "Algorand",
+      "full": {
+        "digits": 4,
+        "lot_size": 100000,
+        "max_volume": 10000000,
+        "min_volume": 100000,
+        "pip_position": 4,
+        "step_volume": 1000,
+        "swap_calculation_type": 1,
+        "swap_long": -20.0,
+        "swap_short": 0.0
+      },
+      "name": "ALGOUSD",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10062
+    },
+    {
+      "base_asset_id": 1189,
+      "base_asset_name": "VIX_K6",
+      "category_id": 9,
+      "description": "Volatility Index - May 26 CFD",
+      "full": {
+        "digits": 2,
+        "lot_size": 100,
+        "max_volume": 25000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": null,
+        "swap_long": 0.0,
+        "swap_short": 0.0
+      },
+      "name": "VIX_K6",
+      "quote_asset_id": 16,
+      "quote_asset_name": "USD",
+      "symbol_id": 10236
+    },
+    {
+      "base_asset_id": 16,
+      "base_asset_name": "USD",
+      "category_id": 1,
+      "description": "US Dollar vs Japanese Yen",
+      "full": {
+        "digits": 3,
+        "lot_size": 10000000,
+        "max_volume": 10000000000,
+        "min_volume": 100000,
+        "pip_position": 2,
+        "step_volume": 100000,
+        "swap_calculation_type": 0,
+        "swap_long": 0.82,
+        "swap_short": -1.7
+      },
+      "name": "USDJPY",
+      "quote_asset_id": 9,
+      "quote_asset_name": "JPY",
+      "symbol_id": 4
+    },
+    {
+      "base_asset_id": 5,
+      "base_asset_name": "EUR",
+      "category_id": 1,
+      "description": "Euro vs Japanese Yen",
+      "full": {
+        "digits": 3,
+        "lot_size": 10000000,
+        "max_volume": 500000000,
+        "min_volume": 100000,
+        "pip_position": 2,
+        "step_volume": 100000,
+        "swap_calculation_type": 0,
+        "swap_long": 0.41,
+        "swap_short": -0.99
+      },
+      "name": "EURJPY",
+      "quote_asset_id": 9,
+      "quote_asset_name": "JPY",
+      "symbol_id": 3
+    },
+    {
+      "base_asset_id": 1197,
+      "base_asset_name": "EURBBL_H6",
+      "category_id": 10,
+      "description": "Euro Bobl -March 26 CFD",
+      "full": {
+        "digits": 2,
+        "lot_size": 10000,
+        "max_volume": 10000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": null,
+        "swap_long": 0.0,
+        "swap_short": 0.0
+      },
+      "name": "EURBBL_H6",
+      "quote_asset_id": 5,
+      "quote_asset_name": "EUR",
+      "symbol_id": 10248
+    },
+    {
+      "base_asset_id": 1198,
+      "base_asset_name": "EURBBL_M6",
+      "category_id": 10,
+      "description": "Euro Bobl -June 26 CFD",
+      "full": {
+        "digits": 2,
+        "lot_size": 10000,
+        "max_volume": 10000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": null,
+        "swap_long": 0.0,
+        "swap_short": 0.0
+      },
+      "name": "EURBBL_M6",
+      "quote_asset_id": 5,
+      "quote_asset_name": "EUR",
+      "symbol_id": 10249
+    },
+    {
+      "base_asset_id": 1199,
+      "base_asset_name": "EURBBL_U6",
+      "category_id": 10,
+      "description": "Euro Bobl -September 26 CFD",
+      "full": {
+        "digits": 2,
+        "lot_size": 10000,
+        "max_volume": 10000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": null,
+        "swap_long": 0.0,
+        "swap_short": 0.0
+      },
+      "name": "EURBBL_U6",
+      "quote_asset_id": 5,
+      "quote_asset_name": "EUR",
+      "symbol_id": 10250
+    },
+    {
+      "base_asset_id": 1200,
+      "base_asset_name": "EURBBL_Z6",
+      "category_id": 10,
+      "description": "Euro Bobl -December 26 CFD",
+      "full": {
+        "digits": 2,
+        "lot_size": 10000,
+        "max_volume": 10000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": null,
+        "swap_long": 0.0,
+        "swap_short": 0.0
+      },
+      "name": "EURBBL_Z6",
+      "quote_asset_id": 5,
+      "quote_asset_name": "EUR",
+      "symbol_id": 10251
+    },
+    {
+      "base_asset_id": 1201,
+      "base_asset_name": "EURSCA_H6",
+      "category_id": 10,
+      "description": "Euro Schatz -March 26 CFD",
+      "full": {
+        "digits": 2,
+        "lot_size": 10000,
+        "max_volume": 10000,
+        "min_volume": 100,
+        "pip_position": 2,
+        "step_volume": 100,
+        "swap_calculation_type": null,
+        "swap_long": 0.0,
+        "swap_short": 0.0
+      },
+      "name": "EURSCA_H6",
+      "quote_asset_id": 5,
+      "quote_asset_name": "EUR",
+      "symbol_id": 10252
+    }
+  ],
+  "uncategorised_symbols": 0
+}

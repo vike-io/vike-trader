@@ -1,0 +1,21 @@
+{
+  "argv": [],
+  "case": "boot.exported_hub_key",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings",
+    "VIKE_TRADEHUB_CONTROL_KEY": "DUMMY-NEVER-ECHOED"
+  },
+  "exit": 1,
+  "stderr": {
+    "<lines>": [
+      "<program>: VIKE_TRADEHUB_CONTROL_KEY is set, but VIKE_TRADEHUB_CONTROL_KEY is NO LONGER READ — removed in the owner's ruling of 2026-10-31 (every key lives only in the settings database; decision 0111, verdict 5, amended), because a hub key is a row of the settings database's `hub_key` table and is read from nowhere else, so a variable that still looked set would present nothing while its operator believes it presents that key. Put the key where the process reads it: on the server `vike-cli backend setup` (tradehub) or `vike-cli datahub setup` (datahub) mints the pair into the box's store; on a client `vike-cli backend connect <host> --manual` files the tradehub pair from stdin, and `vike-cli secrets copy-hub-keys --from-settings-dir <DIR>` copies a pair database to database; the thin-client container reads a MOUNTED settings directory (docs/ops/tradehub-container.md). The value is never echoed here, and the process refuses to start instead of ignoring the variable.",
+      "Credentials are read from the settings database (<project>/settings/db/vike.db); nothing reads this variable.",
+      "",
+      "then unset VIKE_TRADEHUB_CONTROL_KEY.",
+      "",
+      ""
+    ]
+  },
+  "stdout": "",
+  "what": "an exported hub key refuses the start, and the value is not echoed"
+}

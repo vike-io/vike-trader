@@ -1,0 +1,153 @@
+{
+  "argv": [
+    "--addr",
+    "<daemon-addr>",
+    "--backtest-addr",
+    "<daemon-addr>"
+  ],
+  "case": "tools.keyed_hub_no_keys",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "x"
+          },
+          "name": "run_backtest"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "cannot connect to the backtest daemon at <daemon-addr>: this hub REQUIRES authentication (it advertises the `auth` feature) but this box holds no datahub key, the pair it verifies. To read, file its observe key (VIKE_DATAHUB_OBSERVE_KEY) here: `vike-cli backend connect HOST --manual` takes it as the third stdin line. `vike-cli datahub setup` on the datahub's box mints the pair, and `vike-cli secrets copy-hub-keys` carries the pair to a project that writes (start it with `vike-backend backtesthub --addr`)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "x"
+          },
+          "name": "run_sweep"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "cannot connect to the backtest daemon at <daemon-addr>: this hub REQUIRES authentication (it advertises the `auth` feature) but this box holds no datahub key, the pair it verifies. To read, file its observe key (VIKE_DATAHUB_OBSERVE_KEY) here: `vike-cli backend connect HOST --manual` takes it as the third stdin line. `vike-cli datahub setup` on the datahub's box mints the pair, and `vike-cli secrets copy-hub-keys` carries the pair to a project that writes (start it with `vike-backend backtesthub --addr`)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "x"
+          },
+          "name": "run_walk_forward"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "cannot connect to the backtest daemon at <daemon-addr>: this hub REQUIRES authentication (it advertises the `auth` feature) but this box holds no datahub key, the pair it verifies. To read, file its observe key (VIKE_DATAHUB_OBSERVE_KEY) here: `vike-cli backend connect HOST --manual` takes it as the third stdin line. `vike-cli datahub setup` on the datahub's box mints the pair, and `vike-cli secrets copy-hub-keys` carries the pair to a project that writes (start it with `vike-backend backtesthub --addr`)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "list_strategies"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "cannot connect to the backtest daemon at <daemon-addr>: this hub REQUIRES authentication (it advertises the `auth` feature) but this box holds no datahub key, the pair it verifies. To read, file its observe key (VIKE_DATAHUB_OBSERVE_KEY) here: `vike-cli backend connect HOST --manual` takes it as the third stdin line. `vike-cli datahub setup` on the datahub's box mints the pair, and `vike-cli secrets copy-hub-keys` carries the pair to a project that writes (start it with `vike-backend backtesthub --addr`)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "list_series"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "cannot connect to datahub at <daemon-addr>: this hub REQUIRES authentication (it advertises the `auth` feature) but this box holds no datahub key, the pair it verifies. To read, file its observe key (VIKE_DATAHUB_OBSERVE_KEY) here: `vike-cli backend connect HOST --manual` takes it as the third stdin line. `vike-cli datahub setup` on the datahub's box mints the pair, and `vike-cli secrets copy-hub-keys` carries the pair to a project that writes",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "what": "a keyed hub, and a store holding no keys"
+}

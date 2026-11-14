@@ -1,0 +1,187 @@
+{
+  "argv": [
+    "--backtest-addr",
+    "<daemon-addr>",
+    "--addr",
+    "127.0.0.1:1"
+  ],
+  "case": "protocol.id_in_flight",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "hold-first"
+          },
+          "name": "run_sweep"
+        }
+      }
+    },
+    {
+      "observed": "the daemon holds the first request"
+    },
+    {
+      "send": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "answer-refused"
+          },
+          "name": "run_sweep"
+        }
+      }
+    },
+    {
+      "recv": {
+        "error": {
+          "code": -32600,
+          "message": "invalid request: this id is already in use by a request still in flight"
+        },
+        "id": 7,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "send": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "answer-refused-too"
+          },
+          "name": "run_backtest"
+        }
+      }
+    },
+    {
+      "recv": {
+        "error": {
+          "code": -32600,
+          "message": "invalid request: this id is already in use by a request still in flight"
+        },
+        "id": 7,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "send": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "ping",
+        "params": {}
+      }
+    },
+    {
+      "recv": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "id": "7",
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "answer-string-id"
+          },
+          "name": "run_sweep"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": "7",
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "sweep": {
+              "label": "answer-string-id"
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": {
+          "reason": "the user pressed stop",
+          "requestId": 7
+        }
+      }
+    },
+    {
+      "observed": "the daemon saw the first request's peer close"
+    },
+    {
+      "send": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "answer-second"
+          },
+          "name": "run_sweep"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "sweep": {
+              "label": "answer-second"
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": "sentinel-1",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-1",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    }
+  ],
+  "what": "an id in flight, and the same id reused after its cancel"
+}

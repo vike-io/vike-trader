@@ -1,0 +1,1136 @@
+#!/usr/bin/env bash
+# vikectl — the server install, run from the app folder, nothing in /etc (decision 0260): ONE supervisor
+# (`deploy/docker/entrypoint.sh`'s `serve`) runs every daemon, each under its own unit's rules, launched
+# in one of two modes that share every step below except the launch:
+#
+#   * CONTAINER mode (the default; releases and users): one container of the release's image, run by
+#     Docker (or `podman` where there is no `docker`); `--restart unless-stopped` brings it back after a
+#     reboot.
+#   * HOST mode (`install --host`): the same supervisor on the host as the app user, from `<project>/bin`
+#     (`vike-entrypoint.sh` beside `vike-backend` and `vike-cli`), under a user unit kept IN the app
+#     folder (`<project>/bin/vike.service`, linked into the user manager with `systemctl --user link`;
+#     linger starts it at boot). The unit delegates its cgroup, so each daemon keeps its own MemoryMax=.
+#     The mode is the presence of that unit file.
+#
+#     vikectl [--project DIR] install [--host] [--inbox-writer USER]   folders; the host unit; the CI inbox
+#     vikectl [--project DIR] up | down | status | logs [log args...]
+#     vikectl [--project DIR] restart <daemon>                 one daemon, inside the running supervisor
+#     vikectl [--project DIR] run-args [IMAGE]                 the docker run arguments, one per line
+#     vikectl [--project DIR] deploy <request-dir> <tag>       pre-flight, swap, health, auto-rollback
+#     vikectl [--project DIR] deploy-inbox                     take ONE request from the CI inbox
+#     vikectl [--project DIR] rollback                         back to the image before the last deploy
+#     vikectl [--project DIR] verify-tools                     the runtime tools on disk are the release's
+#
+# Installed at <project>/bin/vikectl, the project is the folder above it; from anywhere else pass
+# --project. The app user runs it, and that user must reach the Docker daemon (decision 0260 names
+# what that takes on a box). A credential value is never an argument here and never printed: the probe
+# copy below replaces every key before any daemon reads it.
+#
+# ## What a deploy does (the root-owned `deploy/sbin/vike-trader-ci-deploy`'s sequence, as the user)
+#
+#   1. checks the request's SHA256SUMS (vike-backend and vike-cli must be on it);
+#   2. container mode: builds the image from the request's staged context (COPY of those bytes: 0026's
+#      identity rule) and proves the image's vike-backend is the request's, byte for byte; host mode: the
+#      request's own files are what will run;
+#   3. PRE-FLIGHTS every daemon that runs now on the NEW build (a throwaway container, or the staged binary
+#      under `timeout` on the host, the helper's own way), on a copy of the
+#      settings database with every key replaced, the live gates written false, every account paper and
+#      the listen addresses confined (the helper's `preflight` and `probe_settings_copy`, field for field
+#      from its `unit_shape`); nothing is touched until all pass. A journal the new build refuses (its own
+#      `journal format version mismatch` line) is moved aside only on the owner's word for this deploy, the
+#      request's `ALLOW_JOURNAL_MOVE` file (`allow_journal_move` of the two deploy workflows), and only when the
+#      build's floor is above the stamp of the journal's newest segment; the probe then runs again on its copy
+#      moved aside. Without the word the deploy refuses here (`journal_needs_move`);
+#   4. backs up the host files it replaces and remembers the running image;
+#   5. installs the host files (vike-cli, vike-mcp, the runtime tools of `RUNTIME_TOOLS`), then copies each
+#      shipped strategy file absent from <project>/strategies there (`vike-cli init --strategies-only`);
+#   6. stops the supervisor (it stops the daemons in reverse start order), swaps the strategy source tree
+#      and, in host mode, the binaries in that window, copies a journal step 3 judged unreadable into
+#      var/deploy/journal.pre.<stamp>, checks the copy and renames the journal aside (`move_journal_aside`),
+#      and starts the supervisor again on the new build;
+#   7. waits for every daemon that ran before to print its ready line (45 s, the tradehub's starting
+#      window up to 300 s); on any failure it puts the old image, the files and a moved journal back and starts
+#      that.
+#
+# ⚠ `RUNTIME_TOOLS`, `IBKR_SCRIPTS`, `DEPLOY_UNITS` and the `shape` arms are copies of the helper's, compared by
+# crates/vike-ops/tests/container_deploy/deploy_layout_gate/server_container.rs: edit both or neither.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOCKER="$(command -v docker || command -v podman || true)"
+readonly HERE DOCKER
+# The crontab starts `deploy-inbox` with no login session: host mode reaches the user manager through the
+# runtime directory, which a session would have exported.
+[ -n "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "/run/user/$(id -u)" ] || export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+readonly IMAGE=localhost/vike-tradehub
+readonly NAME=vike
+readonly BOOT_TIMEOUT=12
+readonly HEALTH_TIMEOUT=45
+readonly STARTING_CAP=300
+readonly STARTING_LINE='"kind":"starting"'
+# The sum of the supervisor's stop windows (`SERVER_RULES`), plus 10 s for the container's own exit.
+readonly STOP_TIMEOUT=335
+# One cap for the container: the sum of the units' MemoryMax= (2G + 10G + 8G + 8G + 256M), in MiB. The
+# datahub's MemoryLow=5G and MemorySwapMax=0 hold for the whole container.
+readonly MEMORY=28928m
+readonly MEMORY_LOW=5g
+readonly TAG_RE='^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'
+DEPLOY_UNITS="vike-strategy-builder.service vike-gatewayhub.service vike-datahub.service vike-backtesthub.service vike-tradehub.service vike-telegram.service"
+RUNTIME_TOOLS='
+jforex-bridge.jar|bin/jforex/jforex-bridge.jar|644
+lightgbm|bin/lightgbm/lightgbm|755
+lightgbm.PROVENANCE|bin/lightgbm/PROVENANCE|644
+vike-strategy-source.tar.gz|vendor/vike-strategy-source|tar
+vike-strategies.tar.gz|vendor/vike-strategies|tree
+libfcshim.so|lib/libfcshim.so|755
+'
+# A `tree` row (the shipped strategy files) has no reader to stop: it is replaced at install, and THE seed
+# (`vike-cli init --strategies-only`) then copies each absent shipped file into <project>/strategies/.
+# The IBKR gateway scripts: no release asset, the deployed tree's own files staged as `<dir>.<file>` (deploy.yml,
+# `scripts/deploy_commit.sh stage`). Replaced by a rename, backed up and put back with the binary; no IBKR gateway
+# is restarted. A copy of the helper's table, compared by the same gate.
+IBKR_SCRIPTS='
+ibkr-gateway.build-sysroot.sh|bin/ibkr-gateway/build-sysroot.sh|755
+ibkr-gateway.contain-install.sh|bin/ibkr-gateway/contain-install.sh|755
+ibkr-gateway.install.sh|bin/ibkr-gateway/install.sh|755
+ibkr-gateway.instance.sh|bin/ibkr-gateway/instance.sh|755
+ibkr-gateway.start-gateway.sh|bin/ibkr-gateway/start-gateway.sh|755
+ibkr-gateway.start-xvfb.sh|bin/ibkr-gateway/start-xvfb.sh|755
+ibkr-gateway.stop-gateway.sh|bin/ibkr-gateway/stop-gateway.sh|755
+ibkr-gateway.wait-gateway.sh|bin/ibkr-gateway/wait-gateway.sh|755
+ibkr-gateway.write-ibc-config.sh|bin/ibkr-gateway/write-ibc-config.sh|755
+ibkr-gateway.xkbcomp-shim.c|bin/ibkr-gateway/xkbcomp-shim.c|644
+ibkr-cpapi.build-sysroot.sh|bin/ibkr-cpapi/build-sysroot.sh|755
+ibkr-cpapi.login.js|bin/ibkr-cpapi/login.js|644
+ibkr-cpapi.provision-browser.sh|bin/ibkr-cpapi/provision-browser.sh|755
+ibkr-cpapi.run-login.sh|bin/ibkr-cpapi/run-login.sh|755
+ibkr-cpapi.start-gateway.sh|bin/ibkr-cpapi/start-gateway.sh|755
+vike-tool-root.sh|bin/vike-tool-root.sh|755
+'
+readonly TREE_MARKER=.release-asset
+readonly SDK_RECORD_BEGIN="#vike-fcsdk-pin-begin"
+readonly SDK_RECORD_END="#vike-fcsdk-pin-end"
+
+say() { printf '%s\n' "$*"; }
+die() {
+  printf 'vikectl: %s\n' "$*" >&2
+  exit 2
+}
+
+# The daemon each roster unit names, and what the helper's `unit_shape` gives its pre-flight probe.
+shape() {
+  local unit="$1" field="$2" probe="${3:-}"
+  case "$unit" in
+    vike-strategy-builder.service)
+      case "$field" in
+        ready)     echo 'vike-strategy-builder: listening' ;;
+        args)      printf '%s\n' "--port" "0" "--out-dir" "$probe/strategy-builds" "--workspace-root" "$PROJECT/vendor/vike-strategy-source" ;;
+      esac ;;
+    vike-gatewayhub.service)
+      case "$field" in
+        ready)     echo 'vike-gatewayhub: serving' ;;
+        row-confine) printf '%s\n' "config.gatewayhub_addr=127.0.0.1:0" ;;
+      esac ;;
+    vike-datahub.service)
+      case "$field" in
+        ready)     echo 'vike-datahub: listening' ;;
+        row-gate)  echo flags.datahub_live ;;
+        row-confine) printf '%s\n' "config.datahub_bind_addr=127.0.0.1:0" "config.store_root=$probe/store" \
+                           "config.journal_dir=$probe/state/journal" ;;
+      esac ;;
+    vike-backtesthub.service)
+      case "$field" in
+        ready)     echo 'backtesthub --addr: listening on' ;;
+        args)      printf '%s\n' "--addr" "127.0.0.1:0" ;;
+      esac ;;
+    vike-tradehub.service)
+      case "$field" in
+        ready)     echo '"kind":"ready"' ;;
+        row-gate)  echo flags.tradehub_live ;;
+        row-confine) printf '%s\n' "config.journal_dir=$probe/state/journal" ;;
+        paper-accounts) echo 1 ;;
+        args)      printf '%s\n' "--config" "$probe/tradehub.toml" ;;
+      esac ;;
+    vike-telegram.service)
+      case "$field" in
+        ready)     echo 'vike-telegram: ready' ;;
+        numeric-credentials) printf '%s\n' VIKE_TELEGRAM_ALLOWED_CHAT_IDS VIKE_TELEGRAM_ALLOWED_USER_IDS ;;
+        args)      echo "--no-poll" ;;
+      esac ;;
+  esac
+}
+verb_of() {
+  local v="${1%.service}"
+  printf '%s\n' "${v#vike-}"
+}
+
+# ── the project ────────────────────────────────────────────────────────────────────────────────────
+PROJECT=""
+resolve_project() {
+  if [ -z "$PROJECT" ] && [ "$(basename "$HERE")" = bin ] && [ -d "$(dirname "$HERE")/settings" ]; then
+    PROJECT="$(dirname "$HERE")"
+  fi
+  [ -n "$PROJECT" ] || die "no project: pass --project <the app folder> (or run the copy in <project>/bin)"
+  case "$PROJECT" in
+    /*) ;;
+    *) die "--project must be an absolute path: '$PROJECT'" ;;
+  esac
+  # A ':' or ',' would split a docker -v argument; whitespace would split this script's own words.
+  case "$PROJECT" in
+    *[:,[:space:]]*) die "the project path may not hold ':', ',' or whitespace: '$PROJECT'" ;;
+  esac
+  PROJECT="${PROJECT%/}"
+  SETTINGS="$PROJECT/settings"
+  DB="$SETTINGS/db/vike.db"
+  VAR="$PROJECT/var/deploy"
+}
+
+need_docker() {
+  [ -n "$DOCKER" ] || die "neither docker nor podman is installed: the server install runs one container"
+  "$DOCKER" info > /dev/null 2>&1 ||
+    die "'$DOCKER info' failed: this user cannot reach the container daemon. For Docker that is membership \
+of the docker group (an administrator's act, once) or a rootless dockerd of this user's own (DOCKER_HOST); \
+decision 0260 says what each costs."
+}
+
+# A roster daemon still running as a SYSTEM unit means two copies of one daemon: refuse before starting.
+refuse_system_units() {
+  local unit
+  command -v systemctl > /dev/null 2>&1 || return 0
+  for unit in $DEPLOY_UNITS; do
+    if systemctl is-active --quiet "$unit" 2> /dev/null; then
+      die "the system unit $unit is running: stop and disable it before vikectl runs the same daemon"
+    fi
+  done
+}
+
+# The directory the datahub's store lives in: the parent of the config.store_root row, or of the project
+# default <project>/market_data/hist when there is no row. Read straight from the settings database.
+store_dir() {
+  local v=""
+  if [ -f "$DB" ]; then
+    command -v sqlite3 > /dev/null 2>&1 || die "sqlite3 is needed to read config.store_root from $DB"
+    v="$(sqlite3 -readonly -batch -init /dev/null "$DB" \
+      "SELECT value FROM setting WHERE section = 'config' AND key = 'store_root';" 2> /dev/null)" ||
+      die "could not read config.store_root from $DB"
+    v="${v#\"}"
+    v="${v%\"}"
+  fi
+  [ -n "$v" ] || v="$PROJECT/market_data/hist"
+  case "$v" in
+    /*) ;;
+    *) die "config.store_root '$v' is not an absolute path" ;;
+  esac
+  case "$v" in
+    *[:,\\[:space:]]*) die "config.store_root '$v' holds a character a docker -v cannot carry" ;;
+  esac
+  dirname "$v"
+}
+
+# The live journal: the config.journal_dir row, its only switch (no row: no journal). Read like config.store_root.
+journal_dir() {
+  local v=""
+  [ -f "$DB" ] || return 0
+  command -v sqlite3 > /dev/null 2>&1 || die "sqlite3 is needed to read config.journal_dir from $DB"
+  v="$(sqlite3 -readonly -batch -init /dev/null "$DB" \
+    "SELECT value FROM setting WHERE section = 'config' AND key = 'journal_dir';" 2> /dev/null)" ||
+    die "could not read config.journal_dir from $DB"
+  v="${v#\"}"
+  v="${v%\"}"
+  v="${v%/}"
+  case "$v" in
+    '' | /*) printf '%s\n' "$v" ;;
+    *) die "config.journal_dir '$v' is not an absolute path" ;;
+  esac
+}
+
+# The format stamp of the journal's newest segment (`journal-NNNNNNNN.vjl`, the highest index): its header's bytes
+# 4..8, little-endian, after the magic `VJL1` (`crates/vike-journal/src/format.rs`'s `MAGIC`). Nothing when there is
+# no segment or the newest is not one.
+journal_stamp() {
+  local f seg=""
+  for f in "$1"/journal-*.vjl; do [ -f "$f" ] && seg="$f"; done
+  [ -n "$seg" ] && [ "$(head -c 4 "$seg")" = VJL1 ] || return 0
+  od -An -tu4 -j4 -N4 --endian=little "$seg" | tr -d ' '
+}
+
+# What a copy is checked against: the number of files under a directory and their bytes.
+tree_size() { find "$1" -type f -printf '%s\n' | awk '{ n++; b += $1 } END { printf "%.0f files, %.0f bytes\n", n, b }'; }
+
+# The union of the six units' write grants (ReadWritePaths=), each once: the datahub's logs and journal
+# are inside settings/state, the builder's builds inside user_data; `instruments` is the datahub's
+# own (the venues' fetched instrument lists, which no deploy touches); `strategies` is the backtesthub's
+# (it saves the strategy files a Studio edits, the owner's ruling of 2026-11-13). Plus the store's directory.
+rw_paths() {
+  printf '%s\n' "$SETTINGS/state" "$SETTINGS/db" "$PROJECT/user_data" "$PROJECT/bin/rust-toolchain/cargo-home" \
+    "$PROJECT/instruments" "$PROJECT/strategies"
+  store_dir
+}
+
+# The container's user, so that what the daemons write in the app folder is the app user's: that user's
+# own uid under a rootful daemon; under a ROOTLESS one, uid 0, because the rootless daemon maps its
+# container root to the user who runs it and every other uid to a subordinate one (measured on the latency box,
+# Docker 29.7 rootless: a container uid 1001 was refused writing the app folder; uid 0 wrote it as the user).
+user_spec() {
+  if "$DOCKER" info -f '{{.SecurityOptions}}' 2> /dev/null | grep -q rootless; then
+    echo 0:0
+  else
+    echo "$(id -u):$(id -g)"
+  fi
+}
+
+run_args() {
+  local image="$1" p paths
+  paths="$(rw_paths)" || return 1
+  printf '%s\n' -d --name "$NAME" --restart unless-stopped --network host \
+    --user "$(user_spec)" --read-only --tmpfs /tmp --cap-drop ALL \
+    --security-opt no-new-privileges --init --stop-timeout "$STOP_TIMEOUT" \
+    --memory "$MEMORY" --memory-swap "$MEMORY" --memory-reservation "$MEMORY_LOW" \
+    --log-opt max-size=50m --log-opt max-file=5 \
+    -w "$PROJECT" -e "VIKE_SETTINGS_DIR=$SETTINGS" -e "CARGO_HOME=$PROJECT/bin/rust-toolchain/cargo-home" \
+    -e "CARGO=$PROJECT/bin/rust-toolchain/bin/cargo" -e "RUSTC=$PROJECT/bin/rust-toolchain/bin/rustc" \
+    -v "$PROJECT:$PROJECT:ro"
+  while IFS= read -r p; do
+    printf '%s\n' -v "$p:$p:rw"
+  done <<< "$paths"
+  printf '%s\n' -v "$PROJECT/lib:/opt/vike/lib:ro" "$image" --server
+}
+
+# The IBKR gateways and the SOCKS tunnel run beside the supervisor, in both modes, as this user's own
+# processes outside the container and outside the host unit, so a deploy's stop leaves them running
+# (`deploy/docker/vike-sidecars`, installed beside this file; decision 0260): started before the
+# supervisor, stopped after it; `vike-sidecars restart|status` is the operator's handle on one.
+sidecars() { [ ! -f "$HERE/vike-sidecars" ] || bash "$HERE/vike-sidecars" --project "$PROJECT" "$@"; }
+
+container_exists() { "$DOCKER" container inspect "$NAME" > /dev/null 2>&1; }
+container_running() { [ "$("$DOCKER" container inspect -f '{{.State.Running}}' "$NAME" 2> /dev/null)" = true ]; }
+image_id() { "$DOCKER" image inspect -f '{{.Id}}' "$1" 2> /dev/null; }
+
+start_container() {
+  local image="$1" args=()
+  mapfile -t args < <(run_args "$image") || return 1
+  [ "${#args[@]}" -gt 0 ] || return 1
+  "$DOCKER" run "${args[@]}" > /dev/null
+}
+
+stop_container() {
+  container_exists || return 0
+  "$DOCKER" stop -t "$STOP_TIMEOUT" "$NAME" > /dev/null && "$DOCKER" rm "$NAME" > /dev/null
+}
+
+# ── the two launch modes: everything below asks these, never the runtime directly ─────────────────────
+readonly HOST_UNIT=vike.service
+is_host() { [ -f "$PROJECT/bin/$HOST_UNIT" ]; }
+
+need_runtime() {
+  if is_host; then
+    systemctl --user show-environment > /dev/null 2>&1 ||
+      die "host mode needs this user's own systemd manager (linger keeps it running from boot)"
+  else
+    need_docker
+  fi
+}
+
+sup_running() {
+  if is_host; then systemctl --user is-active --quiet "$HOST_UNIT"; else container_running; fi
+}
+
+# The supervisor's whole log since epoch $1 (no argument: all of it).
+sup_logs() {
+  if is_host; then
+    journalctl --user -u "$HOST_UNIT" -o cat ${1:+--since "@$1"} 2>&1
+  else
+    "$DOCKER" logs ${1:+--since "$1"} "$NAME" 2>&1
+  fi
+}
+
+sup_stop() {
+  if is_host; then systemctl --user stop "$HOST_UNIT"; else stop_container; fi
+}
+
+sup_start() {
+  sidecars start
+  if is_host; then
+    refresh_host_unit
+    systemctl --user start "$HOST_UNIT"
+  else
+    start_container "$1"
+  fi
+}
+
+# Host mode keeps its unit in the shape THIS vikectl writes: before every start (`up`, a deploy, a rollback) a
+# unit rendered by an older vikectl is rewritten and reloaded, so a deploy brings the unit forward with the
+# binaries and nobody re-runs `install --host` by hand. The case that needs it: `@sandbox` (decision 0273), absent
+# from a unit written before it. A refresh that fails is said and the start goes on under the old unit (the
+# strategy builder then refuses builds by name, it does not die).
+refresh_host_unit() {
+  local unit="$PROJECT/bin/$HOST_UNIT" want
+  want="$(render_host_unit)"
+  [ "$want" != "$(cat "$unit" 2> /dev/null)" ] || return 0
+  if printf '%s\n' "$want" > "$unit.writing" && mv -f "$unit.writing" "$unit" && systemctl --user daemon-reload; then
+    say "  $HOST_UNIT rewritten in the shape this vikectl writes, and reloaded"
+  else
+    say "!! could not refresh $unit; starting under the unit as it is" >&2
+  fi
+}
+
+# The host mode's user unit: the supervisor as the app user, from the app folder. The units' process-level
+# hardening that needs no namespace (no new privileges, the syscall filter, the address families) holds
+# here; the namespace half (ProtectSystem=, ReadWritePaths=, PrivateTmp=) a user manager applies only through
+# an implicit user namespace, which this unit does not take: decision 0260's cost. `@sandbox` (the Landlock calls and
+# `seccomp`) is on the allow-list because the strategy builder jails its builds with them (decision 0273) and a call
+# off the list KILLS the process; `refresh_host_unit` rewrites a unit written before it at the next start. KillMode=mixed sends SIGTERM to the supervisor ALONE,
+# so the stop stays ordered; Delegate=yes lets it give each daemon its own memory cap.
+render_host_unit() {
+  cat << EOF
+# vike, host mode (decision 0260): every daemon of the server install, from this app folder. Written by
+# vikectl install --host; linked into the user manager with systemctl --user link, never copied to /etc.
+[Unit]
+Description=vike (host mode): every daemon of the server install, from $PROJECT
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$PROJECT
+Environment=VIKE_SETTINGS_DIR=$SETTINGS
+Environment=CARGO_HOME=$PROJECT/bin/rust-toolchain/cargo-home
+Environment=CARGO=$PROJECT/bin/rust-toolchain/bin/cargo
+Environment=RUSTC=$PROJECT/bin/rust-toolchain/bin/rustc
+ExecStart=$PROJECT/bin/vike-entrypoint.sh --server --host
+KillMode=mixed
+TimeoutStopSec=$((STOP_TIMEOUT + 10))
+Restart=always
+RestartSec=5
+Delegate=yes
+UMask=0077
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @module @reboot @swap @raw-io @debug @clock @cpu-emulation
+SystemCallFilter=fchown
+SystemCallFilter=@sandbox
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+# The daemons the supervisor last reported running or about to restart, as roster unit names.
+verb_state() { awk -v v="$1" '$1 == v { print $2 }' "$SETTINGS/state/supervisor.state" 2> /dev/null; }
+running_units() {
+  local unit
+  [ -f "$SETTINGS/state/supervisor.state" ] || return 0
+  for unit in $DEPLOY_UNITS; do
+    case "$(verb_state "$(verb_of "$unit")")" in running | waiting) printf '%s\n' "$unit" ;; esac
+  done
+}
+
+# Every unit in "$@" printed its ready line in the container's log since epoch $1; the tradehub's
+# starting line pushes the window out, up to STARTING_CAP (the helper's `healthy`). With SKIP_PARKED=1
+# (`up` only, never a deploy) a daemon the supervisor parked waits for setup and is not waited for.
+SKIP_PARKED=0
+healthy() {
+  local since="$1"
+  shift
+  local t0 deadline cap seen=0 n logs unit missing
+  t0="$(date +%s)"
+  deadline=$((t0 + HEALTH_TIMEOUT))
+  cap=$((t0 + STARTING_CAP))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    logs="$(sup_logs "$since")"
+    missing=""
+    for unit in "$@"; do
+      [ "$SKIP_PARKED" = 0 ] || [ "$(verb_state "$(verb_of "$unit")")" != parked ] || continue
+      # A here-string, never `printf | grep -q`: under pipefail grep's early exit SIGPIPEs printf once the log passes
+      # a pipe's 64 KiB, and the 141 read as "no ready line" (measured on the CI box's first host-mode start).
+      grep -qaF -- "$(shape "$unit" ready)" <<< "$logs" || missing="$missing $unit"
+    done
+    if [ -z "$missing" ] && sup_running; then return 0; fi
+    n="$(printf '%s' "$logs" | grep -caF -- "$STARTING_LINE")"
+    if [ "${n:-0}" -gt "$seen" ]; then
+      seen="$n"
+      deadline=$(($(date +%s) + HEALTH_TIMEOUT))
+      [ "$deadline" -le "$cap" ] || deadline="$cap"
+    fi
+    sleep 2
+  done
+  say "!! not healthy in the window:${missing:- the supervisor is not running}" >&2
+  return 1
+}
+
+# ── install / up / down / restart / status / logs ───────────────────────────────────────────────────
+# Every bind source exists before docker sees it: a rootful daemon CREATES a missing one, root-owned.
+ensure_dirs() {
+  local store
+  store="$(store_dir)" || exit 2
+  mkdir -p "$SETTINGS/state" "$SETTINGS/db" "$PROJECT/user_data/strategy-builds" "$PROJECT/bin/rust-toolchain/cargo-home" \
+    "$PROJECT/instruments" "$PROJECT/strategies" "$PROJECT/lib" "$store" "$VAR/inbox" "$VAR/rollback" || die "could not create the project's folders"
+  printf '%s\n' "$store"
+}
+
+cmd_install() {
+  local writer="" store host=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --inbox-writer) writer="${2:-}"; shift 2 ;;
+      --host) host=1; shift ;;
+      *) die "install: unknown argument '$1'" ;;
+    esac
+  done
+  store="$(ensure_dirs)" || exit 2
+  say "folders ready under $PROJECT (the store's: $store)"
+  sidecars install
+  if [ "$host" = 1 ]; then
+    # The supervisor beside the binaries a deploy installs; the copy shipped beside this script seeds it.
+    if [ ! -x "$PROJECT/bin/vike-entrypoint.sh" ]; then
+      [ -f "$HERE/entrypoint.sh" ] || die "install --host: no entrypoint.sh beside $0 to install as bin/vike-entrypoint.sh"
+      install -m 755 "$HERE/entrypoint.sh" "$PROJECT/bin/vike-entrypoint.sh" || die "could not install the supervisor"
+    fi
+    render_host_unit > "$PROJECT/bin/$HOST_UNIT.writing" && mv -f "$PROJECT/bin/$HOST_UNIT.writing" "$PROJECT/bin/$HOST_UNIT" ||
+      die "could not write $PROJECT/bin/$HOST_UNIT"
+    systemctl --user link "$PROJECT/bin/$HOST_UNIT" > /dev/null && systemctl --user daemon-reload &&
+      systemctl --user enable "$HOST_UNIT" > /dev/null || die "could not link and enable $HOST_UNIT in the user manager"
+    say "host mode: $PROJECT/bin/$HOST_UNIT linked into this user's manager and enabled (linger starts it at boot)"
+  fi
+  [ -n "$writer" ] || return 0
+  # The CI runner's user may WRITE the inbox and nothing else of the project: an ACL its owner sets, no root.
+  setfacl -m "u:$writer:x" "$PROJECT/var" "$VAR" &&
+    setfacl -m "u:$writer:rwx" -m "d:u:$writer:rwx" -m "d:u:$(id -un):rwx" "$VAR/inbox" ||
+    die "could not grant '$writer' the inbox (setfacl)"
+  # Taken once a minute by this user's own crontab: no unit, nothing in /etc.
+  local line="* * * * * $PROJECT/bin/vikectl deploy-inbox # vike-deploy-inbox"
+  if ! crontab -l 2> /dev/null | grep -qF '# vike-deploy-inbox'; then
+    { crontab -l 2> /dev/null; printf '%s\n' "$line"; } | crontab - || die "could not add the inbox line to the crontab"
+  fi
+  say "inbox $VAR/inbox writable by $writer; taken each minute by this user's crontab"
+}
+
+cmd_up() {
+  need_runtime
+  refuse_system_units
+  if sup_running; then
+    say "the supervisor is already running"
+    return 0
+  fi
+  local since units=()
+  ensure_dirs > /dev/null || exit 2
+  since="$(date +%s)"
+  if is_host; then
+    sup_start || die "could not start $HOST_UNIT"
+  elif container_exists; then
+    sidecars start
+    "$DOCKER" start "$NAME" > /dev/null || die "could not start the container '$NAME'"
+  else
+    sup_start "$IMAGE:current" || die "could not run $IMAGE:current (deploy one first)"
+  fi
+  sleep 3
+  mapfile -t units < <(running_units)
+  SKIP_PARKED=1
+  [ "${#units[@]}" -eq 0 ] || healthy "$since" "${units[@]}" || exit 1
+  mapfile -t units < <(running_units)
+  say "up: ${units[*]:-no daemon reported running yet}"
+  print_parked
+}
+
+cmd_down() {
+  need_runtime
+  if is_host; then
+    systemctl --user stop "$HOST_UNIT" || die "systemctl --user stop $HOST_UNIT failed"
+    sidecars stop
+    say "stopped (the supervisor stopped the daemons in reverse start order); it starts again at boot while enabled"
+    return 0
+  fi
+  container_exists || { say "no container '$NAME'"; return 0; }
+  "$DOCKER" stop -t "$STOP_TIMEOUT" "$NAME" > /dev/null || die "docker stop failed"
+  sidecars stop
+  say "stopped (the supervisor stopped the daemons in reverse start order); it stays stopped across a reboot"
+}
+
+cmd_restart() {
+  local verb="${1:-}" unit found=0
+  for unit in $DEPLOY_UNITS; do [ "$(verb_of "$unit")" = "$verb" ] && found=1; done
+  [ "$found" = 1 ] || die "restart: '$verb' is not a daemon of the roster ($DEPLOY_UNITS)"
+  printf '%s\n' "$verb" > "$SETTINGS/state/supervisor.restart" || die "could not write the restart request"
+  say "asked the supervisor to restart $verb"
+}
+
+cmd_status() {
+  if is_host; then
+    say "host mode: $(systemctl --user is-active "$HOST_UNIT" 2> /dev/null) ($PROJECT/bin/$HOST_UNIT)"
+  elif [ -n "$DOCKER" ]; then
+    "$DOCKER" ps -a --filter "name=^${NAME}\$" --format '{{.Names}} {{.Status}} {{.Image}}' 2> /dev/null
+  fi
+  cat "$SETTINGS/state/supervisor.state" 2> /dev/null || say "no supervisor state yet"
+  print_parked
+  sidecars status
+  cat "$PROJECT/bin/.built-from" 2> /dev/null || true
+}
+
+# Each PARKED daemon with the one line that says what it waits for: its own `setup needed:` line when it
+# printed one since its last start (an older one is a cause already mended), else the supervisor's line.
+print_parked() {
+  local verb state line logs
+  if grep -q ' parked ' "$SETTINGS/state/supervisor.state" 2> /dev/null; then
+    logs="$(sup_logs)"
+    while read -r verb state _; do
+      [ "$state" = parked ] || continue
+      line="$(printf '%s\n' "$logs" | awk -v s="vike-entrypoint: started $verb " -v n="vike-$verb: setup needed:" \
+        'index($0, s) { l = "" } index($0, n) { l = substr($0, index($0, n)) } END { print l }')"
+      [ -n "$line" ] || line="$(printf '%s\n' "$logs" | grep -a "vike-entrypoint: $verb exited" | tail -n 1)"
+      say "parked $verb: ${line:-(no line found in the log)}"
+      say "  when done: vikectl restart $verb"
+    done < "$SETTINGS/state/supervisor.state"
+  fi
+}
+
+# ── deploy ─────────────────────────────────────────────────────────────────────────────────────────
+manifest_digest() {
+  awk -v n="$1" '{ f = $2; sub(/^\*/, "", f); if (f == n) { print $1; exit } }' "$2"
+}
+installed_digest() {
+  if [ "$2" = tar ] || [ "$2" = tree ]; then
+    awk 'NR == 1 { print $1 }' "$1/$TREE_MARKER" 2> /dev/null || true
+  else
+    sha256sum "$1" 2> /dev/null | cut -d' ' -f1 || true
+  fi
+}
+shim_matches_box_sdk() {
+  local rows want name have present=0 bad=""
+  rows="$(tail -c 65536 "$1" 2> /dev/null |
+    LC_ALL=C sed -n "/^${SDK_RECORD_BEGIN}\$/,/^${SDK_RECORD_END}\$/p" |
+    LC_ALL=C grep -E '^[0-9a-f]{64}  [A-Za-z0-9._+-]+$' || true)"
+  [ -n "$rows" ] || return 0
+  while read -r want name; do
+    [ -n "$name" ] || continue
+    [ -f "$PROJECT/lib/$name" ] || { bad="$bad $name(missing)"; continue; }
+    present=$((present + 1))
+    have="$(sha256sum "$PROJECT/lib/$name" | cut -d' ' -f1)"
+    [ "$have" = "$want" ] || bad="$bad $name(differs)"
+  done <<< "$rows"
+  [ "$present" -eq 0 ] || [ -z "$bad" ]
+}
+
+verify_request() {
+  local dir="$1" f need
+  if is_host; then need="vike-backend vike-cli SHA256SUMS context/entrypoint.sh"; else need="vike-backend vike-cli SHA256SUMS Dockerfile context"; fi
+  for f in $need; do
+    [ -e "$dir/$f" ] || die "the request has no '$f'"
+  done
+  for f in vike-backend vike-cli; do
+    [ -n "$(manifest_digest "$f" "$dir/SHA256SUMS")" ] || die "SHA256SUMS does not name $f"
+  done
+  (cd "$dir" && sha256sum -c --quiet --ignore-missing SHA256SUMS) || die "the request fails its SHA256SUMS"
+}
+
+# The helper's `probe_settings_copy`: the probe's database is rebuilt in memory from the live one with
+# every key and note replaced, and checked clean, before any daemon may read it. `$2` is the unit: the TRADEHUB's
+# copy holds no `VIKE_STRATEGY_BUILDER_KEY` at all, so its build thread waits without opening a socket
+# (`vike_strategy_builder::builder::resolve_keys` refuses first) and a probe never dials the box's builder.
+probe_copy() {
+  local p="$1" unit="${2:-}" bad drop="" left=0
+  if [ -d "$SETTINGS/state" ]; then cp -a -- "$SETTINGS/state" "$p/state" || return 1; fi
+  # The move the restart will make (`move_journal_aside`), made on the probe's own journal (its row-confine's).
+  [ "$JOURNAL_MOVE" = 0 ] || [ ! -d "$p/state/journal" ] || mv -- "$p/state/journal" "$p/state/journal.moved" || return 1
+  [ -f "$DB" ] || return 0
+  case "$DB" in *\'*) return 1 ;; esac
+  mkdir -p "$p/db" || return 1
+  if [ "$unit" = vike-tradehub.service ]; then
+    drop="DELETE FROM hub_key WHERE name = 'VIKE_STRATEGY_BUILDER_KEY'; DELETE FROM credential WHERE name = 'VIKE_STRATEGY_BUILDER_KEY';"
+    left="(SELECT count(*) FROM hub_key WHERE name = 'VIKE_STRATEGY_BUILDER_KEY') + (SELECT count(*) FROM credential WHERE name = 'VIKE_STRATEGY_BUILDER_KEY')"
+  fi
+  sqlite3 -batch -init /dev/null :memory: \
+    "PRAGMA temp_store = MEMORY;" "PRAGMA secure_delete = ON;" ".restore '$DB'" \
+    "UPDATE credential SET value = 'probe-' || id, notes = NULL;" \
+    "UPDATE hub_key SET value = 'probe-' || id;" "UPDATE account SET notes = NULL;" ${drop:+"$drop"} \
+    "VACUUM;" ".backup '$p/db/vike.db'" > "$p/sanitize.log" 2>&1 || return 1
+  chmod 600 "$p/db/vike.db" || return 1
+  bad="$(sqlite3 -batch -init /dev/null "$p/db/vike.db" \
+    "SELECT (SELECT count(*) FROM credential WHERE value NOT LIKE 'probe-%' OR notes IS NOT NULL) + (SELECT count(*) FROM hub_key WHERE value NOT LIKE 'probe-%') + (SELECT count(*) FROM account WHERE notes IS NOT NULL) + $left;" 2>&1)" ||
+    bad=unreadable
+  [ "$bad" = 0 ]
+}
+
+# The NEW build's vike-cli against the probe copy: the image's in container mode, the request's on the host.
+# `$1` is the image, or in host mode the request directory.
+probe_cli() {
+  local build="$1" p="$2"
+  shift 2
+  if is_host; then
+    env -i PATH=/usr/bin:/bin "VIKE_SETTINGS_DIR=$p" "$build/vike-cli" "$@"
+  else
+    "$DOCKER" run --rm --network none --user "$(user_spec)" -v "$p:$p:rw" -e "VIKE_SETTINGS_DIR=$p" \
+      --entrypoint /opt/vike/bin/vike-cli "$build" "$@"
+  fi
+}
+
+# Boot the NEW build as one daemon on a confined copy for BOOT_TIMEOUT: alive at the deadline and its
+# ready line printed is a pass, exactly the helper's `preflight` verdict. `$2` is the image, or in host mode
+# the request directory, whose own binary runs under `timeout` as the helper ran it.
+#
+# The probe is laid out as a PROJECT, `<root>/settings` (the copy, `VIKE_SETTINGS_DIR`) beside `<root>/strategies`,
+# a link to this project's strategy files (bound read-only in container mode): a daemon reads its strategy files
+# beside its settings (`crates/vike-tradehub/src/mount_factory.rs`'s `project_strategies_dir`), so the tradehub
+# judges the files it will run, and writes none. A probe builds nothing: the tradehub does not wait for a build.
+PROBE_JOURNAL=""
+preflight() {
+  local unit="$1" image="$2" root p verb row name running args=() extra=() rows=() numeric=() rc
+  PROBE_JOURNAL=""
+  verb="$(verb_of "$unit")"
+  root="$(mktemp -d "$VAR/probe.XXXXXX")" || return 1
+  chmod 700 "$root"
+  p="$root/settings"
+  if ! mkdir -m 700 "$p" || { [ -d "$PROJECT/strategies" ] && ! ln -s "$PROJECT/strategies" "$root/strategies"; }; then
+    say "  pre-flight[$unit]: the probe's project could not be laid out" >&2
+    rm -rf "$root"
+    return 1
+  fi
+  if ! probe_copy "$p" "$unit"; then
+    say "  pre-flight[$unit]: the probe's settings copy could not be made clean" >&2
+    rm -rf "$root"
+    return 1
+  fi
+  mkdir -p "$p/store" "$p/strategy-builds"
+  mapfile -t rows < <(shape "$unit" row-confine "$p")
+  if [ "${#rows[@]}" -gt 0 ] && [ ! -f "$p/db/vike.db" ]; then
+    probe_cli "$image" "$p" secrets init > "$p/init.log" 2>&1 || { rm -rf "$root"; return 1; }
+  fi
+  for row in "${rows[@]}"; do
+    probe_cli "$image" "$p" config set "${row%%=*}" "${row#*=}" > /dev/null 2>&1 || { rm -rf "$root"; return 1; }
+  done
+  row="$(shape "$unit" row-gate)"
+  if [ -n "$row" ] && [ -f "$p/db/vike.db" ]; then
+    probe_cli "$image" "$p" config set "$row" false > /dev/null 2>&1 || { rm -rf "$root"; return 1; }
+  fi
+  if [ -n "$(shape "$unit" paper-accounts)" ] && [ -f "$p/db/vike.db" ]; then
+    sqlite3 -batch -init /dev/null "$p/db/vike.db" "UPDATE account SET tier = 'paper';" > /dev/null 2>&1 || { rm -rf "$root"; return 1; }
+  fi
+  mapfile -t numeric < <(shape "$unit" numeric-credentials)
+  for name in "${numeric[@]}"; do
+    [ -f "$p/db/vike.db" ] || continue
+    sqlite3 -batch -init /dev/null "$p/db/vike.db" \
+      "UPDATE credential SET value = CAST(id AS TEXT) WHERE name = '$name';" > /dev/null 2>&1 || { rm -rf "$root"; return 1; }
+  done
+  mapfile -t args < <(shape "$unit" args "$p")
+  if is_host; then
+    timeout "$BOOT_TIMEOUT" env -i PATH=/usr/bin:/bin "VIKE_SETTINGS_DIR=$p" "$image/vike-backend" "$verb" "${args[@]}" \
+      > "$p/pre.log" 2>&1
+    rc=$?
+    running=false
+    [ "$rc" != 124 ] || running=true
+  else
+    preflight_container "$unit" "$image" "$p" "$verb" "${args[@]}"
+  fi
+  if [ "$running" = true ] && grep -qaF -- "$(shape "$unit" ready)" "$p/pre.log"; then
+    say "  pre-flight[$unit]: booted on the new build and printed its ready line"
+    rm -rf "$root"
+    return 0
+  fi
+  say "  pre-flight[$unit]: did NOT boot on the new build (alive at the deadline: $running); its last lines:" >&2
+  tail -5 "$p/pre.log" >&2
+  # The build's own words when it refused the journal (`crates/vike-journal/src/format.rs`'s `check_version`).
+  PROBE_JOURNAL="$(grep -aoE 'journal format version mismatch: got [0-9]+, this build reads [0-9]+\.\.=[0-9]+' "$p/pre.log" | head -n 1)"
+  rm -rf "$root"
+  return 1
+}
+
+# The owner's ruling of 2026-11-14: a journal the NEW build refused at the pre-flight (`PROBE_JOURNAL`) is moved aside
+# only when that build's floor is above the stamp of the journal's newest segment AND the request carries the owner's
+# word (`ALLOW_JOURNAL_MOVE`, written by `scripts/deploy_inbox.sh` from `allow_journal_move`). Without the word it
+# REFUSES, before anything is stopped. With it, the pre-flight runs again on the probe's copy moved aside.
+JOURNAL_MOVE=0
+JOURNAL_DIR=""
+journal_needs_move() {
+  local req="$1" floor newest stamp
+  floor="${PROBE_JOURNAL##*reads }"
+  newest="${floor#*..=}"
+  floor="${floor%%..=*}"
+  JOURNAL_DIR="$(journal_dir)" || exit 2
+  stamp=""
+  [ -z "$JOURNAL_DIR" ] || stamp="$(journal_stamp "$JOURNAL_DIR")"
+  if [ -z "$stamp" ] || [ "$floor" -le "$stamp" ]; then
+    say "!! the new build reads journal formats $floor..=$newest, and the newest segment of ${JOURNAL_DIR:-config.journal_dir (no row)} is format ${stamp:-unknown}: moving it aside is not the cure" >&2
+    return 1
+  fi
+  [ -f "$req/ALLOW_JOURNAL_MOVE" ] ||
+    die "REFUSED: the journal at $JOURNAL_DIR is format $stamp and the new build reads $floor..=$newest only. Deploy again with allow_journal_move=true (the owner's word for this deploy): the deploy then copies it to $VAR/journal.pre.<stamp>, checks the copy and moves it aside. Nothing was installed or restarted"
+  JOURNAL_MOVE=1
+  say "  journal: $JOURNAL_DIR is format $stamp, the new build reads $floor..=$newest; allow_journal_move is given: the restart copies it and moves it aside, and the pre-flight runs again on its copy moved aside"
+}
+
+# Inside the stop window (no daemon writes): the journal copied to var/deploy/journal.pre.<stamp>, the copy checked
+# (file count and bytes), and only then renamed aside to <journal>.moved.<stamp>, so the new build starts on an empty
+# one. `$back/journal` records the move, written before it, so a rollback can put it back (`journal_back`).
+move_journal_aside() {
+  local back="$1" stamp="$2" copy="$VAR/journal.pre.$2" want have
+  say "  journal: copying $JOURNAL_DIR to $copy"
+  cp -a -- "$JOURNAL_DIR" "$copy" || { say "!! journal: the copy failed; the journal stays where it is" >&2; return 1; }
+  want="$(tree_size "$JOURNAL_DIR")"
+  have="$(tree_size "$copy")"
+  if [ "$want" != "$have" ]; then
+    say "!! journal: the copy holds $have, the journal $want; the journal stays where it is" >&2
+    return 1
+  fi
+  say "  journal: the copy holds what the journal holds ($have)"
+  printf '%s %s\n' "$JOURNAL_DIR" "$JOURNAL_DIR.moved.$stamp" > "$back/journal" &&
+    mv -- "$JOURNAL_DIR" "$JOURNAL_DIR.moved.$stamp" ||
+    { say "!! journal: could not move $JOURNAL_DIR aside" >&2; return 1; }
+  say "  journal: moved aside to $JOURNAL_DIR.moved.$stamp; the new build starts on an empty journal"
+}
+
+# A rollback of a deploy that moved the journal: the new build's journal goes aside as <journal>.withdrawn.<now>, and
+# the moved one comes back, so the older build starts on the journal it wrote.
+journal_back() {
+  local j moved
+  read -r j moved < "$1/journal" 2> /dev/null && [ -d "$moved" ] || return 0
+  if { [ ! -e "$j" ] || mv -- "$j" "$j.withdrawn.$(date -u +%Y%m%dT%H%M%SZ)"; } && mv -- "$moved" "$j"; then
+    say "  journal: $moved moved back to $j"
+  else
+    say "!! journal: could not move $moved back to $j" >&2
+  fi
+}
+
+# The container half of `preflight`: sets `running` and writes the probe's log to `$p/pre.log`.
+preflight_container() {
+  local unit="$1" image="$2" p="$3" verb="$4" name extra=() strategies=()
+  shift 4
+  local args=("$@")
+  [ "$verb" != gatewayhub ] || [ ! -d "$PROJECT/lib" ] || extra=(-v "$PROJECT/lib:/opt/vike/lib:ro")
+  [ "$verb" != strategy-builder ] || extra=(-v "$PROJECT/vendor/vike-strategy-source:$PROJECT/vendor/vike-strategy-source:ro")
+  # The probe project's `strategies/` (`preflight`'s layout): the real folder, bound where the link points from.
+  [ ! -d "$PROJECT/strategies" ] || strategies=(-v "$PROJECT/strategies:${p%/settings}/strategies:ro")
+  name="vike-probe-$verb-$$"
+  "$DOCKER" run -d --name "$name" --network host --user "$(user_spec)" --read-only --tmpfs /tmp \
+    --cap-drop ALL --security-opt no-new-privileges --init -v "$p:$p:rw" "${extra[@]}" "${strategies[@]}" \
+    -e "VIKE_SETTINGS_DIR=$p" -w "$p" --entrypoint /opt/vike/bin/vike-backend "$image" "$verb" "${args[@]}" > /dev/null ||
+    { running=false; return 0; }
+  sleep "$BOOT_TIMEOUT"
+  running="$("$DOCKER" container inspect -f '{{.State.Running}}' "$name" 2> /dev/null)"
+  "$DOCKER" logs "$name" > "$p/pre.log" 2>&1
+  "$DOCKER" rm -f "$name" > /dev/null 2>&1
+}
+
+# Install every file row of RUNTIME_TOOLS the request carries; stage the one tree row beside its
+# destination for the stop window. Prints the tree's destination when one is staged.
+TREE_DEST=""
+install_runtime_tools() {
+  local dir="$1" tag="$2" asset path mode dest want have
+  while IFS='|' read -r asset path mode; do
+    [ -n "$asset" ] || continue
+    dest="$PROJECT/$path"
+    want="$(manifest_digest "$asset" "$dir/SHA256SUMS")"
+    if [ -z "$want" ] || [ ! -f "$dir/$asset" ]; then
+      say "  $asset: not in this release; $path left as it is"
+      continue
+    fi
+    have="$(installed_digest "$dest" "$mode")"
+    if [ "$have" = "$want" ]; then
+      say "  $asset: unchanged ($path)"
+      continue
+    fi
+    if [ "$asset" = libfcshim.so ] && ! shim_matches_box_sdk "$dir/$asset"; then
+      say "!! $asset: REFUSED, it was linked against ForexConnect libraries that are not the ones in $PROJECT/lib" >&2
+      continue
+    fi
+    if [ "$mode" = tree ]; then
+      rm -rf "$dest.incoming" "$dest.previous"
+      mkdir -p "$(dirname "$dest")" "$dest.incoming" &&
+        tar -xzf "$dir/$asset" -C "$dest.incoming" --no-same-owner &&
+        printf '%s %s\n' "$want" "$tag" > "$dest.incoming/$TREE_MARKER" &&
+        { [ ! -e "$dest" ] || mv "$dest" "$dest.previous"; } && mv "$dest.incoming" "$dest" ||
+        { [ -e "$dest" ] || [ ! -e "$dest.previous" ] || mv "$dest.previous" "$dest"; return 1; }
+      rm -rf "$dest.previous"
+      say "  $asset: installed ($path)"
+      continue
+    fi
+    if [ "$mode" = tar ]; then
+      if [ -e "$dest" ] && [ ! -e "$dest/$TREE_MARKER" ] && [ ! -e "$dest/SOURCE_GIT_SHA" ]; then
+        say "!! $asset: $dest is not a tree a release put there; left alone"
+        continue
+      fi
+      rm -rf "$dest.incoming"
+      mkdir -p "$(dirname "$dest")" "$dest.incoming" &&
+        tar -xzf "$dir/$asset" -C "$dest.incoming" --no-same-owner &&
+        printf '%s %s\n' "$want" "$tag" > "$dest.incoming/$TREE_MARKER" || return 1
+      TREE_DEST="$dest"
+      say "  $asset: staged beside $path, swapped while the supervisor is stopped"
+      continue
+    fi
+    mkdir -p "$(dirname "$dest")" && install -m "$mode" "$dir/$asset" "$dest.installing" &&
+      mv -f "$dest.installing" "$dest" || return 1
+    say "  $asset: installed ($path)"
+  done < <(printf '%s\n' "$RUNTIME_TOOLS" "$IBKR_SCRIPTS" | awk -F'|' 'NF > 1')
+  return 0
+}
+
+swap_tree() {
+  [ -n "$TREE_DEST" ] && [ -d "$TREE_DEST.incoming" ] || return 0
+  rm -rf "$TREE_DEST.previous"
+  if [ -e "$TREE_DEST" ]; then mv "$TREE_DEST" "$TREE_DEST.previous" || return 1; fi
+  mv "$TREE_DEST.incoming" "$TREE_DEST"
+}
+swap_tree_back() {
+  [ -n "$TREE_DEST" ] || return 0
+  if [ -d "$TREE_DEST.previous" ]; then
+    rm -rf "$TREE_DEST.withdrawn"
+    mv "$TREE_DEST" "$TREE_DEST.withdrawn" && mv "$TREE_DEST.previous" "$TREE_DEST" && rm -rf "$TREE_DEST.withdrawn"
+  else
+    rm -rf "$TREE_DEST"
+  fi
+}
+
+# The host files a deploy replaces and a rollback puts back. The host mode's own two (the multicall and the
+# supervisor) are on the list in both modes: a container install simply has none to save.
+readonly HOST_FILES="bin/vike-cli bin/vike-mcp lib/libfcshim.so bin/vike-backend bin/vike-entrypoint.sh"
+restore_host_files() {
+  local back="$1" f
+  for f in $HOST_FILES; do
+    [ -f "$back/$(basename "$f")" ] || continue
+    install -m 755 "$back/$(basename "$f")" "$PROJECT/$f.restoring" && mv -f "$PROJECT/$f.restoring" "$PROJECT/$f"
+  done
+  local asset path mode
+  while IFS='|' read -r asset path mode; do
+    [ -f "$back/ibkr/$path" ] || continue
+    install -m "$mode" "$back/ibkr/$path" "$PROJECT/$path.restoring" && mv -f "$PROJECT/$path.restoring" "$PROJECT/$path"
+  done < <(printf '%s\n' "$IBKR_SCRIPTS" | awk -F'|' 'NF > 1')
+}
+
+cmd_deploy() {
+  local dir="${1:-}" tag="${2:-}" new_id prev_id prev_tag stamp back unit units=() since sha
+  [ -d "$dir" ] || die "deploy: '$dir' is not a request directory"
+  [[ "$tag" =~ $TAG_RE ]] || die "deploy: '$tag' is not a release tag (v<major>.<minor>.<patch>)"
+  need_runtime
+  refuse_system_units
+  ensure_dirs > /dev/null || exit 2
+  say "== checksum =="
+  verify_request "$dir"
+  sha="$(manifest_digest vike-backend "$dir/SHA256SUMS")"
+  local build="$dir"
+  if is_host; then
+    new_id=host
+    say "== host mode: the request's own vike-backend (sha256 $sha) is what will run =="
+  else
+    say "== image =="
+    "$DOCKER" build -q -t "$IMAGE:$tag" -f "$dir/Dockerfile" "$dir/context" > /dev/null || die "the image did not build"
+    [ "$("$DOCKER" run --rm --network none --entrypoint sha256sum "$IMAGE:$tag" /opt/vike/bin/vike-backend | cut -d' ' -f1)" = "$sha" ] ||
+      die "the image's vike-backend is not the request's (sha256 $sha)"
+    new_id="$(image_id "$IMAGE:$tag")"
+    build="$IMAGE:$tag"
+    say "  $IMAGE:$tag = $new_id, its vike-backend is the release's"
+  fi
+  if sup_running; then
+    mapfile -t units < <(running_units)
+  else
+    for unit in $DEPLOY_UNITS; do
+      case "$unit" in
+        vike-telegram.service) ;;
+        vike-strategy-builder.service) [ -d "$PROJECT/vendor/vike-strategy-source" ] && units+=("$unit") ;;
+        *) units+=("$unit") ;;
+      esac
+    done
+  fi
+  say "== pre-flight (nothing installed yet): ${units[*]} =="
+  [ ! -f "$dir/ALLOW_JOURNAL_MOVE" ] || say "  allow_journal_move: given for this deploy"
+  for unit in "${units[@]}"; do
+    preflight "$unit" "$build" && continue
+    [ -n "$PROBE_JOURNAL" ] && journal_needs_move "$dir" || die "pre-flight failed for $unit: nothing was installed or restarted"
+    preflight "$unit" "$build" || die "pre-flight failed for $unit on its journal moved aside: nothing was installed or restarted"
+  done
+  say "== backup =="
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  back="$VAR/rollback/$stamp"
+  mkdir -p "$back" || die "could not create $back"
+  if is_host; then
+    prev_id=host
+  else
+    prev_id="$( { "$DOCKER" container inspect -f '{{.Image}}' "$NAME" 2> /dev/null; } || image_id "$IMAGE:current")"
+  fi
+  prev_tag="$(awk 'NR == 1 { print $1 }' "$PROJECT/bin/.built-from" 2> /dev/null)"
+  printf '%s %s %s\n' "${prev_id:-none}" "${prev_tag:-none}" "${units[*]}" > "$back/image"
+  for unit in $HOST_FILES; do
+    [ -f "$PROJECT/$unit" ] && cp -a "$PROJECT/$unit" "$back/"
+  done
+  while IFS='|' read -r _ unit _; do
+    [ ! -f "$PROJECT/$unit" ] || { mkdir -p "$back/ibkr/${unit%/*}" && cp -a "$PROJECT/$unit" "$back/ibkr/$unit"; } ||
+      die "could not back up $unit into $back: nothing was installed"
+  done < <(printf '%s\n' "$IBKR_SCRIPTS" | awk -F'|' 'NF > 1')
+  ln -sfn "$back" "$VAR/rollback/last"
+  say "  previous build ${prev_id:-none} (${prev_tag:-none}); host files saved in $back"
+  say "== install =="
+  install -m 755 "$dir/vike-cli" "$PROJECT/bin/vike-cli.installing" && mv -f "$PROJECT/bin/vike-cli.installing" "$PROJECT/bin/vike-cli" ||
+    die "could not install vike-cli"
+  if [ -f "$dir/vike-mcp" ] && [ -n "$(manifest_digest vike-mcp "$dir/SHA256SUMS")" ]; then
+    install -m 755 "$dir/vike-mcp" "$PROJECT/bin/vike-mcp.installing" && mv -f "$PROJECT/bin/vike-mcp.installing" "$PROJECT/bin/vike-mcp"
+  fi
+  install_runtime_tools "$dir" "$tag" || { restore_host_files "$back"; die "a runtime tool did not install: host files restored"; }
+  # THE seed: each shipped strategy file absent from <project>/strategies is copied there, by the vike-cli just
+  # installed, on the host in both modes (a container's project mount is read-only). Said on failure, never fatal.
+  env -i -C "$PROJECT" PATH=/usr/bin:/bin "VIKE_SETTINGS_DIR=$SETTINGS" "$PROJECT/bin/vike-cli" init --strategies-only ||
+    say "!! the shipped strategy files were not all copied into $PROJECT/strategies (above); the deploy goes on" >&2
+  if is_host; then
+    # Staged beside, moved in only while the supervisor is stopped: a daemon it restarts in between must
+    # not start the new build beside old ones.
+    install -m 755 "$dir/vike-backend" "$PROJECT/bin/vike-backend.incoming" &&
+      install -m 755 "$dir/context/entrypoint.sh" "$PROJECT/bin/vike-entrypoint.sh.incoming" ||
+      { restore_host_files "$back"; die "could not stage the new vike-backend and supervisor"; }
+  fi
+  say "== restart =="
+  since="$(date +%s)"
+  sup_stop || { restore_host_files "$back"; die "the old supervisor would not stop"; }
+  swap_tree || say "!! the strategy source tree could not be swapped; the old one stays" >&2
+  if is_host; then
+    mv -f "$PROJECT/bin/vike-backend.incoming" "$PROJECT/bin/vike-backend" &&
+      mv -f "$PROJECT/bin/vike-entrypoint.sh.incoming" "$PROJECT/bin/vike-entrypoint.sh" || die "could not move the new build in"
+  else
+    "$DOCKER" tag "$new_id" "$IMAGE:current" || die "could not tag $IMAGE:current"
+  fi
+  if [ "$JOURNAL_MOVE" = 1 ] && ! move_journal_aside "$back" "$stamp"; then
+    say "!! $tag is NOT started: its journal could not be moved aside; rolling back to ${prev_id:-nothing}" >&2
+    rollback_to "$back" "$tag"
+    exit 1
+  fi
+  if sup_start "$IMAGE:current" && healthy "$since" "${units[@]}"; then
+    printf '%s %s image=%s restarted=%s\n' "$tag" "$sha" "$new_id" "$(printf '%s,' "${units[@]}")" > "$PROJECT/bin/.built-from"
+    cp -f "$dir/SHA256SUMS" "$PROJECT/bin/.release-manifest"
+    if [ -f "$dir/vikectl" ]; then install -m 755 "$dir/vikectl" "$PROJECT/bin/vikectl.installing" && mv -f "$PROJECT/bin/vikectl.installing" "$PROJECT/bin/vikectl"; fi
+    if [ -f "$dir/vike-sidecars" ]; then install -m 755 "$dir/vike-sidecars" "$PROJECT/bin/vike-sidecars.installing" && mv -f "$PROJECT/bin/vike-sidecars.installing" "$PROJECT/bin/vike-sidecars"; fi
+    say "== OK: $tag deployed and healthy: ${units[*]} =="
+    return 0
+  fi
+  say "!! $tag is NOT healthy: rolling back to ${prev_id:-nothing}" >&2
+  rollback_to "$back" "$tag"
+  exit 1
+}
+
+rollback_to() {
+  local back="$1" from="${2:-}" prev_id prev_tag units since
+  read -r prev_id prev_tag units < "$back/image" || die "no rollback record in $back"
+  sup_stop
+  swap_tree_back
+  restore_host_files "$back"
+  journal_back "$back"
+  if ! is_host; then
+    [ "$prev_id" != none ] || die "there is no previous image to start: the container stays stopped"
+    "$DOCKER" tag "$prev_id" "$IMAGE:current" || die "could not tag $IMAGE:current back to $prev_id"
+  fi
+  since="$(date +%s)"
+  # shellcheck disable=SC2086 # the unit list is space-separated unit names
+  if sup_start "$IMAGE:current" && healthy "$since" $units; then
+    printf 'rolled-back-from:%s %s image=%s\n' "${from:-?}" "$prev_tag" "$prev_id" > "$PROJECT/bin/.built-from"
+    say "== rolled back: $prev_tag ($prev_id) is running and healthy =="
+    return 0
+  fi
+  die "the ROLLBACK is not healthy either: look at 'vikectl logs' now"
+}
+
+cmd_rollback() {
+  need_runtime
+  [ -e "$VAR/rollback/last/image" ] || die "no deploy to roll back"
+  rollback_to "$(readlink -f "$VAR/rollback/last")" "$(awk 'NR == 1 { print $1 }' "$PROJECT/bin/.built-from" 2> /dev/null)"
+}
+
+# Every take, refusal and failure is also one line in `$VAR/deploy-inbox.log`: the crontab runs this each
+# minute with nowhere else to say why a request was not taken, and the CI half prints that log's tail when its
+# wait runs out (the CI box's first inbox deploy, 2026-11-08: a request this user could not write sat untaken, in
+# silence, for the whole 18 minutes).
+inbox_log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$VAR/deploy-inbox.log" 2> /dev/null; }
+# Answer request `$1` with status `$2` and reason `$3`: in our log always, and in its RESULT and deploy.log
+# when its directory takes a write, so the CI reads why instead of timing out.
+inbox_answer() {
+  local req="$1" rc="$2" why="$3"
+  inbox_log "$(basename "$req"): $why (RESULT $rc)"
+  { say "$why" >> "$req/deploy.log" && printf '%s\n' "$rc" > "$req/RESULT"; } 2> /dev/null ||
+    inbox_log "$(basename "$req"): its RESULT could not be written either: $(id -un) may not write $req"
+}
+
+# Take ONE request the CI dropped in the inbox (`scripts/deploy_inbox.sh` writes it, REQUEST last),
+# copy it out of the writer's reach before checking anything, deploy it, and leave RESULT and the log.
+cmd_deploy_inbox() {
+  local inbox="$VAR/inbox" r reqs=() req tag staging rc
+  [ -d "$inbox" ] || return 0
+  exec 8> "$VAR/inbox.lock"
+  flock -n 8 || return 0
+  for r in "$inbox"/*/REQUEST; do [ -f "$r" ] && reqs+=("$r"); done
+  [ "${#reqs[@]}" -gt 0 ] || return 0
+  if [ "${#reqs[@]}" -gt 1 ]; then
+    for r in "${reqs[@]}"; do
+      mv -f "$r" "$(dirname "$r")/REFUSED" 2> /dev/null
+      inbox_answer "$(dirname "$r")" 2 "refused: more than one request in the inbox"
+    done
+    return 2
+  fi
+  r="${reqs[0]}"
+  req="$(dirname "$r")"
+  tag="$(head -n 1 "$r")"
+  if ! mv -f "$r" "$req/TAKEN" 2> /dev/null; then
+    inbox_answer "$req" 2 "cannot take the request: $(id -un) may not write $req (the writer must leave it \
+group-writable: under the inbox's ACL the group bits are the mask); submit it again once the writer is fixed"
+    return 2
+  fi
+  inbox_log "$(basename "$req"): taken"
+  if ! [[ "$tag" =~ $TAG_RE ]] || [ "$(basename "$req")" != "$tag" ]; then
+    inbox_answer "$req" 2 "refused: the request's tag '$tag' is not a release tag, or not its directory's name"
+    return 2
+  fi
+  staging="$(mktemp -d "$VAR/staging.XXXXXX")" || { inbox_answer "$req" 2 "no private staging directory in $VAR"; return 2; }
+  chmod 700 "$staging"
+  if ! cp -a "$req/." "$staging/"; then
+    rm -rf "$staging"
+    inbox_answer "$req" 2 "could not copy the request out of the writer's reach"
+    return 2
+  fi
+  (cmd_deploy "$staging" "$tag") > "$req/deploy.log" 2>&1
+  rc=$?
+  inbox_log "$(basename "$req"): deployed, status $rc"
+  # What the workflows' `verify-tools` and `status` steps asked the root helper, asked here: the deploy stands
+  # either way, and drifted tools turn the run red (3) as that step did.
+  if [ "$rc" = 0 ]; then
+    { say "== verify-tools =="; (cmd_verify_tools) || rc=3; say "== status =="; (cmd_status); } >> "$req/deploy.log" 2>&1
+  fi
+  printf '%s\n' "$rc" > "$req/RESULT"
+  rm -rf "$staging"
+  return "$rc"
+}
+
+cmd_verify_tools() {
+  local manifest="$PROJECT/bin/.release-manifest" asset path mode want have drift=0
+  [ -f "$manifest" ] || die "no release manifest at $manifest: nothing was deployed here"
+  while IFS='|' read -r asset path mode; do
+    [ -n "$asset" ] || continue
+    want="$(manifest_digest "$asset" "$manifest")"
+    [ -n "$want" ] || { say "  $asset: not in the deployed release"; continue; }
+    have="$(installed_digest "$PROJECT/$path" "$mode")"
+    if [ "$have" = "$want" ]; then say "  $asset: the release's"; else say "!! $asset: DRIFT ($path)"; drift=1; fi
+  done < <(printf '%s\n' "$RUNTIME_TOOLS" "$IBKR_SCRIPTS" | awk -F'|' 'NF > 1')
+  return "$drift"
+}
+
+main() {
+  if [ "${1:-}" = --project ]; then
+    PROJECT="${2:-}"
+    shift 2 || die "--project needs a directory"
+  fi
+  local cmd="${1:-}"
+  shift || true
+  resolve_project
+  case "$cmd" in
+    install) cmd_install "$@" ;;
+    up) cmd_up ;;
+    down) cmd_down ;;
+    restart) cmd_restart "$@" ;;
+    status) cmd_status ;;
+    logs) need_runtime; if is_host; then journalctl --user -u "$HOST_UNIT" "$@"; else "$DOCKER" logs "$@" "$NAME"; fi ;;
+    run-args) run_args "${1:-$IMAGE:current}" ;;
+    deploy) cmd_deploy "$@" ;;
+    deploy-inbox) cmd_deploy_inbox ;;
+    rollback) cmd_rollback ;;
+    verify-tools) cmd_verify_tools ;;
+    *) sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 2 ;;
+  esac
+}
+
+main "$@"

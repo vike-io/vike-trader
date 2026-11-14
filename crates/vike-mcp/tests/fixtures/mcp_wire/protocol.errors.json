@@ -1,0 +1,481 @@
+{
+  "argv": [
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "protocol.errors",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send_raw": "{ not json"
+    },
+    {
+      "recv": {
+        "error": {
+          "code": -32700,
+          "message": "parse error: key must be a string at line 1 column 3"
+        },
+        "id": null,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "send_raw": ""
+    },
+    {
+      "send": {
+        "id": "sentinel-1",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-1",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send_raw": "   "
+    },
+    {
+      "send": {
+        "id": "sentinel-2",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-2",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send_raw": "[1,2,3]"
+    },
+    {
+      "send": {
+        "id": "sentinel-3",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-3",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send_raw": "42"
+    },
+    {
+      "send": {
+        "id": "sentinel-4",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-4",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send_raw": "\"text\""
+    },
+    {
+      "send": {
+        "id": "sentinel-5",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-5",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send_raw": "null"
+    },
+    {
+      "send": {
+        "id": "sentinel-6",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-6",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "no/such/method",
+        "params": {}
+      }
+    },
+    {
+      "recv": {
+        "error": {
+          "code": -32601,
+          "message": "method not found: no/such/method"
+        },
+        "id": 1,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "send": {
+        "jsonrpc": "2.0",
+        "method": "no/such/method"
+      }
+    },
+    {
+      "send": {
+        "id": "sentinel-7",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-7",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+      }
+    },
+    {
+      "send": {
+        "id": "sentinel-8",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-8",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": {
+          "reason": "the user pressed stop",
+          "requestId": 99
+        }
+      }
+    },
+    {
+      "send": {
+        "id": "sentinel-9",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-9",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": {
+          "reason": "the user pressed stop",
+          "requestId": "no-such-id"
+        }
+      }
+    },
+    {
+      "send": {
+        "id": "sentinel-10",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-10",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled"
+      }
+    },
+    {
+      "send": {
+        "id": "sentinel-11",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-11",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {}
+      }
+    },
+    {
+      "send": {
+        "id": "sentinel-12",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-12",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": "fn on_bar() { }"
+          },
+          "name": "validate_strategy"
+        }
+      }
+    },
+    {
+      "send": {
+        "id": "sentinel-13",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-13",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "x"
+          },
+          "name": "run_backtest"
+        }
+      }
+    },
+    {
+      "send": {
+        "id": "sentinel-14",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-14",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": 5
+      }
+    },
+    {
+      "send": {
+        "id": "sentinel-15",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-15",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "send": {
+        "id": "sentinel-16",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-16",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "id": "a-string-id",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "a-string-id",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "id": null,
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": null,
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "id": 1.5,
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": 1.5,
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "id": {
+          "an": "object"
+        },
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": {
+          "an": "object"
+        },
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "id": 5,
+        "jsonrpc": "1.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send_raw": {
+        "<lines>": [
+          "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"ping\"}",
+          "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\"}"
+        ]
+      }
+    },
+    {
+      "recv": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "recv": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    }
+  ],
+  "what": "the lines that are not a well-formed request"
+}

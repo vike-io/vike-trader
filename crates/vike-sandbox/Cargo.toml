@@ -1,0 +1,44 @@
+[package]
+name = "vike-sandbox"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the SANDBOX a same-user process cannot see out of: Landlock for the filesystem and TCP, seccomp for every other socket, signal, process and ptrace call, rlimits and the parent-death signal. Two users: the strategy builder jails itself and every build (`Grants`, `run_jailed`), and a strategy process jails itself before it loads its one artifact (`strategy_process_policy`). Linux only; elsewhere every call refuses by name."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `leaf` (15):
+# it names NO vike-* crate, and 15 is that gate's floor for such a crate that is not one of the
+# role-named ranks below it (3 helpers, 5 market data, 7 paths, 10 vocabulary), as `vike-hub-protocol`.
+# Every consumer sits above it (the builder 65, the strategy-process host, the tradehub core), so the
+# jail is stated once.
+[package.metadata.vike]
+layer = 15
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. Every kernel call below goes through a
+# safe interface (`landlock`, `seccompiler`, `rustix`); `libc` is read for syscall NUMBERS and errno
+# constants only.
+[lints]
+workspace = true
+
+# Linux only: elsewhere no jail can be applied and every call refuses by name (`src/lib.rs`'s
+# `cfg(not(target_os = "linux"))` arm). The root `Cargo.toml` carries why these crates.
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = { workspace = true }
+seccompiler = { workspace = true }
+libc = { workspace = true }
+# `process`: the parent-death signal and the rlimits of `StrategyProcessPolicy::apply`, both SAFE
+# fns (the alternative was `libc::prctl`/`setrlimit` behind `unsafe`). `linux-raw-sys/prctl` is the
+# feature's only addition; no package joins the lockfile.
+rustix = { workspace = true, features = ["process"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+# `vike_boot::descriptors`: the negative-control binary plays a hub, so it runs the boot's step 0 before it
+# starts the child, and proves the child refuses an inherited descriptor without it. A dev edge upward.
+vike-boot = { path = "../vike-boot" }
+
+# The negative-control binary: its own `main`, because the policy covers a SINGLE-threaded process and
+# libtest runs every test on a thread of its own. It answers nextest's `--list` itself.
+[[test]]
+name = "strategy_process_policy"
+harness = false

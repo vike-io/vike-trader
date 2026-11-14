@@ -1,0 +1,50 @@
+{"CommandAck":{"command_sequence":7}}
+{"Event":{"account":"binance:ALT","gateway_epoch":9007199254740993,"sequence":43,"timestamp_ms":1700000000005,"replayed":false,"event":{"type":"OrderAccepted","order_client_id":"c1","venue_order_id":"v9","timestamp":1700000000005}}}
+{"Event":{"account":"binance:ALT","gateway_epoch":9007199254740993,"sequence":44,"timestamp_ms":1700000000006,"replayed":true,"event":{"type":"FillEvent","trade_id":"t-77","order_client_id":"c1","venue":"binance","symbol":"BTCUSDT","side":1,"last_qty":0.25,"last_price":64000.5,"commission":0.016,"commission_asset":"USDT","liquidity_side":"","timestamp":1700000000006,"mark_price":null,"position_side":"BOTH"}}}
+{"AdapterReply":{"rid":1,"reply":{"Running":{"bound_tier":"demo","grid":{"tick_size":0.1,"step_size":0.001,"min_qty":0.001,"max_qty":1000.0,"min_notional":5.0,"contract_size":0.0,"taker_hold_ms":0},"contract_value":{"kind":"linear","per_unit":1.0},"margin_mode":"Cross","leg_grids":[["ETHUSDT",{"tick_size":0.01,"step_size":0.01,"min_qty":0.0,"max_qty":0.0,"min_notional":0.0,"contract_size":0.0,"taker_hold_ms":0}]],"reconcile":true}}}}
+{"AdapterReply":{"rid":2,"reply":{"NotRunning":{"block_word":"live credentials absent","refusal_text":"binance: the live tier holds no key set"}}}}
+{"WireIdsReply":{"rid":3,"pairs":[["hl-1","0x1a2b"]]}}
+{"OrdersResolved":{"rid":4,"results":[{"order_client_id":"c6","state":"Tracked"},{"order_client_id":"c7","state":"Querying"},{"order_client_id":"c8","state":"NoResolver"}]}}
+{"IdentityRecorded":{"rid":5,"ok":false,"note":"the book file is read-only"}}
+{"ReconcileProgress":{"rid":6,"next_in_ms":5000}}
+{"ReconcileReply":{"rid":6,"page":0,"more":true,"payload":{"Orders":[{"venue":"binance","symbol":"BTCUSDT","venue_order_id":"v9","order_client_id":"c1","side":1,"order_type":"limit","qty":0.25,"filled_qty":0.1,"average_price":64000.5,"status":"PARTIALLY_FILLED","timestamp":1700000000007}]}}}
+{"ReconcileReply":{"rid":6,"page":1,"more":false,"payload":{"Fills":[{"venue":"binance","symbol":"BTCUSDT","trade_id":"t-77","venue_order_id":"v9","order_client_id":"c1","side":1,"last_qty":0.1,"last_price":64000.5,"commission":0.006,"commission_asset":"USDT","liquidity_side":"","timestamp":1700000000006}]}}}
+{"ReconcileReply":{"rid":6,"page":0,"more":false,"payload":{"Positions":[{"venue":"binance","symbol":"BTCUSDT","position_side":"BOTH","qty":0.1,"average_price":64000.5,"timestamp":1700000000007}]}}}
+{"ReconcileReply":{"rid":6,"page":0,"more":false,"payload":{"Balance":1234.5}}}
+{"ReconcileReply":{"rid":6,"page":0,"more":false,"payload":{"AccountIdentity":"spot-123"}}}
+{"ReconcileReply":{"rid":6,"page":0,"more":false,"payload":{"FeeRates":{"PercentMakerTaker":{"maker_bps":1.0,"taker_bps":2.5}}}}}
+{"ReconcileReply":{"rid":6,"page":0,"more":false,"payload":{"FeeRates":{"PerShareWithFloor":{"per_share":0.005,"min":1.0,"max_percent":0.5}}}}}
+{"ReconcileReply":{"rid":6,"page":0,"more":false,"payload":{"FeeRates":{"PercentOfUnderlying":{"bps":3.0,"premium_cap_percent":12.5}}}}}
+{"ReconcileReply":{"rid":6,"page":0,"more":false,"payload":{"FeeRates":{"ProbabilityScaled":{"taker_rate":0.07,"maker_rate":0.0,"maker_rebate_share":0.2}}}}}
+{"ReconcileReply":{"rid":6,"page":0,"more":false,"payload":{"FeeRates":"Free"}}}
+{"ReconcileReply":{"rid":6,"page":0,"more":false,"payload":{"Orders":[]},"read":["ETHUSDT.P","SOLUSDT.P"]}}
+{"ReconcileFailed":{"rid":6,"error":"binance: HTTP 503"}}
+{"ReconcileNotReady":{"rid":6,"reason":"the wire-id prefetch failed"}}
+{"TradeStatusIs":{"rid":7,"status":{"adapter_up":true,"last_sequence":44,"ring_floor":5,"commands_received":9}}}
+{"SymbolPropertiesReply":{"rid":8,"properties":{"Ok":{"properties":{"tick_size":0.01,"step_size":1.0,"min_qty":1.0,"max_qty":0.0,"min_notional":5.0,"contract_size":0.0,"taker_hold_ms":0},"contract_value":null}}}}
+{"SymbolPropertiesReply":{"rid":9,"properties":{"Err":{"code":"NoInstrument","reason":"binance: no instrument NOPEUSDT in the venue instrument list"}}}}
+{"SymbolPropertiesReply":{"rid":9,"properties":{"Err":{"code":"Busy","reason":"too many symbol-facts lookups are running at the gatewayhub; ask again"}}}}
+{"SymbolPropertiesReply":{"rid":9,"properties":{"Err":{"code":"NotStarted","reason":"the gatewayhub could not start a symbol-facts lookup"}}}}
+{"SymbolPropertiesReply":{"rid":9,"properties":{"Err":{"code":"ListUnavailable","reason":"binance: the venue's instrument list could not be fetched: http status: 503"}}}}
+{"SymbolPropertiesReply":{"rid":9,"properties":{"Err":{"code":"ListEmpty","reason":"binance: the venue's instrument list came back empty"}}}}
+{"SymbolPropertiesReply":{"rid":9,"properties":{"Err":{"code":"RateUnavailable","reason":"oanda: the venue's quote-currency rate could not be fetched: no rate for JPY in USD"}}}}
+{"SymbolPropertiesReply":{"rid":9,"properties":{"Err":{"code":"Expired","reason":"binance: ETHUSDT_260327 was delivered on 2026-03-27; the venue's list still shows it as TRADING, but the contract has expired, so the symbol is not admitted"}}}}
+{"SymbolPropertiesReply":{"rid":9,"properties":{"Err":{"code":"Forgotten","reason":"the gatewayhub's reconcile client no longer reads this symbol"}}}}
+{"SymbolPropertiesReply":{"rid":9,"properties":{"Err":{"code":"Verdict","reason":"bybit: BTCUSD is a quanto contract, whose notional is not valued"}}}}
+{"VenueReadReply":{"rid":10,"answer":{"Ok":{"Balance":{"asset":"pUSD","balance":20.0,"allowances":[{"spender":"0xE111180000d2663C0091e4f400237545B87B996B","name":"CTF exchange","amount":0.0,"unlimited":true}]}}}}}
+{"VenueReadReply":{"rid":11,"answer":{"Ok":{"OpenOrders":{"orders":[{"venue_order_id":"0xabc","order_client_id":null,"symbol":"6710259892","side":1,"price":0.2,"qty":5.0,"filled_qty":0.0,"status":"ACCEPTED","timestamp_ms":1700000000000}],"truncated":false}}}}}
+{"VenueReadReply":{"rid":11,"answer":{"Err":"not offered by binance: its bridge has no account-wide open-orders read"}}}
+{"VenueReadReply":{"rid":12,"answer":{"Ok":{"Positions":{"positions":[{"symbol":"1484359444963781501765067677755406951259550728919736807361564486189514136251","title":"Solana Up or Down - June 9, 3:40AM-3:45AM ET","outcome":"Down","qty":11.11,"average_price":0.2099,"price":0.0,"value":0.0,"redeemable":true}],"truncated":false}}}}}
+{"VenueReadReply":{"rid":12,"answer":{"Err":"not offered by hyperliquid: its bridge has no account-wide positions read"}}}
+{"ReconcileNow":{"reason":"the bridge asked"}}
+{"ReplayUnavailable":{"floor":12}}
+"Heartbeat"
+"Pong"
+{"Bye":{"Takeover":{"by_key_id":"nk-0123456789abcdef"}}}
+{"Bye":"ServerStopping"}
+{"Bye":"TooSlow"}
+{"Bye":"ClientClosed"}
+{"Bye":{"Protocol":"a Submit with no order client id"}}
+{"ReconcileReply":{"rid":6,"page":0,"more":false,"payload":{"FeeRates":{"BpsWithFloor":{"bps":0.2,"min":2.0}}}}}
+{"ReconcileReply":{"rid":6,"page":0,"more":false,"payload":{"Orders":[{"venue":"bybit","symbol":"BTCUSDT","venue_order_id":"v10","order_client_id":"c2","side":-1,"order_type":"stop_limit","qty":0.001,"filled_qty":0.0,"average_price":0.0,"status":"ACCEPTED","timestamp":1700000000008,"price":60000.5,"trigger_price":60100.0},{"venue":"okx","symbol":"BTC-USDT-SWAP","venue_order_id":"a11","order_client_id":"c3","side":-1,"order_type":"trailing","qty":0.1,"filled_qty":0.0,"average_price":0.0,"status":"ACCEPTED","timestamp":1700000000009,"trigger_price":70000.0,"trail_percent":1.5},{"venue":"deribit","symbol":"BTC-PERPETUAL","venue_order_id":"TSTS-1","order_client_id":"c4","side":-1,"order_type":"trailing","qty":10.0,"filled_qty":0.0,"average_price":0.0,"status":"ACCEPTED","timestamp":1700000000010,"trail":37845.5}]}}}
+{"VenueReadReply":{"rid":13,"answer":{"Ok":{"OpenOrders":{"orders":[{"venue_order_id":"DIWO2","order_client_id":null,"symbol":"CS.D.GBPUSD.MINI.IP","side":-1,"price":null,"trigger_price":1.2412,"order_type":"stop","qty":0.04,"filled_qty":0.0,"status":"ACCEPTED","timestamp_ms":0}],"truncated":false}}}}}

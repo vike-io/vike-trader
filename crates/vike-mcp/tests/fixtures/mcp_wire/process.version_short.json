@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "-V"
+  ],
+  "case": "process.version_short",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "stdout": {
+    "<lines>": [
+      "<program> <version> (<build identity>)",
+      ""
+    ]
+  },
+  "what": "one command line, stdin closed: stdout, stderr, exit"
+}

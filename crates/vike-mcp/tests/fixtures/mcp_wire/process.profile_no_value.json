@@ -1,0 +1,20 @@
+{
+  "argv": [
+    "--profile"
+  ],
+  "case": "process.profile_no_value",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 2,
+  "stderr": {
+    "<lines>": [
+      "<program>: a value is required for '--profile <PROFILE>' but none was supplied",
+      "",
+      "For more information, try '--help'.",
+      ""
+    ]
+  },
+  "stdout": "",
+  "what": "one command line, stdin closed: stdout, stderr, exit"
+}

@@ -1,0 +1,91 @@
+{
+  "argv": [
+    "--trace-dir",
+    "<scratch>/agent",
+    "--backtest-addr",
+    "<daemon-addr>",
+    "--addr",
+    "127.0.0.1:1"
+  ],
+  "case": "trace.cancelled",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "on_disk": {
+    "files": [
+      "mcp-<yyyy-mm>.jsonl",
+      "mcp.lock"
+    ],
+    "records": [
+      {
+        "args": {
+          "profile": "hold-traced"
+        },
+        "detail": "cancelled by the client (notifications/cancelled); no response was sent",
+        "kind": "mcp_tool_call",
+        "proc": {
+          "bin": "<program>",
+          "pid": "<pid>",
+          "ver": "<version>"
+        },
+        "profile": "full",
+        "seq": 0,
+        "token": null,
+        "token_role": null,
+        "tool": "run_sweep",
+        "ts_ms": "<ts_ms>",
+        "verdict": "error",
+        "write": false
+      }
+    ]
+  },
+  "stderr": {
+    "<lines>": [
+      "<program>: recording the agent transcript under <scratch>/agent",
+      ""
+    ]
+  },
+  "transcript": [
+    {
+      "send": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "hold-traced"
+          },
+          "name": "run_sweep"
+        }
+      }
+    },
+    {
+      "send": {
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": {
+          "requestId": 7
+        }
+      }
+    },
+    {
+      "observed": "the record is on disk"
+    },
+    {
+      "send": {
+        "id": "sentinel-1",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-1",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    }
+  ],
+  "what": "a cancelled run's only record"
+}

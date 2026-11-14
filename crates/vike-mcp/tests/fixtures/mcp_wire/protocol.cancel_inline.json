@@ -1,0 +1,118 @@
+{
+  "argv": [
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "protocol.cancel_inline",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": "fn on_bar() { }"
+          },
+          "name": "validate_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": {
+          "reason": "the user pressed stop",
+          "requestId": 4
+        }
+      }
+    },
+    {
+      "send": {
+        "id": "sentinel-1",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-1",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": "fn on_bar() { }"
+          },
+          "name": "validate_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "ping",
+        "params": {}
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    }
+  ],
+  "what": "cancel for an inline tool is a no-op, and a finished id may be reused"
+}

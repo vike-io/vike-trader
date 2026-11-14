@@ -1,0 +1,174 @@
+{
+  "argv": [
+    "--node",
+    "127.0.0.1:1",
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "tools.node_reads_dead_node",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "health_node"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "checks": [
+              {
+                "account": null,
+                "check": "door",
+                "detail": "TRADEHUB at 127.0.0.1:1 does not answer: Connection refused (os error 111)",
+                "items": [
+                  "a dead SSH forward reads the same as a dead daemon. Ask: vike-cli backend status"
+                ],
+                "status": "FAIL"
+              },
+              {
+                "account": null,
+                "check": "datahub",
+                "detail": "DATAHUB at 127.0.0.1:1 does not answer: Connection refused (os error 111)",
+                "items": [],
+                "status": "FAIL"
+              },
+              {
+                "account": null,
+                "check": "gatewayhub",
+                "detail": "unknown: no hub can see it. On its box: bin/vikectl status (system units: systemctl status vike-gatewayhub)",
+                "items": [],
+                "status": "UNKNOWN"
+              }
+            ],
+            "fail": 2,
+            "gatewayhub": {
+              "connections": null,
+              "credentialed_data_venues": null,
+              "epoch": null,
+              "error": "the datahub at 127.0.0.1:1 does not answer: Connection refused (os error 111)",
+              "fetches_running": null,
+              "market_data_venues": null,
+              "reached": false,
+              "stream_sessions": null,
+              "uptime_ms": null,
+              "via": "datahub"
+            },
+            "node": "127.0.0.1:1",
+            "unknown": 1,
+            "verdict": "FAIL",
+            "warn": 0
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "cash": 1000.0,
+            "periods_per_year": 252.0
+          },
+          "name": "report"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "report: cannot query the node at 127.0.0.1:1: Connection refused (os error 111)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "cash": "a lot"
+          },
+          "name": "report"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "report: `cash` must be a number, got \"a lot\"",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "periods_per_year": []
+          },
+          "name": "report"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "report: `periods_per_year` must be a number, got []",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "what": "a dead node: `health_node` is a normal FAIL, `report` an error"
+}

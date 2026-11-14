@@ -1,0 +1,224 @@
+[package]
+name = "vike-studio-core"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false
+description = "Headless Studio vocabulary and study host, engine-free: what a Studio run is asked and answers, the wire conversions to the backtesthub's DTOs, the run and study listings and the study runner. The run pipeline itself is vike-backtesthub's."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `engine-stacked` —
+# one hop over the engine band: a crate composed over a layer-30 crate. This one is the Studio's Run
+# pipeline: it compiles a candidate, backtests it out of sample through `vike-backtest`, and mounts
+# no venue.
+# 35 is the ARITHMETIC FLOOR, MEASURED 2026-09-28: the ceiling is ONE edge, `vike-backtest` (30).
+# Everything else it names sits at 25 or lower — `vike-simulator`, `vike-datahub-client` and
+# `vike-user-research` 25, `vike-rhai`/`vike-data`/`vike-catalog` 20, `vike-analytics`/`vike-ml`/
+# `vike-rust-strategy` 15, `vike-model` 10. Its consumers are `vike-backend` (68) and
+# `vike-studio` (80).
+# ⚠ **35 sits BELOW the venue (40), venue-stacked (41) and collector (42) tiers, and this crate names
+# the HARNESS normally.** A crate in that band naming THIS crate would reach `vike-backtest`
+# transitively, which the rank check alone does not refuse — at 45 it did. That is why
+# `crates/vike-ops/tests/architecture/layer_gate/fences.rs`'s `no_venue_or_collector_names_the_research_harness` walks
+# the whole normal closure since 2026-09-28 rather than the direct edges alone: a band crate
+# reaching the harness through this one is refused exactly as a direct edge is.
+# ⚠ WAS `research` (45) until 2026-09-28. Its ceiling was `vike-backtest` (then 35) from
+# 2026-09-27, a floor of 36, and 40, 41 and 42 are `venue`, `venue-stacked` and `collector`, none
+# of which describes this crate — so `research` was the nearest rank that cleared the floor and
+# fit: not itself an offline study, but the crate that RUNS one, mounts no venue and evaluates out
+# of sample. `vike-backtest` dropped to 30 on 2026-09-28, which made 35 legal.
+# ⚠ Before that it was `service` (50) until 2026-09-27, and it moved because what it was STACKED ON
+# moved: its ceiling was then `vike-rust-strategy` at 41 (this crate's `vike-backtest` edge was
+# not its ceiling while the harness sat at 35), so its arithmetic floor was 42 and `collector` (42)
+# misnamed it. `vike-rust-strategy` dropped to `leaf` (15) later the same day. (`vike-ai` argued
+# the same shape for its own `research` placement beside this one until the simulator split out of
+# `vike-backtest` — docs/decisions/0087.)
+# ⚠⚠ **Since 2026-11-10 this crate names NO harness and no simulator**, so most of the above is the
+# history of a rank rather than its argument: the Run pipeline moved to `vike-backtesthub` (the desktop
+# links this crate and no engine — docs/decisions/0078's amendment of that day), and the ceiling is now
+# 25 (`vike-backtesthub-client`, `vike-user-research`). 35 is KEPT, not re-ranked: a lower rank buys
+# nothing the down-only rule needs, and the engine-free property is a NAMED fence
+# (`crates/vike-ops/tests/architecture/named_run_closure_gate.rs`'s thin-client fence), not a rank.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 35
+
+[dependencies]
+vike-rhai = { path = "../vike-rhai" }
+# ⚠ TOMBSTONE — `vike-backtest` (the HARNESS) and `vike-simulator` (the SIMULATOR) stood here as normal edges
+# until 2026-11-10: the Run pipeline built the slice's `ProfileBacktest` and the harness ran it, in this
+# crate. That pipeline is `vike-backtesthub`'s `studio_run` now, beside the daemon that serves it, because
+# THIS crate is what the desktop links and the thin client links no engine
+# (docs/decisions/0078-one-backtest-path-studios-local-backend-is-deleted.md's amendment of that day;
+# `crates/vike-ops/tests/architecture/named_run_closure_gate.rs`'s thin-client fence refuses either one in
+# `vike-desktop`'s normal closure, optional edges included). What the GUI renders came DOWN instead:
+# `WalkforwardReport`/`WalkforwardWindow` and `cmp_scores_desc` to `vike-analytics`, `wire_result` and the native
+# roster (`STRATEGIES`) to `vike-backtesthub-client`, the tick lanes to `vike_data::StoreKindId::TICK_LANES`.
+# `vike-backtest` is a DEV edge below. Do NOT add either back: a run this crate could compute is the
+# second backtest path 0078 deleted.
+#
+# The ANALYTICS the run vocabulary carries (`BacktestResult`, `overfit` for `StudioParamscan::verdict`,
+# the walk-forward report) — named at their owner, the way every caller names them since 0087.
+vike-analytics = { path = "../vike-analytics" }
+# The Run pipeline operates on `Arc<dyn HistoryStore + Send + Sync> = Arc<dyn HistoryStore + Send + Sync>` (split-plane B12)
+# and the concrete HistoryStoreDataFusion is named only under #[cfg(test)], which gets `vike-store` from
+# [dev-dependencies] below — a default build of this crate is DataFusion-free (split-plane I7; the
+# `studio-standalone` suite in scripts/ci_feature_suite.sh is the gate).
+vike-data = { path = "../vike-data" }
+# ⚠ TOMBSTONE — `vike-datahub-client` stood here: its `hist-route` was what `study_cli` (behind the
+# `study-cli` feature) routed history through. `study_cli` and its `vike-study` bin moved to
+# `vike-backtesthub` on 2026-11-10 with the harness-backed study sim they hand a study, and no other
+# code in this crate names the client.
+#
+# `wire_run` converts the backtesthub's Studio DTOs at the boundary, both halves. Layer 25,
+# engine-free.
+vike-backtesthub-client = { path = "../vike-backtesthub-client" }
+# The INFERENCE half of the model crate, and nothing else follows it in: `cargo tree -p vike-ml -e
+# normal` names NO vike-* crate — its whole normal table is `sha2`, `hex`, `libm` and `indexmap`,
+# and `crates/vike-ops/tests/architecture/layer_gate/vike_free.rs`'s `VIKE_FREE_CRATES` holds the vike-free half.
+# ⚠ It read "`vike-ml -> vike-model`, which this crate already takes on the line below, so the
+# whole cost of this edge in the dependency graph is ZERO new crates" until 2026-09-28. vike-ml
+# stopped naming vike-model on 2026-09-19 (#1963), and its four external crates have not been
+# re-counted against this tree since — `cargo tree -p vike-studio-core -e normal` is that
+# measurement. The count mattered enough to check before adding it: the desktop shell
+# (`crates/vike-desktop/Cargo.toml`) links vike-studio, and so this crate, UNCONDITIONALLY, so
+# anything vike-ml dragged would land in the observe-only client. (That sentence named
+# `crates/vike-app/Cargo.toml` and "both the `fat` and `thin` builds" until 2026-09-28; the shell
+# was renamed and its two builds became one on 2026-09-09, #1727.) It cannot disturb the
+# `studio-standalone` lane's DataFusion-free tree check (`scripts/ci_feature_suite.sh`) either:
+# none of those four crates is DataFusion-shaped.
+#
+# Deliberately NOT `features = ["test-support"]`: `crates/vike-ml/src/seam/test_support.rs` is a learner
+# DOUBLE, and a shipped build must compile none of it. Nothing here fits a model: the study
+# dispatcher only hands a host's learner through (no trainer binary ships off Linux).
+vike-ml = { path = "../vike-ml" }
+vike-model = { path = "../vike-model" }
+# ⚠ TOMBSTONE — `vike-venues` (`fee_lane`, for the cost stamp's lanes), `vike-utility` (`study_cli`'s argv) and
+# the optional `clap` stood here; the cost stamp (`to_wire_cost_model`) and `study_cli` moved to
+# `vike-backtesthub` on 2026-11-10, and nothing left here names them.
+# The project's filesystem layout (`vike_paths::state_path`, `store_path`, `scratch`): std-only, layer 7.
+vike-paths = { path = "../vike-paths" }
+# The run directory a study run is minted into and the Research listing reads (`vike_runs::X`):
+# `create_run_dir`, `RunManifest`, `RunConfig`, the reserved file names. vike-model's `runs` module
+# until it became a crate; adds no external crate.
+vike-runs = { path = "../vike-runs" }
+# The market-data vocabulary (`Bar`, the tick types, `L2Book`, `L2BookUpdate`, `OptionKind`, ...):
+# spelled `vike_marketdata::X` everywhere -- vike-model names but does not re-export it (0067).
+vike-marketdata = { path = "../vike-marketdata" }
+# ⚠ TOMBSTONE — `vike-rust-strategy` stood here: THE JOIN's loader (`build_strategy`'s Strategy file arm
+# `dlopen`s `<project>/user_data/strategy-builds/<folder>/<sha>.so`). It went with the run pipeline to
+# `vike-backtesthub` (`crates/vike-backtesthub/src/studio_run/strategy.rs`) on 2026-11-10;
+# `StrategySpec::StrategyFile` here carries only the name, the sha and the params.
+# The compiled user-STUDY HOST (layer 25), and the home of the STUDY CONTRACT —
+# `StudyContext` / `StudyOutcome` / `StudyError` / `StudyLearner`. Both study tiers reach it from
+# here: `study_run.rs` resolves a COMPILED study through its generated registry, and
+# `src/rhai_study/` registers those same contract types as Rhai custom types so an INTERPRETED
+# study satisfies the identical entry contract (R7: rhai OR rust, the author's choice).
+#
+# The edge goes DOWN and it is the only direction available, for BOTH tiers:
+#   * run persistence lives in `vike-backtest` at 30, so nothing at or below the study host can
+#     mint a run — `docs/decisions/0031-the-study-runner-lives-above-run-persistence.md`;
+#   * `vike-rhai` (20) would be the obvious home for the interpreted tier, beside `RhaiStrategy`,
+#     but 20 may not name 25, and moving the contract types down would undo
+#     `crates/vike-user-research/src/lib.rs`'s argument for where they live.
+# This crate is therefore the lowest one that can host either.
+#
+# It costs exactly ONE crate in the dependency graph — itself — and NO datafusion. Every entry in
+# that manifest is already in this crate's normal tree: vike-model, vike-ml and vike-data (DEFAULT,
+# trait-only) are named right here, vike-analytics is named above, and vike-indicators arrives
+# through vike-rhai above. MEASURED with `cargo tree -p vike-studio -e normal` rather
+# than reasoned about — TWO earlier versions of this comment claimed two new crates and both were
+# wrong, which is why the measurement is named here instead of the reasoning.
+# It matters for the reason the vike-ml comment above states: the desktop shell links this crate
+# in its one build (it named `vike-app` and "both the `fat` and `thin` builds" until 2026-09-28),
+# and the `studio-standalone` lane in scripts/ci_feature_suite.sh greps that same default normal
+# dep tree for `^datafusion`.
+#
+# ⚠ Its build.rs scans `<workspace>/user_data/research/studies/rust/` and compiles what it finds
+# into this build. In every CI checkout and every fresh clone that directory is absent, so the
+# generated registry is EMPTY and the edge costs a no-op build script. (`vike-backtest` above
+# linked `vike-user-strategies`, whose build.rs did the same for the strategy tier, until plan 2b
+# deleted that crate.)
+vike-user-research = { path = "../vike-user-research" }
+# The interpreter itself. Already in this crate's tree through vike-rhai, so naming it adds no
+# crate; named directly because `src/rhai_study/bind.rs` registers types and functions against
+# `rhai::Engine` rather than going through a wrapper — the registration list IS the interpreted
+# tier's boundary and it must be readable as what it is.
+rhai = { workspace = true }
+# A study's `print`/`debug` are REDIRECTED into the facade rather than left on stdout, where they
+# would corrupt a root whose stdout is a protocol (`vike-mcp`). Facade only — this is a library.
+tracing = { workspace = true }
+# `study_run.rs` serializes a `StudyOutcome` — the study returns DATA and the caller writes it
+# (`crates/vike-user-research/src/contract.rs` refuses serde in the study crate for that reason), so
+# the JSON has to be built on this side of the seam.
+serde_json = { workspace = true }
+# The derive for `study_run.rs`'s `StudyDetail` — the study manifest's `detail` subtree TYPED, so the
+# writer and the Research pane cannot drift on a key. Already in every build of this crate through
+# `serde_json`, so no new package.
+serde = { workspace = true }
+# `params_text::parse_scalar` — the ONE reader of a free-form parameter cell (`src/spec.rs`'s
+# `params_from_rows`), shared with `vike-studio`, which already names this crate. Layer 20 against
+# this crate's 35, so it is downward like every other edge here. It is NOT free in THIS crate's own
+# tree: `vike-backtest` takes neither `vike-config` nor `vike-secrets` (they went with the daemon to
+# `vike-backtesthub`), so the edge
+# adds `vike-config` and `vike-secrets` (with its bundled `rusqlite`) to a standalone
+# `vike-studio-core` build. Every production build that links this one already carries it, so it
+# adds no package there: `vike-studio` names `vike-config` directly, and the `vike` multicall's
+# `backtest` and `study-cli` features reach it through `vike-backtesthub` and
+# `vike-datahub-client/hist-route`. Nothing in it is DataFusion-shaped, so the `studio-standalone`
+# lane's grep of the default normal-dep tree is untouched.
+vike-config = { path = "../vike-config" }
+# ⚠ TOMBSTONE — `vike-secrets` stood here for `study_cli`'s credential store; it moved to `vike-backtesthub`.
+# TEXT edges only: the Studio wire's `params_toml` / `recipe_toml` strings, a strategy file's params text
+# across the C-ABI, preset and recipe FILES, and a study recipe (a user document, `toml::Value`).
+# Strategy parameters themselves are `vike_model::params::Params`.
+toml = { workspace = true }
+
+[dev-dependencies]
+# Self-referential dev-dep (the `vike-execution`/`vike-model` idiom): turns `test-support` on for THIS crate's
+# own `tests/` targets, which name `vike_studio_core::test_support`.
+vike-studio-core = { path = ".", features = ["test-support"] }
+# `test-support`: `study_run.rs`'s tests and `tests/rhai_study_pipeline.rs` each build a
+# `StudyContext` over the workspace's OWN store double (`vike_data::HistoryStoreMemory`) rather than a
+# bespoke one, which is the "one owned double behind a `test-support` feature" rule — so the
+# interpreted tier is proven on a box with no DataFusion at all. It reaches no shipped build: this
+# is a dev-dependency, and the `studio-standalone` lane runs without `--all-targets` precisely so
+# dev-dep features stay out of the resolution.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# Test-only DataFusion (split-plane I7): run.rs's #[cfg(test)] module and tests/templates_execute.rs
+# seed a real HistoryStoreDataFusion over a temp dir. A DEV edge only, so the default normal tree stays
+# DataFusion-free.
+vike-store = { path = "../vike-store" }
+# `ScriptedLearner` — the shared learner DOUBLE, pushed through the erased `StudyLearner` seam by
+# `study_run.rs`'s tests and by tests/rhai_study_pipeline.rs, so the fitting half of a study context
+# is proven on a box with no LightGBM binary: every CI runner and every Windows box. ⚠ Deliberately
+# a DEV edge only, for the reason the normal `vike-ml` line above states — a shipped build compiles
+# none of this crate's test doubles, and a dev feature is not unified into the lib build.
+vike-ml = { path = "../vike-ml", features = ["test-support"] }
+# Seed a real HistoryStoreDataFusion over a temp dir for the moved bar-store tests, and a scratch/runs root
+# for `study_run.rs`'s. ⚠ This line used to explain itself as "HistoryStoreMemory is a filters/equity-only
+# stub and cannot store bars" — that stopped being true when the double grew real bar storage
+# (`crates/vike-data/src/test_support.rs`'s `append_bars`), so the reason is now the narrower one it
+# always should have been: those tests are about the CONCRETE store, and this is the crate that
+# creates a directory to put one in. Ad hoc, not workspace-pinned — same as vike-studio.
+tempfile = { workspace = true }
+# One PRODUCTION source of `chosen_params` values for `src/wire_run_tests.rs` (a `[paramscan]` grid expanded by
+# `vike_backtest::harness::expand_paramscan`, four scalar kinds). A DEV edge since 2026-11-10, when the run
+# pipeline left this crate; dev edges are not walked by the thin-client fence, and nothing shipped links it.
+vike-backtest = { path = "../vike-backtest" }
+# `vike_marketdata::test_support`: the shared bar/tick builders. A DEV edge only; the normal edge
+# above already exists, so no lockfile entry.
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+
+[lints]
+workspace = true
+
+[features]
+# `crate::test_support`: the seeded random walk and the two Rhai strategies the unit tests and the
+# integration binaries share, compiled once by the lib instead of once per binary that
+# `#[path]`-included them. Turned on only by the self dev-dependency and by `vike-backtesthub`'s dev edge
+# (the run pipeline's tests use the same fixtures); no shipped edge may enable it
+# (`crates/vike-ops/tests/architecture/test_surface_gate.rs`). It adds no dependency.
+test-support = []
+
+# ⚠ TOMBSTONE — the `vike-study` bin (`required-features = ["study-cli"]`) stood here; it is
+# `vike-backtesthub`'s since 2026-11-10, with `study_cli`, beside the harness its studies may call.

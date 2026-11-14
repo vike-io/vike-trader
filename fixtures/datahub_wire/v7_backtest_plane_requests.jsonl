@@ -1,0 +1,25 @@
+{"Hello":{"proto_version":7}}
+{"Auth":{"scope":"Read","mac":[1,2,3]}}
+{"Auth":{"scope":"Write","mac":[]}}
+"Ping"
+{"RunBacktest":"[data]\nvenue = \"binance\"\n"}
+{"RunSlice":{"spec":{"Rhai":"fn on_bar() {}"},"slice":{"venue":"binance","symbols":["BTCUSDT","ETHUSDT"],"interval":"1m","start":1,"end":2,"kind":"Bars"},"params":null}}
+{"RunSlice":{"spec":{"Native":{"name":"buy_hold","params_toml":"size = 1.0\n"}},"slice":{"venue":"binance","symbols":["BTCUSDT","ETHUSDT"],"interval":"1m","start":null,"end":null,"kind":"Ticks"},"params":{"cash":5000.5,"fee_rate":0.001,"slippage":0.25}}}
+{"RunSlice":{"spec":{"Plugin":{"name":"mine","sha":"abababababababababababababababababababababababababababababababab","params_toml":""}},"slice":{"venue":"binance","symbols":["BTCUSDT","ETHUSDT"],"interval":"1m","start":null,"end":9,"kind":"Bars"},"params":{"cash":null,"fee_rate":null,"slippage":null}}}
+{"RunParamscan":{"spec":{"Rhai":"fn on_bar() {}"},"slice":{"venue":"binance","symbols":["BTCUSDT","ETHUSDT"],"interval":"1m","start":null,"end":null,"kind":"Bars"},"paramscan":{"axes":[["fast",[5,7.5,10.0]]]},"params":null}}
+{"RunParamscan":{"spec":{"Rhai":"fn on_bar() {}"},"slice":{"venue":"binance","symbols":["BTCUSDT","ETHUSDT"],"interval":"1m","start":null,"end":null,"kind":"Bars"},"paramscan":{"axes":[]},"params":{"cash":5000.5,"fee_rate":0.001,"slippage":0.25}}}
+{"RunWalkforward":{"spec":{"Rhai":"fn on_bar() {}"},"slice":{"venue":"binance","symbols":["BTCUSDT","ETHUSDT"],"interval":"1m","start":null,"end":null,"kind":"Bars"},"walkforward":{"n_splits":4},"params":null}}
+{"RunWalkforward":{"spec":{"Rhai":"fn on_bar() {}"},"slice":{"venue":"binance","symbols":["BTCUSDT","ETHUSDT"],"interval":"1m","start":null,"end":null,"kind":"Bars"},"walkforward":{"n_splits":4,"search":{"method":"paramscan","grid":{"axes":[["fast",[5,7.5,10.0]]]},"rank_by":"return"}},"params":{"cash":5000.5,"fee_rate":0.001,"slippage":0.25}}}
+{"RunWalkforward":{"spec":{"Rhai":"fn on_bar() {}"},"slice":{"venue":"binance","symbols":["BTCUSDT","ETHUSDT"],"interval":"1m","start":null,"end":null,"kind":"Bars"},"walkforward":{"n_splits":2,"search":{"method":"none","grid":{"axes":[]}}},"params":null}}
+{"RunParamscanProfile":{"profile_toml":"[paramscan]\nfast = [5, 10]\n","rank_by":null,"search":null}}
+{"RunParamscanProfile":{"profile_toml":"[paramscan]\nfast = [5, 10]\n","rank_by":"multi","search":{"optimizer":"tpe","euler_depth":"2","trials":"128","seed":"7"}}}
+{"RunWalkforwardProfile":{"profile_toml":"[walkforward]\nn_splits = 3\n"}}
+{"RunStudy":{"study":"cohort","recipe_toml":"[learner]\nnum_iterations = 400\n","from":"2026-04-07T05","to":"1785906000"}}
+"ListStrategies"
+"NamedStrategies"
+{"RunNamed":{"strategy":"buy_hold","params":[["rungs",{"Int":4}],["size",{"Num":2.5}],["on",{"Flag":true}]],"venue":"binance","symbol":"BTCUSDT","interval":"1h","start":0,"end":3600000}}
+{"RunSlice":{"spec":{"Rhai":"fn on_bar() {}"},"slice":{"venue":"binance","symbols":["BTCUSDT","ETHUSDT"],"interval":"1m","start":null,"end":null,"kind":"Bars"},"params":{"cash":null,"fee_rate":null,"slippage":2.0,"slippage_model":"ticks","slippage_tick":0.01}}}
+{"RunSlice":{"spec":{"File":{"file":"trend/buy_hold.rs","params_toml":"size = 1.0\n"}},"slice":{"venue":"binance","symbols":["BTCUSDT","ETHUSDT"],"interval":"1m","start":null,"end":null,"kind":"Bars"},"params":null}}
+"ListStrategyFiles"
+{"ReadStrategyFile":{"file":"trend/momentum.rs"}}
+{"SaveStrategyFile":{"file":"trend/momentum.rs","text":"//! Momentum.\npub fn build() {}\n"}}

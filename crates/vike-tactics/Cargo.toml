@@ -1,0 +1,36 @@
+[package]
+name = "vike-tactics"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the order language a strategy rule is written in (decision 0269): named entries, exits bound to their entry, closes and free orders, and their book, lowered onto vike-model's portable order seam (OrderBroker) alone, so one rule runs in a backtest, on paper and live. No fill law, no simulator, no indicators."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `leaf`: names at most the
+# floor, the market-data vocabulary at 5 and the domain vocabulary at 10 (decision 0269, item 1), and the calendar at 3.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+# `Bar`, what a rule reads every bar.
+vike-marketdata = { path = "../vike-marketdata" }
+# The order seam (`OrderBroker`, `OrderPlacement`), `Fill`, `Strategy`, `OrderEvent`, the side-directed snap, the
+# barrier level functions and the trailing activation predicate: the only order law this crate uses.
+vike-model = { path = "../vike-model" }
+# The civil calendar (`civil_from_days`, `days_from_civil`) a month of `HigherTimeframe` starts and ends by: the
+# workspace's one calendar math, at layer 3.
+vike-utility = { path = "../vike-utility" }
+# `sizing::floor_printed`'s decimal step (`libm::log10`, `libm::pow`): the platform-independent transcendentals
+# (decision 0032), as the indicators take them. Workspace-pinned, already in the tree.
+libm = { workspace = true }
+
+[dev-dependencies]
+# `tests/on_the_simulator.rs` runs rules on the real simulator: an UPWARD dev edge (25), which the layer gate allows.
+vike-simulator = { path = "../vike-simulator" }
+# `libm_walk`, the shared source parser behind `tests/libm_platform_probe.rs` (decision 0074), behind its test feature.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

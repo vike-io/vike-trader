@@ -1,0 +1,6 @@
+{"StrategyOpen":{"venue":"binance"}}
+{"StrategyOpen":{"venue":"hyperliquid","network":"mainnet"}}
+{"StrategyOpen":{"venue":"hyperliquid","network":"testnet"}}
+{"StrategyFundingHistory":{"venue":"binance","symbol":"BTCUSDT.P","start":1794124800000,"end":1794211200000}}
+{"StrategyInputBars":{"venue":"binance","symbol":"BTCUSDT","interval":"1h","start":1794124800000,"end":1794211200000}}
+{"StrategyInputBars":{"venue":"binance","symbol":"USDT-USD","interval":"1d","source":"user-coinbase","start":1794124800000,"end":1794211200000}}

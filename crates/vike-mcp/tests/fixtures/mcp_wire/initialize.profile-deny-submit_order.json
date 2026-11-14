@@ -1,0 +1,48 @@
+{
+  "argv": [
+    "--deny-tool",
+    "submit_order",
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "initialize.profile-deny-submit_order",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "2025-06-18"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "capabilities": {
+            "prompts": {},
+            "resources": {},
+            "tools": {}
+          },
+          "instructions": "<instructions.deny-submit_order.txt>",
+          "protocolVersion": "2025-06-18",
+          "serverInfo": {
+            "name": "vike-mcp",
+            "version": "<version>"
+          }
+        }
+      }
+    }
+  ],
+  "what": "`initialize` under one scope: the `instructions` are scoped with the roster"
+}

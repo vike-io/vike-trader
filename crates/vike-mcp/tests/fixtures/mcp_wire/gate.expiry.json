@@ -1,0 +1,272 @@
+{
+  "argv": [
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "gate.expiry",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "guardrail": {
+              "max_notional": null,
+              "max_qty": null,
+              "notional": null,
+              "qty": 1.0,
+              "unpriced": "no vike-tradehub configured — pass `--node <host:port>` to read node state",
+              "within_limits": null
+            },
+            "node_verdict": null,
+            "note": "PREVIEW ONLY — nothing was sent. ⚠ THE NODE WAS NOT ASKED (no node configured, no control key, or unreachable), so `guardrail` is an UNVERIFIED CLIENT-SIDE ESTIMATE — and it cannot size a market order at all, because a market order carries no price. Do not read it as approval. To execute, call again with BOTH \"confirm\": true AND this exact \"preview_token\". The token fires once, expires after 60s, and is bound to THIS command. The node's ControlLimits + RiskGate remain the enforcing gate regardless.",
+            "preview_token": "pv-1",
+            "reason": null,
+            "tier": null,
+            "tier_unread": "no vike-tradehub configured — pass `--node <host:port>` to read node state. Treat this account as live.",
+            "tool": "submit_order",
+            "venue_check": "unverified",
+            "verified_by_node": false,
+            "will_execute": false,
+            "wire_command": {
+              "Submit": {
+                "order_client_id": "<minted-order-client-id-1>",
+                "order_type": "market",
+                "price": null,
+                "qty": 1.0,
+                "reduce_only": false,
+                "side": 1,
+                "symbol": "BTCUSDT",
+                "trigger_price": null,
+                "venue": "sim"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "kind": "bar",
+            "produced_by": "klines:",
+            "venue": "binance"
+          },
+          "name": "delete_series"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "bytes": null,
+            "matched": null,
+            "note": "PREVIEW ONLY — nothing was deleted. ⚠ THE STORE WAS NOT ASKED (`plan_error` says why), so there is NO plan: `matched`, `rows` and `bytes` are null rather than zero, and you have been shown nothing to confirm. Do not confirm this. A confirming call would fail at the same connection, so nothing can be deleted through it — fix the connection, take a fresh plan, and read it before you decide.",
+            "plan": null,
+            "plan_error": {
+              "<lines>": [
+                "cannot connect to datahub at 127.0.0.1:1: Connection refused (os error 111)",
+                "The delete verb is served ONLY by a datahub that holds hub keys. Either have the operator file VIKE_DATAHUB_OBSERVE_KEY and VIKE_DATAHUB_CONTROL_KEY in the hub-key store of the box where this MCP server launches (`vike-cli secrets path` names it), so it authenticates, or — if the datahub itself holds none, in which case it advertises no delete verb at all — tell the operator to run it on that box: `vike-cli data hist rm --kind K --venue V --produced-by PREFIX --dry-run` first, then without `--dry-run` and with `--yes`."
+              ]
+            },
+            "preview_token": "pv-2",
+            "produced_by": "klines:",
+            "provenance_satisfied": null,
+            "reason": null,
+            "rows": null,
+            "selector": {
+              "group": null,
+              "interval": null,
+              "kind": "bar",
+              "symbol": null,
+              "venue": "binance"
+            },
+            "tool": "delete_series",
+            "venue_check": "none",
+            "verified_by_node": false,
+            "will_execute": false
+          }
+        }
+      }
+    },
+    {
+      "observed": "waited past the preview window"
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "confirm": true,
+            "preview_token": "pv-1",
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "preview_token \"pv-1\" EXPIRED (previews stay confirmable for 60s). The book may have moved since it was priced — take a fresh preview.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "confirm": true,
+            "preview_token": "pv-1",
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "preview_token \"pv-1\" is unknown or already used — a token fires at most once. Call this tool WITHOUT `confirm` to get a fresh preview, then confirm with the `preview_token` it returns.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "confirm": true,
+            "kind": "bar",
+            "preview_token": "pv-2",
+            "produced_by": "klines:",
+            "venue": "binance"
+          },
+          "name": "delete_series"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "preview_token \"pv-2\" EXPIRED (previews stay confirmable for 60s). The store may have changed since it was planned — take a fresh plan.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "confirm": true,
+            "kind": "bar",
+            "preview_token": "pv-2",
+            "produced_by": "klines:",
+            "venue": "binance"
+          },
+          "name": "delete_series"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "preview_token \"pv-2\" is unknown or already used — a token fires at most once. Call this tool WITHOUT `confirm` to get a fresh plan, then confirm with the `preview_token` it returns.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "what": "an expired token is refused once and is gone after that"
+}

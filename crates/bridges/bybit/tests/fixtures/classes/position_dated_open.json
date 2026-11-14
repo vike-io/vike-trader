@@ -1,0 +1,52 @@
+{
+  "result": {
+    "category": "linear",
+    "list": [
+      {
+        "adlRankIndicator": 2,
+        "autoAddMargin": 0,
+        "avgPrice": "2231.63",
+        "breakEvenPrice": "2234.08614437",
+        "bustPrice": "",
+        "createdTime": "1793390090402",
+        "cumRealisedPnl": "-0.01227397",
+        "curRealisedPnl": "-0.01227397",
+        "isReduceOnly": false,
+        "leverage": "10",
+        "leverageSysUpdatedTime": "",
+        "liqPrice": "",
+        "markPrice": "2242.67",
+        "mmrSysUpdatedTime": "",
+        "netDeltaRatio": "",
+        "openTime": 1793390093415,
+        "positionBalance": "0",
+        "positionIM": "2.25371656",
+        "positionIMByMp": "2.25371656",
+        "positionIdx": 0,
+        "positionMM": "0.34744706",
+        "positionMMByMp": "0.34744706",
+        "positionStatus": "Normal",
+        "positionValue": "22.4267",
+        "riskId": 1,
+        "riskLimitValue": "100000",
+        "seq": 140718364116394,
+        "sessionAvgPrice": "",
+        "side": "Buy",
+        "size": "0.01",
+        "stopLoss": "",
+        "symbol": "ETHUSDT-06NOV26",
+        "takeProfit": "",
+        "tpslMode": "Full",
+        "tradeMode": 0,
+        "trailingStop": "0",
+        "unrealisedPnl": "0.1104",
+        "updatedTime": "1793390093415"
+      }
+    ],
+    "nextPageCursor": "ETHUSDT-06NOV26%2C1793390093415%2C0"
+  },
+  "retCode": 0,
+  "retExtInfo": {},
+  "retMsg": "OK",
+  "time": 1793390096603
+}

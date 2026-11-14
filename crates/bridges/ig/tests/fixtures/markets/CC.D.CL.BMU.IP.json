@@ -1,0 +1,119 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 20.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 10000.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "POINTS",
+   "value": 10.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 0.01
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 6.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 10.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": null,
+  "contractSize": "1",
+  "controlledRiskAllowed": true,
+  "country": null,
+  "currencies": [
+   {
+    "baseExchangeRate": 1.0,
+    "code": "USD",
+    "exchangeRate": 0.66,
+    "isDefault": true,
+    "symbol": "$"
+   }
+  ],
+  "epic": "CC.D.CL.BMU.IP",
+  "expiry": "-",
+  "expiryDetails": null,
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "POINTS",
+   "value": 6
+  },
+  "lotSize": 1.0,
+  "marginDepositBands": [
+   {
+    "currency": "USD",
+    "margin": 1.5,
+    "max": 60,
+    "min": 0
+   },
+   {
+    "currency": "USD",
+    "margin": 5,
+    "max": 150,
+    "min": 60
+   },
+   {
+    "currency": "USD",
+    "margin": 10,
+    "max": 210,
+    "min": 150
+   },
+   {
+    "currency": "USD",
+    "margin": 15,
+    "max": null,
+    "min": 210
+   }
+  ],
+  "marginFactor": 1.5,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "CL",
+  "name": "Oil - US Crude ($1)",
+  "newsCode": "CRU",
+  "onePipMeans": "1 cent per barrel",
+  "openingHours": null,
+  "rolloverDetails": null,
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 100.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MIN KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": true,
+  "type": "COMMODITIES",
+  "unit": "CONTRACTS",
+  "valueOfOnePip": "1.00"
+ },
+ "snapshot": {
+  "bid": 10241.1,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 1,
+  "delayTime": 0,
+  "high": 10354.6,
+  "low": 10238.1,
+  "marketStatus": "TRADEABLE",
+  "netChange": -98.3,
+  "offer": 10243.9,
+  "percentageChange": -0.95,
+  "scalingFactor": 1,
+  "updateTime": "19:44:23"
+ }
+}

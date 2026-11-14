@@ -1,0 +1,18 @@
+{
+  "argv": [
+    "--trace"
+  ],
+  "case": "process.trace_project",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": {
+    "<lines>": [
+      "<program>: recording the agent transcript under <scratch>/settings/state/agent",
+      ""
+    ]
+  },
+  "stdout": "",
+  "what": "`--trace` inside a project"
+}

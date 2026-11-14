@@ -1,0 +1,11 @@
+{
+  "argv": [],
+  "case": "process.no_flags",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "stdout": "",
+  "what": "one command line, stdin closed: stdout, stderr, exit"
+}

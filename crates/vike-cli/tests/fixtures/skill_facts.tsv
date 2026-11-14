@@ -1,0 +1,29 @@
+EXIT	0	Ok	The command did what was asked.
+EXIT	1	Failed	The command ran and failed — the pre-existing catch-all, and still where every failure that has not been deliberately classified lands (see `From<String> for CliError`).
+EXIT	2	Usage	The command line was wrong: an unknown verb, an unknown flag, a missing required flag, a bad value.
+EXIT	3	Connect	A service could not be reached: no datahub, no node, a refused or timed-out connection.
+EXIT	4	Refused	Refused LOCALLY — by a ceiling, a client-side guardrail, a book selector naming an account a READ has no row field to check against (`crates/vike-cli/src/cmd/trade/selector.rs`'s `refuse_an_unaddressable_book`, its first live producer), or a capability the connected node does not advertise — which is how a risk-reducing verb naming a book (a mass-cancel, flatten or close-all) is refused today — before anything was sent in every case.
+EXIT	5	Venue	The venue or the node accepted the request and REJECTED it: the far side spoke, and it said no.
+EXIT	6	Breach	A DECLARED THRESHOLD WAS BREACHED — the product of this crate's JUDGING verbs, one per plane (`vike-cli backtest gate` and `vike-cli data hist gate`), and the one rung on this ladder that is a RESULT rather than a failure.
+EXIT	7	Empty	NOTHING WAS EVALUATED — an empty slice, no coverage, zero trials, a run directory with no report in it, or a set of criteria that named no key the document carries.
+VERB	backtest	compute a strategy over history and judge what came back: `backtest run` runs one on a remote backtesthub — `vike-backend backtesthub --addr`, config.backtest_addr — or --local, and the PROFILE says what — a [paramscan] grid searches the parameter space, a [walkforward] table walks it forward, and declaring both ships the profile whole to the walk-forward runner. Then `backtest ls|show|path` over the run directory, `tag` to name a run, `diff` to see what moved between two, `gate` to turn that into a CI exit code, and `params` and `strategies` for what can be tuned and what can be run. Before a strategy exists: `templates` ships starters, `script-api` prints everything a Rhai script may call, and `script-check` compiles one and answers in the exit code
+VERB	data	the hist store: fetch, import or load the published real bars into it (no demo or synthetic tape ships), list what it holds and report coverage (read, over --addr)
+VERB	config	this box's settings: provenance (`show`), a validating pre-flight (`check`), and a journalled one-key write (`set`)
+VERB	trade	observe + control a running vike-tradehub: every verb but three lives under a REQUIRED group (`account`, `order`, `position`, `strategy` built; `watch` named in the roster and refused as designed-not-built) — `trade status|halt|resume` are the three NODE-WIDE, risk-REDUCING words that take no book and so take no group, and a bare `trade` opens the interactive REPL (for a human)
+VERB	report	ask a vike-tradehub for a tearsheet over its live journal, or re-render a FINISHED run from this machine's own run directory (read-only; a node built from this tree serves the live verb, an older one refuses and names the command that does)
+VERB	research	investigate a signal and FIT a model — the plane BEFORE a strategy exists: `research study` asks the backend to run a compiled study over the hist store it holds (served by `vike-backend backtesthub --addr` when it mounts the study runner; a peer that does not refuses by name and points at `vike-backend study`)
+VERB	secrets	inspect the credential store THIS box reads — the settings database <project>/settings/db/vike.db, the only store, which `secrets path` reports — set ONE key in it, and create it EMPTY (list | path | set | init)
+VERB	backend	stand a vike-tradehub — the running daemon — up, and attach this box to one (setup on the daemon | connect | status | disconnect on the client)
+VERB	datahub	MINT the hub key pair a vike-datahub server authenticates with (setup), or hand its CONTROL key to a pipe for `just studio` (control-key), on that server's box
+VERB	gatewayhub	MINT the hub key pair a vike-gatewayhub server authenticates with (setup), on that server's box
+VERB	init	create <project>/user_data — starter strategies, presets, notebooks; no run profile and no data ship — and print how to load real bars and run a strategy file
+VERB	indicators	print the indicators a Rhai strategy can call, with their parameters
+VERB	surface	write this binary's own command surface as JSON, for the documentation the docs site generates rather than hand-writes. Reads nothing and dials nothing: the table is compiled in, so the answer is a property of THIS build
+CONST	RECOMMENDED_DEADMAN_TIMEOUT_MS	60000
+CONST	DEADMAN_DISABLED_MS	0
+CONST	MIN_DEADMAN_TIMEOUT_MS	1000
+CONST	MAX_DEADMAN_TIMEOUT_MS	86400000
+CONST	DEFAULT_LINK_DEADMAN_GRACE_MS	120000
+CONST	LINK_DEADMAN_DISABLED_MS	0
+CONST	MIN_LINK_DEADMAN_GRACE_MS	30000
+CONST	MAX_LINK_DEADMAN_GRACE_MS	3600000

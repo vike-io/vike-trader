@@ -1,0 +1,60 @@
+{
+  "argv": [
+    "--backtest-addr",
+    "<daemon-addr>",
+    "--addr",
+    "127.0.0.1:1"
+  ],
+  "case": "protocol.cancel_deferred.run_walk_forward",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "hold-it"
+          },
+          "name": "run_walk_forward"
+        }
+      }
+    },
+    {
+      "observed": "the daemon holds the request"
+    },
+    {
+      "send": {
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled",
+        "params": {
+          "reason": "the user pressed stop",
+          "requestId": 7
+        }
+      }
+    },
+    {
+      "observed": "the daemon saw its peer close"
+    },
+    {
+      "send": {
+        "id": "sentinel-1",
+        "jsonrpc": "2.0",
+        "method": "ping"
+      }
+    },
+    {
+      "recv": {
+        "id": "sentinel-1",
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    }
+  ],
+  "what": "cancel for a deferred tool: no answer, its socket closed"
+}

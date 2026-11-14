@@ -1,0 +1,53 @@
+{
+  "argv": [
+    "--backtest-addr",
+    "<daemon-addr>",
+    "--addr",
+    "127.0.0.1:1"
+  ],
+  "case": "protocol.eof_in_flight",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "gated-walk"
+          },
+          "name": "run_walk_forward"
+        }
+      }
+    },
+    {
+      "observed": "stdin closed with the run in flight"
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "walkforward": {
+              "label": "gated-walk"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "what": "EOF with a run in flight still delivers its answer, then exits"
+}

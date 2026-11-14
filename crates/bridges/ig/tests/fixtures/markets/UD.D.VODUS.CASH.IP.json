@@ -1,0 +1,118 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 35.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "PERCENTAGE",
+   "value": 90.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "PERCENTAGE",
+   "value": 10.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": "VOD",
+  "contractSize": null,
+  "controlledRiskAllowed": true,
+  "country": "US",
+  "currencies": [
+   {
+    "baseExchangeRate": 1.0,
+    "code": "USD",
+    "exchangeRate": 0.66,
+    "isDefault": true,
+    "symbol": "$"
+   }
+  ],
+  "epic": "UD.D.VODUS.CASH.IP",
+  "expiry": "-",
+  "expiryDetails": null,
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "PERCENTAGE",
+   "value": 1
+  },
+  "lotSize": 0.01,
+  "marginDepositBands": [
+   {
+    "currency": "USD",
+    "margin": 20,
+    "max": 85000,
+    "min": 0
+   },
+   {
+    "currency": "USD",
+    "margin": 20,
+    "max": 425000,
+    "min": 85000
+   },
+   {
+    "currency": "USD",
+    "margin": 40,
+    "max": 850000,
+    "min": 425000
+   },
+   {
+    "currency": "USD",
+    "margin": 75,
+    "max": null,
+    "min": 850000
+   }
+  ],
+  "marginFactor": 20,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "S1C270-US",
+  "name": "Vodafone Group PLC - ADR",
+  "newsCode": "VOD.O",
+  "onePipMeans": null,
+  "openingHours": null,
+  "rolloverDetails": null,
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 100.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": false,
+  "type": "SHARES",
+  "unit": "SHARES",
+  "valueOfOnePip": null
+ },
+ "snapshot": {
+  "bid": null,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 4,
+  "delayTime": 0,
+  "high": 15.935,
+  "low": 15.685,
+  "marketStatus": "TRADEABLE",
+  "netChange": 0.255,
+  "offer": null,
+  "percentageChange": 1.64,
+  "scalingFactor": 100,
+  "updateTime": "19:49:55"
+ }
+}

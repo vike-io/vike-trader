@@ -1,0 +1,297 @@
+{
+  "argv": [
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "tools.dead_daemons",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": {
+              "<lines>": [
+                "[strategy]",
+                "name = \"buy_hold\"",
+                ""
+              ]
+            }
+          },
+          "name": "run_backtest"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "cannot connect to the backtest daemon at 127.0.0.1:1: Connection refused (os error 111) (start it with `vike-backend backtesthub --addr`)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "run_backtest"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "run_backtest requires a `profile` string argument",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "x",
+            "rank_by": "sharpe",
+            "trials": 8
+          },
+          "name": "run_sweep"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "cannot connect to the backtest daemon at 127.0.0.1:1: Connection refused (os error 111) (start it with `vike-backend backtesthub --addr`)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "run_sweep"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "run_sweep requires a `profile` string argument (a backtest profile TOML)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "optimizer": 5,
+            "profile": "x"
+          },
+          "name": "run_sweep"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "run_sweep: `optimizer` must be a string, got 5",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "x",
+            "trials": []
+          },
+          "name": "run_sweep"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "run_sweep: `trials` must be an integer (or its decimal string), got []",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "x"
+          },
+          "name": "run_walk_forward"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "cannot connect to the backtest daemon at 127.0.0.1:1: Connection refused (os error 111) (start it with `vike-backend backtesthub --addr`)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "run_walk_forward"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "run_walk_forward requires a `profile` string argument (a backtest profile TOML)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "list_strategies"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "cannot connect to the backtest daemon at 127.0.0.1:1: Connection refused (os error 111) (start it with `vike-backend backtesthub --addr`)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 10,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "list_series"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 10,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "cannot connect to datahub at 127.0.0.1:1: Connection refused (os error 111)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "what": "the hub tools against a dead port, and their argument errors"
+}

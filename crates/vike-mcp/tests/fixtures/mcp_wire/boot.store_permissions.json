@@ -1,0 +1,17 @@
+{
+  "argv": [],
+  "case": "boot.store_permissions",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": {
+    "<lines>": [
+      "<program>: ⚠ <scratch>/settings/db/vike.db holds live venue credentials in PLAINTEXT and is readable beyond its owner (mode 0644); run `chmod 600 <scratch>/settings/db/vike.db`",
+      "<program>: ⚠ <scratch>/settings/db/vike.db holds live venue credentials in PLAINTEXT and is readable beyond its owner (mode 0644); run `chmod 600 <scratch>/settings/db/vike.db`",
+      ""
+    ]
+  },
+  "stdout": "",
+  "what": "a store a stranger could read is reported on stderr, and the server starts"
+}

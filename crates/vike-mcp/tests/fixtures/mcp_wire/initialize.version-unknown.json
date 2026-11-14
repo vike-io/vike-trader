@@ -1,0 +1,46 @@
+{
+  "argv": [
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "initialize.version-unknown",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "initialize",
+        "params": {
+          "protocolVersion": "1999-01-01"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "capabilities": {
+            "prompts": {},
+            "resources": {},
+            "tools": {}
+          },
+          "instructions": "<instructions.full.txt>",
+          "protocolVersion": "2025-11-25",
+          "serverInfo": {
+            "name": "vike-mcp",
+            "version": "<version>"
+          }
+        }
+      }
+    }
+  ],
+  "what": "`initialize` for one `protocolVersion`, full profile"
+}

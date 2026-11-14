@@ -1,0 +1,8 @@
+"SymbolSets"
+{"SetSymbolSet":{"set":{"name":"My Alts","symbols":["SOLUSDT","AVAXUSDT"],"provider":"Auto","interval":"1h","benchmark":"BTCUSDT","user":true}}}
+{"DeleteSymbolSet":{"name":"My Alts"}}
+"InstrumentLists"
+{"RefreshInstrumentLists":{"venue":"binance"}}
+{"RefreshInstrumentLists":{"venue":null}}
+{"OperatorInstruments":{"venue":"ig","add":["EURUSD","GBPUSD"],"remove":[]}}
+{"OperatorInstruments":{"venue":"dukascopy","add":["AAPL.US/USD"],"remove":["SPY.US/USD"],"stated":{"tick":0.001,"quote":"USD","class":"share","point_scale":1000.0}}}

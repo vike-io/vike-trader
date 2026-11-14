@@ -1,0 +1,84 @@
+{
+  "root_help_first_line": "the unified vike command-line surface",
+  "verbs": [
+    {
+      "bad_flag_exit": 2,
+      "bad_flag_first_line": "vike-cli backtest: unexpected argument '--definitely-not-a-flag' found",
+      "help_first_line": "backtest is a PLANE: a sub-verb is always required, so one action has one spelling.",
+      "verb": "backtest"
+    },
+    {
+      "bad_flag_exit": 2,
+      "bad_flag_first_line": "vike-cli data: unexpected argument '--definitely-not-a-flag' found",
+      "help_first_line": "Get market data into the hist store the backtest engine reads, and ask a running",
+      "verb": "data"
+    },
+    {
+      "bad_flag_exit": 2,
+      "bad_flag_first_line": "vike-cli config: unexpected argument '--definitely-not-a-flag' found",
+      "help_first_line": "verbs:",
+      "verb": "config"
+    },
+    {
+      "bad_flag_exit": 2,
+      "bad_flag_first_line": "vike-cli trade: unexpected argument '--definitely-not-a-flag' found",
+      "help_first_line": "With no group and no verb (`vike-cli trade --node <host:port> [--yes]`) this opens the interactive",
+      "verb": "trade"
+    },
+    {
+      "bad_flag_exit": 2,
+      "bad_flag_first_line": "vike-cli report: unexpected argument '--definitely-not-a-flag' found",
+      "help_first_line": "Render a tearsheet. TWO SOURCES, and exactly one per invocation — naming both is refused rather",
+      "verb": "report"
+    },
+    {
+      "bad_flag_exit": 2,
+      "bad_flag_first_line": "vike-cli research: unexpected argument '--definitely-not-a-flag' found",
+      "help_first_line": "Investigate a signal and fit a model — the plane BEFORE a strategy exists",
+      "verb": "research"
+    },
+    {
+      "bad_flag_exit": 2,
+      "bad_flag_first_line": "vike-cli secrets: unexpected argument '--definitely-not-a-flag' found",
+      "help_first_line": "subcommands:",
+      "verb": "secrets"
+    },
+    {
+      "bad_flag_exit": 2,
+      "bad_flag_first_line": "vike-cli backend: unexpected argument '--definitely-not-a-flag' found",
+      "help_first_line": "Stand a vike-tradehub — the running daemon — up, and attach this machine to one.",
+      "verb": "backend"
+    },
+    {
+      "bad_flag_exit": 2,
+      "bad_flag_first_line": "vike-cli datahub: unexpected argument '--definitely-not-a-flag' found",
+      "help_first_line": "MINT the hub key pair a vike-datahub server authenticates with (setup), the strategy-lane key beside it (setup --strategy-lane), or hand its CONTROL key to a pipe (control-key), on that server's box",
+      "verb": "datahub"
+    },
+    {
+      "bad_flag_exit": 2,
+      "bad_flag_first_line": "vike-cli gatewayhub: unexpected argument '--definitely-not-a-flag' found",
+      "help_first_line": "MINT the hub keys a vike-gatewayhub server authenticates with (setup): the observe and control pair and the trade key, on that server's box",
+      "verb": "gatewayhub"
+    },
+    {
+      "bad_flag_exit": 2,
+      "bad_flag_first_line": "vike-cli init: unexpected argument '--definitely-not-a-flag' found",
+      "help_first_line": "Create <project>/user_data — presets, indicators, notebooks, and folders for your run profiles and results — plus the starter strategy files, and print the map",
+      "verb": "init"
+    },
+    {
+      "bad_flag_exit": 2,
+      "bad_flag_first_line": "vike-cli indicators: unexpected argument '--definitely-not-a-flag' found",
+      "help_first_line": "Print the indicators a Rhai strategy can call, grouped by category, each with its parameters and the defaults you get by leaving them out. Offline: no store, no settings, no credential.",
+      "verb": "indicators"
+    },
+    {
+      "bad_flag_exit": 2,
+      "bad_flag_first_line": "vike-cli surface: unexpected argument '--definitely-not-a-flag' found",
+      "help_first_line": "Write this binary's own command surface as JSON",
+      "verb": "surface"
+    }
+  ],
+  "what": "each verb's `--help` first line, and its answer to a flag it does not have"
+}

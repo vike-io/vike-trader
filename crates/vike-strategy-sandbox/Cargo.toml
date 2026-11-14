@@ -1,0 +1,61 @@
+[package]
+name = "vike-strategy-sandbox"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io
+description = "The `vike-backend strategy-sandbox` verb: the one process that loads a Rust strategy file, after jailing itself (Landlock + seccomp + rlimits). `backtest` runs a whole backtesthub request inside the jail; `live` serves one mount's hooks to the tradehub that spawned it. No hub process loads a strategy file: only this one links the loader."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `daemon` — a headless
+# top-of-graph process, the shape `vike-strategy-builder` has: a verb of the multicall (layer 68), which
+# is the ONE crate that names this one. ⚠ It does NOT name `vike-backtesthub` (also 65, so the gate would
+# refuse it): the backtest half of a sandboxed run is the backtesthub's own code, handed in by the
+# dispatcher as a function (`BacktestServe`), so the backtesthub keeps no loader edge and this crate no
+# backtesthub edge.
+[package.metadata.vike]
+layer = 65
+
+[dependencies]
+# `Strategy<OrderBrokerSimulator>`, the boxed strategy a backtest builds from the loaded file (`BacktestServe`'s `build`).
+vike-model = { path = "../vike-model" }
+vike-simulator = { path = "../vike-simulator" }
+# THE LOADER (`loader::load`) and the host side of the C-ABI (`host::StrategyFileHost`). This crate is the only one
+# a shipped binary links it through: no hub names it.
+vike-rust-strategy = { path = "../vike-rust-strategy" }
+# The jail the child applies to itself before the load (`strategy_process_policy`, `StrategyProcessPolicy::apply`).
+vike-sandbox = { path = "../vike-sandbox" }
+# `GIT_SHA`: this binary's commit, which (with the loader's ABI and fingerprint) names the build folder the builder put
+# the artifact in (`vike_rust_strategy::artifact::build_folder`).
+vike-buildinfo = { path = "../vike-buildinfo" }
+# The child's console-only subscriber on stderr (`vike_log::init`, no file layer), started after the jail.
+vike-log = { path = "../vike-log" }
+# The live verb (`src/live.rs`, unit F5): the tradehub's protocol and serve loop (layer 35), so the two ends of
+# the pipe are one code; the mount facts cross the C-ABI as JSON text (`StrategyFileHost::new`'s third argument).
+vike-tradehub-core = { path = "../vike-tradehub-core" }
+serde_json = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# `stdio::dup2_stdout`: fd 1 pointed at stderr after the jail, so a strategy's own `println!` cannot write into the
+# protocol (`src/lib.rs`'s module doc, step 2; `src/live.rs`'s, act 2). A SAFE call: the workspace forbids
+# `unsafe`. Already in the lockfile through `vike-sandbox`; `stdio` adds no package.
+rustix = { workspace = true, features = ["stdio"] }
+
+# `tests/live_child.rs`, the live verb's production route: the real builder builds the probe files (a
+# level edge, dev only), and a real core mounts them (its venue client counts what reaches the venue).
+[dev-dependencies]
+vike-strategy-builder = { path = "../vike-strategy-builder" }
+# `vike_boot::descriptors`: `live_child` plays a hub and runs the boot's step 0 before it starts the child.
+vike-boot = { path = "../vike-boot" }
+vike-core = { path = "../vike-core" }
+vike-execution = { path = "../vike-execution" }
+vike-marketdata = { path = "../vike-marketdata" }
+vike-venues = { path = "../vike-venues" }
+
+# `harness = false`: the binary is also the CHILD it spawns (`strategy-sandbox live <artifact>`), which the
+# jail requires to start with one thread and three descriptors, as no libtest harness does.
+[[test]]
+name = "live_child"
+harness = false
+
+[lints]
+workspace = true

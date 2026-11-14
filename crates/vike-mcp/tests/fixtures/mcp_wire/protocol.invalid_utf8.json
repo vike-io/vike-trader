@@ -1,0 +1,45 @@
+{
+  "argv": [
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "protocol.invalid_utf8",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 1,
+  "stderr": {
+    "<lines>": [
+      "<program>: stream did not contain valid UTF-8",
+      ""
+    ]
+  },
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "ping",
+        "params": {}
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {}
+      }
+    },
+    {
+      "send_bytes": [
+        255,
+        254,
+        123,
+        125
+      ]
+    }
+  ],
+  "what": "a line that is not UTF-8 ends the session, with a failing exit"
+}

@@ -1,0 +1,33 @@
+{"Welcome":{"proto_version":7,"features":["backtest","auth"]}}
+{"Welcome":{"proto_version":7,"features":[],"nonce":[7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7,7]}}
+{"AuthOk":{"scope":"Read"}}
+{"AuthOk":{"scope":"Write"}}
+{"AuthDenied":{"reason":"bad mac"}}
+"Pong"
+{"Report":"{\"name\":\"a\"}"}
+{"RunResult":{"equity_curve":[1000.0,1010.25],"equity_timestamp":[1,2],"final_equity":1010.25,"n_trades":1,"per_symbol_pnl":[["BTCUSDT",10.25]],"trades":[{"entry_price":100.0,"exit_price":110.5,"size":1.0,"pnl":10.5,"fees":0.25,"entry_timestamp":1,"exit_timestamp":2,"symbol":"BTCUSDT","mae":0.01,"mfe":0.02,"is_long":true}],"stale_deferrals":3,"session_deferrals":4,"cost_model":{"source":"derived","lane":"binance-perp","variant":"PercentMakerTaker","maker_rate":0.0002,"taker_rate":0.0005,"reason":"why","maker_fills":5,"taker_fills":6,"fees_paid":-1.5,"rank_metric":"sharpe","not_modelled":["funding"]}}}
+{"RunResult":{"equity_curve":[],"equity_timestamp":[],"final_equity":0.0,"n_trades":0,"per_symbol_pnl":[],"trades":[],"stale_deferrals":0,"session_deferrals":0}}
+{"RunResult":{"equity_curve":[],"equity_timestamp":[],"final_equity":0.0,"n_trades":0,"per_symbol_pnl":[],"trades":[],"stale_deferrals":0,"session_deferrals":0,"funding_paid":-0.5}}
+{"RunResult":{"equity_curve":[],"equity_timestamp":[],"final_equity":0.0,"n_trades":0,"per_symbol_pnl":[],"trades":[],"stale_deferrals":0,"session_deferrals":0,"settle_price":66000.0}}
+{"RunResult":{"equity_curve":[],"equity_timestamp":[],"final_equity":0.0,"n_trades":0,"per_symbol_pnl":[],"trades":[],"stale_deferrals":0,"session_deferrals":0,"refused_orders":[[{"symbol":"BTCUSDT","reason":"a spot account cannot sell more than it holds: it has 1, this sells 2; nothing was sent","size":2.0,"weight":1.0},3]]}}
+{"ParamscanResult":{"entries":[{"overrides":[["fast",5],["slow",10.5]],"result":{"equity_curve":[],"equity_timestamp":[],"final_equity":0.0,"n_trades":0,"per_symbol_pnl":[],"trades":[],"stale_deferrals":0,"session_deferrals":0}}],"dsr":0.5,"pbo":null,"best_index":0,"cost_model":{"source":"derived","lane":"binance-perp","variant":"PercentMakerTaker","maker_rate":0.0002,"taker_rate":0.0005,"reason":"why","maker_fills":5,"taker_fills":6,"fees_paid":-1.5,"rank_metric":"sharpe","not_modelled":["funding"]}}}
+{"ParamscanResult":{"entries":[],"dsr":null,"pbo":0.25,"best_index":0}}
+{"WalkforwardResult":{"windows":[{"test_range":[0,10],"out_of_sample_return":0.05},{"test_range":[10,20],"out_of_sample_return":-0.5,"chosen_params":[["fast",8]]}],"out_of_sample_equity_curve":[1000.0,1050.5],"out_of_sample_return":0.05,"out_of_sample_sharpe":1.5,"walkforward_consistency":0.5,"cost_model":{"source":"derived","lane":"binance-perp","variant":"PercentMakerTaker","maker_rate":0.0002,"taker_rate":0.0005,"reason":"why","maker_fills":5,"taker_fills":6,"fees_paid":-1.5,"rank_metric":"sharpe","not_modelled":["funding"]}}}
+{"WalkforwardResult":{"windows":[],"out_of_sample_equity_curve":[],"out_of_sample_return":0.0,"out_of_sample_sharpe":0.0,"walkforward_consistency":0.0}}
+{"WalkforwardResult":{"windows":[],"out_of_sample_equity_curve":[],"out_of_sample_return":0.0,"out_of_sample_sharpe":0.0,"walkforward_consistency":0.0,"data_warnings":["BTCUSDT.P: no funding history"]}}
+{"WalkforwardResult":{"windows":[],"out_of_sample_equity_curve":[],"out_of_sample_return":0.0,"out_of_sample_sharpe":0.0,"walkforward_consistency":0.0,"funding_paid":-0.25}}
+{"WalkforwardResult":{"windows":[],"out_of_sample_equity_curve":[],"out_of_sample_return":0.0,"out_of_sample_sharpe":0.0,"walkforward_consistency":0.0,"account_currency":"JPY"}}
+{"ParamscanReport":"{\"rows\":[]}"}
+{"WalkforwardReport":"{\"windows\":[]}"}
+{"StudyReport":"{\"run\":\"r\"}"}
+{"Error":"compile: nope"}
+{"Strategies":["buy_hold","grid"]}
+{"NamedStrategies":{"armed":true,"strategies":["buy_hold"]}}
+{"NamedStrategies":{"armed":false,"strategies":[]}}
+{"NamedRun":{"Ran":{"result":{"equity_curve":[1000.0,1010.25],"equity_timestamp":[1,2],"final_equity":1010.25,"n_trades":1,"per_symbol_pnl":[["BTCUSDT",10.25]],"trades":[{"entry_price":100.0,"exit_price":110.5,"size":1.0,"pnl":10.5,"fees":0.25,"entry_timestamp":1,"exit_timestamp":2,"symbol":"BTCUSDT","mae":0.01,"mfe":0.02,"is_long":true}],"stale_deferrals":3,"session_deferrals":4,"cost_model":{"source":"derived","lane":"binance-perp","variant":"PercentMakerTaker","maker_rate":0.0002,"taker_rate":0.0005,"reason":"why","maker_fills":5,"taker_fills":6,"fees_paid":-1.5,"rank_metric":"sharpe","not_modelled":["funding"]}},"report_json":"{\"name\":\"a\"}"}}}
+{"NamedRun":"NotArmed"}
+{"NamedRun":{"Refused":{"UnknownStrategy":{"known":["buy_hold"]}}}}
+{"NamedRun":{"Refused":{"NoSlot":{"limit":4}}}}
+{"StrategyFiles":[{"file":"trend/momentum.rs","build":"built 0123abcd","broken":"","edited":true},{"file":"other/note.rhai","build":"","broken":"no header: the file has no ```toml block","edited":false}]}
+{"StrategyFileText":{"file":"trend/momentum.rs","text":"//! Momentum.\npub fn build() {}\n"}}
+{"StrategyFileSaved":{"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","file":{"file":"trend/momentum.rs","build":"not built","broken":"","edited":false}}}

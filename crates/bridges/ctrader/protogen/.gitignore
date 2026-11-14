@@ -1,0 +1,5 @@
+# Regen build artifacts (this is a standalone workspace, so the root /target ignore does not cover
+# it). The emitted _.rs lands under out/ and is compared against the committed
+# ../src/generated/openapi.rs; neither out/ nor target/ is ever committed.
+/target
+/out

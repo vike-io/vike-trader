@@ -1,0 +1,198 @@
+{
+ "demo_2026_11_08": {
+  "funding_fee": [
+   {
+    "asset": "USDT",
+    "income": "-0.00797482",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1792857600000,
+    "tradeId": "",
+    "tranId": 1664057439257069510
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.00808730",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1792886400000,
+    "tradeId": "",
+    "tranId": 1665265399144614490
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.00806633",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1792915200000,
+    "tradeId": "",
+    "tranId": 1666473358403011540
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.00794956",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1792944000000,
+    "tradeId": "",
+    "tranId": 1667681317955010710
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.00801361",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1792972800000,
+    "tradeId": "",
+    "tranId": 1668889277297297490
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.00800429",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1793001600000,
+    "tradeId": "",
+    "tranId": 1670097236933181440
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.00804247",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1793030400000,
+    "tradeId": "",
+    "tranId": 1671305196023809330
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.00801061",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1793059200000,
+    "tradeId": "",
+    "tranId": 1672513156163012610
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.00797733",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1793088000000,
+    "tradeId": "",
+    "tranId": 1673721116008613830
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.00805694",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1793116800000,
+    "tradeId": "",
+    "tranId": 1674929077699707730
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.00207526",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1793145600000,
+    "tradeId": "",
+    "tranId": 1676137037796967750
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.00533682",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1793174400000,
+    "tradeId": "",
+    "tranId": 1677344996929538290
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.00805074",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1793203200000,
+    "tradeId": "",
+    "tranId": 1678552958243146450
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.00531958",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1793232000000,
+    "tradeId": "",
+    "tranId": 1679760917711260430
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.00798200",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1793260800000,
+    "tradeId": "",
+    "tranId": 1680968877011599680
+   },
+   {
+    "asset": "USDT",
+    "income": "0.00159861",
+    "incomeType": "FUNDING_FEE",
+    "info": "FUNDING_FEE",
+    "symbol": "BTCUSDT",
+    "time": 1793289600000,
+    "tradeId": "",
+    "tranId": 1682176836353885590
+   }
+  ],
+  "every_kind_latest_week": [
+   {
+    "asset": "USDT",
+    "income": "-0.01252820",
+    "incomeType": "COMMISSION",
+    "info": "348491926",
+    "symbol": "ETHUSDT",
+    "time": 1794068989000,
+    "tradeId": "348491926",
+    "tranId": 90061348491926
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.02604000",
+    "incomeType": "REALIZED_PNL",
+    "info": "348492255",
+    "symbol": "ETHUSDT",
+    "time": 1794069001000,
+    "tradeId": "348492255",
+    "tranId": 90060348492255
+   },
+   {
+    "asset": "USDT",
+    "income": "-0.01251779",
+    "incomeType": "COMMISSION",
+    "info": "348492255",
+    "symbol": "ETHUSDT",
+    "time": 1794069001000,
+    "tradeId": "348492255",
+    "tranId": 90060348492255
+   }
+  ]
+ }
+}

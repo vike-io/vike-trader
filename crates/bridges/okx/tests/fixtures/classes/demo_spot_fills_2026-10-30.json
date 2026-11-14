@@ -1,0 +1,21 @@
+{
+  "_provenance": "Measured on the OKX DEMO account (acctLv 3, net_mode), 2026-10-30, by crates/bridges/okx/tests/okx_classes_measure_smoke.rs (okx_classes_orders_channel_any and okx_classes_spot_wire). The orders-channel frames were read off a socket subscribed with instType ANY; the fields the smoke printed are verbatim, the ones it did not print (clOrdId, ordId, fillTime, uTime) are transcribed from the same order's REST row. The fills row is the venue's own GET /api/v5/trade/fills answer for the spot pair, verbatim. CONSTRUCTED, not captured: ws_sell_filled is the sell's REST order row (sz, accFillSz, avgPx, fee, feeCcy, ordId are the venue's) laid out as a frame with an invented tradeId, and ws_margin_order is the buy frame with instType MARGIN (no margin order was placed): both exist to pin the mapper, not the wire.",
+  "ws_buy_live": {
+    "arg": {"channel": "orders", "instType": "ANY", "uid": "0"},
+    "data": [{"accFillSz": "0", "execType": "", "fee": "0", "feeCcy": "BTC", "fillFee": "0", "fillFeeCcy": "", "fillPx": "", "fillSz": "0", "instId": "BTC-USDT", "instType": "SPOT", "ordType": "market", "posSide": "", "px": "", "side": "buy", "state": "live", "sz": "0.00002", "tdMode": "cross", "tgtCcy": "base_ccy", "tradeId": "", "clOrdId": "okxclswb1390301483", "ordId": "4056324874624217089", "uTime": "1793390301624"}]
+  },
+  "ws_buy_filled": {
+    "arg": {"channel": "orders", "instType": "ANY", "uid": "0"},
+    "data": [{"accFillSz": "0.00002", "execType": "T", "fee": "-0.00000002", "feeCcy": "BTC", "fillFee": "-0.00000002", "fillFeeCcy": "BTC", "fillPx": "76927.2", "fillSz": "0.00002", "instId": "BTC-USDT", "instType": "SPOT", "ordType": "market", "posSide": "", "px": "", "side": "buy", "state": "filled", "sz": "0.00002", "tdMode": "cross", "tgtCcy": "base_ccy", "tradeId": "1418224356", "clOrdId": "okxclswb1390301483", "ordId": "4056324874624217089", "fillTime": "1793390301624", "uTime": "1793390301624"}]
+  },
+  "ws_sell_filled": {
+    "arg": {"channel": "orders", "instType": "ANY", "uid": "0"},
+    "data": [{"accFillSz": "0.00008492", "execType": "T", "fee": "-0.006530628236", "feeCcy": "USDT", "fillFee": "-0.006530628236", "fillFeeCcy": "USDT", "fillPx": "76903.3", "fillSz": "0.00008492", "instId": "BTC-USDT", "instType": "SPOT", "ordType": "market", "posSide": "", "px": "", "side": "sell", "state": "filled", "sz": "0.00008492", "tdMode": "cross", "tgtCcy": "base_ccy", "tradeId": "1418224370", "clOrdId": "okxclssms10390338808", "ordId": "4056326126976282625", "fillTime": "1793390338945", "uTime": "1793390338945"}]
+  },
+  "rest_fills_buy_row": {"billId": "4056326109527977985", "clOrdId": "okxclssmk9390338282", "execType": "T", "fee": "-0.00000002", "feeCcy": "BTC", "feeRate": "-0.001", "fillFwdPx": "", "fillIdxPx": "", "fillMarkPx": "", "fillMarkVol": "", "fillPnl": "0", "fillPx": "76903.4", "fillPxUsd": "", "fillPxVol": "", "fillSz": "0.00002", "fillTime": "1793390338425", "instId": "BTC-USDT", "instType": "SPOT", "ordId": "4056326109494423553", "posSide": "net", "side": "buy", "subType": "1", "tag": "", "tradeId": "1418224369", "tradeQuoteCcy": "USDT", "ts": "1793390338425"},
+  "rest_order_buy_row": {"accFillSz": "0.00002", "avgPx": "76903.4", "category": "normal", "clOrdId": "okxclssmk9390338282", "fee": "-0.00000002", "feeCcy": "BTC", "fillSz": "0.00002", "instId": "BTC-USDT", "instType": "SPOT", "ordId": "4056326109494423553", "ordType": "market", "posSide": "net", "side": "buy", "state": "filled", "sz": "0.00002", "tdMode": "cross", "tgtCcy": "base_ccy", "uTime": "1793390338425"},
+  "ws_margin_order": {
+    "arg": {"channel": "orders", "instType": "ANY", "uid": "0"},
+    "data": [{"accFillSz": "0.00002", "execType": "T", "fee": "-0.00000002", "feeCcy": "BTC", "fillFee": "-0.00000002", "fillFeeCcy": "BTC", "fillPx": "76927.2", "fillSz": "0.00002", "instId": "BTC-USDT", "instType": "MARGIN", "ordType": "market", "posSide": "net", "side": "buy", "state": "filled", "sz": "0.00002", "tdMode": "cross", "tradeId": "999", "clOrdId": "handplaced", "ordId": "1", "fillTime": "1793390301624", "uTime": "1793390301624"}]
+  }
+}

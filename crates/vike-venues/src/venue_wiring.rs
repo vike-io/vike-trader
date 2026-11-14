@@ -1,0 +1,302 @@
+//! **THE VENUE WIRING TABLE** — how the trading daemon wires each roster venue: the recon/exec
+//! class `venues.json` publishes as `wiring` and, for a venue the daemon mounts an engine for, WHAT its
+//! engine is mounted on ([`EngineMount`]) and where the engine sits in the core.
+//!
+//! ⚠ **No row names a symbol** (the owner's ruling of 2026-11-13, "remove all hardcoded symbols";
+//! decision 0156's amendment of that date). The symbol an account's engine is mounted on is that
+//! account's own row (`account.symbol`, `vike_config::account_arming::account_symbol`), an account whose
+//! row states none does NOT RUN (`vike_model::ArmingBlock::NoAccountSymbol`), and nothing here or
+//! anywhere chooses one for it. This table says only whether the venue's engine is mounted on a symbol
+//! at all, and whether that symbol's NAME states its money.
+//!
+//! ONE table, read by every crate that used to keep its own copy of it: `vike_tradehub_core::wired_markets`
+//! turns its engine rows into the markets a build mounts (keeping a row whose registry row is a
+//! `Mount` in that build, dropping a `FeatureAbsent` one); `vike-docs` renders `VenueWiring::as_str`;
+//! the account read asks [`mounts_a_symbol`]; the mount fence asks [`mount_of`]. It came down from
+//! `vike-docs`' `WIRING` and `vike-tradehub`'s per-venue `RuntimeMarket` consts (decision 0158), as
+//! `docs/decisions/0098-vike-run-merges-into-vike-mount.md`'s "What would reopen this" prescribes once a
+//! table has more than one consumer: below all of them, never copied.
+//!
+//! **ROW order is MOUNT order**: the order the node mounts venues in and the order
+//! `vike_tradehub_core::armed_live_venues` claims live-account locks in. `engine_rank` is ENGINE order: the
+//! order the core holds the default engines in (the smallest is the primary) and lists their
+//! reconcile legs in. The two differ for deribit, mounted fourth and held sixth, because that is
+//! how the hand-unrolled assembly was written; decision 0098 keeps both.
+//!
+//! **A row with an engine ARMS the venue in the daemon's node.** The scaffold's placeholder is
+//! `VenueWiring::PaperOnly`, which carries none. Give a venue an engine only once its bridge's mount
+//! can arm live, on a pair that venue's own live smoke actually drives (a guessed ticker mounts a
+//! feed nobody watches); if the arm is feature-gated, the class is `VenueWiring::FeatureGated` and the
+//! daemon's registry row (`crates/vike-gatewayhub/src/registry/trade.rs`'s `REGISTRY`) takes the matching
+//! `#[cfg]` pair in the same PR. Whether a profile may NAME the venue is a second question,
+//! answered by the daemon's feed arms (`crates/vike-tradehub/src/feeds.rs`'s `venue_feed_plan`).
+//!
+//! Playbook rules (`crates/vike-venues/CLAUDE.md`, "Per-venue capability maps (the playbook)"): one
+//! NAMED row per [`vike_model::VENUES`] entry, a roster-completeness test and a verbatim pin
+//! (`venue_wiring_tests.rs`), and a `just new-venue` marker.
+
+/// **What a venue's engine is mounted on** — a fact of the venue, never a symbol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineMount {
+    /// A symbol each account's row states (`account.symbol`).
+    Symbol,
+    /// A symbol each account's row states, whose NAME states the money it is quoted in (a currency pair,
+    /// or an IG epic around one): the engine's ledger is anchored to an account's currency only when the
+    /// mounted pair is quoted in it (`vike_tradehub_core::unanchorable_mount`, decision 0183).
+    Pair,
+    /// No symbol: the engine is ACCOUNT-WIDE (exec, the fill pump and reconcile key off the account, not
+    /// a market), so an account of the venue states none.
+    Account,
+}
+
+/// How a venue's EXEC and RECONCILE sides are wired into the trading daemon — the `wiring` field
+/// of `venues.json` and, for the classes the daemon mounts, the engine it mounts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VenueWiring {
+    /// The venue's registry row (`crates/vike-gatewayhub/src/registry/trade.rs`'s `REGISTRY`) is an
+    /// unconditional `VenueRow::Adapter` whose mount builds a real `ExecutionClient` from
+    /// credentials, and the daemon mounts an engine per account that runs (this variant's `mount` and
+    /// `engine_rank`), so the venue is in the default reconcile set.
+    LiveExecutionReconcile { mount: EngineMount, engine_rank: u8 },
+    /// The venue's mount is registered only under a vike-tradehub cargo feature (`ibkr` /
+    /// `polymarket` / `fxcm`); a build without it registers the venue `FeatureAbsent`, and
+    /// `vike_tradehub_core::wired_markets` drops the row, so that build mounts no engine for it.
+    /// Reconcile, where wired, sits behind the same feature (plus each venue's own inner gates).
+    FeatureGated { mount: EngineMount, engine_rank: u8 },
+    /// Exec runs through an owned child process (the dukascopy JForex Java sidecar over JSON-lines
+    /// stdio), and the venue is in the default reconcile set. The daemon mounts its engine (this
+    /// variant's `mount` and `engine_rank`; docs/decisions/0168), and the venue's mount
+    /// (`VenueAdapterDukascopy` in `crates/bridges/dukascopy/src/adapter.rs`) hands the node a
+    /// `ReconcileClient` when the reconcile gate is on and the sidecar's jar answers the `recon` question
+    /// (`crates/bridges/dukascopy/src/reconcile/mod.rs`'s module doc; the verdict is
+    /// `docs/decisions/0235-dukascopy-reconciles-by-asking-the-sidecar-what-the-venue-lists.md`, which
+    /// replaced the variant `SidecarExecNoRecon` that the sidecar protocol's missing order query had
+    /// made the only honest class). The class stays apart from `LiveExecutionReconcile` because the exec side
+    /// is a child process the bridge restarts by itself, which the tradehub's venue-path watch asks about
+    /// (`crates/vike-tradehub/src/venue_backend/gateway/venue_link.rs`'s `reports_path`). The published string
+    /// changed with the class: `sidecar-exec-recon`.
+    SidecarExecutionReconcile { mount: EngineMount, engine_rank: u8 },
+    /// Only the paper fallback mounts it — no live exec arm anywhere. No roster venue today; the
+    /// variant exists so the class is expressible, and it is the scaffold's conservative
+    /// placeholder for a venue whose bridge just landed (no engine, so the daemon arms nothing).
+    PaperOnly,
+}
+
+impl VenueWiring {
+    /// The kebab-case string `venues.json` carries.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            VenueWiring::LiveExecutionReconcile { .. } => "live-exec-recon",
+            VenueWiring::FeatureGated { .. } => "feature-gated",
+            VenueWiring::SidecarExecutionReconcile { .. } => "sidecar-exec-recon",
+            VenueWiring::PaperOnly => "paper-only",
+        }
+    }
+
+    /// The engine the daemon mounts for this venue, `(mount, engine_rank)`; `None` for a class the
+    /// daemon mounts nothing for. `engine_rank` is the venue's DEFAULT engine's position in the core and
+    /// of its reconcile leg: ascending, smallest = primary, distinct per table.
+    #[must_use]
+    pub const fn engine(self) -> Option<(EngineMount, u8)> {
+        match self {
+            VenueWiring::LiveExecutionReconcile { mount, engine_rank }
+            | VenueWiring::FeatureGated { mount, engine_rank }
+            | VenueWiring::SidecarExecutionReconcile { mount, engine_rank } => {
+                Some((mount, engine_rank))
+            }
+            VenueWiring::PaperOnly => None,
+        }
+    }
+}
+
+/// The wiring of every roster venue, in MOUNT order (the module doc).
+///
+/// `#[rustfmt::skip]`: a `just new-venue` marker at the TAIL of a bracketed literal is re-indented
+/// by rustfmt once a row ending in a trailing `//` comment is generated above it, which defeats
+/// `--remove`. Gated by `crates/vike-ops/tests/venues/new_venue_gate/rustfmt_rule.rs`'s
+/// `a_trailing_comment_marker_is_rustfmt_skipped_unless_a_recognised_sibling_follows`.
+#[rustfmt::skip]
+pub const VENUE_WIRING: &[(&str, VenueWiring)] = &[
+    // Binance, the PRIMARY engine: the first row, mounted first and held first (`engine_rank: 0`).
+    // Its resync supervisor takes the recon trigger.
+    ("binance", VenueWiring::LiveExecutionReconcile { mount: EngineMount::Symbol, engine_rank: 0 }),
+    // Bybit. Its resync supervisor takes the recon trigger.
+    ("bybit", VenueWiring::LiveExecutionReconcile { mount: EngineMount::Symbol, engine_rank: 1 }),
+    // OKX. Its resync supervisor takes the recon trigger.
+    ("okx", VenueWiring::LiveExecutionReconcile { mount: EngineMount::Symbol, engine_rank: 2 }),
+    // Deribit, mounted so options orders (from the chain-click → confirm ticket) route to its live
+    // exec engine. The future-kind fills channel still reconciles option fills via
+    // `get_user_trades`; broadening the live fills channel to `any` kind is a documented follow-up.
+    // Deribit's `ReconcileClient` IS wired — but inside its bridge's own mount, which `make_engine`
+    // reaches through the registry (`crates/bridges/deribit/src/adapter.rs`'s `VenueAdapterDeribit`: a
+    // dedicated authed order-WS). It takes no recon trigger, so it reconciles on the periodic
+    // interval only, not when its socket reconnects.
+    //
+    // The one row whose two orders differ: mounted FOURTH (its row position here) and
+    // held SIXTH (`engine_rank: 5`), because that is how the hand-unrolled assembly was written.
+    // Both orders are behaviour, and both are kept (docs/decisions/0098).
+    ("deribit", VenueWiring::LiveExecutionReconcile { mount: EngineMount::Symbol, engine_rank: 5 }),
+    // Hyperliquid: LIVE (testnet for a `demo` account; an ACTIVE `live` hyperliquid account row for
+    // mainnet — decisions 0095 and 0119, `VenueNetwork::for_tier`) when the key is in the store, else
+    // paper. Mounted on the symbol the account states (any coin of the kept list,
+    // `<project>/instruments/hyperliquid.json`); spot orders route here too. Its reconcile client is `Some` on the live path —
+    // `vike_hyperliquid::adapter::live_runtime_for_account` builds `ReconcileClientHyperliquid` via its
+    // bespoke signer/transport, and `crates/bridges/hyperliquid/src/adapter.rs`'s
+    // `VenueAdapterHyperliquid` hands it back through the mount contract (docs/decisions/0096), so HL
+    // joins the node's `reconcile_clients` and reconciles on the periodic timer. It ALSO takes the
+    // recon trigger: HL's exec pump fires it on every WS reconnect so a reconcile pass re-syncs state
+    // missed while the socket was down (like the binance/bybit/okx venues).
+    ("hyperliquid", VenueWiring::LiveExecutionReconcile { mount: EngineMount::Symbol, engine_rank: 3 }),
+    // Aster USDⓈ-M perp (`.P` → fapi). LIVE MAINNET exec when a `live`-tier account holds its
+    // `USER` + `PRIVATE_KEY` fields (real money — see `VenueAdapterAster` in
+    // `crates/bridges/aster/src/adapter.rs`), TESTNET for a `demo`-tier account holding them, else paper
+    // (an account holds ONE key set at its ONE tier, and a live account never falls back to another
+    // tier's keys). Its reconcile client is the ReconcileClientAster (built by that mount
+    // from the resolved env), so aster reconciles whenever the reconcile gate is on. No recon trigger
+    // (aster's spawn takes none) → periodic/startup reconcile only, not event-driven.
+    ("aster", VenueWiring::LiveExecutionReconcile { mount: EngineMount::Symbol, engine_rank: 4 }),
+    // Alpaca US-equity broker. LIVE (sandbox) exec when a `demo` alpaca account holds its
+    // `CLIENT_ID` + `CLIENT_SECRET` + `ACCOUNT_ID` fields, else
+    // paper (see `crates/bridges/alpaca/src/adapter.rs`'s `VenueAdapterAlpaca` — its market feed is
+    // `crates/vike-tradehub/src/feeds.rs`'s alpaca arm (split-plane I9)). Its reconcile
+    // client is the `ReconcileClient` that mount builds (a dedicated Bearer `AlpacaTransport` on a SECOND
+    // OAuth2 lifecycle), so alpaca reconciles whenever the reconcile gate is on. No recon trigger →
+    // periodic/startup reconcile only, like deribit/aster — and with no feed it has no feed status,
+    // so its health gate reads Healthy (never blocked), like deribit.
+    ("alpaca", VenueWiring::LiveExecutionReconcile { mount: EngineMount::Symbol, engine_rank: 6 }),
+    // cTrader FX/CFD (demo). LIVE exec when a `demo` ctrader account holds its OAuth grant
+    // (and the venue its application pair), else
+    // paper (see `crates/bridges/ctrader/src/adapter.rs`'s `VenueAdapterCtrader` — its market feed is
+    // `crates/vike-tradehub/src/feeds.rs`'s ctrader arm (split-plane I9)). Its reconcile
+    // client is the `ReconcileClient` that mount builds (a dedicated authed protobuf socket), so ctrader
+    // reconciles whenever the reconcile gate is on. No recon trigger → periodic/startup reconcile
+    // only, like deribit/aster — and with no feed status its health gate reads Healthy (never
+    // blocked), exactly like deribit.
+    ("ctrader", VenueWiring::LiveExecutionReconcile { mount: EngineMount::Pair, engine_rank: 7 }),
+    // IG (IG Group) FX/CFD — an epic on the demo account. LIVE exec when a `demo` IG
+    // account holds its config fields, else paper (see `crates/bridges/ig/src/adapter.rs`'s
+    // `VenueAdapterIg` — its market feed is `crates/vike-tradehub/src/feeds.rs`'s ig arm
+    // (split-plane I9)). Its reconcile client is the `ReconcileClient` that mount
+    // builds (a dedicated logged-in `IgSession`), so IG joins the node's `reconcile_clients` and
+    // reconciles whenever the reconcile gate is on. No recon trigger → periodic/startup reconcile
+    // only, like deribit/aster/alpaca/ctrader — and with no feed status its health gate reads Healthy
+    // (never blocked), like alpaca/ctrader.
+    ("ig", VenueWiring::LiveExecutionReconcile { mount: EngineMount::Pair, engine_rank: 8 }),
+    // OANDA v20 FX — the demo/fxPractice account. LIVE exec when a `demo` oanda account
+    // holds its config fields, else paper (see oanda's bridge mount, `VenueAdapterOanda` — its market
+    // feed is `crates/vike-tradehub/src/feeds.rs`'s oanda arm (split-plane I9)). Its reconcile
+    // client is the `ReconcileClient` that mount builds (a
+    // dedicated Bearer `OandaTransport` on its own `/summary`-probed session), so OANDA joins the node's
+    // `reconcile_clients` and reconciles whenever the reconcile gate is on. Interval-only reconcile (no
+    // recon trigger), like ig/alpaca/ctrader; no feed status → its health gate reads Healthy.
+    ("oanda", VenueWiring::LiveExecutionReconcile { mount: EngineMount::Pair, engine_rank: 9 }),
+    // IBKR US-equity broker (an account's symbol is the canonical `symbol.exchange.currency` form
+    // `parse_simplified` maps to a conId), a FEATURE-GATED live venue. This row is ALWAYS in the
+    // table; vike-tradehub's `ibkr` feature (→ `vike-ibkr/ibkr` → the `ibapi` registry crate) is what
+    // adds the bridge edge and makes the registry row a `Mount`. With the feature OFF (the default)
+    // the registry row is `FeatureAbsent`, `vike_tradehub_core::wired_markets` drops this row so the node
+    // wires no ibkr market, and no ibapi is built. LIVE exec when the
+    // account's config fields resolve AND a TWS/IB Gateway is running, else paper (an EXEC-ONLY mount -
+    // no market feed). Its reconcile client is the cpapi `ReconcileClientIbkrCpapi` its bridge's mount builds
+    // (`VenueAdapterIbkr` in `crates/bridges/vike-ibkr/src/adapter.rs`; its OWN dedicated CP-Gateway
+    // transport), so ibkr joins the node's `reconcile_clients` and reconciles whenever the reconcile gate
+    // is on. No recon trigger → periodic/startup reconcile only, like deribit/aster/alpaca — and with
+    // no feed status its health gate reads Healthy (never blocked), like deribit/alpaca.
+    ("ibkr", VenueWiring::FeatureGated { mount: EngineMount::Symbol, engine_rank: 10 }),
+    // Polymarket, behind vike-tradehub's `polymarket` feature, which registers
+    // `crates/bridges/polymarket/src/adapter.rs`'s `VenueAdapterPolymarket`. `EngineMount::Account` on
+    // purpose: this venue's mount is ACCOUNT-WIDE — exec, the user-WS fill pump and reconcile all key
+    // off the wallet, not a market — and the mount reads the symbol only to seed its neg-risk lookup,
+    // which resolves per token on demand anyway, so an account of it states no symbol. Mounting one
+    // 5-minute window would be actively wrong: `btc-updown-5m-*` markets expire every 300s.
+    //
+    // ⚠ The feature only makes the registry row a `Mount`, so `vike_tradehub_core::wired_markets` keeps
+    // this row (the row itself is always in the table). What it mounts is decided inside that mount by
+    // `flags.poly_exec` / `flags.poly_reconcile` in the credential map it is handed (the daemon folds
+    // both rows in), both default-off ⇒ paper engine, no network call. Its reconcile handle is `None`
+    // when `flags.poly_reconcile` is off or creds are absent, and it has no feed status, so its health
+    // gate reads Healthy — interval-only reconcile, like deribit/alpaca/ibkr.
+    //
+    // ⚠ Run it under `config.reconcile_policy = quarantine` UNLESS `flags.poly_exec` is also on: with exec
+    // on paper, `hybrid` auto-applies `PositionDrift` and folds the LIVE account's position into the
+    // PAPER engine's books at the venue's avg price. (A comment in the node assembly once blamed
+    // `OrphanLocalOrder` "auto-cancelling every pass" — false: that kind resolves to zero events
+    // under every policy. See `crates/vike-execution/tests/recon/reconcile_policy_pin.rs`.) See the root
+    // `CLAUDE.md`'s *Reconciliation engine* Polymarket bullet.
+    ("polymarket", VenueWiring::FeatureGated { mount: EngineMount::Account, engine_rank: 11 }),
+    // FXCM ForexConnect FX, behind vike-tradehub's `fxcm` feature — the one feature-gated
+    // venue whose live gate is a property of the BOX. The feature registers `VenueAdapterFxcm` in
+    // `crates/bridges/fxcm/src/adapter.rs`; the mount goes live only when a `demo` fxcm account's config
+    // fields resolve AND `vike_fxcm::sdk_available()` is true. On a box where the ForexConnect shim does
+    // not load, the mount REFUSES to go live with an `error!` and lands on paper. Every CI runner
+    // takes the refusing branch, because none of them has the SDK. The account's stated pair is mapped to
+    // the venue's slashed spelling by `crates/bridges/fxcm/src/execution/mod.rs`'s `to_fxcm_instrument`.
+    //
+    // ⚠ Before fxcm had a wiring row the feature linked the SDK and wired NOTHING: the node assembly
+    // had no fxcm call and the table no fxcm row, so an operator who installed the `vike-tradehub-fxcm`
+    // release asset reasonably believed FXCM was live and it was not, with no error anywhere. (That
+    // asset is gone: the shipped `vike` carries this arm, and whether it arms is a property of the box
+    // where `just fxcm-package` put the shim beside the SDK libraries.) The row and its
+    // call landed in the same branch as the sizing conversion
+    // (`crates/bridges/fxcm/src/execution/event_mapper.rs`'s `lots_for`) — deliberately, because before it
+    // `qty` was read as a LOT COUNT while every caller sends base units, and wiring the venue without
+    // it would have made a thousand-fold oversize reachable with real money.
+    //
+    // EXEC-ONLY, like alpaca/ctrader/ig/oanda/ibkr: this bridge has no market-data seam at all
+    // (`DataClientCapabilities::NONE`, `WebsocketSessionSpec::No`), so this daemon's feed wiring (`vike_tradehub::feeds`) builds no feed
+    // for it and its health gate reads Healthy. Its reconcile client is the `ReconcileClientFxcm` its
+    // bridge's mount builds, on its OWN dedicated ForexConnect session, so it joins the node's
+    // `reconcile_clients` and reconciles whenever the reconcile gate is on; no recon trigger ->
+    // periodic/startup only.
+    //
+    // ⚠ RECONCILE IS NOT OPTIONAL IN PRACTICE HERE, and that is this venue's own caps row talking:
+    // the async fill lane routes on an in-process map built at accept time, so across a RESTART
+    // every re-surfaced trade is unroutable and dropped (at `warn!`). `fetch_fill_reports` reading
+    // the same Trades table by the same `trade_id` is what recovers them. Mounting fxcm with reconcile
+    // refused (`flags.reconcile_off`) means accepting the loss of every fill that lands across a
+    // restart.
+    ("fxcm", VenueWiring::FeatureGated { mount: EngineMount::Pair, engine_rank: 12 }),
+    // Dukascopy FX, the JForex sidecar's DEMO session (docs/decisions/0168). LIVE exec when the one ACTIVE `dukascopy` account
+    // row holds its `LOGIN` + `PASSWORD`, at tier `demo` only (a `live` row is `LiveTierNotWired`),
+    // else paper (`crates/bridges/dukascopy/src/adapter.rs`'s `VenueAdapterDukascopy`). ONE sidecar
+    // per process, so exactly one dukascopy account is armed (a named labelled account takes it and
+    // the default one yields: `crates/vike-gatewayhub/src/trade/adapters/exclusive.rs`'s
+    // `pick_holder`). EXEC-ONLY, like fxcm: no live market-data seam (`DataClientCapabilities::NONE`), so
+    // `crates/vike-tradehub/src/feeds.rs` builds no feed for it, a profile cannot name it as its own
+    // venue, and its health gate reads Healthy. RECONCILES when the reconcile gate is on and the jar
+    // answers the `recon` question: the mount hands the node a `ReconcileClient` that pulls the venue's own
+    // orders and net positions from the sidecar (the variant's doc), so under `quarantine` the venue
+    // fetches, reports and HOLDS divergences and folds nothing. It stays outside
+    // `vike_gatewayhub_client::trade::RECONCILE_READS_ADMITTED`, so its restored orders on an admitted
+    // symbol are held, never declared gone.
+    ("dukascopy", VenueWiring::SidecarExecutionReconcile { mount: EngineMount::Pair, engine_rank: 13 }),
+    // vike:new-venue:row ("{venue}", VenueWiring::PaperOnly), // TODO(new-venue: {venue}): classify the recon/exec wiring — PaperOnly is the scaffold's conservative placeholder (no engine, the daemon arms nothing), not a verdict
+];
+
+/// The declared [`VenueWiring`] for a canonical venue string; `None` for anything not in
+/// [`VENUE_WIRING`]. `None` for a ROSTER venue is a test failure (`venue_wiring_tests.rs`'s
+/// `the_wiring_table_is_roster_complete`), never a state a reader should tolerate.
+#[must_use]
+pub fn wiring_for(venue: &str) -> Option<VenueWiring> {
+    VENUE_WIRING.iter().find(|(v, _)| *v == venue).map(|&(_, w)| w)
+}
+
+/// **What `venue`'s engine is mounted on** ([`EngineMount`]); `None` for a venue with no engine or one
+/// not on the roster.
+#[must_use]
+pub fn mount_of(venue: &str) -> Option<EngineMount> {
+    wiring_for(venue)?.engine().map(|(mount, _)| mount)
+}
+
+/// **Whether an account of `venue` states the symbol its engine is mounted on**: `false` only for a venue
+/// whose engine is account-wide ([`EngineMount::Account`]: polymarket). A venue with no engine row, or one
+/// not on the roster, answers `true`: what does not say otherwise needs a symbol.
+#[must_use]
+pub fn mounts_a_symbol(venue: &str) -> bool {
+    mount_of(venue) != Some(EngineMount::Account)
+}
+
+#[cfg(test)]
+#[path = "venue_wiring_tests.rs"]
+mod tests;

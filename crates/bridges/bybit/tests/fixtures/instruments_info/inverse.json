@@ -1,0 +1,159 @@
+{
+  "retCode": 0,
+  "retMsg": "OK",
+  "result": {
+    "category": "inverse",
+    "list": [
+      {
+        "symbol": "BTCUSD",
+        "contractType": "InversePerpetual",
+        "status": "Trading",
+        "baseCoin": "BTC",
+        "quoteCoin": "USD",
+        "launchTime": "1542211200000",
+        "deliveryTime": "0",
+        "deliveryFeeRate": "",
+        "priceScale": "2",
+        "leverageFilter": {
+          "minLeverage": "1",
+          "maxLeverage": "100.00",
+          "leverageStep": "0.01"
+        },
+        "priceFilter": {
+          "minPrice": "0.10",
+          "maxPrice": "1999999.80",
+          "tickSize": "0.10"
+        },
+        "lotSizeFilter": {
+          "maxOrderQty": "25000000",
+          "minOrderQty": "1",
+          "qtyStep": "1",
+          "postOnlyMaxOrderQty": "25000000",
+          "maxMktOrderQty": "5000000",
+          "minNotionalValue": "5"
+        },
+        "unifiedMarginTrade": true,
+        "fundingInterval": 480,
+        "settleCoin": "BTC",
+        "copyTrading": "none",
+        "upperFundingRate": "0.005",
+        "lowerFundingRate": "-0.005",
+        "isPreListing": false,
+        "preListingInfo": null,
+        "riskParameters": {
+          "priceLimitRatioX": "0.03",
+          "priceLimitRatioY": "0.05"
+        },
+        "displayName": "BTCUSD",
+        "symbolType": "",
+        "forbidUplWithdrawal": false,
+        "symbolId": 1,
+        "fullName": "Bitcoin",
+        "marketRegion": "",
+        "underlyingTicker": "",
+        "tags": []
+      },
+      {
+        "symbol": "BTCUSDZ26",
+        "contractType": "InverseFutures",
+        "status": "Trading",
+        "baseCoin": "BTC",
+        "quoteCoin": "USD",
+        "launchTime": "1781251200000",
+        "deliveryTime": "1798185600000",
+        "deliveryFeeRate": "0.0005",
+        "priceScale": "2",
+        "leverageFilter": {
+          "minLeverage": "1",
+          "maxLeverage": "100.00",
+          "leverageStep": "0.01"
+        },
+        "priceFilter": {
+          "minPrice": "0.50",
+          "maxPrice": "9999999.00",
+          "tickSize": "0.50"
+        },
+        "lotSizeFilter": {
+          "maxOrderQty": "5000000",
+          "minOrderQty": "1",
+          "qtyStep": "1",
+          "postOnlyMaxOrderQty": "5000000",
+          "maxMktOrderQty": "1000000",
+          "minNotionalValue": "5"
+        },
+        "unifiedMarginTrade": true,
+        "fundingInterval": 0,
+        "settleCoin": "BTC",
+        "copyTrading": "none",
+        "upperFundingRate": "0",
+        "lowerFundingRate": "0",
+        "isPreListing": false,
+        "preListingInfo": null,
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "displayName": "BTCUSD1225",
+        "symbolType": "",
+        "forbidUplWithdrawal": false,
+        "symbolId": 2708,
+        "fullName": "Bitcoin",
+        "marketRegion": "",
+        "underlyingTicker": "",
+        "tags": []
+      },
+      {
+        "symbol": "HYPEUSD",
+        "contractType": "InversePerpetual",
+        "status": "Trading",
+        "baseCoin": "HYPE",
+        "quoteCoin": "USD",
+        "launchTime": "1783421851000",
+        "deliveryTime": "0",
+        "deliveryFeeRate": "",
+        "priceScale": "3",
+        "leverageFilter": {
+          "minLeverage": "1",
+          "maxLeverage": "20.00",
+          "leverageStep": "0.01"
+        },
+        "priceFilter": {
+          "minPrice": "0.010",
+          "maxPrice": "199999.980",
+          "tickSize": "0.010"
+        },
+        "lotSizeFilter": {
+          "maxOrderQty": "100000",
+          "minOrderQty": "1",
+          "qtyStep": "1",
+          "postOnlyMaxOrderQty": "100000",
+          "maxMktOrderQty": "50000",
+          "minNotionalValue": "5"
+        },
+        "unifiedMarginTrade": true,
+        "fundingInterval": 240,
+        "settleCoin": "HYPE",
+        "copyTrading": "none",
+        "upperFundingRate": "0.025",
+        "lowerFundingRate": "-0.025",
+        "isPreListing": false,
+        "preListingInfo": null,
+        "riskParameters": {
+          "priceLimitRatioX": "0.05",
+          "priceLimitRatioY": "0.1"
+        },
+        "displayName": "HYPEUSD",
+        "symbolType": "",
+        "forbidUplWithdrawal": false,
+        "symbolId": 2743,
+        "fullName": "Hyperliquid",
+        "marketRegion": "",
+        "underlyingTicker": "",
+        "tags": []
+      }
+    ],
+    "nextPageCursor": ""
+  },
+  "retExtInfo": {},
+  "time": 1791726722523
+}
