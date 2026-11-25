@@ -1,0 +1,1300 @@
+//! End-to-end proof that `vike-cli trade` can actually PLACE AN ORDER — the two defects a clean
+//! install found, gated together because one user hits them in sequence in one session.
+//!
+//! Hermetic and loopback-only, the same shape as `tests/shipped_cli/backtest_cli.rs` one layer up: a REAL
+//! PAPER node (`vike_tradehub_core::test_support::paper_maker` + the real `vike_tradehub::{server, publish}`,
+//! the harness `crates/vike-tradehub/tests/control_roundtrip.rs` established) bound on an ephemeral
+//! `127.0.0.1:0` port, driven by the SHIPPED bin via `CARGO_BIN_EXE_vike-cli`. No credentials, no
+//! venue, no external network; this box's device key is made from an obviously-fake `DUMMY-*` value
+//! and written into a throwaway settings directory. The paper mount has no feed, so the maker never quotes and the
+//! ONLY orders in the node's book are the ones the REPL placed.
+//!
+//! # What each test would have caught
+//!
+//! - [`repl_submit_places_an_order_end_to_end`] — **both defects at once, through the shipped
+//!   binary.** The device key exists ONLY in the settings database (the process environment is
+//!   explicitly scrubbed of them), so a client that reads `std::env::var` and nothing else prints
+//!   "nothing to do" and exits 1 — DEFECT 2. Past that, the `submit` line must arrive at the node
+//!   with a pre-minted `order_client_id`, or the server answers "remote submit requires a
+//!   pre-minted order_client_id" and books nothing — DEFECT 1. The assertion is not the printed
+//!   line alone: the order is read back off a SEPARATE observe connection to the node's own pushed
+//!   snapshot, so it proves an order exists, not that a message was formatted.
+//! - [`repl_with_no_key_anywhere_names_the_store_it_looked_in`] — the honest failure. With no
+//!   device key in the store the command still exits 1, but the message NAMES the store path and
+//!   how this box gets a key. The old message said "not set in the environment" while the keys sat
+//!   unread in that file.
+//! - [`two_submits_in_one_session_book_two_distinct_orders`] — the mint is per ORDER, not per
+//!   session. The node refuses a repeated id (it used to book ONE order and silently drop the
+//!   second); only counting the orders at the node catches a regression.
+//! - [`a_node_with_control_disabled_says_so_instead_of_blaming_the_key`] — the write refusal named
+//!   the wrong cause. With the node's `tradehub_control` off and a VALID key in the store, every
+//!   write once blamed a missing key, sending the operator after a key that was never the problem.
+//!   The wiring is what broke — all three causes produced `control: None` — so only a real refused
+//!   handshake proves the right one is reported.
+//! - [`submit_refuses_an_unmintable_order_client_id_while_cancel_warns_and_still_sends`] — `submit` and
+//!   `cancel` taught different rules about the same field. Both speak about the charset now, with
+//!   deliberately different force; the test pins BOTH halves, because making them agree by
+//!   tightening `cancel` would leave an order placed through another surface uncancellable here.
+//! - [`the_preview_prints_typed_numbers_without_a_float_tail`] — `0.4 * 3` reached the guardrail
+//!   line as `1.2000000000000002`. The renderer's own tests live in `vike_client::verbs`; this proves the
+//!   REPL uses it, on both preview lines.
+//!
+//! # The ONE-SHOT kill switch (`vike-cli trade halt` / `resume`)
+//!
+//! ⚠ **These three exist because the write path they drive shipped with no test that reached it.**
+//! Ruling 17 gave `halt`/`resume` their own argv verbs — a command a runbook or a unit file can run
+//! against a LIVE order-signing daemon — and every test of it was a unit test of the PARSER. A
+//! parser test cannot see the four things that actually stop a node: that the resolved command
+//! reaches the wire, that the node applies it, that the confirm gate is between them, and what the
+//! exit code is. All three below run the SHIPPED binary against the same in-process paper node the
+//! REPL tests use, and each asserts the mode the node ENDS IN — read back off an independent
+//! observe connection, never off a printed line.
+//!
+//! - [`the_one_shot_halt_and_resume_change_the_nodes_trading_mode`] — the write path end to end,
+//!   both directions, with the exit code. A `halt` that printed "accepted" and left the node Active
+//!   passes every other test in this repository.
+//! - [`a_one_shot_halt_with_a_closed_stdin_aborts_and_halts_nothing`] — the confirm gate: EOF is a
+//!   NO, the exit is non-zero, and **the node is still Active afterwards**. Asserting the printed
+//!   "aborted" line alone would pass on a build that sent the command and then said otherwise.
+//! - [`a_piped_confirmation_halts_the_node_without_yes`] — the TRUE behaviour of a non-terminal
+//!   stdin, pinned because the shipped `--help` and `docs/ops/kill-switches.md` both claimed the
+//!   opposite ("a piped stdin reads as NO") until 2026-09-10. It is a `read_line`: `y` on a pipe
+//!   confirms. This test fails the day that stops being true, which is the day those words have to
+//!   change back — see `crates/vike-cli/src/cmd/trade/write.rs`'s `confirm_stdin`.
+//!
+//! # A settings write asks ONE question (`docs/decisions/0086` point 7)
+//!
+//! - [`a_policy_set_setting_goes_out_after_one_confirm`] — the REPL used to ask a SECOND question
+//!   after the `y/N`, a retype of the key that `--yes` could not answer. Over a pipe that prompt ate
+//!   whatever line came next, so a `set-setting …` / `y` / `quit` session wrote NOTHING. Judged by
+//!   the ROW on the node's own settings database, not by a printed line — and the `old → new` line
+//!   the operator confirms against must print before the write's result does.
+//! - [`a_policy_set_setting_under_yes_goes_out_with_no_prompt`] — `--yes` covers the settings
+//!   write like every other write verb; nothing is left for a script to be unable to answer.
+//!
+//! ⚠ These drive the REPL over a PIPE, not a terminal. `rustyline` falls back to plain line reads
+//! when stdin is not a tty, which is what makes the shipped binary testable at all; `--yes` skips
+//! the interactive confirm. A pipe also means the harness's own writes RACE the child, and one of
+//! these tests expects the binary to be GONE before it reads anything — so [`run_trade`] takes a
+//! [`Liveness`] declaring which case it is. See that enum for why a blanket "ignore `BrokenPipe`"
+//! would be the wrong fix.
+
+use std::io::Write;
+use std::net::{SocketAddr, TcpListener};
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::thread;
+
+use vike_hub_protocol::auth::HubKeys;
+use vike_model::TradingState;
+use vike_tradehub::{publish, server};
+use vike_tradehub_client::TradehubCoreHandle;
+use vike_tradehub_core::StrategyCorePaper;
+
+use crate::common;
+use std::time::Duration;
+use vike_log::poll::wait_until;
+
+/// The paper mount's symbol. Any string works — nothing resolves it against a venue.
+const TOKEN: &str = "CLI_TRADE_E2E_TOKEN";
+/// Far-future resolution so the A-S horizon is positive (mirrors the vike-tradehub-core offline mount test).
+const RESOLUTION_TIMESTAMP: i64 = 3_000_000_000;
+
+/// Obviously-fake key VALUES, each naming a fixture device (`common::device_for`) the node lists at a
+/// role — and the `DUMMY-` prefix makes it unmistakable in a diff or a process listing that no real
+/// credential is involved.
+const OBSERVE_KEY: &str = "DUMMY-observe-key-for-the-vike-cli-e2e";
+const CONTROL_KEY: &str = "DUMMY-control-key-for-the-vike-cli-e2e";
+
+/// A resting limit far from any market: with no feed it stays WORKING forever, so the node's
+/// snapshot deterministically carries exactly what the REPL placed.
+const SUBMIT_LINE: &str = "submit polymarket CLI_TRADE_E2E_TOKEN buy 20 @0.40";
+
+/// Build a PAPER node and serve it on an ephemeral loopback port, the client's device listed at a
+/// writing role and the core's `CommandSink` threaded in (control ENABLED). The returned mount keeps the core alive.
+fn spawn_hub() -> (StrategyCorePaper, SocketAddr) {
+    spawn_hub_with_control(true)
+}
+
+/// [`spawn_hub`], with the node's CONTROL scope on or off.
+///
+/// `control_enabled = false` reproduces a node that refuses the CONTROL scope (a node started WITHOUT
+/// `flags.tradehub_control`): the client's device is listed at `observe` alone, so its `Scope::Write`
+/// handshake is refused while its reads pass. The client still holds a perfectly good key — which is
+/// the entire point of the case.
+fn spawn_hub_with_control(control_enabled: bool) -> (StrategyCorePaper, SocketAddr) {
+    // No settings source: these cases drive the TRADE path; the SettingsShow arm's answer shape is
+    // pinned in vike-tradehub's tests/daemon/settings_show.rs.
+    spawn_hub_serving(control_enabled, None, "control")
+}
+
+/// [`spawn_hub`], with the node serving a SETTINGS source over `settings_dir` — the node-side
+/// store a `set-setting` line writes into (`docs/decisions/0086`: one row in
+/// `<settings_dir>/db/vike.db`), read and written by the same arm the shipped daemon runs. The
+/// client's device is listed at the ADMIN role: a settings write needs it (decision 0288, the owner's "1A").
+fn spawn_hub_with_settings(settings_dir: &Path) -> (StrategyCorePaper, SocketAddr) {
+    spawn_hub_serving(
+        true,
+        Some(server::settings::SettingsShowSource {
+            settings_dir: Some(settings_dir.to_path_buf()),
+            // No hot-apply seam: every key these cases write is restart-class anyway (policy is
+            // never hot), which is the `applies at the next restart` answer they read back.
+            hot: None,
+        }),
+        "admin",
+    )
+}
+
+/// The one node spawner the two above share, so a change to how a node is stood up is made once.
+/// `writer_role` is the role the client's (CONTROL value's) device is listed at when control is on.
+fn spawn_hub_serving(
+    control_enabled: bool,
+    settings: Option<server::settings::SettingsShowSource>,
+    writer_role: &str,
+) -> (StrategyCorePaper, SocketAddr) {
+    let mount = vike_tradehub_core::test_support::paper_maker::paper_maker_core(
+        vike_strategy_lab::makers::spread_maker::SpreadMaker::from_params,
+        "polymarket",
+        TOKEN,
+        Some(RESOLUTION_TIMESTAMP),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral loopback");
+    let addr = listener.local_addr().expect("resolve assigned port");
+    let publisher = publish::spawn(mount.handle.snapshot_cell(), None);
+    let commands = Some(mount.handle.command_sink());
+    let control_key = if control_enabled { CONTROL_KEY.as_bytes().to_vec() } else { Vec::new() };
+    // The client signs with the device its store's CONTROL value names (`common::seed_device`); a node with control
+    // off lists that device at `observe` alone, so its write is refused for the scope and its reads still pass.
+    let access = if control_enabled {
+        common::fixture_access_at(&[(OBSERVE_KEY, "observe"), (CONTROL_KEY, writer_role)])
+    } else {
+        common::fixture_access(CONTROL_KEY, "")
+    };
+    let keys = HubKeys::new(OBSERVE_KEY.as_bytes().to_vec(), control_key).with_access(access);
+    thread::spawn(move || {
+        let _ = server::serve(
+            listener,
+            publisher,
+            keys,
+            commands,
+            server::control::ControlLimitsConfig::default(),
+            settings,
+            // No `AccountAdminSource`: the account capability is an ABSENCE on every box that
+            // has not DECLARED a barrier, which is every fixture here and every shipped box today.
+            None,
+            None,
+        );
+    });
+    (mount, addr)
+}
+
+/// The NODE's own settings store, seeded with ONE policy row so a write has a real OLD value to
+/// report. A separate directory from the CLIENT's key store (`common::device_settings_dir`), the way a
+/// real node's `<project>/settings` is on a different box from the operator's.
+fn node_settings_with_ceiling(value: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    vike_secrets::plant_settings_rows(
+        dir.path(),
+        &vike_secrets::StoredSettings {
+            settings: vec![vike_secrets::SettingRow {
+                section: "policy".into(),
+                key: "max_notional_per_order".into(),
+                value: value.into(),
+            }],
+            venue: Vec::new(),
+        },
+    )
+    .expect("seed the node's settings database");
+    dir
+}
+
+/// What the node's settings DATABASE holds for the ceiling row — the node's truth, read off the
+/// store itself rather than off anything the REPL printed.
+fn stored_ceiling(dir: &Path) -> Option<String> {
+    let source = vike_secrets::read_settings_in(dir).expect("read the node's settings database");
+    let rows = &source.rows().expect("rows").settings;
+    rows.iter()
+        .find(|r| r.section == "policy" && r.key == "max_notional_per_order")
+        .map(|r| r.value.clone())
+}
+
+/// What one `vike-cli trade` run produced.
+struct Run {
+    stdout: String,
+    stderr: String,
+    ok: bool,
+    /// The exit code, for a case that names the rung.
+    code: Option<i32>,
+}
+
+/// Whether the child is expected to be READING when the harness feeds it the session's lines.
+///
+/// This is the one fact that decides whether a closed stdin is a normal outcome or a real defect,
+/// and it is a statement about what the binary under test is supposed to DO — not a tolerance knob
+/// and not a retry. Writing to a pipe whose reader has exited fails with `BrokenPipe`; swallowing
+/// that everywhere would also swallow "the session died with lines still unwritten", which is
+/// precisely the class of defect these tests exist to catch.
+#[derive(Clone, Copy)]
+enum Liveness {
+    /// The child resolves a key, connects, and sits in the REPL's read loop until it is told to
+    /// quit — so every line the harness writes MUST land. A `BrokenPipe` here means the session
+    /// died early, and [`run_trade`] fails with the child's own transcript attached.
+    ReadsEveryLine,
+    /// The child is expected to EXIT BEFORE it reads anything: `vike-cli trade`'s `!keys.has_any()`
+    /// arm (`crates/vike-cli/src/cmd/trade.rs`'s `run`) prints its message and returns
+    /// `ExitCode::FAILURE` above the connects and above the REPL. The harness's `quit` is therefore
+    /// racing an exit that is the whole POINT of the test, and which side wins is pure scheduling:
+    /// measured on the CI box at 0/36 failures on an idle 32-core box and 24/36 with the same 12-way
+    /// soak pinned to two cores. So `BrokenPipe` — and ONLY `BrokenPipe` — is a normal outcome
+    /// here; the harness stops writing and the run is judged on the exit status and the transcript,
+    /// which is all this case asserts anyway. That is what bounds the tolerance: a child that died
+    /// for some OTHER reason still closes the pipe, but it does not print the store path, so the
+    /// caller's own assertions fail on the transcript rather than on the write.
+    ExitsBeforeReading,
+}
+
+/// Run the SHIPPED `vike-cli trade` bin against `addr`, feeding `lines` (then `quit`) on stdin and
+/// reading the session's output back. `liveness` says whether the child is expected to still be
+/// reading while that happens.
+///
+/// The two retired hub-key variables are explicitly REMOVED from the child's environment: each
+/// refuses the start when set, and the configuration under test is precisely "device key in the
+/// store, nothing in the environment".
+fn run_trade(
+    addr: SocketAddr,
+    settings_dir: &std::path::Path,
+    lines: &[&str],
+    liveness: Liveness,
+) -> Run {
+    run_trade_with(addr, settings_dir, &["--yes"], lines, liveness)
+}
+
+/// [`run_trade`] with the REPL's own flags spelled by the caller. `&[]` is a session WITHOUT
+/// `--yes`, which is the only way a test reaches the `confirm? [y/N]` prompt at all — every other
+/// case in this file skips it, and each `y`/`n` then has to be one of `lines`.
+fn run_trade_with(
+    addr: SocketAddr,
+    settings_dir: &std::path::Path,
+    flags: &[&str],
+    lines: &[&str],
+    liveness: Liveness,
+) -> Run {
+    let node = addr.to_string();
+    let mut argv = vec!["trade", "--node", node.as_str()];
+    argv.extend_from_slice(flags);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_vike-cli"))
+        .args(&argv)
+        .env("VIKE_SETTINGS_DIR", settings_dir)
+        .env_remove("VIKE_TRADEHUB_OBSERVE_KEY")
+        .env_remove("VIKE_TRADEHUB_CONTROL_KEY")
+        // The advisory preview guardrail's one remaining env knob — cleared so a developer box's
+        // value cannot flag the test order as over-limit and change the printed lines.
+        .env_remove("VIKE_MAX_ORDER_QTY")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn vike-cli trade");
+    // Taken OUT of the child rather than borrowed, so the failure arm below can reap the child for
+    // its transcript, and so the write end is closed here by name — EOF is the REPL's other stop
+    // trigger, and leaving it to `wait_with_output` would hide that.
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    for line in lines.iter().copied().chain(std::iter::once("quit")) {
+        match writeln!(stdin, "{line}") {
+            Ok(()) => {}
+            // The child was SUPPOSED to be gone. Stop writing (every later line meets the same
+            // closed pipe) and let the exit status and the transcript carry the verdict.
+            Err(e)
+                if e.kind() == std::io::ErrorKind::BrokenPipe
+                    && matches!(liveness, Liveness::ExitsBeforeReading) =>
+            {
+                break;
+            }
+            // The child was supposed to be READING. Reap it and report with its own output, which
+            // is the only thing that says why it died.
+            Err(e) => {
+                drop(stdin);
+                let out = child.wait_with_output().expect("wait for vike-cli trade");
+                panic!(
+                    "the REPL's stdin closed with {line:?} still unwritten ({e}) — the session was \
+                     expected to be reading, so it exited early with {}\n--- stdout ---\n{}\n\
+                     --- stderr ---\n{}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+            }
+        }
+    }
+    drop(stdin);
+    let out = child.wait_with_output().expect("wait for vike-cli trade");
+    Run {
+        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+        ok: out.status.success(),
+        code: out.status.code(),
+    }
+}
+
+/// **BOTH defects, end to end, through the shipped binary.**
+///
+/// The device key only in the settings database; an order typed at the REPL; the order read back off the
+/// node's own pushed snapshot with the order client id the REPL printed.
+#[test]
+fn repl_submit_places_an_order_end_to_end() {
+    let (_mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+
+    let run = run_trade(addr, settings.path(), &[SUBMIT_LINE], Liveness::ReadsEveryLine);
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+
+    // DEFECT 2: the device key resolved from the store, so both halves connected.
+    assert!(run.ok, "the session must exit cleanly\n{transcript}");
+    assert!(
+        run.stdout.contains("connected: CONTROL (write)"),
+        "the device key must resolve from the settings database\n{transcript}"
+    );
+    assert!(
+        run.stdout.contains("[key from the device key]"),
+        "the connection line must say WHERE the key came from\n{transcript}"
+    );
+
+    // DEFECT 1: the node ACCEPTED the submit, which it cannot do without a pre-minted order client id.
+    assert!(
+        run.stdout.contains("accepted by the node"),
+        "the node must accept the submit\n{transcript}"
+    );
+    assert!(
+        !run.stdout.contains("requires a pre-minted order_client_id"),
+        "the server's empty-order-client-id refusal must not appear\n{transcript}"
+    );
+
+    // …and the order client id the operator was shown is a real, venue-valid id — not a placeholder.
+    let order_client_id = order_client_id_from_preview(&run.stdout)
+        .unwrap_or_else(|| panic!("the preview must print order_client_id=<id>\n{transcript}"));
+    assert!(
+        vike_model::is_valid_crypto_order_client_id(&order_client_id),
+        "the printed order client id must be venue-valid: {order_client_id:?}\n{transcript}"
+    );
+
+    // THE proof: an order actually exists at the node, under exactly that id. A printed line is
+    // not an order.
+    let observer =
+        TradehubCoreHandle::connect(addr, OBSERVE_KEY.as_bytes()).expect("observe connect");
+    assert!(
+        wait_until(Duration::from_secs(10), || observer
+            .snapshot()
+            .orders
+            .iter()
+            .any(|o| o.order_client_id == order_client_id)),
+        "the submitted order never reached the node's snapshot under order client id {order_client_id}\n{transcript}"
+    );
+    let snap = observer.snapshot();
+    let order =
+        snap.orders.iter().find(|o| o.order_client_id == order_client_id).expect("order present");
+    assert_eq!(order.symbol, TOKEN, "routed to the mount symbol");
+    assert_eq!(order.side, 1, "side survived the REPL -> wire -> lower round-trip");
+    assert_eq!(order.qty, 20.0);
+}
+
+/// The REPL's `--reason` takes the rest of the line too, so its bookless panic verb previews the same
+/// note, and the command is still sent. Its pre-stage-5 words (`market-exit`, `panic`) are refused
+/// naming `close-all`, and send nothing.
+#[test]
+fn the_repl_notes_a_venue_in_the_reason_of_a_bookless_panic_verb() {
+    let (_mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+    let run = run_trade(
+        addr,
+        settings.path(),
+        &["close-all --reason why binance", "market-exit --reason why binance", "panic"],
+        Liveness::ReadsEveryLine,
+    );
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+    assert!(run.stdout.contains("`binance` is in the --reason text"), "{transcript}");
+    assert_eq!(
+        run.stdout.matches("accepted by the node").count(),
+        1,
+        "the close-all alone is sent\n{transcript}"
+    );
+    for was in ["market-exit", "panic"] {
+        assert!(
+            run.stdout.contains(&format!(
+                "error [cli.trade.renamed]: `{was}` is now `close-all`: use the new spelling"
+            )),
+            "{was}\n{transcript}"
+        );
+    }
+    // A typed refusal prints once, as rendered: never under the prompt's own `error:` too.
+    assert!(!run.stdout.contains("error: error ["), "{transcript}");
+}
+
+/// **A `modify` or `mount` flag typed after `--reason` never reaches the prompt's preview.** Each line is
+/// refused with the flag named, and nothing was previewed or sent.
+#[test]
+fn the_repl_refuses_a_modify_or_mount_flag_after_reason() {
+    let (_mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+    let run = run_trade(
+        addr,
+        settings.path(),
+        &[
+            "modify C --qty 5 --reason why --price 100",
+            "mount polymarket X 1m --strategy grid.rs --reason why --params {}",
+        ],
+        Liveness::ReadsEveryLine,
+    );
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+    assert!(run.stdout.contains("Put `--price` BEFORE --reason"), "{transcript}");
+    assert!(run.stdout.contains("Put `--params` BEFORE --reason"), "{transcript}");
+    assert!(!run.stdout.contains("preview:"), "nothing was previewed\n{transcript}");
+    assert!(!run.stdout.contains("accepted by the node"), "{transcript}");
+}
+
+/// The mint is per ORDER. Two submits sharing an id would book ONE order (the node refuses the
+/// second; it used to drop it silently) — counting at the node is the only way to see it.
+#[test]
+fn two_submits_in_one_session_book_two_distinct_orders() {
+    let (_mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+
+    let run =
+        run_trade(addr, settings.path(), &[SUBMIT_LINE, SUBMIT_LINE], Liveness::ReadsEveryLine);
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+    assert_eq!(
+        run.stdout.matches("accepted by the node").count(),
+        2,
+        "both submits must be accepted\n{transcript}"
+    );
+
+    let observer =
+        TradehubCoreHandle::connect(addr, OBSERVE_KEY.as_bytes()).expect("observe connect");
+    assert!(
+        wait_until(Duration::from_secs(10), || observer.snapshot().orders.len() >= 2),
+        "two submits must book TWO orders (a repeated order client id books one)\n{transcript}"
+    );
+    let snap = observer.snapshot();
+    let ids: std::collections::BTreeSet<&str> =
+        snap.orders.iter().map(|o| o.order_client_id.as_str()).collect();
+    assert_eq!(
+        ids.len(),
+        snap.orders.len(),
+        "every booked order has its own order client id: {ids:?}"
+    );
+}
+
+/// No key in the store (the only source): still a clean failure, but one that names the store it
+/// looked in.
+///
+/// This is the one case whose child is expected to be GONE before the harness writes `quit` — see
+/// [`Liveness::ExitsBeforeReading`]. The assertions below are what bound that tolerance: they still
+/// demand a non-zero exit AND the store path in the message, so a child that closed the pipe for
+/// any other reason fails here, on the transcript.
+#[test]
+fn repl_with_no_key_anywhere_names_the_store_it_looked_in() {
+    let (_mount, addr) = spawn_hub();
+    // A store that EXISTS but holds no device key: the unrelated key is a deployment row.
+    let settings = tempfile::tempdir().expect("tempdir");
+    common::seed_store(settings.path(), &[("SOME_OTHER_VENUE_API_KEY", "DUMMY-unrelated")]);
+
+    let run = run_trade(addr, settings.path(), &[], Liveness::ExitsBeforeReading);
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+    assert!(!run.ok, "no key anywhere is still a failure\n{transcript}");
+    assert!(
+        run.stderr.contains("device key"),
+        "the message must name the key it looked for, not the environment\n{transcript}"
+    );
+    assert!(
+        run.stderr.contains(vike_secrets::DB_FILE),
+        "…and name the STORE it read (the settings database)\n{transcript}"
+    );
+    assert!(run.stderr.contains("backend mint-missing"), "…and how to get one\n{transcript}");
+    // Decision 0288 item 8: no shared pair is offered as the cure.
+    assert!(!run.stderr.contains("VIKE_TRADEHUB_OBSERVE_KEY"), "{transcript}");
+    assert!(!run.stderr.contains("VIKE_TRADEHUB_CONTROL_KEY"), "{transcript}");
+}
+
+/// **A node with CONTROL OFF and a valid key must not be reported as a missing key.**
+///
+/// The configuration that met it: `tradehub_control` off at the node (a clean install's until
+/// decision 0280 made it default ON; a `false` row since), a perfectly good key on the client
+/// (then the shared control key, since decision 0288 this box's device key). Every write printed
+/// that the control key was missing and nothing was sent, which was FALSE in every part except the
+/// last three words: the key resolved, authenticated, and was refused for its SCOPE. The true
+/// reason had already been printed once at connect and thrown away.
+///
+/// It has to be an end-to-end test through the shipped binary, not a unit test on the message: what
+/// broke was the WIRING — `run_write` branched on `control.is_none()`, which all three causes
+/// produce — so only a real refused handshake proves the right one is now reported.
+#[test]
+fn a_node_with_control_disabled_says_so_instead_of_blaming_the_key() {
+    let (_mount, addr) = spawn_hub_with_control(false);
+    let settings = common::device_settings_dir(CONTROL_KEY);
+
+    // The observe half still connects, so the session lives and reads every line.
+    let run = run_trade(addr, settings.path(), &[SUBMIT_LINE], Liveness::ReadsEveryLine);
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+
+    // The premise: the key WAS there and the node refused the scope.
+    assert!(
+        run.stdout.contains("connected: OBSERVE (read)"),
+        "the same device key still reads — this is not a broken store\n{transcript}"
+    );
+    assert!(
+        run.stderr.contains("control auth denied"),
+        "the node must have refused the CONTROL scope for this case to mean anything\n{transcript}"
+    );
+
+    // The defect: the write refusal blamed a missing key (its old words named the retired variable).
+    assert!(
+        !run.stdout.contains("no VIKE_TRADEHUB_CONTROL_KEY"),
+        "the write refusal must not claim the key is missing — it is present and it \
+         authenticated\n{transcript}"
+    );
+    // The fix: it names what actually happened, and what to do about it.
+    assert!(
+        run.stdout.contains("REFUSED the control scope"),
+        "the write refusal must name the real cause\n{transcript}"
+    );
+    assert!(
+        run.stdout.contains("tradehub_control"),
+        "…and the flag that fixes it, at the node\n{transcript}"
+    );
+    assert!(
+        run.stdout.contains("nothing was sent"),
+        "…while still stating the outcome that matters\n{transcript}"
+    );
+}
+
+/// **`cancel` and `submit` no longer teach different rules about the same field.**
+///
+/// `submit --order-client-id MYPINNED-001` was rejected with a good message; `cancel MYPINNED-001`, for an
+/// order that never existed, answered `accepted by the node (order client id MYPINNED-001)`. Both surfaces
+/// speak about the charset now — and they speak with deliberately different force, which this pins:
+/// `submit` REFUSES (it is minting an id, so nothing is lost by insisting) while `cancel` WARNS AND
+/// STILL SENDS. Refusing a cancel would make an order placed through another surface — the `mcp`
+/// tools pass an agent-supplied `order_client_id` through unvalidated — uncancellable from the
+/// operator's console to enforce a client-side convention.
+#[test]
+fn submit_refuses_an_unmintable_order_client_id_while_cancel_warns_and_still_sends() {
+    let (_mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+
+    let run = run_trade(
+        addr,
+        settings.path(),
+        &[
+            "submit polymarket CLI_TRADE_E2E_TOKEN buy 20 @0.40 --order-client-id MYPINNED-001",
+            "cancel MYPINNED-001",
+        ],
+        Liveness::ReadsEveryLine,
+    );
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+    assert!(run.ok, "the session must exit cleanly\n{transcript}");
+
+    // submit: refused, client-side, with the charset stated.
+    assert!(
+        run.stdout.contains("is not a usable order_client_id"),
+        "submit must still refuse an id no venue would take\n{transcript}"
+    );
+    assert!(run.stdout.contains("alphanumeric"), "…and say what the charset is\n{transcript}");
+
+    // cancel: warned, then SENT — the node's answer is what the operator sees.
+    assert!(
+        run.stdout.contains("not an order_client_id this node could have minted"),
+        "cancel must say the id could not have been minted here\n{transcript}"
+    );
+    assert!(
+        run.stdout.contains("sending it anyway"),
+        "…and be explicit that it is still sent — cancel is fire-and-forget\n{transcript}"
+    );
+    assert!(
+        run.stdout.contains("accepted by the node"),
+        "…which means the node still gets it: refusing locally would make an order placed by \
+         another surface uncancellable from here\n{transcript}"
+    );
+}
+
+/// The preview's numbers carry no floating-point tail, through the shipped binary.
+///
+/// `0.4 * 3` is `1.2000000000000002`, and the guardrail line printed all seventeen digits. The unit
+/// tests in `vike_client::verbs` pin the renderer; this pins that the renderer is what the REPL actually
+/// uses, on BOTH lines of the preview — a `qty` formatted one way above a `qty` formatted another
+/// would leave the operator choosing which of the tool's own lines to believe.
+#[test]
+fn the_preview_prints_typed_numbers_without_a_float_tail() {
+    let (_mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+    // The guardrail prices an order off the node's frame, and an idle paper node publishes no engine
+    // until its first order folds. So one order first, and the preview under test reads that frame.
+    let observer =
+        TradehubCoreHandle::connect(addr, OBSERVE_KEY.as_bytes()).expect("observe connect");
+    let warm = run_trade(addr, settings.path(), &[SUBMIT_LINE], Liveness::ReadsEveryLine);
+    assert!(warm.ok, "the warm-up order\n{}\n{}", warm.stdout, warm.stderr);
+    assert!(
+        wait_until(Duration::from_secs(10), || !observer.snapshot().venues.is_empty()),
+        "the warm-up order never folded into a published engine"
+    );
+
+    let run = run_trade(
+        addr,
+        settings.path(),
+        &["submit polymarket CLI_TRADE_E2E_TOKEN buy 3 @0.4"],
+        Liveness::ReadsEveryLine,
+    );
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+    assert!(run.ok, "the session must exit cleanly\n{transcript}");
+
+    assert!(
+        run.stdout.contains("notional=1.2 "),
+        "the guardrail must print the notional as typed\n{transcript}"
+    );
+    assert!(
+        !run.stdout.contains("1.2000000000000002"),
+        "no float tail may reach the preview\n{transcript}"
+    );
+    // Both preview lines agree on the same quantity.
+    assert!(run.stdout.contains("qty=3 "), "the SUBMIT line's qty\n{transcript}");
+    assert!(run.stdout.contains("guardrail: qty=3 "), "…and the guardrail's\n{transcript}");
+    assert!(run.stdout.contains("@ 0.4"), "the price too\n{transcript}");
+}
+
+// ── the one-shot kill switch ─────────────────────────────────────────────────────────────────────
+
+/// Run the SHIPPED bin ONE-SHOT — `vike-cli trade <verb> …`, no REPL — feeding `stdin` verbatim and
+/// closing the pipe afterwards.
+///
+/// ⚠ Separate from [`run_trade`] rather than a flag on it, because the two differ in the one thing
+/// that matters here: [`run_trade`] appends `quit` and passes `--yes` for the session, and both of
+/// those would silence exactly the gate these tests exist to exercise. `stdin` is written and the
+/// pipe is then dropped, so `""` IS the EOF case — the child sees a closed stdin with nothing on it.
+fn run_trade_once(
+    addr: SocketAddr,
+    settings_dir: &std::path::Path,
+    args: &[&str],
+    stdin: &str,
+) -> Run {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_vike-cli"))
+        .args(["trade"])
+        .args(args)
+        .arg("--node")
+        .arg(addr.to_string())
+        .env("VIKE_SETTINGS_DIR", settings_dir)
+        .env_remove("VIKE_TRADEHUB_OBSERVE_KEY")
+        .env_remove("VIKE_TRADEHUB_CONTROL_KEY")
+        .env_remove("VIKE_MAX_ORDER_QTY")
+        // The two REMOVED risk variables refuse startup when set — cleared so an operator box's
+        // stale export cannot fail a kill-switch test for an unrelated reason.
+        .env_remove("VIKE_MAX_ORDER_NOTIONAL")
+        .env_remove("VIKE_TRADEHUB_MAX_ORDER_NOTIONAL")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn vike-cli trade one-shot");
+    {
+        let mut pipe = child.stdin.take().expect("piped stdin");
+        // A one-shot that took `--yes` never reads, so its pipe may already be gone. That is the
+        // expected shape for that case and not a failure of anything — the verdict is the exit
+        // status, the transcript, and (above all) the mode the NODE ends in.
+        let _ = pipe.write_all(stdin.as_bytes());
+    }
+    let out = child.wait_with_output().expect("wait for vike-cli trade one-shot");
+    Run {
+        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+        ok: out.status.success(),
+        code: out.status.code(),
+    }
+}
+
+/// **The one-shot's preview showed this box's estimate and hid the door's verdict**: an order the node refuses read as a
+/// guardrail line and a question. The door's own sentence now comes ahead of the question, and nothing is sent on a no.
+#[test]
+fn a_one_shot_preview_prints_the_doors_refusal_ahead_of_the_question() {
+    let (mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+    const ORDER_CLIENT_ID: &str = "E2EHELDORDER1";
+    let order = [
+        "order",
+        "submit",
+        "polymarket",
+        TOKEN,
+        "buy",
+        "20",
+        "@0.40",
+        "--order-client-id",
+        ORDER_CLIENT_ID,
+    ];
+    let placed: Vec<&str> = order.iter().copied().chain(["--yes"]).collect();
+    let run = run_trade_once(addr, settings.path(), &placed, "");
+    assert!(run.ok, "the first order rests: {}\n{}", run.stdout, run.stderr);
+    let holds_it = || {
+        mount
+            .handle
+            .snapshot_cell()
+            .load()
+            .orders
+            .iter()
+            .any(|o| o.order_client_id == ORDER_CLIENT_ID)
+    };
+    assert!(wait_until(Duration::from_secs(10), holds_it), "the node holds it");
+
+    let run = run_trade_once(addr, settings.path(), &order, "n\n");
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+    assert!(!run.ok, "declined: {transcript}");
+    let said = run.stdout.find("the node would refuse this").expect(&transcript);
+    assert!(
+        run.stdout[said..].contains(ORDER_CLIENT_ID),
+        "the door's reason names the id: {transcript}"
+    );
+    let asked = run.stdout.find("confirm").or_else(|| run.stderr.find("confirm"));
+    assert!(asked.is_some(), "the question is still asked: {transcript}");
+    assert!(run.stderr.contains("aborted"), "{transcript}");
+}
+
+/// The node's OWN trading mode, off an independent observe connection — never a printed line.
+///
+/// ⚠ This is the whole point of these tests. `send_and_report` prints "accepted by the node" on the
+/// node's ACK, which is the node saying it received a command, not the core saying it applied one;
+/// and the mode is what a kill switch is FOR. Polling is required for the same reason the order
+/// tests poll: the core folds on one thread and the publisher fans out on another.
+///
+/// `secs` is a parameter because the two directions are not the same question. Waiting for a mode
+/// to ARRIVE wants a generous bound (a slow box, not a bug). Proving one NEVER arrives is a bound on
+/// how long a command that should not exist is given to show up, and a generous one there is pure
+/// wall clock in every passing run.
+fn node_trading_state(observer: &TradehubCoreHandle, want: TradingState, secs: u64) -> bool {
+    wait_until(Duration::from_secs(secs), || observer.snapshot().trading_state == want)
+}
+
+/// The bound for "this mode must ARRIVE" — the same 10s the order assertions use.
+const MODE_ARRIVES: u64 = 10;
+/// The bound for "this mode must NEVER arrive". A command the CLI decided not to send has already
+/// not been written to the socket by the time the child exits, so anything past a publish round
+/// trip is only wall clock; 2s is ~100 poll passes of headroom over a localhost fold.
+const MODE_STAYS_AWAY: u64 = 2;
+
+/// **The one-shot write path, end to end, in both directions.**
+///
+/// `vike-cli trade halt --yes` must leave the NODE Halted and exit 0; `resume` must put it back.
+/// Nothing below this line trusts a message: the assertion is the mode the node itself publishes.
+#[test]
+fn the_one_shot_halt_and_resume_change_the_nodes_trading_mode() {
+    let (_mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+    let observer =
+        TradehubCoreHandle::connect(addr, OBSERVE_KEY.as_bytes()).expect("observe connect");
+    assert!(
+        node_trading_state(&observer, TradingState::Active, MODE_ARRIVES),
+        "a fresh paper core starts Active — the premise of both halves below"
+    );
+
+    let halt = run_trade_once(addr, settings.path(), &["halt", "--yes", "--reason", "e2e"], "");
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", halt.stdout, halt.stderr);
+    assert!(halt.ok, "an ACCEPTED halt exits 0:\n{transcript}");
+    assert!(halt.stdout.contains("connected: CONTROL (write)"), "{transcript}");
+    assert!(halt.stdout.contains("accepted by the node"), "{transcript}");
+    assert!(
+        node_trading_state(&observer, TradingState::Halted, MODE_ARRIVES),
+        "THE assertion: the node itself must be Halted, not merely told so\n{transcript}"
+    );
+
+    let resume = run_trade_once(addr, settings.path(), &["resume", "--yes"], "");
+    let transcript =
+        format!("--- stdout ---\n{}\n--- stderr ---\n{}", resume.stdout, resume.stderr);
+    assert!(resume.ok, "an ACCEPTED resume exits 0:\n{transcript}");
+    assert!(
+        node_trading_state(&observer, TradingState::Active, MODE_ARRIVES),
+        "a kill switch that cannot be released is a different failure\n{transcript}"
+    );
+}
+
+/// **The confirm gate, proven by the node's mode rather than by the printed word.**
+///
+/// No `--yes`, and stdin closes with nothing on it: an EOF is a NO, the run exits non-zero, and the
+/// node is STILL ACTIVE. The last clause is the one that matters — a build that sent the command
+/// and then printed "aborted" would satisfy every other assertion here.
+#[test]
+fn a_one_shot_halt_with_a_closed_stdin_aborts_and_halts_nothing() {
+    let (_mount, observer, run, transcript) = halt_without_yes("");
+    assert!(!run.ok, "an aborted confirm is a FAILURE — nothing was sent\n{transcript}");
+    assert!(run.stdout.contains("aborted — nothing was sent"), "{transcript}");
+    assert!(
+        !run.stdout.contains("accepted by the node"),
+        "nothing may have reached the node\n{transcript}"
+    );
+    // And the node agrees. `MODE_STAYS_AWAY` is a WINDOW, not a sleep: the mode is re-read until
+    // the deadline, so a command that arrived late would still be caught here.
+    assert!(
+        !node_trading_state(&observer, TradingState::Halted, MODE_STAYS_AWAY),
+        "the node must NOT be halted by a refused confirm\n{transcript}"
+    );
+}
+
+/// **What a non-terminal stdin actually does — the claim the docs got wrong.**
+///
+/// The shipped `--help` and `docs/ops/kill-switches.md` both said a piped stdin reads as NO, which
+/// would make an unattended `halt` without `--yes` a guaranteed no-op. It is a plain `read_line`:
+/// a `y` on the pipe CONFIRMS, and the node halts. Both documents now say so, and this test is what
+/// holds them honest — if a future change really does make a pipe a refusal, this fails, and the
+/// words have to move back with it.
+#[test]
+fn a_piped_confirmation_halts_the_node_without_yes() {
+    let (_mount, observer, run, transcript) = halt_without_yes("y\n");
+    assert!(run.ok, "a confirmed halt exits 0:\n{transcript}");
+    assert!(
+        node_trading_state(&observer, TradingState::Halted, MODE_ARRIVES),
+        "a `y` on a pipe CONFIRMS — a pipe is not a refusal\n{transcript}"
+    );
+}
+
+/// **`--json` without `--yes` hid the preview and printed the prompt on stdout**, so a `y` confirmed unseen
+/// and stdout stopped being one JSON document. The preview and the prompt go to stderr; stdout is the JSON
+/// answer or, for a `no`, empty. `--json --yes` reads nothing, so it stays as it was: nothing on stderr.
+#[test]
+fn json_without_yes_previews_on_stderr_and_keeps_stdout_one_document() {
+    let (_mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+    let cancel = ["order", "cancel", "NOSUCHORDER3", "--json", "--no-wait"];
+
+    let no = run_trade_once(addr, settings.path(), &cancel, "n\n");
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", no.stdout, no.stderr);
+    assert!(!no.ok, "a declined confirm sends nothing\n{transcript}");
+    assert!(no.stdout.is_empty(), "stdout carries nothing but the JSON answer\n{transcript}");
+    assert!(no.stderr.contains("preview: "), "{transcript}");
+    assert!(no.stderr.contains("NOSUCHORDER3"), "the prompt is for what was shown\n{transcript}");
+    assert!(no.stderr.contains("confirm? [y/N]"), "{transcript}");
+    assert!(no.stderr.contains("nothing was sent"), "{transcript}");
+
+    let yes = run_trade_once(addr, settings.path(), &cancel, "y\n");
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", yes.stdout, yes.stderr);
+    assert!(yes.ok, "{transcript}");
+    let doc: serde_json::Value = serde_json::from_str(yes.stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is one JSON object ({e}):\n{transcript}"));
+    assert_eq!(doc["outcome"], "accepted", "{transcript}");
+    assert!(yes.stderr.contains("confirm? [y/N]"), "{transcript}");
+
+    let mut unattended = cancel.to_vec();
+    unattended.push("--yes");
+    let run = run_trade_once(addr, settings.path(), &unattended, "");
+    assert!(run.ok && run.stderr.is_empty(), "{}", run.stderr);
+    assert!(serde_json::from_str::<serde_json::Value>(run.stdout.trim()).is_ok(), "{}", run.stdout);
+}
+
+/// A fresh paper node proven Active (the premise), then `vike-cli trade halt` run ONCE against it
+/// WITHOUT `--yes`, with `stdin` on the pipe. Returns the mount (hold it for the case), the
+/// observer that reads the node's own mode, the run and its transcript.
+fn halt_without_yes(stdin: &str) -> (StrategyCorePaper, TradehubCoreHandle, Run, String) {
+    let (mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+    let observer =
+        TradehubCoreHandle::connect(addr, OBSERVE_KEY.as_bytes()).expect("observe connect");
+    assert!(
+        node_trading_state(&observer, TradingState::Active, MODE_ARRIVES),
+        "premise: the node is Active"
+    );
+
+    let run = run_trade_once(addr, settings.path(), &["halt"], stdin);
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+    (mount, observer, run, transcript)
+}
+
+/// The removed `state` verb, at the one-shot spelling: it must refuse AND name what replaced it.
+/// A runbook line is what gets pasted at 3am, and `vike-cli trade state halted` was one.
+#[test]
+fn the_removed_state_verb_names_its_replacements_instead_of_being_an_unknown_argument() {
+    let (_mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+
+    let run = run_trade_once(addr, settings.path(), &["state", "halted"], "");
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+    assert!(!run.ok, "the removed verb must fail\n{transcript}");
+    assert!(run.stderr.contains("REMOVED"), "{transcript}");
+    assert!(run.stderr.contains("`halt`"), "it must name the WRITE that replaced it\n{transcript}");
+    assert!(run.stderr.contains("`status`"), "…and the READ\n{transcript}");
+}
+
+// ── the look at the node's recent events after an acknowledged write ─────────────────────────────
+
+/// `vike-cli trade order <args> --yes --json` against a fresh paper node, as the one JSON object it
+/// prints (a `--json` answer prints nothing else on stdout).
+fn one_shot_json(args: &[&str]) -> (serde_json::Value, String) {
+    let (_mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+    let argv: Vec<&str> = ["order"].into_iter().chain(args.iter().copied()).collect();
+    let run = run_trade_once(addr, settings.path(), &argv, "");
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+    assert!(run.ok, "an ACCEPTED write exits 0:\n{transcript}");
+    let doc = serde_json::from_str(run.stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is one JSON object ({e}):\n{transcript}"));
+    (doc, transcript)
+}
+
+/// **A write the node ACKNOWLEDGED and its core then REFUSED says so in its `--json` answer.** A
+/// cancel of an id the node never held is Acked, and the core rings an `OrderCancelRejected` line in
+/// its recent events a moment later: the answer carries it as `node_event` and `waited_ms`, and keeps
+/// the `outcome` and `order_client_id` keys scripts already read.
+#[test]
+fn a_cancel_the_core_refuses_reports_the_rejection_in_the_json() {
+    let (doc, transcript) = one_shot_json(&["cancel", "NOSUCHORDER1", "--yes", "--json"]);
+    assert_eq!(doc["outcome"], "accepted", "{transcript}");
+    assert_eq!(doc["order_client_id"], "NOSUCHORDER1", "{transcript}");
+    assert_eq!(doc["node_event"]["kind"], "OrderCancelRejected", "{transcript}");
+    let reason = doc["node_event"]["reason"].as_str().expect("a rejection carries its reason");
+    assert!(reason.contains("order registry"), "{reason}");
+    assert!(doc["waited_ms"].as_u64().expect("waited_ms") < 2_000, "it stopped at the line");
+}
+
+/// **A write the core ACCEPTED says so**: a resting limit order the paper venue acknowledges is
+/// answered by its `OrderAccepted` line.
+#[test]
+fn a_submit_the_core_accepts_reports_the_acceptance_in_the_json() {
+    let (doc, transcript) =
+        one_shot_json(&["submit", "polymarket", TOKEN, "buy", "20", "@0.40", "--yes", "--json"]);
+    assert_eq!(doc["outcome"], "accepted", "{transcript}");
+    assert_eq!(doc["node_event"]["kind"], "OrderAccepted", "{transcript}");
+    assert_eq!(doc["node_event"]["reason"], serde_json::Value::Null, "{transcript}");
+}
+
+/// **A node that says nothing about a mass-cancel** (there was nothing to cancel) is waited for up to
+/// the bound and then reported as not seen; `--no-wait` skips the look and the answer is exactly what
+/// it was before it existed.
+#[test]
+fn silence_after_a_mass_cancel_is_reported_and_no_wait_skips_it() {
+    let started = std::time::Instant::now();
+    let (doc, transcript) = one_shot_json(&["mass-cancel", "--yes", "--json"]);
+    assert_eq!(doc["outcome"], "accepted", "{transcript}");
+    assert_eq!(doc["node_event"], serde_json::Value::Null, "{transcript}");
+    let waited = doc["waited_ms"].as_u64().expect("waited_ms");
+    assert!((1_900..=2_600).contains(&waited), "it waited out the 2 s bound, not more: {waited}");
+    assert!(started.elapsed().as_millis() >= u128::from(waited));
+
+    let (doc, transcript) = one_shot_json(&["mass-cancel", "--yes", "--json", "--no-wait"]);
+    assert_eq!(doc["outcome"], "accepted", "{transcript}");
+    assert!(
+        doc.get("node_event").is_none() && doc.get("waited_ms").is_none(),
+        "--no-wait leaves the answer as it was:\n{transcript}"
+    );
+}
+
+/// The human answer: the receipt line first, unchanged in its leading words, then one `outcome:` line.
+#[test]
+fn the_human_answer_adds_one_outcome_line_after_the_receipt() {
+    let (_mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+    let run =
+        run_trade_once(addr, settings.path(), &["order", "cancel", "NOSUCHORDER2", "--yes"], "");
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+    assert!(run.ok, "{transcript}");
+    let lines: Vec<&str> = run.stdout.lines().collect();
+    let receipt = lines
+        .iter()
+        .position(|l| l.starts_with("accepted by the node (order client id NOSUCHORDER2)"))
+        .unwrap_or_else(|| panic!("the receipt line keeps its leading words\n{transcript}"));
+    assert!(
+        lines[receipt + 1].starts_with("outcome: OrderCancelRejected ("),
+        "the outcome line follows it\n{transcript}"
+    );
+    assert_eq!(lines.len(), receipt + 2, "and it is the last line\n{transcript}");
+}
+
+/// The order client id a ring line names: `<kind> <order client id> (<reason>)`.
+fn order_client_id_of_line(line: &str) -> String {
+    line.split(' ').nth(1).unwrap_or_default().to_string()
+}
+
+/// **`vike-cli trade order bracket` sends the desktop's TP/SL command through the REAL door and the
+/// REAL core, and prints the core's whole-bracket refusal with the three legs' order client ids.**
+///
+/// Polymarket's capability row has no `stop` kind, so the core refuses a bracket on this paper node
+/// WHOLE (`crates/vike-tradehub/tests/daemon/venue_routing/bracket.rs`'s
+/// `a_bracket_its_venue_cannot_hold_is_refused_whole_and_strands_no_exit` is the same refusal from a
+/// hand-built frame): three rejected legs, the culprit's own reason and two `BRACKET_ATOMIC_REFUSED`
+/// siblings naming it, and one `bracket for <venue> REFUSED WHOLE` note. The CLI cannot know the
+/// order client ids (the core mints them after the Ack), so it prints them from the ring, and this test holds
+/// them to the node's OWN order table (an independent observe connection), not to the printed lines.
+///
+/// The bracket is sent TWICE on one node, human answer then `--json`: the second answer must carry
+/// the second bracket's order client ids, never the first's (the ring still holds the first bracket's lines).
+#[test]
+fn a_bracket_the_venue_cannot_hold_is_refused_whole_and_the_answer_names_its_three_legs() {
+    let (_mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+    let observer =
+        TradehubCoreHandle::connect(addr, OBSERVE_KEY.as_bytes()).expect("observe connect");
+    warm_the_polymarket_engine(addr, settings.path(), &observer);
+    let bracket = |extra: &[&str]| run_bracket(addr, settings.path(), extra);
+
+    // The human answer: the preview, the receipt, the outcome line and one `leg:` line per leg.
+    let first = bracket(&[]);
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", first.stdout, first.stderr);
+    assert!(
+        first.ok,
+        "an ACCEPTED bracket exits 0, refused whole by the core or not:\n{transcript}"
+    );
+    assert!(
+        first.stdout.contains(
+            "preview: BRACKET buy polymarket CLI_TRADE_E2E_TOKEN qty=20 entry=0.4 stop-loss=0.3 \
+             take-profit=0.5 account=-"
+        ),
+        "{transcript}"
+    );
+    assert!(first.stdout.contains("accepted by the node"), "{transcript}");
+    let outcome = first
+        .stdout
+        .lines()
+        .find(|l| l.starts_with("outcome: note (bracket for polymarket REFUSED WHOLE, nothing was sent: its stop_loss leg is refused ("))
+        .unwrap_or_else(|| panic!("the core's whole-bracket refusal is printed\n{transcript}"));
+    assert!(outcome.contains("venue=polymarket"), "{outcome}");
+    let first_legs: Vec<&str> =
+        first.stdout.lines().filter_map(|l| l.strip_prefix("  leg: ")).collect();
+    assert_eq!(first_legs.len(), 3, "three rejected legs\n{transcript}");
+
+    // The `--json` answer carries the same three as `node_event.legs`.
+    let second = bracket(&["--json"]);
+    let transcript =
+        format!("--- stdout ---\n{}\n--- stderr ---\n{}", second.stdout, second.stderr);
+    assert!(second.ok, "{transcript}");
+    let doc: serde_json::Value = serde_json::from_str(second.stdout.trim())
+        .unwrap_or_else(|e| panic!("stdout is one JSON object ({e}):\n{transcript}"));
+    assert_eq!(doc["outcome"], "accepted", "{transcript}");
+    assert_eq!(doc["node_event"]["kind"], "note", "{transcript}");
+    let second_legs: Vec<String> = doc["node_event"]["legs"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a bracket's node_event carries its legs\n{transcript}"))
+        .iter()
+        .map(|l| l.as_str().expect("a leg is a ring line").to_string())
+        .collect();
+    assert_eq!(second_legs.len(), 3, "{transcript}");
+
+    // The shape of one refused group, in each answer: ONE row with the culprit's own reason and TWO
+    // siblings that name that row's order client id and the leg that is refused.
+    for legs in [first_legs.iter().map(|l| l.to_string()).collect::<Vec<_>>(), second_legs.clone()]
+    {
+        assert!(legs.iter().all(|l| l.starts_with("OrderRejected ")), "{legs:?}");
+        let culprit = legs
+            .iter()
+            .find(|l| !l.contains("BRACKET_ATOMIC_REFUSED"))
+            .unwrap_or_else(|| panic!("the culprit's own row is among the legs: {legs:?}"));
+        let culprit = order_client_id_of_line(culprit);
+        let siblings = legs.iter().filter(|l| l.contains("BRACKET_ATOMIC_REFUSED")).count();
+        assert_eq!(siblings, 2, "{legs:?}");
+        assert!(
+            legs.iter().filter(|l| l.contains("BRACKET_ATOMIC_REFUSED")).all(|l| l.contains(
+                &format!(
+                    "BRACKET_ATOMIC_REFUSED: culprit={culprit} leg=stop_loss venue=polymarket)"
+                )
+            )),
+            "the siblings name the culprit and the leg: {legs:?}"
+        );
+    }
+
+    // The two answers name SIX different orders, and the node's own table holds every one of them
+    // REJECTED, with nothing held off the venue.
+    let order_client_ids: Vec<String> = first_legs
+        .iter()
+        .map(|l| order_client_id_of_line(l))
+        .chain(second_legs.iter().map(|l| order_client_id_of_line(l)))
+        .collect();
+    let distinct: std::collections::BTreeSet<&String> = order_client_ids.iter().collect();
+    assert_eq!(
+        distinct.len(),
+        6,
+        "the second answer must not repeat the first's order client ids: {order_client_ids:?}"
+    );
+    assert!(
+        wait_until(Duration::from_secs(MODE_ARRIVES), || {
+            let snap = observer.snapshot();
+            order_client_ids.iter().all(|c| {
+                snap.orders.iter().any(|o| &o.order_client_id == c && o.status == "REJECTED")
+            })
+        }),
+        "every leg an answer named is REJECTED in the node's own order table: {order_client_ids:?}"
+    );
+    assert!(observer.snapshot().held_exits.is_empty(), "no exit is left held off the venue");
+}
+
+/// A bracket names its account, and the door REFUSES a named account while it has published no engine roster (unlike
+/// a submit, which it lets through). A feed-less node publishes only when its state goes dirty, so a far resting limit
+/// warms it up (`trade_plane_cli.rs` does the same), and then the engine's block is waited for.
+fn warm_the_polymarket_engine(addr: SocketAddr, settings: &Path, observer: &TradehubCoreHandle) {
+    let warm = run_trade_once(
+        addr,
+        settings,
+        &["order", "submit", "polymarket", TOKEN, "buy", "20", "@0.40", "--yes", "--no-wait"],
+        "",
+    );
+    assert!(
+        warm.ok,
+        "the warm-up order is accepted:\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        warm.stdout, warm.stderr
+    );
+    assert!(
+        wait_until(Duration::from_secs(MODE_ARRIVES), || observer
+            .snapshot()
+            .venues
+            .iter()
+            .any(|v| v.route_key == "polymarket" && v.symbols.iter().any(|s| s == TOKEN))),
+        "premise: the node publishes the polymarket engine and the symbol it trades, saw {:?}",
+        observer.snapshot().venues.iter().map(|v| (&v.route_key, &v.symbols)).collect::<Vec<_>>()
+    );
+}
+
+/// One `trade order bracket ... --yes` on the paper mount's symbol, `extra` appended.
+fn run_bracket(addr: SocketAddr, settings: &Path, extra: &[&str]) -> Run {
+    let mut args = vec![
+        "order",
+        "bracket",
+        "polymarket",
+        TOKEN,
+        "buy",
+        "20",
+        "@0.40",
+        "--stop-loss",
+        "0.30",
+        "--take-profit",
+        "0.50",
+        "--yes",
+    ];
+    args.extend_from_slice(extra);
+    run_trade_once(addr, settings, &args, "")
+}
+
+/// **A retried bracket cannot place a second bracket** (P4 #12; decision 0303 verdict 3, a retry reuses the id): the
+/// CLI mints the group stem and shows it (`group=<stem>`), and the same line sent again with `--order-client-id <stem>`
+/// is refused WHOLE by the node's door before its answer, on the venue rung. The node's own table is the judge: the
+/// first send's three legs and not one order more under that stem.
+#[test]
+fn a_bracket_retried_under_its_stem_is_refused_whole_and_places_nothing() {
+    let (_mount, addr) = spawn_hub();
+    let settings = common::device_settings_dir(CONTROL_KEY);
+    let observer =
+        TradehubCoreHandle::connect(addr, OBSERVE_KEY.as_bytes()).expect("observe connect");
+    warm_the_polymarket_engine(addr, settings.path(), &observer);
+
+    let first = run_bracket(addr, settings.path(), &["--no-wait"]);
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", first.stdout, first.stderr);
+    assert!(first.ok, "{transcript}");
+    let stem = first
+        .stdout
+        .lines()
+        .find_map(|l| l.strip_prefix("preview: BRACKET ")?.split(" group=").nth(1))
+        .unwrap_or_else(|| panic!("the preview names the minted stem\n{transcript}"))
+        .to_string();
+    assert!(vike_model::orders::client_id::OrderClientIdStem::given(&stem).is_some(), "{stem}");
+    let legs = || {
+        observer.snapshot().orders.iter().filter(|o| o.order_client_id.starts_with(&stem)).count()
+    };
+    assert!(
+        wait_until(Duration::from_secs(MODE_ARRIVES), || legs() == 3),
+        "the first send's three legs reach the node's table under {stem}\n{transcript}"
+    );
+
+    let retry = run_bracket(addr, settings.path(), &["--order-client-id", stem.as_str()]);
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", retry.stdout, retry.stderr);
+    assert_eq!(retry.code, Some(5), "refused by the node, the venue rung\n{transcript}");
+    assert!(
+        retry.stdout.contains(&format!("group={stem}")),
+        "the retry sends the pinned stem\n{transcript}"
+    );
+    assert!(
+        retry.stderr.contains("error [tradehub.bracket.order_client_id_used]"),
+        "the door refuses the bracket whole\n{transcript}"
+    );
+    assert!(
+        !wait_until(Duration::from_secs(MODE_STAYS_AWAY), || legs() != 3),
+        "the retry placed nothing: still the first send's three legs under {stem}"
+    );
+}
+
+/// The REPL line both settings cases send. The `policy.` key is a risk ceiling — the key class the
+/// deleted retype was demanded for — so the case that used to need it most is the one pinned.
+const SET_CEILING_LINE: &str = "set-setting policy.max_notional_per_order 250";
+
+/// The ceiling's CURRENT value as the node renders it (`SettingsShow`'s effective row) — read the
+/// same way the REPL reads it, so the assertion below is about the `old → new` line and not about
+/// how a float prints.
+fn ceiling_as_the_node_renders_it(addr: SocketAddr) -> String {
+    let show = vike_tradehub_client::settings_show(addr, OBSERVE_KEY.as_bytes())
+        .expect("the node serves its settings");
+    show.rows
+        .into_iter()
+        .find(|r| r.key == "policy.max_notional_per_order")
+        .expect("the node carries the ceiling row")
+        .value
+}
+
+/// **A policy `set-setting` goes out after ONE `confirm? [y/N]`** (`docs/decisions/0086` point 7).
+///
+/// The session is `set-setting …`, `y`, `quit`. Against the retype build the SECOND prompt read
+/// `quit` as the retyped key, called it a mismatch and aborted — so the node's row still held its
+/// old value, which is the assertion that carries the weight: a printed line is not a write.
+#[test]
+fn a_policy_set_setting_goes_out_after_one_confirm() {
+    let node_settings = node_settings_with_ceiling("100");
+    let (_mount, addr) = spawn_hub_with_settings(node_settings.path());
+    let settings = common::device_settings_dir(CONTROL_KEY);
+    let old = ceiling_as_the_node_renders_it(addr);
+
+    let run = run_trade_with(
+        addr,
+        settings.path(),
+        &[],
+        &[SET_CEILING_LINE, "y"],
+        Liveness::ReadsEveryLine,
+    );
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+
+    assert!(run.ok, "the session must exit cleanly\n{transcript}");
+    assert_eq!(
+        stored_ceiling(node_settings.path()).as_deref(),
+        Some("250"),
+        "ONE y/N must be all a settings write takes — the node's row must hold the new value\n\
+         {transcript}"
+    );
+    // The line the operator confirms AGAINST: the node's current value, then the new one — printed
+    // with the preview, so it lands before the write's own result line.
+    let change = format!("policy.max_notional_per_order: {old} → 250");
+    let at = |needle: &str| run.stdout.lines().position(|l| l.contains(needle));
+    let (Some(preview), Some(written)) = (at(&format!("change: {change}")), at("written:")) else {
+        panic!("both the `change:` preview line and the `written:` result must print\n{transcript}")
+    };
+    assert!(preview < written, "the old → new line must come BEFORE the send\n{transcript}");
+    assert!(
+        run.stdout.contains("applies at the next restart"),
+        "a policy key is never hot, so the node says restart — and the REPL must say so\n\
+         {transcript}"
+    );
+    assert!(
+        !run.stdout.to_ascii_lowercase().contains("retype"),
+        "no retype, in any wording\n{transcript}"
+    );
+}
+
+/// **`--yes` covers the settings write like every other write verb.** The retype used to be the one
+/// prompt `--yes` could not answer, which made a policy write the only REPL line a script could not
+/// complete: here the retype prompt read `quit` and the write never happened.
+#[test]
+fn a_policy_set_setting_under_yes_goes_out_with_no_prompt() {
+    let node_settings = node_settings_with_ceiling("100");
+    let (_mount, addr) = spawn_hub_with_settings(node_settings.path());
+    let settings = common::device_settings_dir(CONTROL_KEY);
+
+    let run = run_trade(addr, settings.path(), &[SET_CEILING_LINE], Liveness::ReadsEveryLine);
+    let transcript = format!("--- stdout ---\n{}\n--- stderr ---\n{}", run.stdout, run.stderr);
+
+    assert!(run.ok, "the session must exit cleanly\n{transcript}");
+    assert_eq!(
+        stored_ceiling(node_settings.path()).as_deref(),
+        Some("250"),
+        "under --yes the settings write needs no answer at all\n{transcript}"
+    );
+}
+
+/// Pull `order_client_id=<id>` out of the REPL's `preview:` line — the id the operator sees and types back.
+fn order_client_id_from_preview(stdout: &str) -> Option<String> {
+    let line = stdout.lines().find(|l| l.starts_with("preview: SUBMIT"))?;
+    let at = line.rfind("order_client_id=")? + "order_client_id=".len();
+    Some(line[at..].split_whitespace().next()?.to_string())
+}

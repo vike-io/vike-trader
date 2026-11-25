@@ -1,0 +1,178 @@
+[
+  {
+    "name": "golden",
+    "final_equity": 1005.0,
+    "total_return": 0.004999999999999893,
+    "n_trades": 2,
+    "win_rate": 0.5,
+    "sharpe": 1.5001166048633607,
+    "max_drawdown": 0.019801980198019802,
+    "profit_factor": 2.0,
+    "funding_paid": -0.5,
+    "per_symbol_pnl": [
+      [
+        "BTCUSDT",
+        5.0
+      ]
+    ],
+    "extended": {
+      "net_profit": 5.0,
+      "gross_profit": 10.0,
+      "gross_loss": 5.0,
+      "total_fees": 0.0,
+      "average_win": 10.0,
+      "average_loss": -5.0,
+      "largest_win": 10.0,
+      "largest_loss": -5.0,
+      "payoff_ratio": 2.0,
+      "expected_payoff": 2.5,
+      "consecutive_wins": 1,
+      "consecutive_losses": 1,
+      "sqn": 0.3333333333333333,
+      "long_ratio": 1.0,
+      "sortino": 2.0216288244296683,
+      "calmar": 26.27866662214515,
+      "cagr": 0.5203696360820822,
+      "recovery_factor": 0.2524999999999946,
+      "ulcer_index": 1.0205706994103119,
+      "ulcer_performance_index": 0.5098810267458717,
+      "k_ratio": -0.10798903516956154,
+      "risk_return_ratio": 0.09449846366826188,
+      "returns_volatility": 0.2995506713523366,
+      "returns_skewness": -1.5879576556248767,
+      "returns_kurtosis": 0.0,
+      "tail_ratio": 0.8700840066349175,
+      "omega": 1.2701515151515137,
+      "value_at_risk_95": -0.016821782178217833,
+      "expected_shortfall_95": -0.01980198019801982
+    },
+    "honesty": {
+      "intrabar_both_hit": 1,
+      "stale_deferrals": 2,
+      "session_deferrals": 4,
+      "impact_unpriced": 3,
+      "below_min_reversals": 1,
+      "warmup": 5,
+      "denials": [
+        [
+          "insufficient-margin",
+          1
+        ],
+        [
+          "volume_cap",
+          1
+        ]
+      ],
+      "denial_details": [
+        {
+          "examples": [
+            {
+              "symbol": "BTCUSDT",
+              "size": 0.5,
+              "numbers": []
+            }
+          ]
+        },
+        {
+          "examples": [
+            {
+              "symbol": "BTCUSDT",
+              "size": 2.0,
+              "numbers": []
+            }
+          ]
+        }
+      ]
+    },
+    "data_warnings": [
+      "ETHUSDT: did not run"
+    ]
+  },
+  {
+    "name": "golden",
+    "final_equity": 1000.0,
+    "total_return": 0.0,
+    "n_trades": 0,
+    "win_rate": 0.0,
+    "sharpe": 0.0,
+    "max_drawdown": 0.0,
+    "profit_factor": 0.0,
+    "funding_paid": 0.0,
+    "per_symbol_pnl": [],
+    "zero_trade": {
+      "causes": [
+        {
+          "code": "warmup-shortfall",
+          "headline": "Strategy warm-up (50 bars) exceeds the 3 bar(s) loaded.",
+          "detail": "The strategy stayed in warm-up for the whole run: it needs 50 warm-up bars/ticks but only 3 were available, so its on_bar/on_tick logic never ran. Widen the date range or reduce the indicator lookback."
+        },
+        {
+          "code": "orders-denied",
+          "headline": "All 3 submitted order(s) were rejected before filling.",
+          "detail": "Rejections by reason: insufficient-margin (3). These are RiskGate / cash-gate / volume-cap / latency drops - the strategy submitted orders but none was admitted. Review the gate limits (margin, min-qty/notional, price collar, buying power) or the order sizes."
+        },
+        {
+          "code": "stale-price",
+          "headline": "1 market order(s) were deferred waiting for a fresh price print.",
+          "detail": "The stale-price wait gate (max_price_staleness_ms) held every market order because the tape never printed fresh data within the bound - the data may be forward-filled / zero-volume across this window."
+        }
+      ]
+    },
+    "extended": {
+      "net_profit": 0.0,
+      "gross_profit": 0.0,
+      "gross_loss": -0.0,
+      "total_fees": 0.0,
+      "average_win": 0.0,
+      "average_loss": 0.0,
+      "largest_win": 0.0,
+      "largest_loss": 0.0,
+      "payoff_ratio": 0.0,
+      "expected_payoff": 0.0,
+      "consecutive_wins": 0,
+      "consecutive_losses": 0,
+      "sqn": 0.0,
+      "long_ratio": 0.0,
+      "sortino": 0.0,
+      "calmar": 0.0,
+      "cagr": 0.0,
+      "recovery_factor": 0.0,
+      "ulcer_index": 0.0,
+      "ulcer_performance_index": 0.0,
+      "k_ratio": 0.0,
+      "risk_return_ratio": 0.0,
+      "returns_volatility": 0.0,
+      "returns_skewness": 0.0,
+      "returns_kurtosis": 0.0,
+      "tail_ratio": 0.0,
+      "omega": 0.0,
+      "value_at_risk_95": 0.0,
+      "expected_shortfall_95": 0.0
+    },
+    "honesty": {
+      "intrabar_both_hit": 0,
+      "stale_deferrals": 1,
+      "session_deferrals": 0,
+      "impact_unpriced": 0,
+      "below_min_reversals": 0,
+      "warmup": 50,
+      "denials": [
+        [
+          "insufficient-margin",
+          3
+        ]
+      ],
+      "denial_details": [
+        {
+          "examples": [
+            {
+              "symbol": "BTCUSDT",
+              "size": 1.0,
+              "numbers": []
+            }
+          ]
+        }
+      ]
+    }
+  }
+]

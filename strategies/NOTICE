@@ -1,0 +1,73 @@
+Notice of the strategy gallery
+
+The 617 strategy files in this folder that carry a licence header of their own are hand-written Rust versions of published trading scripts. Each is changed
+from its original: rewritten in another language, against vike's own engine and indicators. No code generated from
+an original was read or used. Each strategy file opens with its licence as an SPDX line, every copyright notice its
+licence requires to be kept, the page or repository it comes from, and the line "Changed: rewritten by hand in Rust
+for vike."
+
+The other files in this folder are vike's own, under the workspace's licence (LICENSE.md at the repository root). The
+reference trade lists, reference numbers and bars the strategies were checked against are not part of this folder.
+
+1. Files from the validation corpus (Apache-2.0): 252 files
+
+These files are rewritten from scripts of https://github.com/pineforge-4pass/pineforge-corpus at commit
+adef1c63e650163a57408bcf3c97e7d5ecd4f697, licensed under the Apache License, Version 2.0. A copy of the licence is
+LICENSE-APACHE-2.0.txt in this folder, and https://www.apache.org/licenses/LICENSE-2.0.
+
+The source's NOTICE carries this attribution notice, kept here as Apache-2.0 section 4(d) requires:
+
+    PineForge Validation Corpus
+    Copyright 2026 PineForge contributors
+
+Each of these files carries its script's own copyright line. The 8 scripts that carry none are under the Apache-2.0
+by the source repository's LICENSE and LEGAL.md; their files carry the notice's copyright line above and say so.
+
+2. Corpus files that also carry the Mozilla Public License 2.0: 14 files
+
+These corpus scripts share code lines with community scripts whose author published them under the MPL-2.0, so the
+Rust files built from them are under "Apache-2.0 AND MPL-2.0". Each says so in its first lines, and names the
+original:
+
+  - "Integrated Execution System [JOAT]", © officialjackofalltrades, https://www.tradingview.com/script/SxASLpF5-Integrated-Execution-System-JOAT/
+    adx_regime_classify.rs, bb_kc_squeeze_release.rs, combo_3.rs, cooldown_daily_cap.rs, pivot_liquidity_sweep.rs,
+    pressure_gauge.rs, rsi_macd_momentum.rs, three_ema_bias_score.rs
+  - "Vortex Confluence Protocol [JOAT]", © officialjackofalltrades, https://www.tradingview.com/script/XtP27UK6-Vortex-Confluence-Protocol-JOAT/
+    combo_9.rs, cumulative_volume_delta.rs, fvg_active_zones.rs, manual_adx_regime.rs, rsi_smooth_divergence.rs,
+    vol_zscore_anomaly.rs
+
+3. Files from scripts published with their source open (MPL-2.0 or MIT): 365 files
+
+These files are rewritten from scripts published on the site each file's header links to. Each header names the
+original's author and page (and its title, unless the title names another product), and keeps every copyright notice
+of the original verbatim, as MPL-2.0 section 3.4 and the MIT license require. The licence of each file is:
+
+  - MPL-2.0 where the original states it: 209 files. One of them embeds a part its author published under the MIT
+    license; its header says so, and LICENSE-MIT carries that notice.
+  - MPL-2.0 where the original states no licence: 153 files. The site's Terms of Use license a script published
+    without a stated licence under the MPL-2.0. Only scripts published on or after 2019-07-19, the first archived
+    copy of those terms that carries the sentence, are in this folder. Each header says so, with the date.
+  - MIT where the original states it: 3 files. The MIT text, with every MIT copyright notice, is LICENSE-MIT in this
+    folder.
+
+4. Data tables under the Creative Commons Attribution 4.0 International licence (CC BY 4.0)
+
+One file of section 3 also carries data tables its original ships, as the original writes them, digit for digit:
+other/flytv_a_real_fruit_fly_connectome_trading_on_you.rs. Its original's author distilled them from the MaleCNS v1.0
+connectome, data under CC BY 4.0; the file's code is MPL-2.0 like the rest of section 3. The file's header and its
+documentation keep the data's attribution verbatim:
+
+    Data: MaleCNS v1.0, CC BY 4.0 — FlyEM/HHMI Janelia, University of Cambridge, MRC LMB, Google Research.
+    Berg et al., doi:10.1101/2025.10.09.680999
+
+The licence is https://creativecommons.org/licenses/by/4.0/.
+
+5. The Mozilla Public License 2.0
+
+The MPL-2.0 text is LICENSE-MPL-2.0.txt in this folder, and https://mozilla.org/MPL/2.0/. The Source Code Form of
+each MPL-2.0 file is that file, available at https://github.com/vike-io/vike-trader.
+
+6. No affiliation
+
+This work is not affiliated with or endorsed by the authors of the original scripts, the authors of the validation
+corpus, the authors of the data, or the site that publishes the scripts. Every trademark belongs to its owner.

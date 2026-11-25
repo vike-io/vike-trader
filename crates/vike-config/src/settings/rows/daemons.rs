@@ -1,0 +1,141 @@
+//! The `SETTINGS` rows read by the two daemons, their clients, the mount and alerting.
+
+use super::{external_credential, vike_credential, vike_env};
+use crate::settings::{Layer, Medium, Naming, Scope, Setting};
+
+pub(crate) const ROWS: &[Setting] = &[
+    // The three remaining VIKE_ALERT* rows moved from `vike-ops` to `vike-alerting` with the tree
+    // that reads them (`delivery::webhook_configs_from_env`) — `krate_of` keys on the source path,
+    // so a row left on the old crate would fail `every_declared_variable_is_read`.
+    //
+    // `VIKE_ALERTS`, the rules-file override, has no reader row: decision 0111 made the path the
+    // derived `<settings>/state/alerts.json`, and `vike-config` refuses the variable.
+    //
+    // The three are CREDENTIAL-STORE rows (`vike-cli secrets set`, value on stdin), the owner's
+    // ruling of 2026-10-31: every daemon reads them out of its settings database
+    // (`vike_alerting::WEBHOOK_KEYS`), none out of its process environment.
+    vike_credential("VIKE_ALERT_TELEGRAM_CHAT_ID", "vike-alerting", ""),
+    vike_credential("VIKE_ALERT_TELEGRAM_TOKEN", "vike-alerting", ""),
+    vike_credential("VIKE_ALERT_WEBHOOK_URL", "vike-alerting", ""),
+    // THE TOOL-FEEDS LANE'S TWO API KEYS (`crates/vike-datahub/src/tool_feeds/mod.rs`'s `FINNHUB_API_KEY` and
+    // `FMP_API_KEY`): the data daemon reads each from ITS OWN box's credential store, one scoped
+    // read per poll cycle (`ToolFeedKeyReaderStore`), to fetch earnings (Finnhub) and dividends (FMP) on the
+    // server's schedule. They are third-party DATA keys, not venue credentials. `Injected`/`MapLookup`
+    // so `LIBRARY_PIN` does not grow, and the rows that make `vike-cli secrets set FINNHUB_API_KEY`
+    // legal (`vike_venues::credential_keys::STORE_KEYS_OUTSIDE_THE_GRID`, held to this table in both
+    // directions). Absent is the ordinary state: the feed answers `NotConfigured` naming the key.
+    // ⚠ The desktop used to read both (`vike-app-core`'s `ToolApiKeys`, from the process environment
+    // and then the desktop's store); those rows left with that code — the desktop holds no provider key.
+    external_credential("FINNHUB_API_KEY", "vike-datahub", ""),
+    external_credential("FMP_API_KEY", "vike-datahub", ""),
+    // THE ARCHIVE DOWNLOAD'S AWS KEY PAIR (`crates/vike-datahub/src/import/download.rs`'s
+    // `ACCESS_KEY_ID_NAME` and `SECRET_ACCESS_KEY_NAME`, the owner's ruling of 2026-11-13): the data
+    // daemon reads both from ITS OWN box's credential store, one scoped read per `FetchArchive`
+    // request, to list and download Dukascopy's Requester-Pays S3 archive on the operator's own AWS
+    // account. A DEPLOYMENT pair, never a venue credential (the datahub reads none), and the same
+    // `Injected`/`MapLookup` shape as the two data keys above.
+    external_credential("DUKASCOPY_ARCHIVE_AWS_ACCESS_KEY_ID", "vike-datahub", ""),
+    external_credential("DUKASCOPY_ARCHIVE_AWS_SECRET_ACCESS_KEY", "vike-datahub", ""),
+    // The data daemon's own settings — its listen address and public-bind opt-in, the live
+    // market-data plane, its resident set, the chart-gap seed lane and the store root — have no
+    // reader rows: decision 0111 made each a row of the settings database (`config.datahub_*`,
+    // `flags.datahub_*`, `config.store_root`), a client's dial address is `config.datahub_addr`,
+    // and `vike-config` refuses every variable at startup.
+    // (The `vike-hub-protocol` rows for `VIKE_DATAHUB_{OBSERVE,CONTROL}_KEY` stood here until decision
+    // 0288's cutover: no hub reads a person's shared key, and the crate's two names and their reader
+    // are deleted. Both names are `vike-config` refusals.)
+    Setting {
+        name: "VIKE_HOLD_STORE",
+        krate: "vike-datahub",
+        scope: Scope::Vike,
+        layer: Layer::TestOnly,
+        naming: Naming::Literal,
+        medium: Medium::ProcessEnv,
+        default: "a temp dir is used when it is unset",
+    },
+    vike_env("VIKE_LOG_DIR", "vike-tradehub-core", ""),
+    // ⚠ TOMBSTONE — the `("VIKE_POLY_TICKS", "vike-desktop")` row stood beside its `vike-desktop`
+    // neighbour `crates/vike-config/src/settings/rows/gui.rs`'s `VIKE_POLY_COCKPIT_TOKEN` and is
+    // DELETED. Unlike that neighbour (a QA seed the GUI still reads), this one armed
+    // the Polymarket startup SUBSCRIBE loop inside the desktop's local market-data plane, which the
+    // desktop cut removed outright — the GUI opens no venue socket at all now. It was read THERE and
+    // nowhere else in the workspace, so the name has no row left in any crate; the desktop's own
+    // tombstone beside the deleted feed block says the same thing from the other side. If the
+    // subscribe loop is ever rebuilt behind the daemon, the row comes back keyed to THAT crate.
+    // The `VIKE_RECONCILE_*` family has no reader row: decision 0111 made every member a row of the
+    // settings database (`vike_tradehub::reconcile_config::ReconcileSettings` carries them), and
+    // `vike-config` refuses each variable at startup.
+    // `("VIKE_RECORD_PROPERTIES", "vike-datahub")` — the Polymarket taker-hold live smoke's own skip
+    // gate — stood here until decision 0111's P7: the smoke arms its recorder itself, because the
+    // production gate is a parameter now and the variable refuses startup.
+    // The ROUTE's address read: `datahub_address_for_bin` hands this override to the settings
+    // database read, so the `config.datahub_addr` row is looked up under the same project everything
+    // else on the box resolves to (the bin's device key is read from that database too). A MAP
+    // LOOKUP off the sweep the calling binary already owns, never a process read — this is library
+    // code, and every routed reader
+    // (the backtesthub, the three `cheap_np` bins, the tearsheet) passes the map it had
+    // already swept for its store root.
+    //
+    // ⚠ The READ is not new; its CRATE is. It sat in `crates/vike-backtesthub/src/backtest_cli.rs`
+    // until 2026-09-23, when the route moved down so a second reader of that crate's own layer
+    // rank could reach it. This registry is keyed on the PAIR `(name, krate)`, so a read crossing
+    // a crate boundary is a NEW row rather than an edited one — and `vike-backtest` KEEPS its own
+    // row, because `run_serve` still resolves the pair for the daemon it is about to bind.
+    Setting {
+        name: "VIKE_SETTINGS_DIR",
+        krate: "vike-datahub-client",
+        scope: Scope::Vike,
+        layer: Layer::Injected,
+        naming: Naming::MapLookup,
+        medium: Medium::ProcessEnv,
+        default: "<none> → the project walk, the same answer every other absent spelling resolves to",
+    },
+    // Task 3 of decision 0095: `poly_taker_hold_live_smoke.rs`'s own
+    // `declare_polymarket_egress_from_the_settings_database` helper reads the override directly
+    // (a `std::env::var` call in the TEST BINARY, same shape as the bridge-crate smokes'
+    // `VIKE_SETTINGS_DIR` rows in `crates/vike-config/src/settings/rows/bridges.rs`),
+    // ahead of declaring the Polymarket bridge's egress from the settings database it names.
+    Setting {
+        name: "VIKE_SETTINGS_DIR",
+        krate: "vike-datahub",
+        scope: Scope::Vike,
+        layer: Layer::TestOnly,
+        naming: Naming::Literal,
+        medium: Medium::ProcessEnv,
+        default: "<none> → the project walk, i.e. whichever checkout the smoke runs in",
+    },
+    // ⚠ This declared `Naming::Literal` until decision 0088's B5 step moved
+    // `ctrader_live_mount_smoke.rs` (whose `std::env::var("VIKE_SETTINGS_DIR")` call was the
+    // Literal sighting) out of this crate's `tests/` and into `bridges/ctrader`'s own row (in
+    // `crates/vike-config/src/settings/rows/bridges.rs`'s `VIKE_SETTINGS_DIR` block),
+    // which already declared `Naming::Literal` for it independently. The one sighting left here was
+    // `account_table_is_reachable.rs`'s `HashMap::insert("VIKE_SETTINGS_DIR", ..)`, a MapLookup
+    // shape, and the row was re-keyed to match.
+    //
+    // ⚠ `Binary`/`Literal` again since decision 0111: the `incident` bin
+    // (`crates/vike-tradehub-core/src/bin/incident.rs`'s `active_run_profile`) reads the override with a
+    // literal `std::env::var` to find the settings database whose ACTIVE `run` row it captures —
+    // it took the run profile from a FILE named by `--profile` / `VIKE_RUN_PROFILE` until then, and
+    // that variable's `vike-tradehub-core` row went with it. The binary read outranks the test sighting.
+    Setting {
+        name: "VIKE_SETTINGS_DIR",
+        krate: "vike-tradehub-core",
+        scope: Scope::Vike,
+        layer: Layer::Binary,
+        naming: Naming::Literal,
+        medium: Medium::ProcessEnv,
+        default: "<none> → the project walk from the working directory",
+    },
+    // The TELEGRAM control channel (`vike-telegram`, decision 0256). The two gates are settings rows
+    // (`flags.tradehub_control`, `flags.telegram_control`); the credentials and the two ALLOWLISTS
+    // are parsed out of an already-loaded credential MAP by the library (`TelegramConfig::from_vars`):
+    // the caller owns the I/O. The token and a non-empty CHAT allowlist must both be present
+    // or nothing is constructed; the USER allowlist is the one optional member — absent means
+    // chat-only authorization, exactly as before it existed.
+    vike_credential("VIKE_TELEGRAM_ALLOWED_CHAT_IDS", "vike-telegram", ""),
+    vike_credential("VIKE_TELEGRAM_ALLOWED_USER_IDS", "vike-telegram", ""),
+    vike_credential("VIKE_TELEGRAM_BOT_TOKEN", "vike-telegram", ""),
+    // (The `vike-tradehub-client` rows for `VIKE_TRADEHUB_{OBSERVE,CONTROL,ADMIN}_KEY` stood here until
+    // decision 0288's cutover: the tradehub reads no person's shared key, and the crate's three names
+    // and their two readers are deleted.)
+];

@@ -1,0 +1,67 @@
+[package]
+name = "vike-nlp"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the TEXT models (W8b): financial sentiment from a FinBERT-class classifier and sentence embeddings from a MiniLM-class encoder, run on the CPU with candle + tokenizers. `pins` is the table of pinned model revisions and the sha256 of every file; `fetch` downloads a pinned model into `<project>/models/` and refuses a file whose digest differs; `sentiment` and `embedding` score ONE text per forward pass, so a text's numbers depend on the text and the pinned weights and on nothing else. Host-side and research-only: the study sandbox has no file and no network, so a study reads the numbers this crate wrote, never the model. The `vike-nlp` binary is the command line: `fetch` the weights, and `score` the stored news over the datahub wire into day files the datahub imports (`text-scores`)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Its highest normal
+# vike-* edges are rank 25 (`vike-boot`, the binary's startup; `vike-datahub-client`, its read of the
+# texts), so 30 is its floor. Nothing ranks it from above: no crate names it.
+[package.metadata.vike]
+layer = 30
+
+[dependencies]
+# ⚠ WHO MAY LINK THIS CRATE: nobody. Its closure is the whole candle + tokenizers tree (root
+# Cargo.toml's pin comment), so the owner ruled (2026-11-16) that it ships as its OWN binary, a release
+# tool like `lightgbm`, and that neither the datahub nor the released `vike-backend` links it: the
+# datahub only PARSES the score files it writes (`crates/vike-backfill/src/text_scores.rs`). It never
+# joins the strategy template (`crates/vike-rust-strategy/template/Cargo.toml.in`) or a study file's
+# surface either: a study reads the stored numbers.
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
+candle-transformers = { workspace = true }
+tokenizers = { workspace = true }
+# `config.json` of a pinned model: candle's `bert::Config` is a serde type, and the classifier's
+# `id2label` is read off the same document.
+serde_json = { workspace = true }
+# The weights download (`fetch`): the workspace's ONE blocking HTTP client, rustls + ring.
+ureq = { workspace = true }
+# Its download agent (`vike_transport::http::public_get_agent_bounded`: the DNS resolver, the stated public-GET
+# redirect limit, the client's User-Agent), the generic network layer (decision 0299): layer 4, no vike-* crate; no
+# `websocket`.
+vike-transport = { path = "../vike-transport" }
+# `vike_hub_protocol::hash::sha256_hex`, the ONE home of "SHA-256 of these bytes, as hex"; already
+# linked by every daemon, it adds no package.
+vike-hub-protocol = { path = "../vike-hub-protocol" }
+# `atomic_file::write_atomic` (a fetched file appears whole or not at all) and `cli` (the binary's clap
+# rules, decision 0155).
+vike-utility = { path = "../vike-utility", features = ["cli"] }
+# The formula floor (decision 0294): `special_functions::softmax`, the class probabilities (`libm::exp`,
+# docs/decisions/0032-transcendentals-come-from-the-libm-crate-not-the-platform.md). Layer 2, `libm` only.
+vike-math = { path = "../vike-math" }
+# `state_path::PROJECT_MODELS_DIR`: where under `<project>` the weights live.
+vike-paths = { path = "../vike-paths" }
+# The binary's `--version` line (`version_line`), as every program's.
+vike-buildinfo = { path = "../vike-buildinfo" }
+# The binary's startup (`vike_boot::boot`): the ONE project walk, the settings (`config.datahub_addr`)
+# and the settings directory whose device key signs the datahub connection.
+vike-boot = { path = "../vike-boot" }
+# `vike-nlp score` reads the stored texts over the datahub WIRE (A5's `ScanTexts`), the reader every
+# tool is (decision 0084): `route` dials `config.datahub_addr` with this box's device key.
+vike-datahub-client = { path = "../vike-datahub-client", features = ["hist-route"] }
+# The rows: `TextRow` read, `TextScoreRow` written, and the day-file spelling the import reads
+# (`text_score_log`).
+vike-data = { path = "../vike-data" }
+# `chunk::chunk_texts`, the ONE chunking rule (W17): every chunk of a text is scored, and a study
+# re-cuts the text by the same call to pair a stored vector with its words. Pure, layer 15.
+vike-rag = { path = "../vike-rag" }
+# `time::floor_ms_to_utc_day` (a text's day) and `time::parse_date_label` (`--from`/`--to`).
+vike-model = { path = "../vike-model" }
+# `access::device_key_load`: this box's device key, which signs the datahub connection.
+vike-secrets = { path = "../vike-secrets" }
+clap = { workspace = true }
+
+[lints]
+workspace = true

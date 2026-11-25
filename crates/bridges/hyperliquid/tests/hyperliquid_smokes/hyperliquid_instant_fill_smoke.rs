@@ -1,0 +1,261 @@
+//! An order Hyperliquid FILLS IN ITS OWN ANSWER, on the **testnet**, through the whole exec client: the
+//! lane carries `OrderSubmitted`, `OrderAccepted`, then the fill. The live proof of
+//! `crates/vike-bridge-core/src/event_map.rs`'s `accept_implied_by_fill` as
+//! `crates/bridges/hyperliquid/src/execution/state.rs`'s `submit` sends it (`src/execution/execution_tests.rs` pins the same
+//! lane order against a fake venue). Before it the lane was `OrderSubmitted`, `OrderFilled` and the
+//! engine's order table, which has no `Submitted -> Filled` edge, refused the fill: the order stayed
+//! SUBMITTED for good (`terminal event dropped on a live order ... status="SUBMITTED"`).
+//!
+//!     MSYS_NO_PATHCONV=1 BOX=the CI box LANE=<pinned> just the CI box <branch> env \
+//!       VIKE_SETTINGS_DIR=/var/lib/vike/settings VIKE_NO_LIVE_KEYS=true \
+//!       cargo test -p vike-hyperliquid --test hyperliquid_smokes -- --ignored --nocapture hyperliquid_instant_fill_smoke::
+//!
+//! ORDER-PLACING, **TESTNET ONLY**: the demo tier is the only one this file loads credentials at
+//! (`common`'s `demo_credentials`), and the first thing the test does after loading them is assert the network
+//! is `Testnet`. It buys 0.0002 BTC with a MARKET order (the exec client sends an emulated IOC at a
+//! slippage from the mid, so it crosses the book and the venue answers `filled`), then closes what it
+//! holds with a reduce-only market order from the same test. It refuses to start unless the account holds
+//! no BTC position, and a `Drop` guard flattens whatever is left on every exit path (a run killed from
+//! outside skips destructors: check the testnet BTC position by hand). Double-gated like every smoke in
+//! this crate: the network and the demo account's `PRIVATE_KEY` in the credential store, a
+//! `tracing::warn!` and an early return when absent. Nothing secret is printed: only events, venue
+//! numbers and the ids of this smoke's own orders.
+
+use crate::common;
+use crate::ingest::{Pull, pump_until, words};
+use common::demo_credentials;
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use serde_json::json;
+use vike_bridge_core::exec_actor::ExecutionClientActor;
+use vike_bridge_core::smoke::lifecycle_word;
+use vike_execution::testing::RecordingClient;
+use vike_execution::{
+    Account, BalanceMode, Engine, EventBusOutbox, EventHandler, ExecutionClient, RiskGate,
+    event_channel,
+};
+use vike_hyperliquid::instrument::properties::HyperliquidInstruments;
+use vike_hyperliquid::signing::Signer;
+use vike_hyperliquid::test_support::{seed_execution_urls, seed_transport};
+use vike_hyperliquid::transport::HyperliquidTransport;
+use vike_model::VenueNetwork;
+use vike_model::events::Event;
+use vike_model::{OrderRecord, OrderRequest, OrderStatus, OrderType, RiskLimits, now_ms};
+
+/// The perpetual's USER name (decision 0290); `COIN` is its wire coin, which the venue's own reads name.
+const SYMBOL: &str = "BTCUSDC.P";
+const COIN: &str = "BTC";
+const VENUE: &str = "hyperliquid";
+/// 0.0002 BTC: just over the venue's 10 USD minimum at a BTC price above 50,000.
+const QTY: f64 = 0.0002;
+
+fn market(order_client_id: &str, side: i32, qty: f64, reduce_only: bool) -> OrderRequest {
+    OrderRequest {
+        order_client_id: order_client_id.into(),
+        venue: VENUE.into(),
+        symbol: SYMBOL.into(),
+        side,
+        qty,
+        order_type: OrderType::Market,
+        reduce_only,
+        timestamp: now_ms(),
+        ..Default::default()
+    }
+}
+
+/// The account's signed BTC position (0.0 when flat), straight off `clearinghouseState`.
+fn position(transport: &HyperliquidTransport, master: &str) -> Result<f64, String> {
+    let state = transport
+        .info(&json!({ "type": "clearinghouseState", "user": master }))
+        .map_err(|e| e.to_string())?;
+    Ok(state["assetPositions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p["position"]["coin"] == COIN)
+        .filter_map(|p| p["position"]["szi"].as_str()?.parse::<f64>().ok())
+        .sum())
+}
+
+/// The exec client under test plus the cleanup: on every exit path it closes whatever BTC position the
+/// account holds, with a reduce-only market order through the same client.
+struct Flat {
+    client: ExecutionClientActor,
+    transport: HyperliquidTransport,
+    master: String,
+}
+
+impl Drop for Flat {
+    fn drop(&mut self) {
+        match position(&self.transport, &self.master) {
+            Ok(q) if q.abs() > 1e-9 => {
+                let order_client_id = format!("vtihflat{}", now_ms() % 100_000_000);
+                println!("CLEANUP flatten {q} with {order_client_id}");
+                self.client.submit(&market(
+                    &order_client_id,
+                    vike_model::closing_side(q),
+                    q.abs(),
+                    true,
+                ));
+                // The client's own drop joins its thread; give the order the time to go out first.
+                std::thread::sleep(Duration::from_secs(6));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                println!("CLEANUP could not read the {SYMBOL} position ({e}): CHECK IT BY HAND")
+            }
+        }
+    }
+}
+
+/// A real engine holding `req` as the core registers a submit, with its lane events folded in arrival
+/// order.
+fn fold(req: &OrderRequest, seen: &[Event]) -> Engine<RecordingClient> {
+    let mut engine = Engine::new(
+        Account::new(1.0, VENUE, None, BalanceMode::Delta),
+        RiskGate::new(RiskLimits::new()),
+        RecordingClient::default(),
+        VENUE,
+        SYMBOL,
+    );
+    engine.registry.insert(req.order_client_id.clone(), OrderRecord::new(req.clone()));
+    let mut outbox = EventBusOutbox::default();
+    for e in seen {
+        if lifecycle_word(e).is_some_and(|(c, _)| c == req.order_client_id) {
+            engine.on_event(e, &mut outbox);
+        }
+    }
+    engine
+}
+
+/// What one instant-fill order must have put on the lane, and what the engine makes of it.
+fn check_instant_fill(req: &OrderRequest, seen: &[Event]) {
+    let order_client_id = &req.order_client_id;
+    let lane = words(seen, order_client_id);
+    let lifecycle: Vec<&str> = lane.iter().copied().filter(|w| *w != "Fill").collect();
+    println!("MEASURED {order_client_id} lane order: {lane:?}");
+    assert!(
+        matches!(lifecycle.as_slice(), ["Submitted", "Accepted", "Filled" | "PartiallyFilled", ..]),
+        "{order_client_id}: the answer's own events must be Submitted, Accepted, then the fill; got {lane:?}"
+    );
+    let accepted = seen.iter().find_map(|e| match e {
+        Event::OrderAccepted(a) if a.order_client_id == *order_client_id => Some(a),
+        _ => None,
+    });
+    let oid = accepted.and_then(|a| a.venue_order_id.as_deref());
+    println!("MEASURED {order_client_id} Accepted names the venue oid {oid:?}");
+    assert!(
+        oid.is_some_and(|o| !o.is_empty()),
+        "{order_client_id}: the implied accept must name the oid"
+    );
+
+    let engine = fold(req, seen);
+    let order = &engine.registry[order_client_id];
+    println!(
+        "MEASURED {order_client_id} after the engine fold: status={:?} filled_qty={} avg_fill_px={} \
+         closing_events_dropped_order_still_live={}",
+        order.status,
+        order.filled_qty,
+        order.average_fill_price,
+        engine.closing_events_dropped_order_still_live
+    );
+    let want =
+        if lifecycle[2] == "Filled" { OrderStatus::Filled } else { OrderStatus::PartiallyFilled };
+    assert_eq!(order.status, want, "{order_client_id}: the engine must walk the order to the fill");
+}
+
+#[test]
+#[ignore = "network + TESTNET creds — buys 0.0002 BTC at the testnet and sells it back — run manually (see module doc)"]
+fn hyperliquid_an_order_filled_in_the_answer_is_accepted_first() {
+    vike_log::test_init();
+    let Some(creds) = demo_credentials() else { return };
+    assert_eq!(creds.network, VenueNetwork::Testnet, "this smoke places real orders: TESTNET ONLY");
+
+    let signer = Signer::from_private_key(creds.private_key.expose(), creds.network)
+        .expect("the demo account's PRIVATE_KEY must be a valid secp256k1 key");
+    let master = creds.account_address.clone().unwrap_or_else(|| signer.address().to_string());
+    let transport = seed_transport(creds.network);
+    let instruments = Arc::new(HyperliquidInstruments::load(&transport, false).expect("meta"));
+    let instrument =
+        instruments.symbology().by_symbol(SYMBOL).expect("BTCUSDC.P is listed").clone();
+    let mid: f64 = transport
+        .info(&json!({ "type": "allMids" }))
+        .expect("allMids")
+        .get(&instrument.coin)
+        .and_then(|v| v.as_str())
+        .and_then(|s| s.parse().ok())
+        .expect("a live BTC mid");
+    assert!(QTY * mid > 10.5, "{QTY} BTC at {mid} is under the venue's 10 USD minimum");
+    let base0 = position(&transport, &master).expect("clearinghouseState");
+    assert!(
+        base0.abs() < 1e-9,
+        "the testnet account must hold no BTC position before this smoke (it holds {base0}): it \
+         flattens what it finds at the end and must not touch another test's position"
+    );
+    println!("START mid={mid} position={base0} qty={QTY}");
+
+    let (events, mut rx) = event_channel(1024);
+    let client = vike_hyperliquid::execution::client::spawn(
+        signer,
+        master.clone(),
+        Arc::clone(&instruments),
+        events,
+        None,
+        None,
+        seed_execution_urls(creds.network),
+    );
+    let mut flat = Flat { client, transport: seed_transport(creds.network), master };
+    let mut pull: Pull = Box::new(move || rx.try_recv().ok());
+    let mut seen: Vec<Event> = Vec::new();
+    let started = Instant::now();
+    std::thread::sleep(Duration::from_secs(4)); // the user-data socket settles
+
+    // --- 1. BUY: a market order the venue fills in its answer ---------------------------------------
+    let buy = market(&format!("vtihbuy{}", now_ms() % 100_000_000), 1, QTY, false);
+    flat.client.submit(&buy);
+    let done = pump_until(&mut pull, &mut seen, Some(started), 25, |s| {
+        let w = words(s, &buy.order_client_id);
+        w.contains(&"Filled") || w.contains(&"PartiallyFilled") || w.contains(&"Rejected")
+    });
+    // let the socket's own rows (the bare fill, the order update) land behind the answer's
+    pump_until(&mut pull, &mut seen, Some(started), 4, |_| false);
+    let held = position(&flat.transport, &flat.master);
+    println!("MEASURED position after the buy: {held:?}");
+    assert!(
+        done,
+        "{}: no fill and no refusal in 25 s: {:?}",
+        buy.order_client_id,
+        words(&seen, &buy.order_client_id)
+    );
+    check_instant_fill(&buy, &seen);
+
+    // --- 2. SELL: the same, reduce-only, for what the account holds ----------------------------------
+    let held = held.expect("clearinghouseState").abs();
+    assert!(held > 0.0, "the buy filled, so the account must hold BTC");
+    let sell = market(&format!("vtihsel{}", now_ms() % 100_000_000), -1, held, true);
+    flat.client.submit(&sell);
+    let done = pump_until(&mut pull, &mut seen, Some(started), 25, |s| {
+        let w = words(s, &sell.order_client_id);
+        w.contains(&"Filled") || w.contains(&"PartiallyFilled") || w.contains(&"Rejected")
+    });
+    pump_until(&mut pull, &mut seen, Some(started), 4, |_| false);
+    let after = position(&flat.transport, &flat.master);
+    println!("MEASURED position after the sell: {after:?}");
+    assert!(
+        done,
+        "{}: no fill and no refusal in 25 s: {:?}",
+        sell.order_client_id,
+        words(&seen, &sell.order_client_id)
+    );
+    check_instant_fill(&sell, &seen);
+    assert!(
+        after.is_ok_and(|q| q.abs() < 1e-9),
+        "the reduce-only sell must leave the account flat"
+    );
+
+    println!(
+        "hyperliquid instant-fill smoke green: Submitted -> Accepted -> Filled for the buy and the reduce-only sell"
+    );
+}

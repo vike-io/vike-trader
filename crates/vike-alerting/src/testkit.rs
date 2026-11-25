@@ -1,0 +1,83 @@
+//! Test fixtures shared ACROSS this crate's test modules: the snapshot input and the price rule
+//! that `engine_tests.rs` and `evaluation/tests/snapshot.rs` both drive. A fixture one module tree uses
+//! alone lives in that tree's own tests root (`evaluation/tests.rs`, `delivery/tests.rs`) instead.
+
+use crate::rule::{AlertRule, Compare, RuleTrigger};
+use crate::{GroupCurveFact, ReconcileAlertFact, SnapshotFacts, StaleRateFact};
+
+/// The test implementation of [`SnapshotFacts`] — plain OWNED data, which is the whole
+/// reason that input is a trait rather than a struct of borrowed slices (see its doc): a
+/// helper can return this by value, where a borrowing struct would be self-referential.
+#[derive(Default)]
+pub(crate) struct Facts {
+    pub(crate) last_prices: Vec<(String, String, f64)>,
+    pub(crate) drawdown_curve: f64,
+    /// The caller's own peak of that curve (`SnapshotFacts::drawdown_peak`); `None` = no latch armed.
+    pub(crate) drawdown_peak: Option<f64>,
+    pub(crate) capital_base: f64,
+    pub(crate) pnl_total: f64,
+    /// `(kind, detail, proposed_event_count)`, owned here and borrowed on the way out.
+    pub(crate) recon: Vec<(String, String, usize)>,
+    /// The other currency groups' curves (decision 0183, item 13); empty = a one-currency caller.
+    pub(crate) group_curves: Vec<GroupCurveFact>,
+    /// The currency the primary curve is in (`SnapshotFacts::drawdown_currency`); empty = a one-currency caller.
+    pub(crate) drawdown_currency: String,
+    /// The conversion rates that are stale under an open position (decision 0183).
+    pub(crate) stale_rates: Vec<StaleRateFact>,
+}
+
+impl SnapshotFacts for Facts {
+    fn last_price(&self, venue: &str, symbol: &str, _op: crate::rule::Compare) -> Option<f64> {
+        self.last_prices.iter().find(|(v, s, _)| v == venue && s == symbol).map(|(_, _, px)| *px)
+    }
+    fn drawdown_curve(&self) -> f64 {
+        self.drawdown_curve
+    }
+    fn drawdown_peak(&self) -> Option<f64> {
+        self.drawdown_peak
+    }
+    fn capital_base(&self) -> f64 {
+        self.capital_base
+    }
+    fn pnl_total(&self) -> f64 {
+        self.pnl_total
+    }
+    fn group_curves(&self) -> Vec<GroupCurveFact> {
+        self.group_curves.clone()
+    }
+    fn drawdown_currency(&self) -> String {
+        self.drawdown_currency.clone()
+    }
+    fn stale_rates(&self) -> Vec<StaleRateFact> {
+        self.stale_rates.clone()
+    }
+    fn reconcile_alerts(&self) -> Vec<ReconcileAlertFact<'_>> {
+        self.recon
+            .iter()
+            .map(|(k, d, n)| ReconcileAlertFact { kind: k, detail: d, proposed_event_count: *n })
+            .collect()
+    }
+}
+
+/// One last price for `(venue, symbol)` and nothing else: no equity, no recon alert.
+pub(crate) fn snap_with_mark(venue: &str, symbol: &str, px: f64) -> Facts {
+    Facts { last_prices: vec![(venue.to_string(), symbol.to_string(), px)], ..Default::default() }
+}
+
+/// [`snap_with_mark`] for the one instrument [`price_rule`] watches.
+pub(crate) fn snap_mark(px: f64) -> Facts {
+    snap_with_mark("binance", "BTCUSDT", px)
+}
+
+/// A `Price` rule on `binance`/`BTCUSDT`, the instrument [`snap_mark`] marks.
+pub(crate) fn price_rule(id: &str, op: Compare, level: f64) -> AlertRule {
+    AlertRule::new(
+        id,
+        RuleTrigger::Price {
+            venue: "binance".into(),
+            symbol: "BTCUSDT".into(),
+            comparison: op,
+            level,
+        },
+    )
+}

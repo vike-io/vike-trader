@@ -1,0 +1,83 @@
+//! OANDA's rows: one deep-and-recent request channel and a finding that there is no archive.
+
+use super::BARS;
+use crate::history::{
+    HistoryChannel, HistoryChannelAccess, HistoryChannelClass, HistoryChannelDepth,
+    HistoryChannelEvidence, HistoryChannelEvidenceSource, HistoryChannelLane, HistoryChannelPace,
+    HistoryChannelPerRequest, HistoryChannelState,
+};
+
+// ---------------------------------------------------------------------------------------------
+// OANDA — one channel, deep and recent at once. Read 2026-09-30 from the vendor's docs; the depth
+// was also measured by a 5-second-candle probe (an example program that is not on main).
+// ---------------------------------------------------------------------------------------------
+
+const OANDA_INTRODUCTION: &str = "https://developer.oanda.com/rest-live-v20/introduction/";
+
+pub(crate) const OANDA: &[HistoryChannel] = &[
+    HistoryChannel {
+        class: HistoryChannelClass::Request,
+        name: "v20 REST candles",
+        kinds: BARS,
+        depth: HistoryChannelDepth::Since {
+            date: "2005-01-03",
+            scope: "5-second candles of the majors the probe covered; the vendor's page says only \
+                    that history dates back to 2005",
+        },
+        per_request: HistoryChannelPerRequest::Rows(5000),
+        pace: HistoryChannelPace::Stated(
+            "120 requests per second per IP address (an excess request answers HTTP 429) and at \
+             most 2 new connections per second, as OANDA documents; our probe ran clean at up \
+             to 25 requests per second",
+        ),
+        access: HistoryChannelAccess::Credential(
+            "a practice-tier OANDA API token stored on the gatewayhub's own box, which the \
+             gatewayhub reads when the datahub forwards a Backfill request; this platform \
+             reaches only the practice tier",
+        ),
+        state: HistoryChannelState::Built(HistoryChannelLane::CredentialedKlines),
+        evidence: HistoryChannelEvidence::Sourced(&[
+            HistoryChannelEvidenceSource::Documented {
+                url: OANDA_INTRODUCTION,
+                checked: "2026-09-30",
+            },
+            HistoryChannelEvidenceSource::Documented {
+                url: "https://developer.oanda.com/rest-live-v20/pricing-ep/",
+                checked: "2026-09-30",
+            },
+            HistoryChannelEvidenceSource::Documented {
+                url: "https://developer.oanda.com/rest-live-v20/development-guide/",
+                checked: "2026-09-30",
+            },
+            HistoryChannelEvidenceSource::Measured {
+                on: "2026-09-30",
+                by: "a 5-second-candle probe run against OANDA's practice endpoint (an example \
+                     program on the probe/oanda-s5 branch, not on main): the earliest candle per \
+                     instrument, a 5000-candle page ceiling, and a request burst with no 429",
+            },
+        ]),
+        note: "Candles only, no ticks: 5-second candles are the finest history OANDA serves, in \
+               granularities from S5 to monthly and as mid, bid or ask prices; the datahub's lane \
+               stores mid only. Only the 5-second depth was measured; coarser candles and other \
+               instruments were not. The lane answers a Backfill request and is never started by \
+               opening a chart. It fetches a whole UTC day at a time and refuses two requests \
+               before fetching anything: a symbol that is not OANDA's own instrument name \
+               (EUR_USD, not EURUSD) and a window in seconds that starts before 2005-01-03. \
+               Measured on 2026-10-01 on the deployed datahub, one pair's 5-second history from \
+               2015-01-01 to 2026-09-30 took about an hour (EUR_USD 3,620 s, USD_JPY 3,828 s, one \
+               request each, before the per-year split); a window reaching back to 2005 is not \
+               yet measured. vike-cli data history fetch sends one request per calendar year and \
+               prints one line after each; a window of one year or less is one request, and a \
+               re-run skips the days already stored.",
+    },
+    HistoryChannel::none_found(
+        HistoryChannelClass::Bulk,
+        "bulk archive",
+        &[HistoryChannelEvidenceSource::Documented {
+            url: OANDA_INTRODUCTION,
+            checked: "2026-09-30",
+        }],
+        "OANDA's v20 API reference offers history only as candle requests and lists no bulk \
+         download. No other OANDA history product was looked for.",
+    ),
+];

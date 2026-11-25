@@ -1,0 +1,23 @@
+{
+  "_provenance": "BTC-USD-261030: GET /api/v5/public/instruments?instType=FUTURES, keyless, 2026-10-11, field values transcribed one by one (not a byte capture), trimmed to the keys the parsers read. ETH-USDT-261225: per OKX docs, no captured payload (a linear future built from the documented v5 row shape)",
+  "code": "0",
+  "msg": "",
+  "data": [
+    {
+      "instType": "FUTURES", "instId": "BTC-USD-261030", "uly": "BTC-USD", "instFamily": "BTC-USD",
+      "baseCcy": "", "quoteCcy": "", "settleCcy": "BTC",
+      "ctVal": "100", "ctMult": "1", "ctValCcy": "USD", "ctType": "inverse", "optType": "", "stk": "",
+      "expTime": "1793347200000", "listTime": "1786695000686", "alias": "this_month", "lever": "20",
+      "tickSz": "0.1", "lotSz": "0.1", "minSz": "0.1", "maxMktSz": "10000",
+      "state": "live"
+    },
+    {
+      "instType": "FUTURES", "instId": "ETH-USDT-261225", "uly": "ETH-USDT", "instFamily": "ETH-USDT",
+      "baseCcy": "", "quoteCcy": "", "settleCcy": "USDT",
+      "ctVal": "0.1", "ctMult": "1", "ctValCcy": "ETH", "ctType": "linear", "optType": "", "stk": "",
+      "expTime": "1798185600000", "alias": "quarter", "lever": "50",
+      "tickSz": "0.01", "lotSz": "1", "minSz": "1", "maxMktSz": "10000",
+      "state": "live"
+    }
+  ]
+}

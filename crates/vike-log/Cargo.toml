@@ -1,0 +1,78 @@
+[package]
+name = "vike-log"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "Workspace logging init: layered tracing subscriber (pretty console + non-blocking JSON rolling file). No domain deps."
+# Test discovery is off so each test file keeps its path while two of them share a binary: the `[[test]]` rows at the
+# bottom say which, and why the rest stay a binary each.
+autotests = false
+
+# ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs): a pure leaf with no vike-*
+# dependency of its own; any normal vike-* dependency must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+# A `log` record's own target for the recent tail (`NormalizeEvent`); already linked by
+# `tracing-subscriber`'s `tracing-log` feature, so no new crate.
+tracing-log = { workspace = true }
+# BUILD-GRAPH EDGE ONLY, not an API (root Cargo.toml has the `idna_adapter` rationale): it binds the
+# workspace requirement into resolution. That requirement is `~1.0` (the stub, no ICU4X).
+idna_adapter = { workspace = true }
+
+[features]
+# The scoped `tracing` capture (`src/capture.rs`) and the one test polling loop (`src/poll.rs`).
+# Only dev-dependency edges enable it (plus `vike-bridge-core`'s dev-only `test-support`), so it
+# never reaches a shipped binary.
+test-support = []
+
+[dev-dependencies]
+# Self dev-dep: turns `test-support` on for this crate's own `tests/`. A dev edge, so the
+# `VIKE_FREE_CRATES` row (it reads `[dependencies]` alone) is untouched.
+vike-log = { path = ".", features = ["test-support"] }
+log = { workspace = true }
+# Self-cleaning scratch dirs for `tests/`; dev-only and third-party: the leaf stays a leaf.
+tempfile = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true
+
+# The two test files that touch no process-global state share ONE binary, `tests/integration.rs`. The other six are a
+# binary each ON PURPOSE (each file's `//!` says why): `init` sets the process's one global subscriber and panic hook
+# (`writes_json`, `unwritable_log_dir`, `panic_reaches_the_file`), `capture::global` installs the global default
+# (`global_capture`), and the two callsite tests need to be the process's only capture
+# (`capture_sees_every_callsite`, `scoped_sees_every_callsite`). Discovery is off (`autotests` above), so a new root
+# file builds only as a `mod` of the entry or a row here (`crates/vike-ops/tests/hygiene/test_registry_gate.rs`'s `every_root_test_file_is_built_where_discovery_is_off`).
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[[test]]
+name = "capture_sees_every_callsite"
+path = "tests/capture_sees_every_callsite.rs"
+
+[[test]]
+name = "global_capture"
+path = "tests/global_capture.rs"
+
+[[test]]
+name = "panic_reaches_the_file"
+path = "tests/panic_reaches_the_file.rs"
+
+[[test]]
+name = "scoped_sees_every_callsite"
+path = "tests/scoped_sees_every_callsite.rs"
+
+[[test]]
+name = "unwritable_log_dir"
+path = "tests/unwritable_log_dir.rs"
+
+[[test]]
+name = "writes_json"
+path = "tests/writes_json.rs"

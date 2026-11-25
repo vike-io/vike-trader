@@ -1,0 +1,128 @@
+//! `server::unadmit` — the control door's gate for the GIVE-BACK of an admitted symbol
+//! (`CommandWire::UnadmitSymbol`, decision 0205).
+//!
+//! An account's engine takes a symbol on demand (decision 0173) and holds sixteen at most. The verb gives one
+//! back: the engine takes it out (`SymbolAdmission::release`, journaled as an `AdmitSymbol` record with one more
+//! key), the gatewayhub's reconcile client stops reading it and the node forgets what it kept for it
+//! (`TradeLeaseRegistry::settle_releases`). This module is the edge's half: it judges the frame against the PUBLISHED
+//! snapshot BEFORE the `Ack`, so the operator reads the cause in words instead of a note in recent-events.
+//!
+//! * **It is advice, the engine is the authority.** The published snapshot is coalesced and the core keeps books
+//!   outside the engine's fenced state (an armed conditional, a held exit); the engine refuses by its own folded
+//!   state (`Engine::unadmit_symbol`), so a frame this gate lets through can still be refused there, and
+//!   the node then finds the symbol still listed (`TradeLeaseRegistry::settle_releases`) and forgets nothing.
+//! * **What it refuses**: a symbol the engine's block does not list as one of its extra symbols (the engine's own
+//!   symbol is no slot), a non-flat position in it on any leg, and any order in it that has not ended, an armed
+//!   conditional included (the published orders carry it as `Emulated`). The orders arrive through
+//!   `crate::publish::named_orders`, which names them for this verb; they are matched to the account by
+//!   `route_key_of(order.venue, order.account)`, the spelling every door gate uses, so a LABELLED engine
+//!   (`bybit#DEMO`) is judged like the default one. ⚠ A bracket exit held off the venue and a core-held stop are
+//!   NOT in the published orders (`OrderHeldView`, `OrderEmulationStopView`): this gate does not see them (the unfilled
+//!   entry order or the position they hang on refuses first), and the core denies a fire for a symbol given back
+//!   since (decision 0205 item 3).
+//! * **What it does not ask**: the tier and the trading state. A give-back writes nothing at the venue and opens
+//!   nothing, so it is taken on a `live` account and while the node is halted.
+//! * **The engine's spelling.** The symbol the operator typed is matched against the block's list in any case
+//!   (every name is a USER name, decision 0290: one per kept row ignoring case, hyperliquid's included, HL-5),
+//!   and the statement carries the LIST's spelling (`ETHUSDT.P`, never `ethusdt.p`), which is what the engine
+//!   compares and the reconcile client was told.
+
+use vike_execution::{OrderView, VenueBlock};
+use vike_hub_protocol::refusal::HubRefusal;
+use vike_model::accounts::account_keys::{AccountLabel, parse_wire_account, route_key_of};
+use vike_tradehub_client::wire::CommandWire;
+
+use crate::refusals::DoorRefusal;
+
+/// What the gate decided for one frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UnadmitPlan {
+    /// Not a give-back (every other verb), or a node that cannot judge it (no engine block published yet): the
+    /// frame goes on, and the core's verdict stands.
+    Pass,
+    /// Refused before the `Ack`, with the cause in words: the refusal FRAME of a [`DoorRefusal`] id.
+    Refuse(HubRefusal),
+    /// Send it: `symbol` is the engine's own spelling of the symbol to give back.
+    Release {
+        /// The account's routing key (`route_key_of(venue, account)`).
+        route_key: String,
+        /// The symbol, spelled as the engine's block lists it.
+        symbol: String,
+    },
+}
+
+/// Judge `cmd` against the published `blocks` and `orders` ([`UnadmitPlan`]). Pure: reads nothing but its
+/// arguments, so a Preview surface may call it too.
+#[must_use]
+pub fn plan_unadmit(cmd: &CommandWire, blocks: &[VenueBlock], orders: &[OrderView]) -> UnadmitPlan {
+    let CommandWire::UnadmitSymbol { venue, account, symbol } = cmd else {
+        return UnadmitPlan::Pass;
+    };
+    let typed = symbol.trim();
+    if typed.is_empty() {
+        return UnadmitPlan::Refuse(DoorRefusal::UnadmitEmptySymbol.into());
+    }
+    let label = match account.as_deref().map_or(Ok(AccountLabel::Default), parse_wire_account) {
+        Ok(label) => label,
+        Err(e) => {
+            return UnadmitPlan::Refuse(DoorRefusal::UnadmitAccount { why: e.to_string() }.into());
+        }
+    };
+    let route_key = route_key_of(venue, &label);
+    // The NEWEST block of the key: after a restart of the account a stopped engine's block may sit before it.
+    let Some(block) = blocks.iter().rev().find(|b| b.route_key == route_key) else {
+        // No block published for it (an empty roster, or an account the roster gate already judged): the core
+        // answers, as it does for every verb this gate has no evidence about.
+        return UnadmitPlan::Pass;
+    };
+    // Every name compared below is a USER name (decision 0290), upper case and the name of ONE kept row ignoring case
+    // (`vike_catalog::kept_row_of_user_name` refuses a name two rows answer), so a match ignoring case is the
+    // instrument's own name on every venue: hyperliquid's case-kept `kPEPE` is `KPEPEUSDC.P` here (audit HL-5).
+    if block.symbol.eq_ignore_ascii_case(typed) {
+        return UnadmitPlan::Refuse(
+            DoorRefusal::UnadmitOwnSymbol { symbol: block.symbol.clone(), route_key }.into(),
+        );
+    }
+    let Some(listed) = block.extra_symbols.iter().find(|s| s.eq_ignore_ascii_case(typed)) else {
+        let held: Vec<&str> = block.extra_symbols.iter().map(String::as_str).collect();
+        let held =
+            if held.is_empty() { "it has admitted none".to_string() } else { held.join(", ") };
+        return UnadmitPlan::Refuse(
+            DoorRefusal::UnadmitNotAdmitted { typed: typed.to_string(), route_key, held }.into(),
+        );
+    };
+    if let Some(p) = block
+        .positions
+        .iter()
+        .find(|p| p.symbol.as_str().eq_ignore_ascii_case(listed) && p.size.abs() > 1e-12)
+    {
+        return UnadmitPlan::Refuse(
+            DoorRefusal::UnadmitPositionOpen { route_key, size: p.size, listed: listed.clone() }
+                .into(),
+        );
+    }
+    // The engine's own question (`Engine::unadmit_symbol`): an order that has not ENDED, which is
+    // `!is_terminal()` and so counts a `Liquidated` one that `is_live()` does not.
+    let live: Vec<&OrderView> = orders
+        .iter()
+        .filter(|o| {
+            !o.status.is_terminal()
+                && o.symbol.eq_ignore_ascii_case(listed)
+                && route_key_of(&o.venue, &o.account.clone().unwrap_or_default()) == route_key
+        })
+        .collect();
+    if let Some(first) = live.first() {
+        return UnadmitPlan::Refuse(
+            DoorRefusal::UnadmitLiveOrders {
+                route_key,
+                count: live.len(),
+                listed: listed.clone(),
+                order_client_id: first.order_client_id.clone(),
+                status: first.status.as_str().to_string(),
+                them: if live.len() == 1 { "it" } else { "them" },
+            }
+            .into(),
+        );
+    }
+    UnadmitPlan::Release { route_key, symbol: listed.clone() }
+}

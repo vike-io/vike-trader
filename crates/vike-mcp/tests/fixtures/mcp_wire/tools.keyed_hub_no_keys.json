@@ -1,0 +1,153 @@
+{
+  "argv": [
+    "--addr",
+    "<daemon-addr>",
+    "--backtest-addr",
+    "<daemon-addr>"
+  ],
+  "case": "tools.keyed_hub_no_keys",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "x"
+          },
+          "name": "run_backtest"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "the backtest daemon at <daemon-addr> refused this box: error [hub.access.denied]: this hub REQUIRES authentication (it advertises the `auth` feature) but this connection carries no key. On this box's own hubs, register its device key with `vike-cli backend mint-missing` (after `vike-cli secrets init` when there is no settings database); through a tunnel to another server, with `vike-cli backend connect HOST --server-project DIR`. `vike-cli access ls` on the server shows who may do what (decision 0288)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "x"
+          },
+          "name": "run_sweep"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "the backtest daemon at <daemon-addr> refused this box: error [hub.access.denied]: this hub REQUIRES authentication (it advertises the `auth` feature) but this connection carries no key. On this box's own hubs, register its device key with `vike-cli backend mint-missing` (after `vike-cli secrets init` when there is no settings database); through a tunnel to another server, with `vike-cli backend connect HOST --server-project DIR`. `vike-cli access ls` on the server shows who may do what (decision 0288)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "x"
+          },
+          "name": "run_walk_forward"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "the backtest daemon at <daemon-addr> refused this box: error [hub.access.denied]: this hub REQUIRES authentication (it advertises the `auth` feature) but this connection carries no key. On this box's own hubs, register its device key with `vike-cli backend mint-missing` (after `vike-cli secrets init` when there is no settings database); through a tunnel to another server, with `vike-cli backend connect HOST --server-project DIR`. `vike-cli access ls` on the server shows who may do what (decision 0288)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "list_strategies"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "the backtest daemon at <daemon-addr> refused this box: error [hub.access.denied]: this hub REQUIRES authentication (it advertises the `auth` feature) but this connection carries no key. On this box's own hubs, register its device key with `vike-cli backend mint-missing` (after `vike-cli secrets init` when there is no settings database); through a tunnel to another server, with `vike-cli backend connect HOST --server-project DIR`. `vike-cli access ls` on the server shows who may do what (decision 0288)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "list_series"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "cannot connect to datahub at <daemon-addr>: error [hub.access.denied]: this hub REQUIRES authentication (it advertises the `auth` feature) but this connection carries no key. On this box's own hubs, register its device key with `vike-cli backend mint-missing` (after `vike-cli secrets init` when there is no settings database); through a tunnel to another server, with `vike-cli backend connect HOST --server-project DIR`. `vike-cli access ls` on the server shows who may do what (decision 0288)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "what": "a keyed hub, and a store holding no keys"
+}

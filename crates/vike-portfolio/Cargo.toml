@@ -1,0 +1,34 @@
+[package]
+name = "vike-portfolio"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "Portfolio construction and bet sizing, pure maths over `vike_math::linear_algebra`: mean-variance (minimum variance and maximum Sharpe, in closed form and long-only by projected gradient), inverse volatility and risk parity, Hierarchical Risk Parity, covariance denoising (Marchenko–Pastur, constant residual) and detoning, Nested Clustered Optimisation, Kelly (continuous and fractional), the bet size of a predicted probability, principal components and eigenportfolios, and the position-sizer registry (the eight `PositionSizer`s the simulator and the profile harness size entries with). On both user-file surfaces, a strategy file's and a research study file's (decision 0089's addendum of 2026-11-16)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `leaf`: its
+# `vike-*` edges are the formula floor `vike-math` (2) and the vocabulary `vike-model` (10), and it is
+# none of the role-named ranks below 15.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+# The formula floor (decision 0294): `linear_algebra`'s `Matrix`, Cholesky solves, the symmetric
+# eigen-decomposition and `correlation_from_covariance`, plus `distributions::normal_cdf` for the bet size.
+# This crate writes no factorisation of its own. Layer 2, `libm` only, and on the strategy file template, so
+# a strategy file builds the `Matrix` it hands in.
+vike-math = { path = "../vike-math" }
+# `sizing`'s one sizing law: `ContractValue` (what one unit is worth, decision 0170), `share_quantity` and
+# `floor_to_step`. Layer 10, already on both user-file templates (the strategy entry contract).
+vike-model = { path = "../vike-model" }
+
+[dev-dependencies]
+# tests/properties.rs: weights sum to one, no short where none is promised, and the weights follow their
+# assets when the asset order changes. tests/sizing_property_tests.rs: the `PositionSizer::size` property
+# suite, moved here with the `sizing` module it exercises. Root-pinned; dev-dep only.
+proptest = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

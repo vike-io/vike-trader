@@ -1,0 +1,119 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 5.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 1500.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "POINTS",
+   "value": 4.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": null,
+  "contractSize": "1",
+  "controlledRiskAllowed": true,
+  "country": "US",
+  "currencies": [
+   {
+    "baseExchangeRate": 1.0,
+    "code": "USD",
+    "exchangeRate": 0.66,
+    "isDefault": true,
+    "symbol": "$"
+   }
+  ],
+  "epic": "IX.D.SPTRD.IFMM.IP",
+  "expiry": "-",
+  "expiryDetails": null,
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "POINTS",
+   "value": 0.6
+  },
+  "lotSize": 1.0,
+  "marginDepositBands": [
+   {
+    "currency": "USD",
+    "margin": 0.5,
+    "max": 1355,
+    "min": 0
+   },
+   {
+    "currency": "USD",
+    "margin": 1,
+    "max": 6775,
+    "min": 1355
+   },
+   {
+    "currency": "USD",
+    "margin": 3,
+    "max": 10840,
+    "min": 6775
+   },
+   {
+    "currency": "USD",
+    "margin": 15,
+    "max": null,
+    "min": 10840
+   }
+  ],
+  "marginFactor": 0.5,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "US500",
+  "name": "US 500 Cash ($1)",
+  "newsCode": ".SPX",
+  "onePipMeans": "1 Index Point",
+  "openingHours": null,
+  "rolloverDetails": null,
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 50.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MIN KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": true,
+  "type": "INDICES",
+  "unit": "CONTRACTS",
+  "valueOfOnePip": "1.00"
+ },
+ "snapshot": {
+  "bid": 7579.96,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 2,
+  "delayTime": 0,
+  "high": 7722.92,
+  "low": 7526.91,
+  "marketStatus": "TRADEABLE",
+  "netChange": -138.67,
+  "offer": 7580.36,
+  "percentageChange": -1.8,
+  "scalingFactor": 1,
+  "updateTime": "19:51:29"
+ }
+}

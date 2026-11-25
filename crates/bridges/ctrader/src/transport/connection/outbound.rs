@@ -1,0 +1,509 @@
+//! Outbound command encoding, subscription tracking and the write-failure reject synthesis.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use vike_bridge_core::execution_client::order_client_id::OrderVenueIdRegistry;
+use vike_execution::EventSender;
+use vike_model::events::{Event, OrderCancelRejected, OrderModifyRejected, OrderRejected};
+use vike_model::{OrderRefusalId, now_ms};
+use vike_utility::errors::FailureOutcome;
+
+use super::inbound::{close_terminal_event, emit_event};
+use super::session::OrderLane;
+use super::stream::FrameWriteFailure;
+use super::{CloseState, ConnectionCommand, PositionsByIdShared, Reader, send_frame};
+use crate::transport::proto::{
+    ProtoOaCancelOrderReq, ProtoOaClosePositionReq, ProtoOaGetTrendbarsReq,
+    ProtoOaSubscribeLiveTrendbarReq, ProtoOaSubscribeSpotsReq, ProtoOaTrendbarPeriod,
+    ProtoOaUnsubscribeLiveTrendbarReq, ProtoOaUnsubscribeSpotsReq, pt,
+};
+
+#[cfg(doc)]
+use super::reconcile::replay_after_reconnect;
+#[cfg(doc)]
+use super::session::reconnect_with_backoff;
+
+/// The envelope `clientMsgId` prefix of an AMEND request (`AMEND_MESSAGE_PREFIX` + the order's order client id). The venue echoes
+/// the id on the failure of the request, and the inbound side reads the verb off it (`inbound`'s
+/// `amend_order_client_id`) so that a failed amend is an `OrderModifyRejected` and not a terminal `OrderRejected` of a
+/// working order. (An order client id is a machine token; one that itself began with this prefix would be read as an amend.)
+pub(super) const AMEND_MESSAGE_PREFIX: &str = "amend:";
+
+/// Encode+write one outbound command. Returns `false` on Shutdown (caller breaks the loop); a failed write says what
+/// the venue may hold of the frame ([`super::stream::write_frame`]), which [`book_write`] books.
+///
+/// Only the three ORDER commands (`NewOrder`/`CancelOrder`/`AmendOrder`) set the envelope
+/// `clientMsgId` to the real `order_client_id` — that is the ONLY id `on_error_res`/
+/// `on_order_error_event` may correlate to a synthesized order event. Every non-order command
+/// (Subscribe/Unsubscribe spots+trendbar, GetTrendbars) sends an EMPTY `clientMsgId`: its response
+/// is routed by `payload_type` in `on_inbound`, never by envelope id, so there is nothing to
+/// correlate — and a static per-verb label here (the old "sub"/"unsub"/"subtb"/"unsubtb"/"gtb")
+/// would otherwise get echoed back on a failing request's `ERROR_RES` and be misread by
+/// `on_error_res` as a genuine order's order client id, fabricating a phantom `Event::OrderRejected` on a
+/// combined data+exec connection (the bug this comment documents the fix for).
+pub(super) fn write_command(
+    reader: &mut Reader,
+    ctid: i64,
+    cmd: ConnectionCommand,
+) -> Result<bool, FrameWriteFailure> {
+    match cmd {
+        ConnectionCommand::SubscribeSpots { symbol_id } => {
+            let req = ProtoOaSubscribeSpotsReq {
+                ctid_trader_account_id: ctid,
+                symbol_id: vec![symbol_id],
+                ..Default::default()
+            };
+            send_frame(reader, pt::SUBSCRIBE_SPOTS_REQ, &req, "")?;
+        }
+        ConnectionCommand::UnsubscribeSpots { symbol_id } => {
+            let req = ProtoOaUnsubscribeSpotsReq {
+                ctid_trader_account_id: ctid,
+                symbol_id: vec![symbol_id],
+                ..Default::default()
+            };
+            send_frame(reader, pt::UNSUBSCRIBE_SPOTS_REQ, &req, "")?;
+        }
+        ConnectionCommand::SubscribeTrendbar { symbol_id, period } => {
+            let req = ProtoOaSubscribeLiveTrendbarReq {
+                ctid_trader_account_id: ctid,
+                period: period as i32,
+                symbol_id,
+                ..Default::default()
+            };
+            send_frame(reader, pt::SUBSCRIBE_LIVE_TRENDBAR_REQ, &req, "")?;
+        }
+        ConnectionCommand::UnsubscribeTrendbar { symbol_id, period } => {
+            let req = ProtoOaUnsubscribeLiveTrendbarReq {
+                ctid_trader_account_id: ctid,
+                period: period as i32,
+                symbol_id,
+                ..Default::default()
+            };
+            send_frame(reader, pt::UNSUBSCRIBE_LIVE_TRENDBAR_REQ, &req, "")?;
+        }
+        ConnectionCommand::GetTrendbars {
+            symbol_id,
+            period,
+            from_timestamp: from_timestamp_value,
+            to_timestamp: to_timestamp_value,
+            count,
+        } => {
+            let req = ProtoOaGetTrendbarsReq {
+                ctid_trader_account_id: ctid,
+                from_timestamp: Some(from_timestamp_value),
+                to_timestamp: Some(to_timestamp_value),
+                period: period as i32,
+                symbol_id,
+                count: Some(count),
+                ..Default::default()
+            };
+            send_frame(reader, pt::GET_TRENDBARS_REQ, &req, "")?;
+        }
+        // The envelope `clientMsgId` is set to the order's `order_client_id` (not a static per-verb
+        // label) so cTrader's echo of it on the response/`ERROR_RES` correlates the reply back to
+        // the order (see `on_error_res`). NewOrder ALSO keeps the order client id in the wire `label`/
+        // `order_client_id` fields (set by the mapper) for the exec-event correlation path.
+        ConnectionCommand::NewOrder(req) => {
+            let message_id =
+                req.client_order_id.clone().or_else(|| req.label.clone()).unwrap_or_default();
+            send_frame(reader, pt::NEW_ORDER_REQ, &req, &message_id)?
+        }
+        ConnectionCommand::CancelOrder { order_id, order_client_id } => {
+            let req = ProtoOaCancelOrderReq {
+                ctid_trader_account_id: ctid,
+                order_id,
+                ..Default::default()
+            };
+            send_frame(reader, pt::CANCEL_ORDER_REQ, &req, &order_client_id)?;
+        }
+        // An AMEND carries its order client id behind [`AMEND_MESSAGE_PREFIX`]: a failure of it comes back as an
+        // `ERROR_RES` / `ORDER_ERROR_EVENT` echoing this id, and without the verb in the id both read as the
+        // failure of a SUBMIT (a terminal `OrderRejected` of a still-working order) or of a CANCEL.
+        ConnectionCommand::AmendOrder { req, order_client_id } => send_frame(
+            reader,
+            pt::AMEND_ORDER_REQ,
+            &req,
+            &format!("{AMEND_MESSAGE_PREFIX}{order_client_id}"),
+        )?,
+        // Close-by-position-id (reduce/flatten). The envelope `clientMsgId` is the reducing submit's
+        // order client id (like every other order command) so a venue `ERROR_RES` correlates back to it; the
+        // successful close's execution events correlate by `positionId` instead (the closing order
+        // carries no order client id of ours) — see `map_close_event`.
+        ConnectionCommand::ClosePosition { position_id, volume, order_client_id } => {
+            let req = ProtoOaClosePositionReq {
+                ctid_trader_account_id: ctid,
+                position_id,
+                volume,
+                ..Default::default()
+            };
+            send_frame(reader, pt::CLOSE_POSITION_REQ, &req, &order_client_id)?;
+        }
+        // The actor answers a positions read ITSELF, between two reads (`actor_loop`): it is not a frame.
+        // Reached only by a command that was queued behind a reconnect, which is dropped here, and its
+        // `reply` with it: the asker reads the dropped reply as "not read".
+        ConnectionCommand::ReadPositions { .. } => {}
+        ConnectionCommand::Shutdown => return Ok(false),
+    }
+    Ok(true)
+}
+
+/// The cancels the bridge owes for ORPHANED bound exits: every exit whose position is gone
+/// ([`crate::execution::positions::BoundExit`]) and whose venue `orderId` is known. Each returned exit is marked
+/// `cancel_sent`, so it is written once and the engine's own cancel of the same order (an OCO sibling,
+/// racing this one) is not written a second time ([`crate::execution::ExecutionClientCtrader::cancel`]). An exit whose
+/// `orderId` is not known yet (its accept has not arrived) stays orphaned and is picked up on a later call.
+/// Lock order: the position book, then the order map (nothing takes them the other way round).
+pub(super) fn orphan_cancel_commands(
+    positions: &PositionsByIdShared,
+    orders: &Arc<Mutex<OrderVenueIdRegistry<i64>>>,
+) -> Vec<ConnectionCommand> {
+    let Ok(mut book) = positions.lock() else { return Vec::new() };
+    let owed = book.exits_to_cancel();
+    if owed.is_empty() {
+        return Vec::new();
+    }
+    let Ok(map) = orders.lock() else { return Vec::new() };
+    let mut out = Vec::new();
+    for order_client_id in owed {
+        let Some(&order_id) = map.venue_order_id_of(&order_client_id) else { continue };
+        book.mark_cancel_sent(&order_client_id);
+        tracing::warn!(
+            target: "ctrader",
+            order_client_id = %order_client_id,
+            order_id,
+            "cancelling a resting exit whose position is gone: the venue does not, and a stale \
+             bound stop that reaches the market opens a new position"
+        );
+        out.push(ConnectionCommand::CancelOrder { order_id, order_client_id });
+    }
+    out
+}
+
+/// **What one command's write leaves booked**, in the actor's drain and in the replay after a reconnect alike
+/// (`written`: the write's `Ok`, or what its failure left, [`super::stream::write_frame`]). A write that went out, or
+/// whose outcome is UNKNOWN (the venue may hold the frame whole), is a written one: nothing refuses it (decision 0303),
+/// and the reconnect asks the venue about it by its order client id (`reconcile`'s `ask_about_unanswered`; a cancel or
+/// an amend is read back as after any lost socket). A write NOT SENT is refused with `refusal`, the event
+/// [`write_failure_event`] built before the write, and what was booked for it is undone.
+pub(super) fn book_write(
+    written: Result<(), FailureOutcome>,
+    refusal: Option<Event>,
+    new_order: &Option<String>,
+    close_order_client_id: &Option<String>,
+    positions: &PositionsByIdShared,
+    closes: &CloseState,
+    events: Option<&EventSender>,
+) {
+    if matches!(written, Ok(()) | Err(FailureOutcome::OutcomeUnknown)) {
+        mark_new_order_sent(new_order, positions);
+        mark_close_written(close_order_client_id, closes);
+        return;
+    }
+    // The close leg never reached the venue: its tracker state would misroute a later leg's fill or block the next reduce.
+    forget_close_on_write_failure(close_order_client_id, closes);
+    restore_bound_exit_on_write_failure(&refusal, positions);
+    match (refusal, events) {
+        (Some(event), Some(events)) => emit_event(events, positions, event),
+        // Data-only wiring (`connect_and_auth`, no exec): no order command originates there.
+        (Some(_), None) => tracing::warn!(
+            target: "ctrader",
+            "write failed for an order command but no EventSender is wired; reject dropped"
+        ),
+        (None, _) => {}
+    }
+}
+
+/// A command's write was NOT SENT, and `event` is the reject [`write_failure_event`] built for it: what the
+/// bound-exit table must forget. A `NewOrder` that never reached the venue has no exit to keep
+/// (`OrderRejected`: drop the row); a `CancelOrder` that never reached it was not delivered, so the
+/// cancel is owed again (`OrderCancelRejected`: clear `cancel_sent` and `cancelling`, and the orphan
+/// pass re-sends the bridge's own once the connection is back; the engine's cancel was refused to it
+/// as a `CancelRejected` and is the engine's to retry); an `AmendOrder` that never reached it asked for
+/// nothing (`OrderModifyRejected`: the exit stops counting the size the amend asked for).
+pub(super) fn restore_bound_exit_on_write_failure(
+    event: &Option<Event>,
+    positions: &PositionsByIdShared,
+) {
+    let Some(event) = event else { return };
+    let Ok(mut book) = positions.lock() else { return };
+    match event {
+        Event::OrderRejected(r) => book.unbind_exit(&r.order_client_id),
+        Event::OrderCancelRejected(r) => book.cancel_unsent(&r.order_client_id),
+        // An amend that never reached the venue leaves the exit at its size.
+        Event::OrderModifyRejected(r) => book.exit_amend_failed(&r.order_client_id),
+        _ => {}
+    }
+}
+
+/// The order client id of a `NewOrder` command (else `None`), captured BEFORE `write_command` consumes it.
+pub(super) fn new_order_order_client_id(cmd: &ConnectionCommand) -> Option<String> {
+    match cmd {
+        ConnectionCommand::NewOrder(req) => {
+            req.client_order_id.clone().or_else(|| req.label.clone())
+        }
+        _ => None,
+    }
+}
+
+/// A `NewOrder` was written to the venue: a bound exit's row is now judged against the venue's pending list
+/// at a reconnect ([`crate::execution::positions::PositionsById::forget_sent_exits_not_in`]), and until an event ends the order
+/// a reconnect asks the venue about it ([`crate::execution::positions::PositionsById::take_written_orders_not_in`]).
+pub(super) fn mark_new_order_sent(
+    order_client_id: &Option<String>,
+    positions: &PositionsByIdShared,
+) {
+    if let Some(order_client_id) = order_client_id
+        && let Ok(mut book) = positions.lock()
+    {
+        book.mark_sent(order_client_id);
+        book.note_order_written(order_client_id, now_ms());
+    }
+}
+
+/// Track/untrack a (de)subscription command against the actor's own view of "what should be live
+/// right now" — the set [`reconnect_with_backoff`]'s caller replays after a reconnect (cTrader does
+/// not remember subscriptions across a dropped socket).
+pub(super) fn track_subscription(
+    cmd: &ConnectionCommand,
+    spot_subs: &mut HashSet<i64>,
+    trendbar_subs: &mut HashSet<(i64, ProtoOaTrendbarPeriod)>,
+) {
+    match cmd {
+        ConnectionCommand::SubscribeSpots { symbol_id } => {
+            spot_subs.insert(*symbol_id);
+        }
+        ConnectionCommand::UnsubscribeSpots { symbol_id } => {
+            spot_subs.remove(symbol_id);
+        }
+        ConnectionCommand::SubscribeTrendbar { symbol_id, period } => {
+            trendbar_subs.insert((*symbol_id, *period));
+        }
+        ConnectionCommand::UnsubscribeTrendbar { symbol_id, period } => {
+            trendbar_subs.remove(&(*symbol_id, *period));
+        }
+        ConnectionCommand::GetTrendbars { .. }
+        | ConnectionCommand::NewOrder(_)
+        | ConnectionCommand::CancelOrder { .. }
+        | ConnectionCommand::AmendOrder { .. }
+        | ConnectionCommand::ClosePosition { .. }
+        | ConnectionCommand::ReadPositions { .. } => {}
+        ConnectionCommand::Shutdown => {}
+    }
+}
+
+/// Ask the venue again for every stream the actor tracks, spots before the trend bars that need them. A failed
+/// write is swallowed: a socket that is broken is found by the next read, which reconnects and comes back here.
+pub(super) fn resubscribe(
+    reader: &mut Reader,
+    ctid: i64,
+    spot_subs: &HashSet<i64>,
+    trendbar_subs: &HashSet<(i64, ProtoOaTrendbarPeriod)>,
+) {
+    for &symbol_id in spot_subs {
+        let _ = write_command(reader, ctid, ConnectionCommand::SubscribeSpots { symbol_id });
+    }
+    for &(symbol_id, period) in trendbar_subs {
+        let _ =
+            write_command(reader, ctid, ConnectionCommand::SubscribeTrendbar { symbol_id, period });
+    }
+}
+
+/// When a fresh-stream swap asks for its spots once more, after the swap itself. The vendor's word on an unsubscribe
+/// is "added to queue and will be completed shortly", with no number and no promise of order against a subscribe.
+const SWAP_RECHECKS: [Duration; 2] = [Duration::from_secs(5), Duration::from_secs(30)];
+
+/// **The re-check of a fresh-stream swap**: `UnsubscribeSpots` and `SubscribeSpots` of one symbol written back to back
+/// (`crates/vike-gatewayhub-client/src/credentialed_limits.rs`'s `first_price_comes_with_a_new_stream`). Were the venue to read the
+/// subscribe while the queued unsubscribe is pending (`ALREADY_SUBSCRIBED`, or accepted and then undone by it), the
+/// key would go silent with nothing to say so, and nothing offline can prove it does not. So the subscribe is written
+/// again after the queue had time to finish, whatever came back: on a live stream the worst answer is
+/// `ALREADY_SUBSCRIBED`, on a stream the swap lost it is the stream and its first price. No leftover spot event can
+/// fool it (the vendor says some may still arrive), because no event is read.
+#[derive(Default)]
+pub(super) struct SwapRecheck {
+    /// When each symbol's spots were last released, until a subscribe follows or the window passes.
+    released: HashMap<i64, Instant>,
+    due: Vec<(Instant, i64)>,
+}
+
+impl SwapRecheck {
+    /// Note one command the actor is about to write.
+    pub(super) fn note(&mut self, cmd: &ConnectionCommand, now: Instant) {
+        let window = SWAP_RECHECKS[0];
+        match cmd {
+            ConnectionCommand::UnsubscribeSpots { symbol_id } => {
+                self.released.retain(|_, at| now.duration_since(*at) < window);
+                self.released.insert(*symbol_id, now);
+            }
+            ConnectionCommand::SubscribeSpots { symbol_id }
+                if self
+                    .released
+                    .remove(symbol_id)
+                    .is_some_and(|at| now.duration_since(at) < window) =>
+            {
+                self.due.extend(SWAP_RECHECKS.map(|after| (now + after, *symbol_id)));
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn is_idle(&self) -> bool {
+        self.due.is_empty()
+    }
+
+    /// The symbols due a re-check at `now` (a key released since is the caller's to skip).
+    pub(super) fn take_due(&mut self, now: Instant) -> Vec<i64> {
+        let mut out = Vec::new();
+        self.due.retain(|(at, symbol_id)| {
+            let due = *at <= now;
+            if due {
+                out.push(*symbol_id);
+            }
+            !due
+        });
+        out
+    }
+}
+
+/// **An order command refused unwritten** (the account is not authorized, the actor is ending, or its thread is dead):
+/// the event [`write_failure_event`] builds for it in `words`, under the catalog's `order.not_sent` (nothing reached the
+/// venue), with the same book-keeping as a write that never reached the venue. A command that carries no order comes
+/// back to be held.
+pub(super) fn refuse_order_command(
+    cmd: ConnectionCommand,
+    words: &str,
+    lane: &OrderLane<'_>,
+) -> Option<ConnectionCommand> {
+    let Some(mut event) = write_failure_event(&cmd, lane.closes) else { return Some(cmd) };
+    let not_sent = vike_model::events::refusal_id_of(vike_model::OrderRefusalId::NotSent.word());
+    match &mut event {
+        Event::OrderRejected(r) => (r.reason, r.refusal_id) = (words.into(), not_sent),
+        Event::OrderCancelRejected(r) => (r.reason, r.refusal_id) = (words.into(), not_sent),
+        Event::OrderModifyRejected(r) => (r.reason, r.refusal_id) = (words.into(), not_sent),
+        _ => {}
+    }
+    forget_close_on_write_failure(&close_command_order_client_id(&cmd), lane.closes);
+    let event = Some(event);
+    restore_bound_exit_on_write_failure(&event, lane.positions);
+    if let (Some(event), Some(events)) = (event, lane.events) {
+        emit_event(events, lane.positions, event);
+    }
+    None
+}
+
+/// Reason text embedded in a synthesized reject when a command's write to the socket failed
+/// mid-send (Task 6, Fix 1). Kept as static text — never interpolate the underlying `io::Error`
+/// (mirrors `try_refresh_and_reauth`'s no-secrets-in-messages discipline elsewhere in this file).
+const WRITE_FAILED_NEW_ORDER: &str = "submit write failed; connection reset";
+const WRITE_FAILED_CANCEL: &str = "cancel write failed; connection reset";
+const WRITE_FAILED_AMEND: &str = "amend write failed; connection reset";
+const WRITE_FAILED_CLOSE: &str = "close-position write failed; connection reset";
+
+/// The order client id of a `ClosePosition` command (else `None`), captured BEFORE `write_command` consumes it
+/// so a write FAILURE can [`forget`](crate::execution::positions::CloseTracker::forget) it from `closes`: that
+/// leg will never reach the venue, and a stale `by_position` entry would otherwise misroute a later
+/// leg's fill or block the next reduce on the position. No-op for every non-close command.
+pub(super) fn close_command_order_client_id(cmd: &ConnectionCommand) -> Option<String> {
+    match cmd {
+        ConnectionCommand::ClosePosition { order_client_id, .. } => Some(order_client_id.clone()),
+        _ => None,
+    }
+}
+
+/// A `ClosePosition` was written: a socket death now strands it ([`crate::execution::positions::CloseTracker::take_written`]).
+/// A no-op when `close_order_client_id` is `None` (non-close command).
+pub(super) fn mark_close_written(close_order_client_id: &Option<String>, closes: &CloseState) {
+    if let Some(order_client_id) = close_order_client_id
+        && let Ok(mut t) = closes.lock()
+    {
+        t.mark_written(order_client_id, now_ms());
+    }
+}
+
+/// FORGET a `ClosePosition`'s order client id from the tracker at the actual write-failure site (paired with
+/// [`close_command_order_client_id`]'s capture). A no-op when `close_order_client_id` is `None` (non-close command).
+pub(super) fn forget_close_on_write_failure(
+    close_order_client_id: &Option<String>,
+    closes: &CloseState,
+) {
+    if let Some(order_client_id) = close_order_client_id
+        && let Ok(mut t) = closes.lock()
+    {
+        t.forget(order_client_id);
+    }
+}
+
+/// Build the canonical event to synthesize when `cmd`'s write was NOT SENT ([`book_write`] emits it only then), so
+/// the order-affecting command that never reached the venue never vanishes from the core's event stream (the
+/// venue-adapter contract: "No order may silently vanish"). Called on a `&ConnectionCommand` BEFORE it is handed to
+/// [`write_command`] (which consumes it), so the order client id is still available even though the write itself
+/// fails. A write of UNKNOWN outcome refuses nothing: the venue may hold the frame whole (decision 0303).
+///
+/// `NewOrder` synthesizes a TERMINAL `OrderRejected`: nothing the venue can read left, so it is safe to send again.
+/// `CancelOrder`/`AmendOrder` synthesize their NON-terminal advisory reject (the order stays live under its existing
+/// terms), matching [`crate::execution::ExecutionClientCtrader`]'s existing dead-actor-channel handling for the same
+/// two commands. Subscribe/Unsubscribe/GetTrendbars/Shutdown carry no order intent and need no synthesis (a failed
+/// subscribe still self-heals via the tracked-subscription replay on reconnect, since `track_subscription` runs before
+/// the write — see [`replay_after_reconnect`]; a failed `GetTrendbars` seed is simply lost — best-effort, per that
+/// command's own doc — while the independently-sent `SubscribeTrendbar` still starts the live stream).
+///
+/// `ClosePosition` picks a LEGAL terminal via [`close_terminal_event`] (Canceled-if-an-earlier-leg-progressed, else
+/// Rejected) so a close leg that never left never strands the order client id. This function is PURE — it is called for
+/// EVERY drained command BEFORE the write is even attempted, so it must NOT mutate `closes` (an earlier bug forgot the
+/// order client id here, wiping the just-registered mapping on a SUCCESSFUL write); the tracker `forget` happens only
+/// at the actual failure site (see [`forget_close_on_write_failure`]). It reads `closes` only for the non-mutating
+/// progress check.
+pub(super) fn write_failure_event(cmd: &ConnectionCommand, closes: &CloseState) -> Option<Event> {
+    let not_sent = vike_model::events::refusal_id_of(OrderRefusalId::NotSent.word());
+    match cmd {
+        ConnectionCommand::NewOrder(req) => {
+            let order_client_id = req.client_order_id.clone().or_else(|| req.label.clone())?;
+            Some(Event::OrderRejected(OrderRejected {
+                cause: None,
+                order_client_id,
+                reason: WRITE_FAILED_NEW_ORDER.into(),
+                timestamp: now_ms(),
+                refusal_id: not_sent,
+            }))
+        }
+        ConnectionCommand::CancelOrder { order_client_id, .. } => {
+            Some(Event::OrderCancelRejected(OrderCancelRejected {
+                order_client_id: order_client_id.clone(),
+                reason: WRITE_FAILED_CANCEL.into(),
+                timestamp: now_ms(),
+                refusal_id: not_sent,
+            }))
+        }
+        ConnectionCommand::AmendOrder { order_client_id, .. } => {
+            Some(Event::OrderModifyRejected(OrderModifyRejected {
+                order_client_id: order_client_id.clone(),
+                reason: WRITE_FAILED_AMEND.into(),
+                timestamp: now_ms(),
+                refusal_id: not_sent,
+            }))
+        }
+        // A reduce whose close leg never reached the wire: a LEGAL terminal (Canceled if an earlier
+        // leg already progressed the FSM, else Rejected) — built WITHOUT forgetting (this runs at
+        // capture time, even for a write that will SUCCEED). The forget is done at the failure site
+        // by `forget_close_on_write_failure`.
+        ConnectionCommand::ClosePosition { order_client_id, .. } => {
+            let progressed = closes.lock().ok().is_some_and(|t| t.has_progress(order_client_id));
+            Some(close_terminal_event(
+                order_client_id,
+                progressed,
+                WRITE_FAILED_CLOSE,
+                now_ms(),
+                OrderRefusalId::NotSent,
+            ))
+        }
+        ConnectionCommand::SubscribeSpots { .. }
+        | ConnectionCommand::UnsubscribeSpots { .. }
+        | ConnectionCommand::SubscribeTrendbar { .. }
+        | ConnectionCommand::UnsubscribeTrendbar { .. }
+        | ConnectionCommand::GetTrendbars { .. }
+        | ConnectionCommand::ReadPositions { .. }
+        | ConnectionCommand::Shutdown => None,
+    }
+}

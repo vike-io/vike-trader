@@ -1,0 +1,336 @@
+//! The read half: presence probes and the readers that load every stored profile.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use rusqlite::OptionalExtension;
+
+use super::*;
+use crate::db::{StoreError, database_present, open_for_read};
+
+// ---------------------------------------------------------------------------------------------
+// Reading
+// ---------------------------------------------------------------------------------------------
+
+/// The tables the PRESENCE PROBE requires, which is a SMALLER set and deliberately so.
+///
+/// ⚠ **Widening the probe to every table in [`PROFILE_TABLES`] would have been a silent
+/// regression, and it is the first thing the recorder tables nearly broke.** `read_profiles` uses
+/// the probe to tell "this store predates the profile phase" from "this store has an empty profile
+/// table", and answers [`ProfileSet::none`] for the first. A store written before 2026-09-16 holds
+/// exactly these four — so a probe demanding six would report every already-migrated box as
+/// un-migrated, and its daemon and run profiles would vanish from the read path with no error
+/// anywhere. Two boxes are in that state today.
+///
+/// So the probe keeps the four that define the phase, and [`read_recorder`] asks `sqlite_master`
+/// for its own table instead of assuming it. `store_profile` and `ensure_tables` execute the whole
+/// DDL (`CREATE TABLE IF NOT EXISTS`), so the first write upgrades an old store to all six.
+const CORE_PROFILE_TABLES: [&str; 4] = ["profile", "mount", "mount_param", "profile_setting"];
+
+/// The RECORDER tables, asked rather than assumed — see [`CORE_PROFILE_TABLES`] for why the main
+/// presence probe may not require them.
+const RECORDER_TABLES: [&str; 2] = ["recorder", "subscription"];
+
+/// Does this store carry every table in `names`? Asked of `sqlite_master`.
+///
+/// Over [`CORE_PROFILE_TABLES`] it is the probe that lets [`read_profiles`] answer
+/// [`ProfileSet::none`] for a store that predates Phase 3 instead of erroring — which is the
+/// difference between "this box has not migrated" and "this box is broken", and the second answer
+/// would be false.
+fn tables_present(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    names: &[&str],
+) -> Result<bool, StoreError> {
+    let marks = vec!["?"; names.len()].join(", ");
+    let found: i64 = conn
+        .query_row(
+            &format!(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ({marks})"
+            ),
+            rusqlite::params_from_iter(names),
+            |r| r.get(0),
+        )
+        .map_err(|e| StoreError::sql(path, e))?;
+    Ok(usize::try_from(found).unwrap_or(0) == names.len())
+}
+
+/// **Every profile the store holds.** The whole read half of Phase 3, and it needs no unit change:
+/// 0057's EROFS section measures that `ProtectSystem=strict` leaves reads untouched and that the
+/// composition root already opens this store read-only at mount.
+///
+/// Three states collapse to [`ProfileSet::none`] — no database, no profile tables, no rows — because
+/// the daemon must behave identically in all three and today.
+///
+/// # Errors
+///
+/// [`ProfileStoreError::Db`] when the store exists and cannot be read (never when it is absent, which is
+/// the ordinary unconfigured state), and [`ProfileStoreError::UnreadableKind`] for a `kind` word outside
+/// the three [`ProfileKind`] parses.
+///
+/// ⚠ **That clause named `recorder` as the unreadable kind and had been wrong since 2026-09-16**,
+/// when the owner overruled 0057's NO: `recorder` is read here like any other kind, and this entry
+/// point's whole job is handing the recorder body to the two sides of
+/// [`ProfileSet::resolve_active`]'s contract.
+pub fn read_profiles(path: &Path) -> Result<ProfileSet, ProfileStoreError> {
+    if !database_present(path)? {
+        return Ok(ProfileSet::none());
+    }
+    let conn = open_for_read(path)?;
+    if !tables_present(&conn, path, &CORE_PROFILE_TABLES)? {
+        return Ok(ProfileSet::none());
+    }
+    let mut rows: Vec<ProfileRow> = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT name, kind, active, note FROM profile ORDER BY name")
+            .map_err(|e| StoreError::sql(path, e))?;
+        let mapped = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)? != 0,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            })
+            .map_err(|e| StoreError::sql(path, e))?;
+        for row in mapped {
+            let (name, kind, active, note) = row.map_err(|e| StoreError::sql(path, e))?;
+            rows.push(ProfileRow { name, kind: ProfileKind::parse(&kind)?, active, note });
+        }
+    }
+    let mut out = Vec::new();
+    for row in rows {
+        let mounts = read_mounts(&conn, path, &row.name)?;
+        let params = read_params(&conn, path, &row.name)?;
+        let settings = read_settings(&conn, path, &row.name)?;
+        let recorder = read_recorder(&conn, path, &row.name)?;
+        out.push(ProfileRecord { row, mounts, params, settings, recorder });
+    }
+    Ok(ProfileSet { profiles: out, tables_present: true })
+}
+
+/// The ONE body stored under `name`, read on a connection the caller holds — [`update_profile`]'s
+/// read inside its own write transaction. `None` when no profile holds the name.
+pub(super) fn read_one(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    name: &str,
+) -> Result<Option<ProfileRecord>, ProfileStoreError> {
+    let held: Option<(String, i64, Option<String>)> = conn
+        .query_row("SELECT kind, active, note FROM profile WHERE name = ?1", [name], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .optional()
+        .map_err(|e| StoreError::sql(path, e))?;
+    let Some((kind, active, note)) = held else { return Ok(None) };
+    let row = ProfileRow {
+        name: name.to_string(),
+        kind: ProfileKind::parse(&kind)?,
+        active: active != 0,
+        note,
+    };
+    Ok(Some(ProfileRecord {
+        row,
+        mounts: read_mounts(conn, path, name)?,
+        params: read_params(conn, path, name)?,
+        settings: read_settings(conn, path, name)?,
+        recorder: read_recorder(conn, path, name)?,
+    }))
+}
+
+/// **Every mount row that still holds a RETIRED selection column** (`strategy_name` or
+/// `strategy_rhai`, `profile_ddl`'s deviation 6), in profile and ordinal order: the one read of
+/// those columns, READ-ONLY, for `vike-cli config check`'s refusal. No load reads them, so such a row
+/// mounts nothing by them. No store, or no profile tables, is an empty list.
+///
+/// # Errors
+///
+/// [`ProfileStoreError::Db`] when the store exists and cannot be read.
+pub fn read_retired_strategy_selections(
+    path: &Path,
+) -> Result<Vec<RetiredStrategySelection>, ProfileStoreError> {
+    if !database_present(path)? {
+        return Ok(Vec::new());
+    }
+    let conn = open_for_read(path)?;
+    if !tables_present(&conn, path, &CORE_PROFILE_TABLES)? {
+        return Ok(Vec::new());
+    }
+    let mut stmt = conn
+        .prepare(
+            "SELECT profile, ord, strategy_name, strategy_rhai FROM mount \
+             WHERE strategy_name IS NOT NULL OR strategy_rhai IS NOT NULL ORDER BY profile, ord",
+        )
+        .map_err(|e| StoreError::sql(path, e))?;
+    let mapped = stmt
+        .query_map([], |r| {
+            Ok(RetiredStrategySelection {
+                profile: r.get(0)?,
+                ord: r.get(1)?,
+                strategy_name: r.get(2)?,
+                strategy_rhai: r.get(3)?,
+            })
+        })
+        .map_err(|e| StoreError::sql(path, e))?;
+    let mut out = Vec::new();
+    for row in mapped {
+        out.push(row.map_err(|e| StoreError::sql(path, e))?);
+    }
+    Ok(out)
+}
+
+/// The `recorder` row and its subscriptions, or `None` when this profile has no recorder body.
+///
+/// ⚠ A profile of any kind is asked, not just [`ProfileKind::Recorder`]: the absence is read off
+/// the TABLE rather than inferred from the kind word, so a row written under the wrong kind is
+/// visible to a caller instead of being silently unreadable.
+fn read_recorder(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    profile: &str,
+) -> Result<Option<ProfileRecorderBody>, StoreError> {
+    if !tables_present(conn, path, &RECORDER_TABLES)? {
+        return Ok(None);
+    }
+    let row: Option<ProfileRecorderRow> = conn
+        .query_row(
+            "SELECT store, interval_secs, min_parts, target_mb, max_merge_rows, retention_days, \
+             alert_webhooks, alert_repeat_secs, alert_series_prefix, note FROM recorder \
+             WHERE profile = ?1",
+            [profile],
+            |r| {
+                Ok(ProfileRecorderRow {
+                    store: r.get(0)?,
+                    interval_secs: r.get(1)?,
+                    min_parts: r.get(2)?,
+                    target_mb: r.get(3)?,
+                    max_merge_rows: r.get(4)?,
+                    retention_days: r.get(5)?,
+                    alert_webhooks: r.get(6)?,
+                    alert_repeat_secs: r.get(7)?,
+                    alert_series_prefix: r.get(8)?,
+                    note: r.get(9)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| StoreError::sql(path, e))?;
+    let Some(row) = row else { return Ok(None) };
+    let mut stmt = conn
+        .prepare(
+            "SELECT ord, venue, family, symbols, note FROM subscription \
+             WHERE profile = ?1 ORDER BY ord",
+        )
+        .map_err(|e| StoreError::sql(path, e))?;
+    let mapped = stmt
+        .query_map([profile], |r| {
+            Ok(ProfileRecorderSubscriptionRow {
+                ord: r.get(0)?,
+                venue: r.get(1)?,
+                family: r.get(2)?,
+                symbols: r.get(3)?,
+                note: r.get(4)?,
+            })
+        })
+        .map_err(|e| StoreError::sql(path, e))?;
+    let mut subscriptions = Vec::new();
+    for s in mapped {
+        subscriptions.push(s.map_err(|e| StoreError::sql(path, e))?);
+    }
+    Ok(Some(ProfileRecorderBody { row, subscriptions }))
+}
+
+fn read_mounts(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    profile: &str,
+) -> Result<Vec<MountRow>, StoreError> {
+    // `strategy_file` and `max_leverage` only where the store has them (`profile_ddl`'s deviations 6
+    // and 8): a store born before a column, read here read-only before any writer added it, reads
+    // every mount as naming no file and stating no leverage cap.
+    let column = |name: &'static str| {
+        crate::settings::has_column(conn, "mount", name)
+            .map(|has| if has { name } else { "NULL" })
+            .map_err(|e| StoreError::sql(path, e))
+    };
+    let (file, leverage) = (column("strategy_file")?, column("max_leverage")?);
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT ord, is_primary, venue, asset_class, symbol, interval, \
+             interval_ms, resolution_ts_ms, qty, half_spread, tick_size, seed_cash, data_only, \
+             account, {file}, {leverage} FROM mount WHERE profile = ?1 ORDER BY ord"
+        ))
+        .map_err(|e| StoreError::sql(path, e))?;
+    let mapped = stmt
+        .query_map([profile], |r| {
+            Ok(MountRow {
+                ord: r.get(0)?,
+                is_primary: r.get::<_, i64>(1)? != 0,
+                venue: r.get(2)?,
+                asset_class: r.get(3)?,
+                symbol: r.get(4)?,
+                interval: r.get(5)?,
+                interval_ms: r.get(6)?,
+                resolution_ts_ms: r.get(7)?,
+                qty: r.get(8)?,
+                half_spread: r.get(9)?,
+                tick_size: r.get(10)?,
+                seed_cash: r.get(11)?,
+                data_only: r.get::<_, Option<i64>>(12)?.map(|v| v != 0),
+                account: r.get(13)?,
+                strategy_file: r.get(14)?,
+                max_leverage: r.get(15)?,
+            })
+        })
+        .map_err(|e| StoreError::sql(path, e))?;
+    let mut out = Vec::new();
+    for row in mapped {
+        out.push(row.map_err(|e| StoreError::sql(path, e))?);
+    }
+    Ok(out)
+}
+
+fn read_params(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    profile: &str,
+) -> Result<BTreeMap<(i64, String), String>, StoreError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT mount_ord, key, value FROM mount_param WHERE profile = ?1 \
+             ORDER BY mount_ord, key",
+        )
+        .map_err(|e| StoreError::sql(path, e))?;
+    let mapped = stmt
+        .query_map([profile], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })
+        .map_err(|e| StoreError::sql(path, e))?;
+    let mut out = BTreeMap::new();
+    for row in mapped {
+        let (ord, key, value) = row.map_err(|e| StoreError::sql(path, e))?;
+        out.insert((ord, key), value);
+    }
+    Ok(out)
+}
+
+fn read_settings(
+    conn: &rusqlite::Connection,
+    path: &Path,
+    profile: &str,
+) -> Result<BTreeMap<String, String>, StoreError> {
+    let mut stmt = conn
+        .prepare("SELECT path, value FROM profile_setting WHERE profile = ?1 ORDER BY path")
+        .map_err(|e| StoreError::sql(path, e))?;
+    let mapped = stmt
+        .query_map([profile], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|e| StoreError::sql(path, e))?;
+    let mut out = BTreeMap::new();
+    for row in mapped {
+        let (p, v) = row.map_err(|e| StoreError::sql(path, e))?;
+        out.insert(p, v);
+    }
+    Ok(out)
+}

@@ -1,0 +1,177 @@
+//! The positional (`rpc`) verbs: one request, one reply, on a connection that survives.
+//!
+//! Each verb is answered in three steps, in this order, so a refusal is always the cheapest one:
+//! the build must serve the verb (otherwise `Response::Error` naming the feature string, decision 0112's
+//! server leg), the venue must be one that lane serves (otherwise `Response::Error` naming the
+//! roster), and only then does the lane run. Lane failures reach the peer UNCHANGED as
+//! `Response::Error(text)`: the client forwards a server text verbatim, so the in-process error words
+//! survive the hop. ⚠ A failure is an `Error`, never an empty answer - an empty family resolve would
+//! unsubscribe every live stream and an empty catalog would be cached.
+//!
+//! The multi-frame `Fetch` family is `crate::server::fetch`'s; the mode switches (`DataOpen`,
+//! `OptionsFeedOpen`) never reach this module.
+
+use std::sync::Arc;
+
+use vike_gatewayhub_client::proto::{
+    FEATURE_GATEWAY_ARMING, FEATURE_GATEWAY_CATALOG, FEATURE_GATEWAY_CREDENTIALS_CHANGED,
+    FEATURE_GATEWAY_FAMILY, FEATURE_GATEWAY_OPTIONS, FEATURE_GATEWAY_PREFLIGHT,
+    FEATURE_GATEWAY_PRESENCE, Request, Response, request_kind,
+};
+
+use super::features::not_served;
+use super::fetch;
+use super::shared::{Connection, ServerAfter};
+
+/// Answer one positional request.
+pub fn serve(conn: &mut Connection, request: Request) -> ServerAfter {
+    let shared = Arc::clone(&conn.shared);
+    let rest = &shared.rest;
+    let lane = &shared.lanes.rest;
+    let response = match request {
+        Request::Ping => Response::Pong,
+        Request::GatewayStatus => {
+            let report = shared.stats.report(
+                &shared.data_venues,
+                &rest.credentialed,
+                lane.budget_counters(),
+            );
+            Response::StatusIs(Box::new(report))
+        }
+        Request::CatalogDescribe { venue } => {
+            if rest.catalog.is_empty() {
+                Response::Error(not_served("CatalogDescribe", FEATURE_GATEWAY_CATALOG))
+            } else if !rest.catalog.contains(&venue) {
+                Response::Error(roster_refusal("catalog", &venue, &rest.catalog))
+            } else {
+                match lane.catalog_describe(&conn.memo, &venue) {
+                    Ok(traits) => Response::CatalogDescribed {
+                        asset_classes: traits.asset_classes,
+                        mode: traits.mode,
+                    },
+                    Err(text) => Response::Error(text),
+                }
+            }
+        }
+        Request::OptionsRest { call } => {
+            if rest.options {
+                match lane.options(&conn.memo, &call) {
+                    Ok(reply) => Response::OptionsReplied(reply),
+                    Err(text) => Response::Error(text),
+                }
+            } else {
+                Response::Error(not_served("OptionsRest", FEATURE_GATEWAY_OPTIONS))
+            }
+        }
+        Request::ResolveFamily { venue, family, now_ms } => {
+            if rest.family.is_empty() {
+                Response::Error(not_served("ResolveFamily", FEATURE_GATEWAY_FAMILY))
+            } else if !rest.family.contains(&venue) {
+                Response::Error(roster_refusal("family", &venue, &rest.family))
+            } else {
+                match lane.resolve_family(&conn.memo, &venue, &family, now_ms) {
+                    Ok(symbols) => Response::FamilyResolved { symbols },
+                    Err(text) => Response::Error(text),
+                }
+            }
+        }
+        Request::CredentialPresence { venue } => {
+            if rest.presence {
+                Response::PresenceIs { presence: lane.credential_presence(&venue) }
+            } else {
+                Response::Error(not_served("CredentialPresence", FEATURE_GATEWAY_PRESENCE))
+            }
+        }
+        Request::Fetch { rid, what } => return fetch::serve(conn, rid, what, false),
+        Request::FetchCredentialed { rid, what } => return fetch::serve(conn, rid, what, true),
+        // No fetch is running (a running one reads its own cancel): a stray cancel after completion.
+        // No reply is owed, and writing one would answer a request nobody is waiting on.
+        Request::FetchCancel { .. } => return ServerAfter::Continue,
+        // The trade class's two queries: answered by the mounted trade lane, and by name as not served
+        // when there is none (a build without `trade`, or no Trade key).
+        Request::ArmingQuery => arming_query(&shared),
+        Request::PreflightQuery { venues, step } => preflight_query(&shared, &venues, step),
+        Request::CredentialsChanged { account } => credentials_changed(&shared, account),
+        other @ (Request::DataOpen { .. }
+        | Request::OptionsFeedOpen { .. }
+        | Request::TradeOpen { .. }) => Response::Error(format!(
+            "gatewayhub: {} is not a positional verb on an established connection",
+            request_kind(&other)
+        )),
+    };
+    match conn.reply(&response) {
+        Ok(()) => ServerAfter::Continue,
+        Err(_) => ServerAfter::Close,
+    }
+}
+
+/// `ArmingQuery`: the mounted trade lane's table, or the by-name refusal.
+fn arming_query(shared: &super::shared::ServerShared) -> Response {
+    #[cfg(feature = "trade")]
+    if let Some(hub) = &shared.trade {
+        return Response::ArmingTable(Box::new(hub.arming_table()));
+    }
+    let _ = shared;
+    Response::Error(not_served("ArmingQuery", FEATURE_GATEWAY_ARMING))
+}
+
+/// `PreflightQuery`: the mounted trade lane's legs for the venues named (bounded, and served ones only), or
+/// the by-name refusal.
+fn preflight_query(
+    shared: &super::shared::ServerShared,
+    venues: &[String],
+    step: vike_gatewayhub_client::proto::PreflightStep,
+) -> Response {
+    #[cfg(feature = "trade")]
+    if let Some(hub) = &shared.trade {
+        return match hub.preflight(venues, step) {
+            Ok(answer) => Response::PreflightLegs { legs: answer.legs, plan: answer.plan },
+            Err(text) => Response::Error(text),
+        };
+    }
+    let _ = (shared, venues, step);
+    Response::Error(not_served("PreflightQuery", FEATURE_GATEWAY_PREFLIGHT))
+}
+
+/// `CredentialsChanged`: the mounted trade lane reconnects the account's sessions on the store's credentials now
+/// (decision 0287), or the by-name refusal. Only the row id arrived; the sessions re-read the store themselves.
+fn credentials_changed(shared: &super::shared::ServerShared, account: i64) -> Response {
+    #[cfg(feature = "trade")]
+    if let Some(hub) = &shared.trade {
+        let mut reconnected = hub.credentials_changed(account);
+        // ...and the price streams that logged in with that row's credentials (a credentialed data session).
+        reconnected.extend(
+            shared.credentialed_sessions.end_logged_in_as(shared.lanes.data.as_ref(), account),
+        );
+        tracing::info!(
+            account,
+            reconnected = ?reconnected,
+            "vike-gatewayhub: account {account}'s credentials changed in the store; its sessions were reconnected"
+        );
+        return Response::CredentialsReloaded { reconnected };
+    }
+    let _ = (shared, account);
+    Response::Error(not_served("CredentialsChanged", FEATURE_GATEWAY_CREDENTIALS_CHANGED))
+}
+
+/// The text for a venue a served lane does not carry.
+fn roster_refusal(lane: &str, venue: &str, roster: &[String]) -> String {
+    format!(
+        "gatewayhub: `{venue}` is not served by the {lane} lane (served: [{}]); nothing was asked of \
+         any venue",
+        roster.join(", ")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_roster_refusal_names_the_venue_and_the_served_set() {
+        let text =
+            roster_refusal("catalog", "deribit", &["binance".to_string(), "bybit".to_string()]);
+        assert!(text.contains("`deribit`") && text.contains("catalog lane"), "{text}");
+        assert!(text.contains("binance, bybit"), "{text}");
+    }
+}

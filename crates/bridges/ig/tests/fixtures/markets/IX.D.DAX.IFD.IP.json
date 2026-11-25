@@ -1,0 +1,119 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 25.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "PERCENTAGE",
+   "value": 75.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "POINTS",
+   "value": 10.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 0.1
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 5.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": null,
+  "contractSize": "25",
+  "controlledRiskAllowed": true,
+  "country": "DE",
+  "currencies": [
+   {
+    "baseExchangeRate": 0.89552,
+    "code": "EUR",
+    "exchangeRate": 0.9,
+    "isDefault": false,
+    "symbol": "E"
+   }
+  ],
+  "epic": "IX.D.DAX.IFD.IP",
+  "expiry": "-",
+  "expiryDetails": null,
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "POINTS",
+   "value": 2
+  },
+  "lotSize": 25.0,
+  "marginDepositBands": [
+   {
+    "currency": "EUR",
+    "margin": 0.5,
+    "max": 12.88,
+    "min": 0
+   },
+   {
+    "currency": "EUR",
+    "margin": 1,
+    "max": 64.4,
+    "min": 12.88
+   },
+   {
+    "currency": "EUR",
+    "margin": 3,
+    "max": 103.04,
+    "min": 64.4
+   },
+   {
+    "currency": "EUR",
+    "margin": 15,
+    "max": null,
+    "min": 103.04
+   }
+  ],
+  "marginFactor": 0.5,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "DE30",
+  "name": "Germany 40 Cash (E25)",
+  "newsCode": ".GDAXI",
+  "onePipMeans": "1 Index Point",
+  "openingHours": null,
+  "rolloverDetails": null,
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 50.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MIN KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": true,
+  "type": "INDICES",
+  "unit": "CONTRACTS",
+  "valueOfOnePip": "25.00"
+ },
+ "snapshot": {
+  "bid": 25709.3,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 1,
+  "delayTime": 0,
+  "high": 25831.0,
+  "low": 25661.3,
+  "marketStatus": "TRADEABLE",
+  "netChange": -104.8,
+  "offer": 25712.1,
+  "percentageChange": -0.41,
+  "scalingFactor": 1,
+  "updateTime": "19:44:48"
+ }
+}

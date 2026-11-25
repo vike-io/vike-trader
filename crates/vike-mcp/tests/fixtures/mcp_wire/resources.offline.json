@@ -1,0 +1,121 @@
+{
+  "argv": [
+    "--profile",
+    "offline",
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "resources.offline",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "resources/list",
+        "params": {}
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "resources": [
+            {
+              "description": "Every refusal id this build can show (the `[id]` of an `error [id]: text` answer), with its text template and the crate that declares it: the release's refusals.json. Compiled in, so it opens no connection.",
+              "mimeType": "application/json",
+              "name": "Refusal catalog",
+              "uri": "vike://refusals"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "resources/read",
+        "params": {
+          "uri": "vike://backtest/last"
+        }
+      }
+    },
+    {
+      "recv": {
+        "error": {
+          "code": -32002,
+          "message": "tool `run_backtest` is not available: this server is running under the `offline` tool profile. Tools served in this session: validate_strategy, discover_params, list_templates, list_indicators, profile_template, decode_order_id. Only the OPERATOR can widen this, by restarting the server with `--profile full` (and without that `--deny-tool`) in the MCP client's launch command — this server cannot widen its own scope, and asking again will not change the answer."
+        },
+        "id": 2,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "resources/read",
+        "params": {
+          "uri": "vike://node/snapshot"
+        }
+      }
+    },
+    {
+      "recv": {
+        "error": {
+          "code": -32002,
+          "message": "tool `node_snapshot` is not available: this server is running under the `offline` tool profile. Tools served in this session: validate_strategy, discover_params, list_templates, list_indicators, profile_template, decode_order_id. Only the OPERATOR can widen this, by restarting the server with `--profile full` (and without that `--deny-tool`) in the MCP client's launch command — this server cannot widen its own scope, and asking again will not change the answer."
+        },
+        "id": 3,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "resources/read",
+        "params": {
+          "uri": "vike://nope"
+        }
+      }
+    },
+    {
+      "recv": {
+        "error": {
+          "code": -32002,
+          "message": "unknown resource uri: \"vike://nope\" — call resources/list for what this server serves"
+        },
+        "id": 4,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "send": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "resources/read",
+        "params": {}
+      }
+    },
+    {
+      "recv": {
+        "error": {
+          "code": -32002,
+          "message": "unknown resource uri: \"\" — call resources/list for what this server serves"
+        },
+        "id": 5,
+        "jsonrpc": "2.0"
+      }
+    }
+  ],
+  "what": "`resources/list` and `resources/read` under one scope"
+}

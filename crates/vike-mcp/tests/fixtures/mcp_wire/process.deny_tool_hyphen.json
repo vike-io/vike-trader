@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "--deny-tool",
+    "submit-order"
+  ],
+  "case": "process.deny_tool_hyphen",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 2,
+  "stderr": {
+    "<lines>": [
+      "<program>: unknown --deny-tool \"submit-order\" — this server serves: validate_strategy, discover_params, list_templates, list_indicators, profile_template, run_backtest, run_sweep, run_walk_forward, run_status, cancel_run, list_strategies, list_series, node_snapshot, strategy_status, settings_show, health_node, report, decode_order_id, submit_order, submit_order_list, submit_combo, cancel_order, modify_order, flatten, close_all, mass_cancel, set_trading_state, mount_strategy, unmount_strategy, set_setting, delete_series",
+      ""
+    ]
+  },
+  "stdout": "",
+  "what": "one command line, stdin closed: stdout, stderr, exit"
+}

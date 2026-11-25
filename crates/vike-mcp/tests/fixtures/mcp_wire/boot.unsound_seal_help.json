@@ -1,0 +1,25 @@
+{
+  "argv": [
+    "--help"
+  ],
+  "case": "boot.unsound_seal_help",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 1,
+  "stderr": {
+    "<lines>": [
+      "<program>: settings: settings database (section `policy`): `max_notional_per_order` — expected value at line 1 column 1. A `setting` row holds ONE JSON SCALAR (`100`, `\"warn\"`, `true`). This value is in a format the column no longer holds — most likely a TOML rendering from before the value column became JSON. Every value below is a compiled-in default until this is repaired, which for `max_notional_per_order` means NO CEILING. Remove the refused row with `vike-cli config unset <section>.<key>` (the section and key are named above; `vike-cli config check` prints the exact line for each refused row). The seal's row count moves with the row, in one transaction, so the store loads again.",
+      "REFUSED: `<program>` will not run while this box's settings seal is unsound.",
+      "",
+      "settings database (section `policy`): `max_notional_per_order` — expected value at line 1 column 1. A `setting` row holds ONE JSON SCALAR (`100`, `\"warn\"`, `true`). This value is in a format the column no longer holds — most likely a TOML rendering from before the value column became JSON. Every value below is a compiled-in default until this is repaired, which for `max_notional_per_order` means NO CEILING. Remove the refused row with `vike-cli config unset <section>.<key>` (the section and key are named above; `vike-cli config check` prints the exact line for each refused row). The seal's row count moves with the row, in one transaction, so the store loads again.",
+      "",
+      "This verb is refused because it ACTS on the ceilings — it places or gates orders — and the values this process resolved are not the ones the box was sealed with. `vike-cli config check` still runs and reports the fault. There are no settings FILES any more (docs/decisions/0086), so there is no `config compare` or `config adopt --undo` to step back to.",
+      "",
+      "Diagnose with `vike-cli config check`: it names every ROW the loader refuses and prints the `vike-cli config unset <section>.<key>` line that removes it (the seal's row count moves with the row, in one transaction, so the store loads again). Only when the cause above is the seal's ROW COUNT — rows that arrived or left by a hand INSERT/DELETE, or by a restored backup — is there no row to remove: nothing can tell which rows are the right ones, so that case is repaired by restoring `<project>/settings/db/vike.db` from this box's nightly backup.",
+      ""
+    ]
+  },
+  "stdout": "",
+  "what": "a seal that does not hold refuses this actor"
+}

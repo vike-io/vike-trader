@@ -1,0 +1,78 @@
+[package]
+name = "vike-ig"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "IG (IG Group) FX/CFD venue bridge — co-located data + exec (stateful session-auth REST + Lightstreamer trade-update stream)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `venue` — a per-venue bridge built on vike-bridge-core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 40
+
+[dependencies]
+vike-model = { path = "../../vike-model" }
+# The per-venue tables (`capabilities_for`, `fee_schedule_for`, the credential-field table ...) that left `vike-model` (decision 0162).
+vike-venues = { path = "../../vike-venues" }
+# The pure helpers (decision 0141, layer 3) this crate calls: `calendar`, `percent`.
+vike-utility = { path = "../../vike-utility" }
+# The market-data vocabulary (`Bar`, the tick types, `L2Book`, `BookUpdate`, `OptionKind`, ...):
+# spelled `vike_marketdata::X` everywhere -- vike-model names but does not re-export it (0067).
+vike-marketdata = { path = "../../vike-marketdata" }
+vike-execution = { path = "../../vike-execution" }
+# shared venue-bridge plumbing (venue_adapter, exec_actor, http::blocking_agent)
+vike-bridge-core = { path = "../../vike-bridge-core" }
+# The generic network layer (decision 0299): the agents (`http`) and the WS socket and dial (`websocket`, `websocket_proxy`), which
+# moved out of vike-bridge-core. Layer 4, no vike-* dependency, already in this crate's tree through it.
+vike-transport = { path = "../../vike-transport", features = ["websocket"] }
+# The credential half that moved down out of vike-bridge-core (docs/decisions/0135): the
+# `vike_secrets::account_credentials` view of the mounted account's fields, plus `key_permissions`,
+# `venue_passphrase` or `account_directory` where this bridge names them. Already in this crate's graph
+# through vike-bridge-core, so it adds no package.
+vike-secrets = { path = "../../vike-secrets" }
+vike-catalog = { path = "../../vike-catalog" }
+vike-data = { path = "../../vike-data" }   # the live market-data seam (DataClient/DataClientSink/DataClientRegistry) the Lightstreamer market feed implements
+serde_json = { workspace = true }
+ureq = { workspace = true }   # blocking REST (rustls, no OpenSSL) + the Lightstreamer streaming body reader
+tungstenite = { workspace = true } # the SHARED blocking WS stack — IG's Lightstreamer TLCP is a TEXT protocol spoken over it (no Lightstreamer client crate; see crates/bridges/ig/CLAUDE.md)
+tracing = { workspace = true } # LS trade-stream reconnect diagnostics
+
+[dev-dependencies]
+# TEST-ONLY: the history probe's median spacing (`vike_math::statistics::high_median_of_sorted`, decision 0294) and
+# the smokes' powers of ten (`vike_math::powers::power_of_ten`).
+vike-math = { path = "../../vike-math" }
+# `vike_execution::testing`'s doubles for this crate's tests — compiled only under vike-execution's
+# `test-support`, which a DEV edge may turn on and the normal edge above may not.
+vike-execution = { path = "../../vike-execution", features = ["test-support"] }
+# dev-only, test-support feature: the venue-adapter contract's test double
+# (`venue_adapter_fixture::AdapterFixture`) — the normal [dependencies] vike-bridge-core entry above is
+# untouched for normal builds.
+vike-bridge-core = { path = "../../vike-bridge-core", features = ["test-support"] }
+# dev-only, test-support feature: `vike_log::capture::captured`, the workspace's one scoped
+# `tracing` capture, which the mount tests read a mount's log lines with (it moved there out of
+# `venue_adapter_fixture`). The test tree already builds vike-log, through `vike-bridge-core`'s own
+# `test-support`; this edge is what lets a test NAME it.
+vike-log = { path = "../../vike-log", features = ["test-support"] }
+# dev-only: the decoder totality harnesses (tests/decoder_never_panics.rs, src/execution/user_data_property_tests.rs) —
+# arbitrary + grammar-shaped TLCP text and JSON through the real feed / stream / reconcile decoders;
+# no panic, no event flood.
+proptest = { workspace = true }
+# test-only: the temp settings directories the history lane's credential tests plant a store in
+# (`src/credentialed_klines_tests.rs`).
+tempfile = { workspace = true }
+# dev-only, test-support feature: `vike_secrets::smoke_directory`, the live smokes' one way to the
+# credential store (it reads `VIKE_SETTINGS_DIR` and `VIKE_NO_LIVE_KEYS` once). The normal
+# [dependencies] vike-secrets entry above turns none of it on.
+vike-secrets = { path = "../../vike-secrets", features = ["test-support"] }
+
+[features]
+# `src/epic.rs`'s `hold_kept_list_for_tests` (the four captured FX Minis as the operator's rows), for the cross-bridge
+# conformance harness, whose dev edge turns this on (decision 0290: it mounts ig on a user name). Dep-free; never on a
+# normal edge.
+test-support = []
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

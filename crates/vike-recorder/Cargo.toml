@@ -1,0 +1,99 @@
+[package]
+name = "vike-recorder"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the live-tape RECORDING LIBRARY. A customer subscribes to symbols or market FAMILIES; this resolves them, drives the venue feeds and writes the rows into their local DataFusion+Parquet store, one grouped commit per family. It is no longer a daemon of its own: ruling 10 of docs/superpowers/specs/2026-09-09-datahub-market-data-wire-design.md merged the recorder process into the data server, so the mount, the tick cadence and the teardown live in crates/vike-datahub/src/recorder.rs and this crate is what that mount is built from."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Every NORMAL (non-dev)
+# vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+#
+# 30 `engine`. This is a LIBRARY the data daemon composes (ruling 10), and since decision
+# 0092 (one venue client per process) it names no bridge: the venue table lives in
+# `crates/vike-datahub/src/recording.rs`. The normal vike-* edges are vike-store (25), vike-data (20),
+# vike-catalog (20), vike-alerting (15) and vike-model (10), so the floor is 26 and `engine` ("a crate
+# composed over a layer-25 crate") is the lowest correctly-named rank above it. The down-only rule
+# at 30 also keeps it off the research harness (`vike-backtest`, 30): an equal rank is no edge. Its
+# one consumer, `vike-datahub` (65), is unaffected. How the rank follows the declaration, not the role:
+# docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+[package.metadata.vike]
+layer = 30
+
+[dependencies]
+# The live seam the recorder drives (`DataClient`, `DataClientSubscriptionId`, `DataClientError`) and the series
+# cadence table its rows are judged by (`series_cadence`; the kind type is `vike_model::StoreKindId`).
+vike-data = { path = "../vike-data" }
+# The DataFusion+Parquet write engine's types the recorder configures and watches (`GroupResolver`,
+# `MaintenanceConfig`, `Liveness`): a recorder writes Parquet.
+vike-store = { path = "../vike-store" }
+# Domain types on the sink verbs (TickQuote/TickTrade/L2BookUpdate).
+vike-model = { path = "../vike-model" }
+# The formula floor (decision 0294): the family-collapse baseline is `vike_math::statistics::high_median_of_sorted`.
+vike-math = { path = "../vike-math" }
+# The project's filesystem layout (`vike_paths::state_path`, `store_path`, `scratch`): std-only, layer 7.
+vike-paths = { path = "../vike-paths" }
+# The silence watchdog's DELIVERY half (`src/alerts.rs`). A plain edge with no feature to choose:
+# vike-alerting declares none and names no vike-* crate in any build (its whole reason to exist is
+# that a watchdog can page without linking the trading core). The engine, the rule model, the
+# evaluator and the webhook sinks all come with it.
+# `crates/vike-ops/tests/architecture/layer_gate/vike_free.rs`'s `VIKE_FREE_CRATES` gates that.
+vike-alerting = { path = "../vike-alerting" }
+serde = { workspace = true, features = ["derive"] }
+toml = { workspace = true }
+tracing = { workspace = true }
+# ⚠ NO venue bridge and no `[features]` table (decision 0092): what a binance or polymarket recording
+# contains is argued in `crates/vike-datahub/src/recording.rs`.
+# The `Instrument` model and `CatalogProvider` seam `resolve::CatalogGlob` filters — the family glob
+# for EVERY venue with an enumerable instrument list (bridge-free, vike-model only).
+vike-catalog = { path = "../vike-catalog" }
+
+# `crate::test_support`: the recording alert sink (`Pager`) the alert test binaries share, compiled once
+# by the lib instead of once per binary. Turned on only by the self dev-dependency below; no shipped
+# edge may enable it (`crates/vike-ops/tests/architecture/test_surface_gate.rs`).
+[features]
+test-support = []
+
+[dev-dependencies]
+# Self-referential dev-dep (the `vike-execution`/`vike-model` idiom): turns `test-support` on for THIS crate's
+# own `tests/` targets.
+vike-recorder = { path = ".", features = ["test-support"] }
+# `vike_data::NoopSink` — the workspace's ONE owned `DataClientSink` double ("one owned double behind
+# a test-support feature"), so this crate does not grow a private copy of it.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# `vike_venues::PERP_SUFFIX`, the `.P` marker the catalog double derives a perp's contract from
+# (`src/resolve_tests.rs`). Already in the normal closure through vike-catalog; a DEV edge only.
+vike-venues = { path = "../vike-venues" }
+# `vike_log::capture::captured`, the one scoped `tracing` capture: `alerts_tests.rs` pins the alert
+# line `LOG_SINK` writes. A DEV edge only.
+vike-log = { path = "../vike-log", features = ["test-support"] }
+
+# The test binaries. Discovery stays ON here: `scripts/publish_mirror.sh` DENIES
+# `tests/family_collapse_independence_gate.rs`, so the public mirror deletes it, and a `[[test]]` row or a `mod` line
+# naming it would not compile there; it stays an auto-discovered binary of its own. The four `*_alert.rs` suites are
+# modules of `integration` (`tests/integration.rs`), and each one's auto-discovered standalone target is switched off
+# below: `test = false` keeps it out of `cargo test`, `--tests`, `--all-targets` and nextest, so it is compiled and
+# linked once, inside `integration`. A NEW `tests/*.rs` is a binary of its own until it is added to both lists.
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[[test]]
+name = "cadence_alert"
+test = false
+
+[[test]]
+name = "family_collapse_alert"
+test = false
+
+[[test]]
+name = "resolve_alert"
+test = false
+
+[[test]]
+name = "silence_alert"
+test = false
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

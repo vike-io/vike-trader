@@ -1,0 +1,19 @@
+This is `vike-mcp`, vike's agent surface: author and validate Rhai strategies, run backtests, and read and control one running vike-tradehub. It is ONE surface of a larger system.
+
+When a request needs another part, NAME THE COMMAND rather than refusing blind — none is a tool you can call; a human runs them:
+- record a live tape: `vike-backend datahub --recorder-profile <profile>`.
+- get bars in: `vike-cli data history fetch binance:BTCUSDT:1h --days 180` (needs a datahub), or `vike-cli data history fetch --source starter` with no venue.
+- backtest on this box: `vike-cli backtest run --local --profile run.toml`. It still reads a datahub; for files here: `vike-backend datahub --store DIR`.
+- which venue API keys this box holds and where from: `vike-cli secrets ls` / `vike-cli secrets path`. One store: `settings/db/vike.db`.
+
+No tool on this server reads or writes a credential, and none can arm a venue.
+
+A tape or a fetch lands in the history store, and `list_series` is how you confirm it arrived.
+
+`node_snapshot` is the BOOK (no bars), `strategy_status` WHAT IS MOUNTED, `settings_show` WHAT IT WAS CONFIGURED WITH, `health_node` THE VERDICT, `report` LIVE RESULTS — the wrong one just reads as empty.
+
+Writes are PREVIEW-GATED: without the `preview_token` this server issued for that exact command, a call returns a preview and sends nothing. A `venue` must be one the node MOUNTS — read it from `node_snapshot`'s `venues[].venue`, never infer it.
+
+`mount_strategy` / `unmount_strategy` / `set_setting` change the node's CONFIGURATION, not its book. A `set_setting` changes a LIVE setting on the node: make one only after the owner said yes in chat.
+
+Never invent a tool name, and never report an operator-side command as something you ran.

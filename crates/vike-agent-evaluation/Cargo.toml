@@ -1,0 +1,87 @@
+[package]
+name = "vike-agent-evaluation"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The agent-driving crate. `vike-agent-evaluation` is the MODEL-IN-THE-LOOP evaluation harness: a real LLM agent drives the real `vike-mcp` server against a real paper `vike-tradehub` node, and every outcome is graded DETERMINISTICALLY from the MCP transcript plus node state — never by another model; its `--scripted` driver runs the same pipeline with no model at all, which is the half CI can gate. `vike-agent-run` is the UNATTENDED runner that shares that machine: one session against the OPERATOR's own node, read-only by default, bounded, leaving an append-only record — the local-first answer to a hosted agent cloud."
+# The integration tests are TWO test binaries, declared at the bottom: `tests/integration.rs` (every other
+# `tests/<name>.rs` a `mod` of it) and `tests/relative_work_dir.rs`, which changes the process's working directory and
+# so must never share a process with another test. Discovery is off so each file keeps the path its citations name; a
+# new root file builds only as a `mod` there or a `[[test]]` row (`crates/vike-ops/tests/hygiene/test_registry_gate.rs`'s `every_root_test_file_is_built_where_discovery_is_off`).
+autotests = false
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `daemon` — a headless
+# top-of-graph binary: nothing may depend on it. The rank is chosen to match `vike-cli`, the tool
+# this harness DRIVES: an evaluation harness sits at least as high as its subject, and a crate below
+# it could otherwise take an edge onto this one and drag a model client into a trading graph.
+# ⚠ The strictly-lower rule is VACUOUS here on purpose — this crate has no `vike-*` dependency of the
+# system it evaluates, normal or dev (its one dev edge onto ITSELF, below, links nothing but this crate), and one
+# floor edge: `vike-transport` (layer 4), the network layer its Anthropic agent ends in, which itself names no
+# `vike-*` crate (decision 0299). It reaches every part of the system the way an operator does, by SPAWNING the
+# shipped binaries, so it cannot compile against an internal API the shipped surface does not expose
+# and then report a green the operator's own path would not have produced.
+# The NORMAL half of "no `vike-*` dependency, normal or dev" is HELD, not only stated, since
+# 2026-09-28: `crates/vike-ops/tests/architecture/layer_gate/vike_free.rs`'s `every_vike_free_crate_names_no_vike_crate`,
+# through this crate's `VIKE_FREE_CRATES` row and its one `FLOOR_EDGES` row. The DEV half is held by nothing — every
+# rule in that file exempts dev edges.
+[package.metadata.vike]
+layer = 65
+
+[[bin]]
+name = "vike-agent-evaluation"
+path = "src/main.rs"
+
+# ⚠ THE SECOND BINARY IS `src/bin/vike-agent-run.rs` AND IS DELIBERATELY NOT LISTED HERE. Cargo
+# auto-discovers `src/bin/*.rs`, and the PATH is what the settings-registry gate keys on:
+# `crates/vike-ops/tests/settings_secrets/settings_registry/observe.rs`'s `layer_for` scores `/src/bin/` and `/src/main.rs` as
+# `Layer::Binary` and everything else under `src/` as `Layer::Library` — the ratcheted work-list. A
+# `[[bin]] path = "src/run_main.rs"` would compile identically and land this crate's two model
+# credentials on that ratchet. The directory is the declaration.
+#
+# It is the UNATTENDED runner (crates/vike-agent-evaluation/src/unattended.rs), which shares this crate's
+# MCP client and its three model drivers with the evaluation harness and builds no world of its own.
+# That module's doc argues why it is a second bin here rather than a second crate.
+
+[dependencies]
+# The MCP wire is newline-delimited JSON-RPC and the Anthropic Messages API is JSON; both are
+# handled as `Value` rather than as typed mirrors, deliberately — a typed mirror of a surface this
+# harness exists to OBSERVE would silently normalise away the drift it is looking for.
+serde_json = { workspace = true }
+# The ONE sanctioned blocking HTTP client (root Cargo.toml's rationale; `deny.toml`'s `[bans]`
+# rejects reqwest/isahc/curl). Used for exactly one endpoint — the Anthropic Messages API.
+ureq = { workspace = true }
+# That agent (`vike_transport::http::blocking_agent_with_timeout`: no redirect, the DNS resolver), decision 0299.
+# The one `vike-*` edge, a `FLOOR_EDGES` row onto a crate that names no `vike-*` crate itself; no `websocket`.
+vike-transport = { path = "../vike-transport" }
+# The command-line reader (decision 0155), named DIRECTLY: `clap` is an external crate, so this crate keeps its
+# "no `vike-*` dependency" property (`VIKE_FREE_CRATES`) and still has no hand-rolled parser. It does NOT go
+# through `vike_utility::cli` (a `vike-*` crate); the one rule it copies from there is the blank-value refusal,
+# as a local `value_parser` in each binary.
+clap = { workspace = true }
+
+# `crate::test_support`: the binaries-or-fail setup the integration tests share, compiled once by the
+# lib instead of once per binary. Turned on only by the self dev-dependency below; no shipped edge may
+# enable it (`crates/vike-ops/tests/architecture/test_surface_gate.rs`).
+[features]
+test-support = []
+
+[dev-dependencies]
+# Self-referential dev-dep (the `vike-execution`/`vike-model` idiom): turns `test-support` on for THIS crate's
+# own `tests/` targets. It names no OTHER `vike-*` crate, so the black-box property above holds.
+vike-agent-evaluation = { path = ".", features = ["test-support"] }
+# The throwaway project root each test's paper node runs in — unique per run and self-deleting on
+# the panic path, which is what `crates/vike-ops/tests/hygiene/temp_path_gate.rs` asks of test scratch.
+tempfile = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[[test]]
+name = "relative_work_dir"
+path = "tests/relative_work_dir.rs"

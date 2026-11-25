@@ -1,0 +1,16 @@
+{
+  "argv": [],
+  "case": "boot.bad_user_indicator",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": {
+    "<lines>": [
+      "<program>: indicator not loaded — <scratch>/user_data/indicators/broken.rhai: did not compile — broken: Expecting ')' to close the parameters list of function 'broken' (line 1, position 12)",
+      ""
+    ]
+  },
+  "stdout": "",
+  "what": "a user indicator that does not compile is reported, and the server still starts"
+}

@@ -1,0 +1,31 @@
+//! Multi-timeframe support: synthesize higher timeframes from a fine base stream.
+//! Exact port of `core/timeframe.py`. Look-ahead-safe by construction: a coarse bar only
+//! becomes visible once its window has fully elapsed (the engine enforces visibility). The roll-up
+//! itself is `vike_marketdata::resample`, beside the streaming `BarConsolidator`.
+//!
+//! A higher timeframe built as a rule's bars come, a bar of it handed out once closed, is the order
+//! language's (`vike_tactics::HigherTimeframe`).
+
+/// Convert a timeframe string like "30s"/"1m"/"4h"/"1d" to milliseconds. Delegates to the single
+/// interval vocabulary in [`vike_marketdata::interval::interval_ms`] (which also accepts seconds — a `"30s"`
+/// series that loads from the hist store is now a valid backtest timeframe).
+pub fn parse_timeframe(tf: &str) -> Result<i64, String> {
+    vike_marketdata::interval::interval_ms(tf)
+        .ok_or_else(|| format!("bad timeframe {tf:?} (expected e.g. '30s', '1m', '4h', '1d')"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_timeframe;
+
+    #[test]
+    fn parse_timeframe_accepts_seconds_and_rejects_garbage() {
+        // Regression: a "30s" series loads from the hist store, so it must also be a valid
+        // backtest timeframe (this used to error before the interval vocab was unified).
+        assert_eq!(parse_timeframe("30s").unwrap(), 30_000);
+        assert_eq!(parse_timeframe("1m").unwrap(), 60_000);
+        assert_eq!(parse_timeframe("4h").unwrap(), 14_400_000);
+        assert!(parse_timeframe("1x").is_err());
+        assert!(parse_timeframe("m").is_err());
+    }
+}

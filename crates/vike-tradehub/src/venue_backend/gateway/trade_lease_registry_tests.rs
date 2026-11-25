@@ -1,0 +1,3071 @@
+//! `TradeLeaseRegistry::exposure_cap_armed`: the answer the control door's LIVE-account gate reads
+//! (`plan_submit_symbol`: a live account takes a new symbol only with an account-wide ceiling armed).
+//! The production binding is `bind_exposure_cap`'s closure in `tradehub_cli/live_runtime.rs`; what
+//! this proves is the seam's own contract.
+
+use super::*;
+use vike_log::poll::wait_for;
+
+/// Epoch-ms of a UTC instant, from the workspace's one civil calendar.
+fn utc_ms(y: i64, mo: u32, d: u32, h: i64, mi: i64) -> i64 {
+    vike_utility::calendar::days_from_civil(y, mo, d) * 86_400_000 + h * 3_600_000 + mi * 60_000
+}
+
+/// Wednesday 2026-11-11 12:00 UTC: the FX week is open, so a paper account's market clock holds nothing back
+/// (`crate::readmit::paper_waits_for_open`) and every test that does not name a closed instant stands here.
+const WEDNESDAY_NOON: i64 = 1_794_398_400_000;
+
+/// What the door judges an order by, with no venue asked: the figures the start stated for the mounted symbol, on
+/// that symbol and that account only, for as long as its engine runs; a start that stated none holds nothing.
+#[test]
+fn the_grid_a_start_stated_is_held_for_its_own_symbol_until_the_engine_stops() {
+    let facts = TradeLeaseRegistry::default();
+    let stated = vike_model::SymbolProperties {
+        tick_size: 0.5,
+        step_size: 10.0,
+        min_qty: 10.0,
+        ..Default::default()
+    };
+    assert_eq!(facts.held_grid("deribit", "BTC-PERPETUAL"), None, "nothing stated yet");
+    facts.note_own_grid("deribit", "BTC-PERPETUAL", Some(&stated));
+    let held = facts.held_grid("deribit", "BTC-PERPETUAL").expect("the start's figures");
+    assert_eq!((held.lot_size, held.min_qty), (Some(10.0), Some(10.0)));
+    assert_eq!(facts.held_grid("deribit", "ETH-PERPETUAL"), None, "another symbol");
+    assert_eq!(facts.held_grid("deribit#ALT", "BTC-PERPETUAL"), None, "another account");
+
+    facts.engine_stopped("deribit");
+    assert_eq!(facts.held_grid("deribit", "BTC-PERPETUAL"), None, "a stopped engine holds none");
+
+    facts.note_own_grid("deribit", "BTC-PERPETUAL", Some(&stated));
+    facts.note_own_grid("deribit", "BTC-PERPETUAL", None);
+    assert_eq!(facts.held_grid("deribit", "BTC-PERPETUAL"), None, "a later start stated none");
+}
+
+/// A symbol the engine admitted is judged from the facts answer the door already looked up, while it is younger
+/// than the answer's own life; an older one is not a fact any more, and nothing is asked in its place.
+#[test]
+fn an_admitted_symbols_grid_is_the_cached_answers_and_it_ages_out() {
+    let facts = TradeLeaseRegistry::default();
+    let answer = |at| {
+        (
+            at,
+            SymbolAdmission {
+                route_key: "deribit".into(),
+                symbol: "ETH-PERPETUAL".into(),
+                grid: SymbolGrid { lot_size: Some(1.0), ..SymbolGrid::default() },
+                contract_value: None,
+                initial_mark: None,
+                initial_mark_ms: None,
+                quote_currency: None,
+                quote_rate: None,
+                rate_as_of_ms: None,
+                initial_margin_requirement: None,
+                release: false,
+                margin_mode: None,
+            },
+        )
+    };
+    let key = ("deribit".to_string(), "ETH-PERPETUAL".to_string());
+    facts.answers.lock().unwrap().insert(key.clone(), answer(Instant::now()));
+    let held = facts.held_grid("deribit", "ETH-PERPETUAL").expect("the cached answer");
+    assert_eq!(held.lot_size, Some(1.0));
+
+    let old = Instant::now().checked_sub(FACTS_TTL + Duration::from_secs(1));
+    let Some(old) = old else { return }; // a box up for less than the life of an answer
+    facts.answers.lock().unwrap().insert(key, answer(old));
+    assert_eq!(facts.held_grid("deribit", "ETH-PERPETUAL"), None);
+}
+
+/// Unbound, NO account counts as capped: a live account is refused a new symbol rather than admitted
+/// on a ceiling nobody checked.
+#[test]
+fn an_unbound_registry_arms_no_account() {
+    let facts = TradeLeaseRegistry::default();
+    assert!(!facts.exposure_cap_armed("bybit"));
+    assert!(!facts.exposure_cap_armed("okx#ALT"));
+}
+
+/// Bound, the closure answers per ROUTE KEY: the account with a ceiling is armed, its sibling is not,
+/// and the binding is made once (a second bind does not replace the first).
+#[test]
+fn a_bound_registry_answers_per_route_key_and_binds_once() {
+    let facts = TradeLeaseRegistry::default();
+    facts.bind_exposure_cap(|route_key| route_key == "bybit#ALT");
+    assert!(facts.exposure_cap_armed("bybit#ALT"));
+    assert!(!facts.exposure_cap_armed("bybit"), "the default account has no ceiling of its own");
+    facts.bind_exposure_cap(|_| true);
+    assert!(!facts.exposure_cap_armed("bybit"), "the first binding stands");
+}
+
+/// The directory a start reads: one ACTIVE `live` row of `venue`/`label`, with `cap` as its `max_exposure`.
+fn rows_with(
+    venue: &str,
+    label: &AccountLabel,
+    cap: Option<f64>,
+    active: bool,
+) -> AccountDirectory {
+    vike_tradehub_core::AdapterPolicy::default()
+        .with_account_row(vike_secrets::AccountRow {
+            id: 1,
+            venue: venue.to_string(),
+            tier: vike_model::AccountTier::Live,
+            label: label.text().map(str::to_string),
+            venue_account_id: None,
+            parent_id: None,
+            active,
+            last_verified_at: None,
+            max_exposure: cap.and_then(vike_secrets::AccountRowMaxExposure::new),
+            leverage: None,
+            symbol: vike_secrets::fixture_account_symbol(venue).map(str::to_string),
+            facts: Default::default(),
+        })
+        .accounts
+}
+
+fn alt() -> AccountLabel {
+    AccountLabel::parse("ALT").expect("a legal label")
+}
+
+/// The ceiling an engine is built under is the box-wide row OR the account's own ACTIVE row; rows that
+/// were not read arm nothing.
+#[test]
+fn a_ceiling_is_the_policy_row_or_the_accounts_own_active_row() {
+    let armed = |policy, rows: &AccountDirectory| rows_arm_a_cap(policy, rows, "bybit", &alt());
+    assert!(armed(true, &AccountDirectory::unread()), "the box-wide row needs no account row");
+    assert!(!armed(false, &AccountDirectory::unread()), "unread rows arm nothing");
+    assert!(armed(false, &rows_with("bybit", &alt(), Some(5000.0), true)));
+    assert!(!armed(false, &rows_with("bybit", &alt(), None, true)));
+    assert!(
+        !armed(false, &rows_with("bybit", &alt(), Some(5000.0), false)),
+        "an inactive row binds nothing"
+    );
+    assert!(!armed(false, &rows_with("bybit", &AccountLabel::Default, Some(5000.0), true)));
+}
+
+/// **An account hot-started with a ceiling row the boot never saw is armed for the door** (an account
+/// inactive at boot, or whose `max_exposure` was set later): the boot's rows say "no cap", the engine
+/// the start built carries one, and a live account must not be refused every new symbol for want of a
+/// restart decision 0169 rules out.
+#[test]
+fn a_hot_started_account_with_a_cap_the_boot_did_not_see_is_armed() {
+    let facts = TradeLeaseRegistry::default();
+    facts.bind_exposure_cap(|_| false);
+    assert!(!facts.exposure_cap_armed("bybit#ALT"));
+    facts.engine_starting("bybit#ALT", true);
+    assert!(facts.exposure_cap_armed("bybit#ALT"));
+    assert!(!facts.exposure_cap_armed("bybit"), "a sibling keeps the boot's answer");
+}
+
+/// **A hot-restarted account whose ceiling was removed is NOT armed for the door** (the unsafe
+/// direction): the boot's rows said "capped", the new engine has no ceiling, and a live account must
+/// not be admitted sixteen symbols on the boot's word. A later start with a ceiling arms it again.
+#[test]
+fn a_hot_restarted_account_whose_cap_is_gone_is_not_armed_by_the_boots_rows() {
+    let facts = TradeLeaseRegistry::default();
+    facts.bind_exposure_cap(|_| true);
+    assert!(facts.exposure_cap_armed("bybit#ALT"));
+    facts.engine_starting("bybit#ALT", false);
+    assert!(
+        !facts.exposure_cap_armed("bybit#ALT"),
+        "the engine's own state outranks the boot's rows"
+    );
+    facts.engine_starting("bybit#ALT", true);
+    assert!(facts.exposure_cap_armed("bybit#ALT"));
+}
+
+/// **Stopping an account forgets what the node admitted into its engine** (decision 0169 stop then
+/// start): the next engine has none, so a stale entry would make `release` return early and `price` take
+/// the uncounted path past [`MAX_WATCHED`]. A symbol no other account of the venue admitted goes to the
+/// idle reaper (its pump is not permanent); one another account admitted keeps its pump.
+#[test]
+fn a_stopped_account_forgets_its_admitted_symbols_and_hands_their_pumps_to_the_reaper() {
+    let facts = TradeLeaseRegistry::default();
+    facts.admitted.lock().unwrap().extend([
+        key("bybit#ALT", "SOLUSDT"),
+        key("bybit", "SOLUSDT"),
+        key("bybit#ALT", "ETHUSDT"),
+    ]);
+    facts.engine_stopped("bybit#ALT");
+    assert_eq!(*facts.admitted.lock().unwrap(), HashSet::from([key("bybit", "SOLUSDT")]));
+    assert_eq!(entry(&facts, "bybit", "SOLUSDT"), None, "the default account still admits it");
+    assert!(matches!(entry(&facts, "bybit", "ETHUSDT"), Some(Sub::Idle(_))));
+}
+
+/// **Stop, start without a ceiling, start with one — the door follows the engine, never a stale answer.**
+/// A stopped account reads "no ceiling" at once (the boot's rows, which said capped, no longer speak for
+/// it); a start announces its ceiling BEFORE the engine exists; a start that builds nothing puts the
+/// previous answer back; and every stop and start moves the account's generation.
+#[test]
+fn the_door_follows_stop_and_start_and_never_a_stale_ceiling() {
+    let facts = TradeLeaseRegistry::default();
+    facts.bind_exposure_cap(|_| true);
+    assert_eq!(facts.generation("bybit#ALT"), 0);
+    assert!(facts.exposure_cap_armed("bybit#ALT"), "the boot's engine, capped by the boot's rows");
+
+    facts.engine_stopped("bybit#ALT");
+    assert!(!facts.exposure_cap_armed("bybit#ALT"), "stopped: the door refuses a live new symbol");
+    assert_eq!(
+        facts.engines.lock().unwrap()["bybit#ALT"].cap,
+        Some(false),
+        "the cap entry is cleared"
+    );
+    assert_eq!(facts.generation("bybit#ALT"), 1);
+
+    let before = facts.engine_starting("bybit#ALT", false);
+    assert!(!facts.exposure_cap_armed("bybit#ALT"), "started without a ceiling: refuses");
+    assert_eq!(facts.generation("bybit#ALT"), 2);
+
+    facts.engine_start_refused("bybit#ALT", before);
+    assert!(!facts.exposure_cap_armed("bybit#ALT"), "a refused start restores the stopped answer");
+
+    facts.engine_starting("bybit#ALT", true);
+    assert!(facts.exposure_cap_armed("bybit#ALT"), "started with a ceiling: admits");
+    assert_eq!(facts.generation("bybit#ALT"), 3, "every start moves it");
+    assert_eq!(facts.generation("bybit"), 0, "a sibling's generation is its own");
+}
+
+fn key(venue: &str, symbol: &str) -> (String, String) {
+    (venue.to_string(), symbol.to_string())
+}
+
+fn entry(facts: &TradeLeaseRegistry, venue: &str, symbol: &str) -> Option<Sub> {
+    facts.watched.lock().unwrap().get(&key(venue, symbol)).copied()
+}
+
+// ---- the negative cache is bounded ----------------------------------------------------------------
+
+/// One refusal per distinct refused name is remembered, and no more than [`MAX_FAILED`] at once: a
+/// full map first drops what expired, a refusal that still does not fit is not remembered (the next
+/// order asks again), and a refusal already in the map is always refreshed.
+#[test]
+fn the_negative_cache_never_outgrows_its_cap_and_drops_the_expired_first() {
+    let mut failed: HashMap<(String, String), (Instant, SymbolPropertiesRequestError)> =
+        HashMap::new();
+    for i in 0..MAX_FAILED {
+        remember_refusal(
+            &mut failed,
+            key("bybit", &format!("S{i}")),
+            SymbolPropertiesRequestError::Refused("no".into()),
+        );
+    }
+    assert_eq!(failed.len(), MAX_FAILED);
+    remember_refusal(
+        &mut failed,
+        key("bybit", "ONE-MORE"),
+        SymbolPropertiesRequestError::Refused("no".into()),
+    );
+    assert_eq!(failed.len(), MAX_FAILED, "all fresh: the newcomer is not remembered");
+    assert!(!failed.contains_key(&key("bybit", "ONE-MORE")));
+
+    remember_refusal(
+        &mut failed,
+        key("bybit", "S0"),
+        SymbolPropertiesRequestError::Refused("still no".into()),
+    );
+    assert_eq!(failed[&key("bybit", "S0")].1.text(), "still no", "a known name is refreshed");
+    assert_eq!(failed.len(), MAX_FAILED);
+
+    let long_ago = Instant::now().checked_sub(NEGATIVE_TTL + Duration::from_secs(1)).unwrap();
+    for (at, _) in failed.values_mut() {
+        *at = long_ago;
+    }
+    remember_refusal(
+        &mut failed,
+        key("bybit", "ONE-MORE"),
+        SymbolPropertiesRequestError::Refused("no".into()),
+    );
+    assert_eq!(failed.len(), 1, "the expired were dropped, the newcomer stands");
+}
+
+// ---- the price pumps of symbols nobody admitted are bounded ------------------------------------------
+
+/// A symbol the door let go of keeps its place (its pump is open) until the pump is closed, and a full
+/// set is refused: the bound is on OPEN pumps, not on in-flight asks. Asking again takes an idle one back.
+#[test]
+fn a_released_pump_keeps_its_place_until_it_is_closed_and_a_re_ask_takes_it_back() {
+    let facts = TradeLeaseRegistry::default();
+    for i in 0..MAX_WATCHED {
+        let k = key("bybit", &format!("S{i}"));
+        assert!(matches!(facts.claim_pump(&k), Ok(Claim::Subscribe)));
+        facts.watched.lock().unwrap().insert(k, Sub::Open);
+    }
+    let full = facts.claim_pump(&key("bybit", "NEW")).err().expect("a full set refuses");
+    assert!(full.contains(&MAX_WATCHED.to_string()), "{full}");
+
+    facts.release("bybit", "bybit", "S0");
+    assert!(
+        matches!(entry(&facts, "bybit", "S0"), Some(Sub::Idle(_))),
+        "released: idle, still counted"
+    );
+    assert!(
+        facts.claim_pump(&key("bybit", "NEW")).is_err(),
+        "a released pump still holds its place (no feed is bound here to close it)"
+    );
+    assert!(matches!(facts.claim_pump(&key("bybit", "S0")), Ok(Claim::Held)));
+    assert_eq!(entry(&facts, "bybit", "S0"), Some(Sub::Open), "the re-ask put it back in use");
+}
+
+/// A pump the reaper is closing right now answers "none yet" (the retry subscribes afresh), and an
+/// ADMITTED symbol's entry is dropped at once, never left to be reaped.
+#[test]
+fn a_closing_pump_asks_for_a_retry_and_an_admitted_symbol_leaves_the_set() {
+    let facts = TradeLeaseRegistry::default();
+    let k = key("bybit", "ETHUSDT");
+    facts.watched.lock().unwrap().insert(k.clone(), Sub::Closing);
+    assert!(matches!(facts.claim_pump(&k), Ok(Claim::Closing)));
+
+    facts.watched.lock().unwrap().insert(k, Sub::Idle(Instant::now()));
+    facts.admitted("bybit", "bybit", "ETHUSDT");
+    assert_eq!(entry(&facts, "bybit", "ETHUSDT"), None, "admitted: the engine pump, not counted");
+    assert_eq!(facts.close_idle_pumps(), 0);
+}
+
+/// `release` moves only a pump IN USE to idle, and not at all for a symbol its account admitted.
+#[test]
+fn release_idles_a_pump_in_use_and_never_one_an_account_admitted() {
+    let facts = TradeLeaseRegistry::default();
+    facts.watched.lock().unwrap().insert(key("bybit", "A"), Sub::Opening);
+    facts.release("bybit", "bybit", "A");
+    assert_eq!(entry(&facts, "bybit", "A"), Some(Sub::Opening), "an ask in flight is not idle");
+
+    facts.watched.lock().unwrap().insert(key("bybit", "B"), Sub::Open);
+    facts.admitted.lock().unwrap().insert(("bybit".to_string(), "B".to_string()));
+    facts.release("bybit", "bybit", "B");
+    assert_eq!(entry(&facts, "bybit", "B"), Some(Sub::Open), "an admitted symbol is never idled");
+}
+
+/// A symbol ANOTHER account of the venue admitted is the engine pump too: `admitted_on_venue` sees it
+/// across route keys and labels, and not across venues.
+#[test]
+fn an_admission_by_any_account_of_the_venue_protects_the_pump() {
+    let facts = TradeLeaseRegistry::default();
+    facts.admitted.lock().unwrap().insert(("bybit#ALT".to_string(), "ETHUSDT".to_string()));
+    assert!(facts.admitted_on_venue("bybit", "ETHUSDT"));
+    assert!(!facts.admitted_on_venue("bybit", "SOLUSDT"));
+    assert!(!facts.admitted_on_venue("binance", "ETHUSDT"));
+}
+
+// ---- an idle pump under a venue gap ------------------------------------------------------------------
+
+/// A scripted dial: it records the quote lanes the feed opens and closes, and fails nothing.
+struct Lanes(Arc<Mutex<Vec<String>>>, u64);
+
+impl vike_data::DataClient for Lanes {
+    fn subscribe_quotes(
+        &mut self,
+        symbol: &str,
+    ) -> Result<vike_data::DataClientSubscriptionId, vike_data::DataClientError> {
+        self.1 += 1;
+        self.0.lock().unwrap().push(format!("quotes {symbol}"));
+        Ok(vike_data::DataClientSubscriptionId(self.1))
+    }
+    crate::testutil::lanes_answer!(
+        self => unreachable!("the door subscribes quotes only");
+        bars, trades, book
+    );
+    fn unsubscribe(&mut self, id: vike_data::DataClientSubscriptionId) {
+        self.0.lock().unwrap().push(format!("unsubscribe {}", id.0));
+    }
+    fn shutdown(&mut self) {}
+}
+
+/// What [`idle_pump_under_a_gap`] builds: the registry, the feed and tap it keeps alive, and the dial's log.
+type IdlePump = (
+    TradeLeaseRegistry,
+    crate::feeds::StrategyLaneQuote,
+    Arc<crate::feeds::PriceTap>,
+    Arc<Mutex<Vec<String>>>,
+);
+
+/// A registry whose `venue` has a price feed with `symbol`'s quote lane open and a VENUE-source gap open
+/// on it (a stream whose dial keeps failing: `GapStart` from every refused open, never a `Live`), and the
+/// door's entry for it idle since long enough to be reaped.
+fn idle_pump_under_a_gap(venue: &str, symbol: &str) -> IdlePump {
+    use vike_model::StreamStatus;
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let tap = Arc::new(crate::feeds::PriceTap::default());
+    let feed = crate::feeds::StrategyLaneQuote::new(
+        crate::feeds::DataClientTracking::new(Box::new(Lanes(Arc::clone(&log), 0))),
+        Arc::clone(&tap),
+    );
+    let watcher = feed.watcher();
+    watcher.subscribe_ticks(symbol, 0.00001).expect("the lane opens");
+    tap.note_status(venue, symbol, "quotes", StreamStatus::GapStart { at_timestamp_ms: 1 });
+    assert!(watcher.gap_open(venue, symbol));
+    let facts = TradeLeaseRegistry::default();
+    facts.bind_prices(HashMap::from([(venue.to_string(), watcher)]));
+    let long_ago = Instant::now().checked_sub(IDLE_TTL + Duration::from_secs(1)).unwrap();
+    facts.watched.lock().unwrap().insert(key(venue, symbol), Sub::Idle(long_ago));
+    (facts, feed, tap, log)
+}
+
+/// **A pair whose stream cannot connect does not keep its place for ever** (oanda: a fence-passing pair whose
+/// `/pricing/stream` open keeps failing, the venue's stream cap or a stuck 429, redials every few seconds and
+/// keeps a venue gap open). OANDA's row is `SessionBounded`, so no link dead-man window exists for the gap to
+/// strand: the reaper closes the idle pump, the lane is unsubscribed (its redials stop), the tap forgets the
+/// gap, and the place under [`MAX_WATCHED`] is free again. (Every other venue is closed the same way since
+/// A55, `trade_lease_registry_gap_tests.rs`'s ctrader test: the close also says `Live` for the symbol.)
+#[test]
+fn an_idle_pump_under_a_gap_is_reaped_where_no_dead_man_window_exists() {
+    let (facts, _feed, tap, log) = idle_pump_under_a_gap("oanda", "GBPUSD");
+    assert_eq!(facts.close_idle_pumps(), 1, "the place was freed");
+    assert_eq!(entry(&facts, "oanda", "GBPUSD"), None);
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["quotes GBPUSD".to_string(), "unsubscribe 1".to_string()],
+        "the lane was closed, so the stream stops redialling"
+    );
+    assert!(!tap.gap_open("oanda", "GBPUSD"), "a re-subscribe starts clean");
+
+    // …and a full set of such pumps no longer refuses the next pair.
+    let (facts, _feed, _tap, _log) = idle_pump_under_a_gap("oanda", "GBPUSD");
+    for i in 0..MAX_WATCHED - 1 {
+        facts.watched.lock().unwrap().insert(key("oanda", &format!("S{i}")), Sub::Open);
+    }
+    assert!(matches!(facts.claim_pump(&key("oanda", "NEW")), Ok(Claim::Subscribe)));
+}
+
+/// **An armed venue's pump is closed under a gap too** (A55): binance's `Armed` row means the core holds a link
+/// dead-man window for an open gap, and the reaper used to keep the pump (it would have left that window without
+/// its `Live`: cancel + HALT after the grace). It closes the pump and ends the gap with it
+/// (`trade_lease_registry_gap_tests.rs` reads the `Live` the core is handed), whatever the venue's row says.
+#[test]
+fn an_idle_pump_under_a_gap_is_closed_on_every_venue_the_dead_man_arms() {
+    for venue in ["binance", "hyperliquid", "deribit", "alpaca"] {
+        let (facts, _feed, tap, log) = idle_pump_under_a_gap(venue, "ETHUSDT");
+        assert_eq!(facts.close_idle_pumps(), 1, "{venue}: the place was freed");
+        assert_eq!(entry(&facts, venue, "ETHUSDT"), None, "{venue}");
+        assert_eq!(
+            *log.lock().unwrap(),
+            ["quotes ETHUSDT".to_string(), "unsubscribe 1".to_string()],
+            "{venue}: the lane was closed"
+        );
+        assert!(!tap.gap_open(venue, "ETHUSDT"), "{venue}: the gap ended with the pump");
+    }
+}
+
+// ---- a started lane twin's price lane is opened ahead of its first order ------------------------------
+
+/// A registry with `binance`'s price feed bound to a scripted dial (it records the lanes opened), and the
+/// facts of the twin's own symbol already looked up on its lease (the cache stands in for the gatewayhub).
+fn registry_with_twin_facts()
+-> (TradeLeaseRegistry, crate::feeds::StrategyLaneQuote, Arc<Mutex<Vec<String>>>) {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let feed = crate::feeds::StrategyLaneQuote::new(
+        crate::feeds::DataClientTracking::new(Box::new(Lanes(Arc::clone(&log), 0))),
+        Arc::new(crate::feeds::PriceTap::default()),
+    );
+    let facts = TradeLeaseRegistry::default();
+    facts.bind_prices(HashMap::from([("binance".to_string(), feed.watcher())]));
+    keep_twin_facts(&facts);
+    (facts, feed, log)
+}
+
+/// Keep the twin's own symbol's facts as `facts`' answer (the cache stands in for the gatewayhub).
+fn keep_twin_facts(facts: &TradeLeaseRegistry) {
+    facts.answers.lock().unwrap().insert(
+        key("binance#PERP", "BTCUSDT.P"),
+        (
+            Instant::now(),
+            SymbolAdmission {
+                route_key: "binance#PERP".into(),
+                symbol: "BTCUSDT.P".into(),
+                grid: SymbolGrid {
+                    tick_size: Some(0.1),
+                    lot_size: Some(0.001),
+                    ..SymbolGrid::default()
+                },
+                contract_value: None,
+                initial_mark: None,
+                initial_mark_ms: None,
+                quote_currency: None,
+                quote_rate: None,
+                rate_as_of_ms: None,
+                initial_margin_requirement: None,
+                release: false,
+                margin_mode: None,
+            },
+        ),
+    );
+}
+
+/// **`warm_price` opens the twin's own symbol's pump once, before any order asks**: the venue's feed dial gets
+/// the symbol's lane, the door's set counts it as in use, and a second warm (a restart of the twin) opens
+/// nothing more. Without it the first opening order after a hot start paid the facts look-up, the datahub dial
+/// and the pump's first frame inside the door's hold.
+#[test]
+fn warming_a_lane_twins_price_opens_its_pump_once() {
+    crate::testutil::note_the_binance_lane_twin();
+    let (facts, _feed, log) = registry_with_twin_facts();
+    facts.warm_price("binance#PERP", "binance", "BTCUSDT.P");
+    assert_eq!(*log.lock().unwrap(), ["quotes BTCUSDT.P".to_string()], "the lane is open");
+    assert_eq!(entry(&facts, "binance", "BTCUSDT.P"), Some(Sub::Open), "counted, in use");
+
+    facts.warm_price("binance#PERP", "binance", "BTCUSDT.P");
+    assert_eq!(log.lock().unwrap().len(), 1, "a second warm finds the pump open");
+}
+
+/// **Another account's refused order cannot idle the twin's price lane** (v0.1.80 review b). A second binance
+/// account asking for `BTCUSDT.P` and refused releases the symbol, and `release` moved the shared pump to idle
+/// because nothing there knew the twin held it: 30 s later the reaper closed the lane under the running twin.
+/// Built on the twin's `warmed` record, the lane survives the release and the reaper while the twin runs, and
+/// goes back to the reaper when the twin stops.
+#[test]
+fn another_accounts_refused_order_cannot_idle_a_running_twins_price_lane() {
+    crate::testutil::note_the_binance_lane_twin();
+    let (facts, _feed, log) = registry_with_twin_facts();
+    facts.set_idle_ttl(Duration::ZERO);
+    facts.warm_price("binance#PERP", "binance", "BTCUSDT.P");
+
+    facts.release("binance#ALT", "binance", "BTCUSDT.P");
+    assert_eq!(
+        entry(&facts, "binance", "BTCUSDT.P"),
+        Some(Sub::Open),
+        "not idled by the other account"
+    );
+    assert_eq!(facts.close_idle_pumps(), 0, "nothing for the reaper to close");
+    assert_eq!(*log.lock().unwrap(), ["quotes BTCUSDT.P".to_string()], "the lane stays open");
+
+    facts.engine_stopped("binance#PERP");
+    assert!(matches!(entry(&facts, "binance", "BTCUSDT.P"), Some(Sub::Idle(_))));
+    assert_eq!(facts.close_idle_pumps(), 1, "the stopped twin hands its lane to the reaper");
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["quotes BTCUSDT.P".to_string(), "unsubscribe 1".to_string()],
+        "…which closes it"
+    );
+}
+
+/// A warm that cannot be done (no lease for the account, no price feed for the venue) is best effort: it
+/// opens nothing, leaves no place held under [`MAX_WATCHED`], and the door's own ask stands.
+#[test]
+fn a_warm_that_cannot_be_done_opens_nothing_and_holds_no_place() {
+    crate::testutil::note_the_binance_lane_twin();
+    let (facts, _feed, log) = registry_with_twin_facts();
+    facts.warm_price("binance#PERP", "binance", "ETHUSDT.P");
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "no facts and no lease for that symbol: nothing opened"
+    );
+    assert_eq!(entry(&facts, "binance", "ETHUSDT.P"), None, "a failed ask forgets its place");
+
+    let unbound = TradeLeaseRegistry::default();
+    unbound.warm_price("binance#PERP", "binance", "BTCUSDT.P");
+    assert_eq!(entry(&unbound, "binance", "BTCUSDT.P"), None, "no price feed for the venue");
+}
+
+/// **A lane twin that stops hands back the pump it warmed.** The twin's own symbol is admitted by nobody, so
+/// `engine_stopped` found nothing of it in `admitted` and the pump held its place under [`MAX_WATCHED`] and a
+/// datahub subscription until the session ended. Now the stop idles it, the reaper closes it, and the place is
+/// free; a pump another twin warmed too, or an account admitted, stays open for its holder.
+#[test]
+fn a_stopped_lane_twin_hands_back_the_pump_it_warmed() {
+    crate::testutil::note_the_binance_lane_twin();
+    let (facts, _feed, log) = registry_with_twin_facts();
+    facts.warm_price("binance#PERP", "binance", "BTCUSDT.P");
+    assert_eq!(entry(&facts, "binance", "BTCUSDT.P"), Some(Sub::Open));
+    facts.engine_stopped("binance#PERP");
+    assert!(
+        matches!(entry(&facts, "binance", "BTCUSDT.P"), Some(Sub::Idle(_))),
+        "the stop gave the pump to the reaper"
+    );
+    assert!(facts.warmed.lock().unwrap().is_empty(), "nothing is kept warm for a stopped engine");
+    facts.set_idle_ttl(Duration::ZERO);
+    assert_eq!(facts.close_idle_pumps(), 1, "the place was freed");
+    assert_eq!(entry(&facts, "binance", "BTCUSDT.P"), None);
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["quotes BTCUSDT.P".to_string(), "unsubscribe 1".to_string()],
+        "the datahub subscription was closed"
+    );
+
+    // Started again: the next warm opens it afresh (the restart path of an account follow).
+    facts.warm_price("binance#PERP", "binance", "BTCUSDT.P");
+    assert_eq!(entry(&facts, "binance", "BTCUSDT.P"), Some(Sub::Open));
+    assert_eq!(log.lock().unwrap().len(), 3);
+}
+
+/// **A stop releases only a pump nobody else holds**: a sibling twin that warmed the same symbol keeps it
+/// until the LAST one stops, and an account that admitted the symbol keeps it for good. A stop of an
+/// account that warmed nothing touches nothing.
+#[test]
+fn a_stopped_twin_leaves_a_pump_another_twin_or_an_admission_holds() {
+    crate::testutil::note_the_binance_lane_twin();
+    let (facts, _feed, _log) = registry_with_twin_facts();
+    facts.warm_price("binance#PERP", "binance", "BTCUSDT.P");
+    facts.warmed.lock().unwrap().insert(("binance#ALT".into(), "BTCUSDT.P".into()));
+    facts.engine_stopped("binance#PERP");
+    assert_eq!(entry(&facts, "binance", "BTCUSDT.P"), Some(Sub::Open), "the sibling twin holds it");
+    facts.engine_stopped("binance#OTHER");
+    assert_eq!(entry(&facts, "binance", "BTCUSDT.P"), Some(Sub::Open), "it warmed nothing");
+    facts.engine_stopped("binance#ALT");
+    assert!(
+        matches!(entry(&facts, "binance", "BTCUSDT.P"), Some(Sub::Idle(_))),
+        "the last one left"
+    );
+
+    let (facts, _feed, _log) = registry_with_twin_facts();
+    facts.warm_price("binance#PERP", "binance", "BTCUSDT.P");
+    facts.admitted.lock().unwrap().insert(("binance#ALT".into(), "BTCUSDT.P".into()));
+    facts.engine_stopped("binance#PERP");
+    assert_eq!(entry(&facts, "binance", "BTCUSDT.P"), Some(Sub::Open), "an admission holds it");
+}
+
+/// A dial whose quote subscribe first runs `during`: the account's engine stopping WHILE the warm is in flight.
+struct StopsDuringOpen {
+    log: Arc<Mutex<Vec<String>>>,
+    during: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl vike_data::DataClient for StopsDuringOpen {
+    fn subscribe_quotes(
+        &mut self,
+        symbol: &str,
+    ) -> Result<vike_data::DataClientSubscriptionId, vike_data::DataClientError> {
+        if let Some(during) = self.during.take() {
+            during();
+        }
+        self.log.lock().unwrap().push(format!("quotes {symbol}"));
+        Ok(vike_data::DataClientSubscriptionId(1))
+    }
+    crate::testutil::lanes_answer!(
+        self => unreachable!("the door subscribes quotes only");
+        bars, trades, book
+    );
+    fn unsubscribe(&mut self, id: vike_data::DataClientSubscriptionId) {
+        self.log.lock().unwrap().push(format!("unsubscribe {}", id.0));
+    }
+    fn shutdown(&mut self) {}
+}
+
+/// **FORCED INTERLEAVING: a stop that lands while the warm is subscribing does not strand the pump.** The
+/// warm's own thread opens the pump AFTER the stop has already looked for what to hand back; it sees the
+/// engine's generation moved and hands the pump back itself, instead of leaving a lane no stop will ever
+/// find. MUTATION PROOF: drop the generation check in `keep_warmed` and the pump stays `Open`.
+#[test]
+fn a_stop_that_lands_while_the_warm_subscribes_does_not_strand_the_pump() {
+    crate::testutil::note_the_binance_lane_twin();
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let facts = Arc::new(TradeLeaseRegistry::default());
+    let stopper = Arc::clone(&facts);
+    let dial = StopsDuringOpen {
+        log: Arc::clone(&log),
+        during: Some(Box::new(move || stopper.engine_stopped("binance#PERP"))),
+    };
+    let feed = crate::feeds::StrategyLaneQuote::new(
+        crate::feeds::DataClientTracking::new(Box::new(dial)),
+        Arc::new(crate::feeds::PriceTap::default()),
+    );
+    facts.bind_prices(HashMap::from([("binance".to_string(), feed.watcher())]));
+    keep_twin_facts(&facts);
+
+    facts.warm_price("binance#PERP", "binance", "BTCUSDT.P");
+    assert!(
+        matches!(entry(&facts, "binance", "BTCUSDT.P"), Some(Sub::Idle(_))),
+        "the warm handed the pump back: its engine had stopped"
+    );
+    assert!(facts.warmed.lock().unwrap().is_empty());
+    facts.set_idle_ttl(Duration::ZERO);
+    assert_eq!(facts.close_idle_pumps(), 1);
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["quotes BTCUSDT.P".to_string(), "unsubscribe 1".to_string()],
+        "the reaper closed it"
+    );
+}
+
+// ---- the boot window ---------------------------------------------------------------------------------
+
+fn unavailable() -> SymbolPropertiesRequestError {
+    SymbolPropertiesRequestError::Unavailable("no answer".into())
+}
+
+/// Outside the window a round trip gets no bound of its own; inside it gets the boot bound; after the
+/// guard drops it gets none again (the runtime door keeps its behaviour). A registry told no boot bound
+/// opens no window at all.
+#[test]
+fn only_the_boot_window_bounds_a_round_trip() {
+    let facts = TradeLeaseRegistry::default();
+    let seen = Mutex::new(Vec::new());
+    let ask = |facts: &TradeLeaseRegistry| {
+        let _ = facts.ask("bybit", |bound| {
+            seen.lock().unwrap().push(bound);
+            Ok(())
+        });
+    };
+    ask(&facts);
+    {
+        let _no_wait = facts.begin_boot();
+        ask(&facts);
+    }
+    facts.set_boot_wait(Duration::from_secs(7));
+    {
+        let _window = facts.begin_boot();
+        ask(&facts);
+    }
+    ask(&facts);
+    assert_eq!(*seen.lock().unwrap(), [None, None, Some(Duration::from_secs(7)), None]);
+}
+
+/// A lease that burned the whole bound is not asked again inside the window (fail closed, fast), a lease
+/// that answered "unavailable" at once is (it was not the wait), another lease is unaffected, and the
+/// next window starts clean.
+#[test]
+fn a_lease_that_missed_the_boot_bound_is_not_asked_again_in_the_window() {
+    let facts = TradeLeaseRegistry::default();
+    facts.set_boot_wait(Duration::from_millis(200));
+    {
+        let _window = facts.begin_boot();
+        assert!(facts.ask("bybit", |_| Err::<(), _>(unavailable())).is_err());
+        let mut asked = 0;
+        let fast = facts.ask("bybit", |_| {
+            asked += 1;
+            Ok(())
+        });
+        assert!(fast.is_ok() && asked == 1, "a prompt `unavailable` is not a miss");
+
+        let slow = facts.ask("bybit", |_| {
+            std::thread::sleep(Duration::from_millis(250));
+            Err::<(), _>(unavailable())
+        });
+        assert!(slow.is_err(), "the bound was burned");
+        let mut called = false;
+        let again = facts.ask("bybit", |_| {
+            called = true;
+            Ok(())
+        });
+        match again {
+            Err(SymbolPropertiesRequestError::Unavailable(why)) => {
+                assert!(why.contains("not asked again"), "{why}");
+            }
+            other => panic!("a missed lease is refused without a round trip: {other:?}"),
+        }
+        assert!(!called, "no round trip was made");
+        assert!(facts.ask("okx", |_| Ok(())).is_ok(), "another lease is asked as usual");
+    }
+    let _next = facts.begin_boot();
+    assert!(facts.ask("bybit", |_| Ok(())).is_ok(), "the next window starts clean");
+}
+
+/// `AccountReadiness::awaiting_balance`: what the control door holds an account's opening orders on
+/// (decisions 0169 and 0246). Nothing waits until a start ANNOUNCES a wait, so any account a start announced
+/// nothing for reads `None`; an announced wait reads `Some`, with the leg's reason, until the cell its reconcile
+/// leg fills has landed; a stop forgets it; the next start of the same account waits afresh.
+#[test]
+fn only_an_announced_wait_holds_an_account_and_a_landed_balance_or_a_stop_ends_it() {
+    let facts = TradeLeaseRegistry::default();
+    assert_eq!(facts.awaiting_balance("okx#ALT"), None, "nothing is announced yet");
+
+    let synced = ReconcileFirstBalance::new();
+    facts.engine_awaiting_balance("okx#ALT", &synced);
+    let waiting = facts.awaiting_balance("okx#ALT").expect("announced, not landed");
+    assert_eq!(waiting.why, "the first reconcile pass has not reached this account yet");
+    synced.fail("balance fetch failed: 401");
+    assert_eq!(
+        facts.awaiting_balance("okx#ALT").map(|w| w.why),
+        Some("balance fetch failed: 401".to_string()),
+        "the door reads the leg's last reason"
+    );
+    assert_eq!(facts.awaiting_balance("okx"), None, "a sibling account of the venue is not held");
+    assert_eq!(facts.awaiting_balance("bybit#ALT"), None, "nor is another venue's");
+
+    synced.land();
+    assert_eq!(facts.awaiting_balance("okx#ALT"), None, "the balance landed");
+
+    // Stopped before it landed: a stopped account is not waiting for anything.
+    let unlanded = ReconcileFirstBalance::new();
+    facts.engine_awaiting_balance("okx#ALT", &unlanded);
+    assert!(facts.awaiting_balance("okx#ALT").is_some());
+    facts.engine_stopped("okx#ALT");
+    assert_eq!(facts.awaiting_balance("okx#ALT"), None);
+
+    // Started again: a new engine, a new wait, even though the old cell had landed.
+    facts.engine_awaiting_balance("okx#ALT", &ReconcileFirstBalance::new());
+    assert!(facts.awaiting_balance("okx#ALT").is_some());
+    // The cap answer the same entry carries (a stop reads `false`) is not touched by a wait.
+    assert!(!facts.exposure_cap_armed("okx#ALT"), "the wait leaves the cap answer alone");
+}
+
+/// An answer for `oanda`'s EURGBP, priced in GBP when `rate` is `Some`.
+fn eurgbp(rate: Option<f64>) -> SymbolAdmission {
+    SymbolAdmission {
+        route_key: "oanda".into(),
+        symbol: "EURGBP".into(),
+        grid: SymbolGrid { tick_size: Some(0.00001), lot_size: Some(1.0), ..SymbolGrid::default() },
+        contract_value: None,
+        initial_mark: None,
+        initial_mark_ms: None,
+        quote_currency: rate.map(|_| "GBP".to_string()),
+        quote_rate: rate,
+        rate_as_of_ms: rate.map(|_| 1),
+        initial_margin_requirement: None,
+        release: false,
+        margin_mode: None,
+    }
+}
+
+/// Keep `admission` as the registry's answer for oanda's EURGBP, looked up `age` ago.
+fn keep_aged(facts: &TradeLeaseRegistry, age: Duration, admission: SymbolAdmission) {
+    let at = Instant::now().checked_sub(age).expect("a clock that has run this long");
+    facts.answers.lock().unwrap().insert(key("oanda", "EURGBP"), (at, admission));
+}
+
+/// **An answer that carries a conversion rate is served for [`RATE_FRESH_FOR`] and no longer**, where the
+/// same answer without a rate lives [`FACTS_TTL`]: the next ask after the window goes back to the lease (here
+/// there is none, so the ask says so), and the facts around a rate-less answer are not re-read for an hour.
+#[test]
+fn a_rate_bearing_answer_is_served_for_the_rate_window_only() {
+    let facts = TradeLeaseRegistry::default();
+    keep_aged(&facts, Duration::from_secs(5), eurgbp(Some(1.35)));
+    assert_eq!(facts.admission("oanda", "oanda", "EURGBP"), Ok(eurgbp(Some(1.35))));
+
+    keep_aged(&facts, RATE_FRESH_FOR + Duration::from_secs(1), eurgbp(Some(1.35)));
+    let why = facts
+        .admission("oanda", "oanda", "EURGBP")
+        .expect_err("the rate is past its window")
+        .to_string();
+    assert!(why.contains("no open trade lease"), "it asked the lease again: {why}");
+
+    keep_aged(&facts, RATE_FRESH_FOR + Duration::from_secs(1), eurgbp(None));
+    assert_eq!(
+        facts.admission("oanda", "oanda", "EURGBP"),
+        Ok(eurgbp(None)),
+        "the same age without a rate is still inside the hour"
+    );
+}
+
+/// **A rate comes due for a refresh at its own window, and a failed re-read is retried in ten seconds, not on
+/// every order**: an admitted symbol whose rate is [`RATE_FRESH_FOR`] old is refreshed by the next order (the
+/// facts around a rate-less one wait ten minutes); when the re-read fails the entry is moved so that the retry
+/// is due [`RATE_RETRY_AFTER`] later.
+#[test]
+fn a_rate_is_refreshed_at_its_window_and_a_failed_reread_waits_ten_seconds() {
+    let facts = TradeLeaseRegistry::default();
+    facts.admitted.lock().unwrap().insert(key("oanda", "EURGBP"));
+
+    // A rate-less answer 31 s old is not due (ten minutes are): nothing is asked, nothing moves.
+    keep_aged(&facts, Duration::from_secs(31), eurgbp(None));
+    assert_eq!(facts.refresh("oanda", "oanda", "EURGBP"), None);
+    let age_of = |facts: &TradeLeaseRegistry| {
+        facts.answers.lock().unwrap()[&key("oanda", "EURGBP")].0.elapsed()
+    };
+    assert!(age_of(&facts) >= Duration::from_secs(31), "not touched");
+
+    // A rated answer 31 s old IS due; the lookup fails (no lease), and the entry is moved to wait ten seconds.
+    keep_aged(&facts, RATE_FRESH_FOR + Duration::from_secs(1), eurgbp(Some(1.35)));
+    assert_eq!(facts.refresh("oanda", "oanda", "EURGBP"), None, "the re-read failed");
+    let waited = age_of(&facts);
+    let want = RATE_FRESH_FOR - RATE_RETRY_AFTER;
+    assert!(
+        waited >= want && waited < want + Duration::from_secs(5),
+        "due again {RATE_RETRY_AFTER:?} later: the entry is {waited:?} old, wanted about {want:?}"
+    );
+    assert_eq!(facts.refresh("oanda", "oanda", "EURGBP"), None, "not due yet: no second re-read");
+    assert!(age_of(&facts) >= waited, "the second ask did not move it again");
+}
+
+// ---- a held foreign-quoted position whose rate nothing refreshes is named ------------------------------
+
+const NOW: i64 = 1_700_000_000_000;
+
+fn ibkr_sap() -> (String, String) {
+    key("ibkr", "SAP.SMART.EUR")
+}
+
+/// The registry told the journal restored `SAP.SMART.EUR` (EUR) in `ibkr`'s engine, whose engine rate was last
+/// observed `age_s` seconds before `NOW` (`None`: the engine holds no EUR row).
+fn journaled_sap(age_s: Option<i64>) -> TradeLeaseRegistry {
+    let facts = TradeLeaseRegistry::default();
+    facts.note_journaled_foreign("ibkr", &[("SAP.SMART.EUR".to_string(), "EUR".to_string())]);
+    facts.bind_rate_rows(move |route_key, currency| {
+        assert_eq!((route_key, currency), ("ibkr", "EUR"), "asked for the symbol's own currency");
+        age_s.map(|age| NOW - age * 1_000)
+    });
+    facts
+}
+
+/// **A held restored position whose rate is older than the window is named, with its age**; a fresh one, a
+/// position nothing is held in, and a registry whose rows are not bound are not.
+#[test]
+fn a_held_restored_position_with_an_old_rate_is_named_with_its_age() {
+    let held = |route_key: &str, symbol: &str| (route_key, symbol) == ("ibkr", "SAP.SMART.EUR");
+    let none_held = |_: &str, _: &str| false;
+
+    let stale = journaled_sap(Some(342)).unrefreshed_held(&held, NOW);
+    assert_eq!(
+        stale,
+        [Unrefreshed {
+            route_key: "ibkr".into(),
+            symbol: "SAP.SMART.EUR".into(),
+            currency: "EUR".into(),
+            age_s: Some(342)
+        }]
+    );
+    assert!(journaled_sap(Some(60)).unrefreshed_held(&held, NOW).is_empty(), "inside the cadence");
+    assert!(journaled_sap(Some(89)).unrefreshed_held(&held, NOW).is_empty(), "inside the window");
+    assert_eq!(journaled_sap(Some(91)).unrefreshed_held(&held, NOW).len(), 1, "past the window");
+    assert!(journaled_sap(Some(342)).unrefreshed_held(&none_held, NOW).is_empty(), "nothing held");
+
+    let never = journaled_sap(None).unrefreshed_held(&held, NOW);
+    assert_eq!(never.len(), 1);
+    assert_eq!(never[0].age_s, None, "the engine holds no row for the currency at all");
+
+    let unbound = TradeLeaseRegistry::default();
+    unbound.note_journaled_foreign("ibkr", &[("SAP.SMART.EUR".to_string(), "EUR".to_string())]);
+    assert!(unbound.unrefreshed_held(&held, NOW).is_empty(), "no rows, nothing can be said");
+}
+
+/// A symbol this registry rated and admitted is watched the same way as a restored one, and is listed once when
+/// the journal names it too.
+#[test]
+fn an_admitted_rated_symbol_is_watched_and_listed_once() {
+    let facts = journaled_sap(Some(300));
+    let mut rated = eurgbp(Some(1.10));
+    rated.route_key = "ibkr".into();
+    rated.symbol = "SAP.SMART.EUR".into();
+    rated.quote_currency = Some("EUR".into());
+    facts.answers.lock().unwrap().insert(ibkr_sap(), (Instant::now(), rated));
+    facts.admitted.lock().unwrap().insert(ibkr_sap());
+    let held = |_: &str, _: &str| true;
+    assert_eq!(facts.unrefreshed_held(&held, NOW).len(), 1, "one line, not two");
+}
+
+/// The journaled symbols nothing has rated are the ones the timer heals, and a stop of the engine forgets them.
+#[test]
+fn only_the_journaled_symbols_nothing_has_rated_are_owed_and_a_stop_forgets_them() {
+    let facts = journaled_sap(Some(10));
+    assert_eq!(facts.owed_symbols(&[]), [ibkr_sap()]);
+    assert!(facts.owed_symbols(&[ibkr_sap()]).is_empty(), "rated: the ordinary pass has it");
+    facts.engine_stopped("ibkr");
+    assert!(facts.owed_symbols(&[]).is_empty(), "a stopped engine owes nothing");
+    facts.note_journaled_foreign("ibkr", &[]);
+    assert!(facts.journaled.lock().unwrap().is_empty());
+}
+
+/// **The owed symbol's backoff doubles from its first wait to its cap and no further** (finding 5 of the second
+/// IBKR currency review): 1, 2, 4, 8 minutes, then 15 for every failure after, and it is due exactly when its
+/// wait has run.
+#[test]
+fn the_owed_backoff_doubles_to_fifteen_minutes_and_stays_there() {
+    let t = Instant::now();
+    let mut state = None;
+    let mut waits = Vec::new();
+    for _ in 0..7 {
+        let next = OwedBackoff::failed(state, t, OWED_RETRY_FIRST);
+        waits.push((next.next_at - t).as_secs() / 60);
+        state = Some(next);
+    }
+    assert_eq!(waits, [1, 2, 4, 8, 15, 15, 15]);
+    let last = state.expect("failed");
+    assert_eq!(last.fails, 7);
+    assert!(!last.due(t + Duration::from_secs(15 * 60 - 1)));
+    assert!(last.due(t + Duration::from_secs(15 * 60)));
+}
+
+/// **The watcher's word on the lane twins is what the door reads**, replaced whole at each telling, and silent
+/// (false) until the watcher has spoken.
+#[test]
+fn the_watchers_word_on_the_lane_twins_is_what_the_door_reads() {
+    crate::testutil::note_the_binance_lane_twin();
+    let facts = TradeLeaseRegistry::default();
+    for key in ["binance#PERP", "bybit#X"] {
+        assert!(!facts.real_account_under_twin_label(key) && !facts.lane_twin_closing_only(key));
+    }
+    facts.set_lane_twin_flags(&["binance#PERP".to_string()], &["bybit#X".to_string()]);
+    assert!(facts.real_account_under_twin_label("binance#PERP"));
+    assert!(!facts.lane_twin_closing_only("binance#PERP"));
+    assert!(
+        facts.lane_twin_closing_only("bybit#X") && !facts.real_account_under_twin_label("bybit#X")
+    );
+    facts.set_lane_twin_flags(&[], &[]);
+    assert!(
+        !facts.real_account_under_twin_label("binance#PERP")
+            && !facts.lane_twin_closing_only("bybit#X")
+    );
+}
+
+/// **The derived twins the watcher tells the door are the positive evidence a live engine needs**
+/// ([`AccountReadiness::derived_lane_twin`]): silent (false) until the watcher has spoken, replaced whole at each
+/// telling, and independent of the real/closing flags.
+#[test]
+fn the_derived_lane_twins_the_watcher_tells_are_what_the_door_reads_as_evidence() {
+    crate::testutil::note_the_binance_lane_twin();
+    let facts = TradeLeaseRegistry::default();
+    assert!(!facts.derived_lane_twin("binance#PERP"), "silent until the watcher has spoken");
+    facts.set_derived_lane_twins(&["binance#PERP".to_string()]);
+    assert!(facts.derived_lane_twin("binance#PERP") && !facts.derived_lane_twin("binance#ALT"));
+    facts.set_lane_twin_flags(&[], &[]);
+    assert!(facts.derived_lane_twin("binance#PERP"), "the other flags do not move it");
+    facts.set_derived_lane_twins(&[]);
+    assert!(!facts.derived_lane_twin("binance#PERP"), "replaced whole");
+}
+
+/// **A gate's hold is listed per route key, in route-key order, and ends with the gate, the start or the engine**
+/// ([`AccountReadiness::balance_withheld`]): silent until a gate speaks, replaced by a later word, withdrawn by `None`, and
+/// forgotten by a refused start ([`TradeLeaseRegistry::forget_lease`]), a new start ([`TradeLeaseRegistry::anchor_currency`]) and a
+/// stop ([`TradeLeaseRegistry::engine_stopped`]), so a row of an engine that is gone never outlives it.
+#[test]
+fn a_gates_hold_is_listed_per_account_and_ends_with_its_engine() {
+    let facts = TradeLeaseRegistry::default();
+    assert!(facts.balance_held().is_empty(), "silent until a gate speaks");
+    facts.set_balance_held("oanda#ALT", Some("assumed USD"));
+    facts.set_balance_held("fxcm", Some("stated EUR not anchored"));
+    assert_eq!(
+        facts.balance_held(),
+        [
+            ("fxcm".to_string(), "stated EUR not anchored".to_string()),
+            ("oanda#ALT".to_string(), "assumed USD".to_string()),
+        ]
+    );
+    facts.set_balance_held("oanda#ALT", Some("untold foreign stock"));
+    assert_eq!(facts.balance_held()[1].1, "untold foreign stock", "a later word replaces");
+    facts.set_balance_held("oanda#ALT", None);
+    assert_eq!(facts.balance_held().len(), 1, "withdrawn by the gate");
+
+    facts.forget_lease("fxcm");
+    assert!(facts.balance_held().is_empty(), "a refused start leaves no row");
+    facts.set_balance_held("ig", Some("assumed USD"));
+    facts.anchor_currency("ig", Some("USD"));
+    assert!(facts.balance_held().is_empty(), "a new start decides its own hold afresh");
+    facts.set_balance_held("ig", Some("assumed USD"));
+    facts.engine_stopped("ig");
+    assert!(facts.balance_held().is_empty(), "a stopped engine holds nothing");
+}
+
+// ---- an engine's OWN symbol: the held lane (decision 0197) ----------------------------------------------
+
+/// Keep `symbol`'s facts as `facts`' answer for `route_key` (the cache stands in for the gatewayhub).
+fn keep_facts(facts: &TradeLeaseRegistry, route_key: &str, symbol: &str) {
+    facts.answers.lock().unwrap().insert(
+        key(route_key, symbol),
+        (
+            Instant::now(),
+            SymbolAdmission {
+                route_key: route_key.into(),
+                symbol: symbol.into(),
+                grid: SymbolGrid {
+                    tick_size: Some(0.1),
+                    lot_size: Some(0.001),
+                    ..SymbolGrid::default()
+                },
+                contract_value: None,
+                initial_mark: None,
+                initial_mark_ms: None,
+                quote_currency: None,
+                quote_rate: None,
+                rate_as_of_ms: None,
+                initial_margin_requirement: None,
+                release: false,
+                margin_mode: None,
+            },
+        ),
+    );
+}
+
+/// A registry whose `venue` has a price feed on a scripted dial (it records the lanes opened and closed) and
+/// the facts of the default account's own `symbol` already looked up.
+fn registry_for(
+    venue: &str,
+    symbol: &str,
+) -> (TradeLeaseRegistry, crate::feeds::StrategyLaneQuote, Arc<Mutex<Vec<String>>>) {
+    let (facts, feed, log, _tap) = registry_with_tap(venue, symbol);
+    (facts, feed, log)
+}
+
+/// What [`registry_with_tap`] builds: the registry, the feed it keeps alive, the dial's log and the venue's tap.
+type TappedRegistry = (
+    TradeLeaseRegistry,
+    crate::feeds::StrategyLaneQuote,
+    Arc<Mutex<Vec<String>>>,
+    Arc<crate::feeds::PriceTap>,
+);
+
+/// [`registry_for`] and the venue's price tap, which says whether the core is handed a mark for a symbol.
+fn registry_with_tap(venue: &str, symbol: &str) -> TappedRegistry {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let tap = Arc::new(crate::feeds::PriceTap::default());
+    let feed = crate::feeds::StrategyLaneQuote::new(
+        crate::feeds::DataClientTracking::new(Box::new(Lanes(Arc::clone(&log), 0))),
+        Arc::clone(&tap),
+    );
+    let facts = TradeLeaseRegistry::default();
+    facts.bind_prices(HashMap::from([(venue.to_string(), feed.watcher())]));
+    keep_facts(&facts, venue, symbol);
+    (facts, feed, log, tap)
+}
+
+fn held_state(facts: &TradeLeaseRegistry, route_key: &str, symbol: &str) -> Option<Hold> {
+    facts.held.lock().unwrap().get(&key(route_key, symbol)).copied()
+}
+
+fn is_open(facts: &TradeLeaseRegistry, route_key: &str, symbol: &str) -> bool {
+    matches!(held_state(facts, route_key, symbol), Some(Hold::Open { .. }))
+}
+
+/// An instant older than [`HOLD_GRACE`].
+fn past_the_grace() -> Instant {
+    Instant::now().checked_sub(HOLD_GRACE + Duration::from_secs(1)).unwrap()
+}
+
+/// How long a wait in this file allows before `vike_log::poll::wait_for` fails it.
+const WAIT_FOR: Duration = Duration::from_secs(10);
+
+fn wanted(route_key: &str, symbol: &str) -> crate::readmit::ReadmitTarget {
+    crate::readmit::ReadmitTarget {
+        route_key: route_key.into(),
+        venue: vike_model::accounts::account_keys::venue_of_route_key(route_key).into(),
+        symbol: symbol.into(),
+        flat: false,
+    }
+}
+
+/// A dial whose every quote subscribe is refused, as a venue's stream cap refuses one.
+struct Capped(Arc<Mutex<Vec<String>>>);
+
+impl vike_data::DataClient for Capped {
+    fn subscribe_quotes(
+        &mut self,
+        symbol: &str,
+    ) -> Result<vike_data::DataClientSubscriptionId, vike_data::DataClientError> {
+        self.0.lock().unwrap().push(format!("refused {symbol}"));
+        Err(vike_data::DataClientError::Subscribe("the venue's stream cap is reached".into()))
+    }
+    crate::testutil::lanes_answer!(
+        self => unreachable!("the keeper subscribes quotes only");
+        bars, trades, book
+    );
+    fn unsubscribe(&mut self, _: vike_data::DataClientSubscriptionId) {}
+    fn shutdown(&mut self) {}
+}
+
+/// **A default engine's own symbol gets its lane once, and the lane is the ENGINE's**: the venue's feed dial
+/// opens it a single time (a second hold finds it open), and it takes no place under [`MAX_WATCHED`], so the
+/// door's foreign symbols are all still free beside it.
+#[test]
+fn holding_an_engines_own_symbol_opens_its_lane_once_and_takes_no_watched_place() {
+    let (facts, _feed, log) = registry_for("oanda", "EURUSD");
+    facts.hold_price("oanda", "oanda", "EURUSD");
+    assert_eq!(*log.lock().unwrap(), ["quotes EURUSD".to_string()], "the lane is open");
+    assert!(is_open(&facts, "oanda", "EURUSD"));
+    assert_eq!(
+        entry(&facts, "oanda", "EURUSD"),
+        None,
+        "held, not watched: no place under the bound"
+    );
+
+    facts.hold_price("oanda", "oanda", "EURUSD");
+    assert_eq!(log.lock().unwrap().len(), 1, "a second hold finds the lane open");
+    for i in 0..MAX_WATCHED {
+        let k = key("oanda", &format!("S{i}"));
+        assert!(matches!(facts.claim_pump(&k), Ok(Claim::Subscribe)), "place {i} is free");
+        facts.watched.lock().unwrap().insert(k, Sub::Open);
+    }
+}
+
+/// **Flat releases the lane to the idle reaper, after the grace and not before**: a lane the engine was seen
+/// holding something in a moment ago stays; one not wanted for longer than [`HOLD_GRACE`] goes `Idle`, and the
+/// reaper then closes the datahub subscription. A lane still in the keeper's `wanted` list never ages out.
+#[test]
+fn a_flat_engine_hands_its_lane_to_the_idle_reaper_after_the_grace() {
+    let (facts, _feed, log) = registry_for("oanda", "EURUSD");
+    facts.hold_price("oanda", "oanda", "EURUSD");
+
+    facts.keep_lanes(&[]);
+    assert!(is_open(&facts, "oanda", "EURUSD"), "inside the grace: kept");
+
+    facts
+        .held
+        .lock()
+        .unwrap()
+        .insert(key("oanda", "EURUSD"), Hold::Open { seen: past_the_grace() });
+    facts.keep_lanes(&[wanted("oanda", "EURUSD")]);
+    assert!(
+        is_open(&facts, "oanda", "EURUSD"),
+        "still held: the sighting is stamped, not released"
+    );
+    let Some(Hold::Open { seen }) = held_state(&facts, "oanda", "EURUSD") else { panic!() };
+    assert!(seen.elapsed() < HOLD_GRACE);
+
+    facts
+        .held
+        .lock()
+        .unwrap()
+        .insert(key("oanda", "EURUSD"), Hold::Open { seen: past_the_grace() });
+    facts.keep_lanes(&[]);
+    assert_eq!(held_state(&facts, "oanda", "EURUSD"), None, "flat past the grace: released");
+    assert!(matches!(entry(&facts, "oanda", "EURUSD"), Some(Sub::Idle(_))), "…to the reaper");
+    facts.set_idle_ttl(Duration::ZERO);
+    assert_eq!(facts.close_idle_pumps(), 1);
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["quotes EURUSD".to_string(), "unsubscribe 1".to_string()],
+        "the datahub subscription is closed"
+    );
+}
+
+/// **Nothing held, nothing subscribed**: a keeper tick over an empty view, and a registry nobody holds
+/// anything in, open no lane and leave no entry.
+#[test]
+fn nothing_held_subscribes_nothing() {
+    let (facts, _feed, log) = registry_for("oanda", "EURUSD");
+    facts.keep_lanes(&[]);
+    assert!(log.lock().unwrap().is_empty());
+    assert!(facts.held.lock().unwrap().is_empty());
+    assert!(facts.watched.lock().unwrap().is_empty());
+}
+
+/// **A venue ceiling hit fails SOFT**: the dial refuses (OANDA's stream cap, IG's lane cap, the strategy lane's
+/// key limit all arrive as a refused subscribe), the entry is `Refused`, no place is held, nothing panics and no
+/// order is touched; the lane is not asked again inside [`HOLD_RETRY_AFTER`], and the retry after it is the
+/// quiet one (its refusal was said when it first happened).
+#[test]
+fn a_ceiling_hit_fails_soft_says_it_once_and_is_not_asked_again_at_once() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let feed = crate::feeds::StrategyLaneQuote::new(
+        crate::feeds::DataClientTracking::new(Box::new(Capped(Arc::clone(&log)))),
+        Arc::new(crate::feeds::PriceTap::default()),
+    );
+    let facts = TradeLeaseRegistry::default();
+    facts.bind_prices(HashMap::from([("oanda".to_string(), feed.watcher())]));
+    keep_facts(&facts, "oanda", "EURUSD");
+
+    facts.hold_price("oanda", "oanda", "EURUSD");
+    assert!(matches!(held_state(&facts, "oanda", "EURUSD"), Some(Hold::Refused { .. })));
+    assert_eq!(entry(&facts, "oanda", "EURUSD"), None, "a refused lane holds no place");
+    assert_eq!(log.lock().unwrap().len(), 1);
+
+    facts.hold_price("oanda", "oanda", "EURUSD");
+    assert_eq!(log.lock().unwrap().len(), 1, "not asked again inside the retry pause");
+
+    facts.held.lock().unwrap().insert(
+        key("oanda", "EURUSD"),
+        Hold::Refused { at: Instant::now().checked_sub(HOLD_RETRY_AFTER).unwrap() },
+    );
+    assert_eq!(
+        facts.claim_hold("oanda", "oanda", "EURUSD"),
+        Some((0, true)),
+        "the retry knows its refusal was said already"
+    );
+    facts.unclaim_hold("oanda", "EURUSD");
+
+    // A tick that no longer wants it forgets the refusal, so the next holding says it afresh.
+    facts.held.lock().unwrap().insert(key("oanda", "EURUSD"), Hold::Refused { at: Instant::now() });
+    facts.keep_lanes(&[]);
+    assert_eq!(held_state(&facts, "oanda", "EURUSD"), None);
+}
+
+/// A venue this node has no price feed for at all is the same soft failure.
+#[test]
+fn a_venue_with_no_price_feed_stays_unpriced_without_a_fuss() {
+    let facts = TradeLeaseRegistry::default();
+    keep_facts(&facts, "polymarket", "TOKEN");
+    facts.hold_price("polymarket", "polymarket", "TOKEN");
+    assert!(matches!(held_state(&facts, "polymarket", "TOKEN"), Some(Hold::Refused { .. })));
+    assert!(facts.watched.lock().unwrap().is_empty());
+}
+
+/// **Alpaca is out by name** (the owner's deferral), whatever the account's label, and so are the engines that a
+/// mount prices already (default or labelled) and a stopped one. None of them opens a lane, marks a symbol or
+/// leaves an entry; a stopped engine that starts again may.
+#[test]
+fn alpaca_a_stopped_engine_and_a_mounted_symbol_hold_no_lane() {
+    assert!(
+        NO_HELD_LANE.iter().any(|(venue, why)| *venue == "alpaca" && !why.is_empty()),
+        "alpaca is excluded by name, with its reason"
+    );
+    let (facts, _feed, log, tap) = registry_with_tap("alpaca", "AAPL");
+    keep_facts(&facts, "alpaca#ALT", "AAPL");
+    facts.hold_price("alpaca", "alpaca", "AAPL");
+    facts.hold_price("alpaca#ALT", "alpaca", "AAPL");
+    assert!(log.lock().unwrap().is_empty() && facts.held.lock().unwrap().is_empty());
+    assert!(!tap.marks_symbol("alpaca", "AAPL"), "a labelled alpaca engine is not marked either");
+
+    let (facts, _feed, log, tap) = registry_with_tap("binance", "BTCUSDT");
+    keep_facts(&facts, "binance#ALT", "BTCUSDT");
+    facts.bind_mounted(|venue, symbol| (venue, symbol) == ("binance", "BTCUSDT"));
+    facts.hold_price("binance", "binance", "BTCUSDT");
+    facts.hold_price("binance#ALT", "binance", "BTCUSDT");
+    assert!(log.lock().unwrap().is_empty(), "a strategy mount prices the symbol already");
+    assert!(facts.held.lock().unwrap().is_empty());
+    assert!(!tap.marks_symbol("binance", "BTCUSDT"), "…and the mount's mark concept is left alone");
+    keep_facts(&facts, "binance", "ETHUSDT");
+    facts.hold_price("binance", "binance", "ETHUSDT");
+    assert_eq!(*log.lock().unwrap(), ["quotes ETHUSDT".to_string()], "an unmounted symbol is held");
+
+    let (facts, _feed, log) = registry_for("binance", "BTCUSDT");
+    facts.engine_stopped("binance");
+    facts.hold_price("binance", "binance", "BTCUSDT");
+    assert!(log.lock().unwrap().is_empty(), "a stopped engine is priced by nobody");
+    facts.engine_starting("binance", false);
+    facts.hold_price("binance", "binance", "BTCUSDT");
+    assert_eq!(*log.lock().unwrap(), ["quotes BTCUSDT".to_string()], "started again: held again");
+}
+
+/// **A stopped engine hands its held lane back**, and a refused start (which built no engine) leaves it unable
+/// to hold one.
+#[test]
+fn a_stopped_engine_hands_back_the_lane_it_held() {
+    let (facts, _feed, log) = registry_for("binance", "BTCUSDT");
+    facts.hold_price("binance", "binance", "BTCUSDT");
+    assert!(is_open(&facts, "binance", "BTCUSDT"));
+    facts.engine_stopped("binance");
+    assert!(facts.held.lock().unwrap().is_empty());
+    assert!(matches!(entry(&facts, "binance", "BTCUSDT"), Some(Sub::Idle(_))));
+    facts.set_idle_ttl(Duration::ZERO);
+    assert_eq!(facts.close_idle_pumps(), 1);
+    assert_eq!(log.lock().unwrap().len(), 2, "opened, then closed");
+
+    let before = facts.engine_starting("binance", true);
+    facts.engine_start_refused("binance", before);
+    facts.hold_price("binance", "binance", "BTCUSDT");
+    assert_eq!(log.lock().unwrap().len(), 2, "a refused start built no engine to hold anything");
+}
+
+/// **Another account's refused order cannot idle or close an engine's held lane** (the twin's rule, for the
+/// default engine): the other account's release is a no-op while the lane is held, and when the reaper does
+/// pick the entry that account's door ask left, it frees the place and keeps the pump.
+#[test]
+fn another_accounts_refused_order_cannot_idle_or_close_a_held_lane() {
+    let (facts, _feed, log) = registry_for("binance", "BTCUSDT");
+    facts.hold_price("binance", "binance", "BTCUSDT");
+    facts.set_idle_ttl(Duration::ZERO);
+
+    facts.watched.lock().unwrap().insert(key("binance", "BTCUSDT"), Sub::Open);
+    facts.release("binance#ALT", "binance", "BTCUSDT");
+    assert_eq!(
+        entry(&facts, "binance", "BTCUSDT"),
+        Some(Sub::Open),
+        "not idled by the other account"
+    );
+
+    facts.watched.lock().unwrap().insert(key("binance", "BTCUSDT"), Sub::Idle(Instant::now()));
+    assert_eq!(facts.close_idle_pumps(), 1, "the place is freed…");
+    assert_eq!(*log.lock().unwrap(), ["quotes BTCUSDT".to_string()], "…and the pump is kept");
+    assert!(is_open(&facts, "binance", "BTCUSDT"));
+}
+
+/// A pump the reaper has marked `Closing` is not claimed under: the hold stands down for this tick (the
+/// keeper asks again), so a lane is never closed under a hold that has just been taken.
+#[test]
+fn a_pump_being_closed_is_not_claimed() {
+    let (facts, _feed, log) = registry_for("binance", "BTCUSDT");
+    facts.watched.lock().unwrap().insert(key("binance", "BTCUSDT"), Sub::Closing);
+    facts.hold_price("binance", "binance", "BTCUSDT");
+    assert!(facts.held.lock().unwrap().is_empty(), "no claim was left behind");
+    assert!(log.lock().unwrap().is_empty());
+}
+
+/// **FORCED INTERLEAVING: a stop that lands while the lane is opening does not strand the pump.** The opening
+/// thread subscribes AFTER the stop has looked for what to hand back; it finds its claim gone and hands the pump
+/// back itself. MUTATION PROOF: drop the `ours` check in `open_hold` and the entry is `Open` for a dead engine.
+#[test]
+fn a_stop_that_lands_while_the_lane_opens_does_not_strand_the_pump() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let facts = Arc::new(TradeLeaseRegistry::default());
+    let stopper = Arc::clone(&facts);
+    let dial = StopsDuringOpen {
+        log: Arc::clone(&log),
+        during: Some(Box::new(move || stopper.engine_stopped("binance"))),
+    };
+    let feed = crate::feeds::StrategyLaneQuote::new(
+        crate::feeds::DataClientTracking::new(Box::new(dial)),
+        Arc::new(crate::feeds::PriceTap::default()),
+    );
+    facts.bind_prices(HashMap::from([("binance".to_string(), feed.watcher())]));
+    keep_facts(&facts, "binance", "BTCUSDT");
+
+    facts.hold_price("binance", "binance", "BTCUSDT");
+    assert!(facts.held.lock().unwrap().is_empty(), "the stopped engine holds nothing");
+    assert!(
+        matches!(entry(&facts, "binance", "BTCUSDT"), Some(Sub::Idle(_))),
+        "the pump went back"
+    );
+    facts.set_idle_ttl(Duration::ZERO);
+    assert_eq!(facts.close_idle_pumps(), 1);
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["quotes BTCUSDT".to_string(), "unsubscribe 1".to_string()],
+        "the reaper closed it"
+    );
+}
+
+/// **The door's call never waits**: `hold_lane` claims under a lock and opens the lane on a thread of its own, so
+/// the order that asked is not held behind a look-up and a datahub round trip. Without a keeper to hand it that
+/// thread (no handle on the registry) it claims nothing.
+#[test]
+fn the_doors_hold_opens_the_lane_off_its_own_thread() {
+    let (facts, _feed, log) = registry_for("oanda", "EURUSD");
+    SymbolAdmitter::hold_lane(&facts, "oanda", "oanda", "EURUSD");
+    assert!(facts.held.lock().unwrap().is_empty(), "no keeper, no thread to open it: no claim");
+    assert!(log.lock().unwrap().is_empty());
+
+    let facts = Arc::new(facts);
+    facts.me.set(Arc::downgrade(&facts)).expect("set once");
+    SymbolAdmitter::hold_lane(&*facts, "oanda", "oanda", "EURUSD");
+    wait_for(WAIT_FOR, "the lane to open", || is_open(&facts, "oanda", "EURUSD"));
+    assert_eq!(*log.lock().unwrap(), ["quotes EURUSD".to_string()]);
+    SymbolAdmitter::hold_lane(&*facts, "oanda", "oanda", "EURUSD");
+    assert_eq!(log.lock().unwrap().len(), 1, "an open lane is not opened again");
+}
+
+/// **The keeper tick opens what the snapshot shows held**, through the same non-blocking path.
+#[test]
+fn a_keeper_tick_opens_the_lanes_the_snapshot_shows_held() {
+    let (facts, _feed, log) = registry_for("oanda", "EURUSD");
+    let facts = Arc::new(facts);
+    facts.me.set(Arc::downgrade(&facts)).expect("set once");
+    facts.keep_lanes(&[wanted("oanda", "EURUSD")]);
+    wait_for(WAIT_FOR, "the lane to open", || is_open(&facts, "oanda", "EURUSD"));
+    assert_eq!(*log.lock().unwrap(), ["quotes EURUSD".to_string()]);
+}
+
+/// **A restored hold is subscribed at the boot**, through the very functions the boot calls: the journal's
+/// engine holds an order in its own symbol, `own_hold_targets` names it and `warm_twins` opens its lane with
+/// `hold_price`, on a short-lived thread.
+#[test]
+fn a_restored_hold_subscribes_at_the_boot() {
+    crate::testutil::note_the_binance_lane_twin();
+    use vike_execution::testing::RecordingClient;
+    use vike_execution::{Account, BalanceMode, Engine, EventBusOutbox, RiskGate};
+
+    let mut engine = Engine::new(
+        Account::new(1.0, "binance", None, BalanceMode::Delta),
+        RiskGate::new(vike_model::RiskLimits::new()),
+        RecordingClient::default(),
+        "binance",
+        "BTCUSDT",
+    );
+    engine.submit_order(
+        &vike_model::OrderRequest {
+            order_client_id: "resting".into(),
+            venue: "binance".into(),
+            symbol: "BTCUSDT".into(),
+            side: 1,
+            qty: 1.0,
+            order_type: vike_model::OrderType::Limit,
+            price: Some(100.0),
+            timestamp: 1,
+            ..Default::default()
+        },
+        1_000,
+        &mut EventBusOutbox::default(),
+    );
+    let mut snapshot = engine.snapshot_state();
+    snapshot.tier = Some(vike_model::AccountTier::Demo);
+
+    let (facts, _feed, log) = registry_for("binance", "BTCUSDT");
+    let facts = Arc::new(facts);
+    let boot = crate::readmit::own_hold_targets(&[snapshot]);
+    assert_eq!(boot, [wanted("binance", "BTCUSDT")]);
+    let handles = crate::readmit::warm_twins(&boot, &crate::readmit::ReadmitPace::default(), {
+        let facts = Arc::clone(&facts);
+        move |t: &crate::readmit::ReadmitTarget| facts.hold_price(&t.route_key, &t.venue, &t.symbol)
+    });
+    for handle in handles {
+        handle.join().expect("the boot's lane opening ends quietly");
+    }
+    assert_eq!(*log.lock().unwrap(), ["quotes BTCUSDT".to_string()]);
+    assert!(is_open(&facts, "binance", "BTCUSDT"));
+}
+
+// ---- a LABELLED engine's own symbol: the same lane, marked in the core (decision 0198) -------------------
+
+/// **A labelled engine that holds something gets its own symbol's lane, and the core is handed a mark for it**
+/// (`hyperliquid#LIVE`, `bybit#LIVE`): the lane is the venue dial's public QUOTE subscription (the scripted dial
+/// is a `DataClient`, which has no order path to open), counted as held and not as watched, and the tap is told
+/// to mark the symbol, because the core hands a venue's quote to the venue's default engine only.
+#[test]
+fn a_labelled_engine_that_holds_something_keeps_its_symbols_lane_and_has_it_marked() {
+    let (facts, _feed, log, tap) = registry_with_tap("hyperliquid", "BTC");
+    keep_facts(&facts, "hyperliquid#LIVE", "BTC");
+    assert!(!tap.marks_symbol("hyperliquid", "BTC"), "nothing is held yet: nothing is marked");
+
+    facts.hold_price("hyperliquid#LIVE", "hyperliquid", "BTC");
+    assert_eq!(*log.lock().unwrap(), ["quotes BTC".to_string()], "the public quote lane is open");
+    assert!(is_open(&facts, "hyperliquid#LIVE", "BTC"));
+    assert!(tap.marks_symbol("hyperliquid", "BTC"), "…and the core is handed a mark for it");
+    assert_eq!(
+        entry(&facts, "hyperliquid", "BTC"),
+        None,
+        "held, not watched: no place under the bound"
+    );
+}
+
+/// **A flat labelled engine releases the lane and the mark**, after the grace and not before, through the same
+/// idle path as a default engine's: the reaper then closes the datahub subscription.
+#[test]
+fn a_flat_labelled_engine_hands_back_its_lane_and_its_mark() {
+    let (facts, _feed, log, tap) = registry_with_tap("hyperliquid", "BTC");
+    keep_facts(&facts, "hyperliquid#LIVE", "BTC");
+    facts.hold_price("hyperliquid#LIVE", "hyperliquid", "BTC");
+
+    facts.keep_lanes(&[]);
+    assert!(is_open(&facts, "hyperliquid#LIVE", "BTC"), "inside the grace: kept");
+    assert!(tap.marks_symbol("hyperliquid", "BTC"));
+
+    facts
+        .held
+        .lock()
+        .unwrap()
+        .insert(key("hyperliquid#LIVE", "BTC"), Hold::Open { seen: past_the_grace() });
+    facts.keep_lanes(&[]);
+    assert_eq!(
+        held_state(&facts, "hyperliquid#LIVE", "BTC"),
+        None,
+        "flat past the grace: released"
+    );
+    assert!(!tap.marks_symbol("hyperliquid", "BTC"), "no mark for a symbol nobody holds");
+    assert!(matches!(entry(&facts, "hyperliquid", "BTC"), Some(Sub::Idle(_))), "…to the reaper");
+    facts.set_idle_ttl(Duration::ZERO);
+    assert_eq!(facts.close_idle_pumps(), 1);
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["quotes BTC".to_string(), "unsubscribe 1".to_string()],
+        "the datahub subscription is closed"
+    );
+}
+
+/// **Two accounts of one venue share ONE subscription** (the gatewayhub allows one tick pump per symbol per
+/// session): the default engine and the labelled one hold the same symbol, the dial is asked once, the pump is
+/// the venue's whoever leaves first, the mark follows the LABELLED holder alone, and the last one out hands the
+/// pump to the reaper, which closes it once.
+#[test]
+fn two_accounts_of_one_venue_share_one_subscription_and_the_last_one_out_closes_it() {
+    for default_leaves_first in [true, false] {
+        let (facts, _feed, log, tap) = registry_with_tap("bybit", "BTCUSDT");
+        keep_facts(&facts, "bybit#LIVE", "BTCUSDT");
+        facts.hold_price("bybit", "bybit", "BTCUSDT");
+        facts.hold_price("bybit#LIVE", "bybit", "BTCUSDT");
+        assert_eq!(
+            *log.lock().unwrap(),
+            ["quotes BTCUSDT".to_string()],
+            "ONE dial subscription for two accounts"
+        );
+        assert!(tap.marks_symbol("bybit", "BTCUSDT"), "the labelled engine is marked");
+
+        let (first, second) =
+            if default_leaves_first { ("bybit", "bybit#LIVE") } else { ("bybit#LIVE", "bybit") };
+        facts
+            .held
+            .lock()
+            .unwrap()
+            .insert(key(first, "BTCUSDT"), Hold::Open { seen: past_the_grace() });
+        facts.keep_lanes(&[wanted(second, "BTCUSDT")]);
+        assert_eq!(held_state(&facts, first, "BTCUSDT"), None, "{first} left");
+        assert!(is_open(&facts, second, "BTCUSDT"), "{second} still holds it");
+        assert_eq!(
+            tap.marks_symbol("bybit", "BTCUSDT"),
+            default_leaves_first,
+            "marked while the labelled engine holds the symbol, and not otherwise"
+        );
+        facts.set_idle_ttl(Duration::ZERO);
+        assert_eq!(facts.close_idle_pumps(), 0, "the pump is still held: not idle");
+
+        facts
+            .held
+            .lock()
+            .unwrap()
+            .insert(key(second, "BTCUSDT"), Hold::Open { seen: past_the_grace() });
+        facts.keep_lanes(&[]);
+        assert!(
+            matches!(entry(&facts, "bybit", "BTCUSDT"), Some(Sub::Idle(_))),
+            "the last one left"
+        );
+        assert!(!tap.marks_symbol("bybit", "BTCUSDT"));
+        assert_eq!(facts.close_idle_pumps(), 1);
+        assert_eq!(
+            *log.lock().unwrap(),
+            ["quotes BTCUSDT".to_string(), "unsubscribe 1".to_string()],
+            "one subscription, closed once"
+        );
+    }
+}
+
+/// **A stopped labelled engine hands back the lane and the mark**, and holds none while it is stopped; started
+/// again, it may.
+#[test]
+fn a_stopped_labelled_engine_hands_back_its_lane_and_its_mark() {
+    let (facts, _feed, log, tap) = registry_with_tap("hyperliquid", "BTC");
+    keep_facts(&facts, "hyperliquid#LIVE", "BTC");
+    facts.hold_price("hyperliquid#LIVE", "hyperliquid", "BTC");
+    assert!(tap.marks_symbol("hyperliquid", "BTC"));
+
+    facts.engine_stopped("hyperliquid#LIVE");
+    assert!(facts.held.lock().unwrap().is_empty());
+    assert!(!tap.marks_symbol("hyperliquid", "BTC"), "a stopped engine is marked by nobody");
+    assert!(matches!(entry(&facts, "hyperliquid", "BTC"), Some(Sub::Idle(_))));
+
+    facts.hold_price("hyperliquid#LIVE", "hyperliquid", "BTC");
+    assert!(facts.held.lock().unwrap().is_empty(), "a stopped engine holds no lane");
+    facts.engine_starting("hyperliquid#LIVE", false);
+    facts.hold_price("hyperliquid#LIVE", "hyperliquid", "BTC");
+    assert!(is_open(&facts, "hyperliquid#LIVE", "BTC"), "started again: held again");
+    assert!(tap.marks_symbol("hyperliquid", "BTC"));
+    assert_eq!(log.lock().unwrap().len(), 1, "the pump was never closed: opened once");
+}
+
+/// **A ceiling hit on a labelled engine fails soft and marks nothing**: the dial refuses, the entry is `Refused`
+/// (said once, asked again after the pause), and the tap is not told to mark a symbol no lane is open for.
+#[test]
+fn a_labelled_engine_refused_a_lane_is_marked_for_nothing() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let tap = Arc::new(crate::feeds::PriceTap::default());
+    let feed = crate::feeds::StrategyLaneQuote::new(
+        crate::feeds::DataClientTracking::new(Box::new(Capped(Arc::clone(&log)))),
+        Arc::clone(&tap),
+    );
+    let facts = TradeLeaseRegistry::default();
+    facts.bind_prices(HashMap::from([("hyperliquid".to_string(), feed.watcher())]));
+    keep_facts(&facts, "hyperliquid#LIVE", "BTC");
+
+    facts.hold_price("hyperliquid#LIVE", "hyperliquid", "BTC");
+    assert!(matches!(held_state(&facts, "hyperliquid#LIVE", "BTC"), Some(Hold::Refused { .. })));
+    assert!(!tap.marks_symbol("hyperliquid", "BTC"), "no lane, no mark");
+    assert_eq!(log.lock().unwrap().len(), 1);
+}
+
+/// **A FLAT coin ledger holds its own symbol's lane, has it marked, and keeps it past the grace** (0198's amendment of
+/// 2026-11-09, the CI box's `bybit#INV`): the keeper reads what the engine publishes (no position, no order, its own
+/// symbol listed inverse), opens the lane through the same non-blocking path, and switches the tap's mark on, because
+/// the engine's money is valued at that price. A flat LINEAR labelled engine beside it asks for nothing.
+#[test]
+fn a_flat_coin_ledger_holds_its_own_symbols_lane_and_has_it_marked_for_good() {
+    let (facts, _feed, log, tap) = registry_with_tap("bybit", "BTCUSD");
+    keep_facts(&facts, "bybit#INV", "BTCUSD");
+    let facts = Arc::new(facts);
+    facts.me.set(Arc::downgrade(&facts)).expect("set once");
+    let grid =
+        indexmap::IndexMap::from([("BTCUSD".to_string(), vike_model::ContractValue::inverse(1.0))]);
+    let block = |route_key: &str, symbol: &str, grid| vike_execution::VenueBlock {
+        venue: "bybit".into(),
+        route_key: route_key.into(),
+        symbol: symbol.into(),
+        tier: Some(vike_model::AccountTier::Demo),
+        contract_values: Arc::new(grid),
+        ..Default::default()
+    };
+    let blocks =
+        [block("bybit#INV", "BTCUSD", grid), block("bybit#LIN", "BTCUSDT", Default::default())];
+    let keeper_tick =
+        || facts.keep_lanes(&crate::readmit::own_symbol_holds(&blocks, &[], WEDNESDAY_NOON));
+
+    keeper_tick();
+    wait_for(WAIT_FOR, "the coin ledger's lane to open", || is_open(&facts, "bybit#INV", "BTCUSD"));
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["quotes BTCUSD".to_string()],
+        "one lane: the linear engine asked none"
+    );
+    assert!(tap.marks_symbol("bybit", "BTCUSD"), "the core is handed a mark for it");
+
+    facts
+        .held
+        .lock()
+        .unwrap()
+        .insert(key("bybit#INV", "BTCUSD"), Hold::Open { seen: past_the_grace() });
+    keeper_tick();
+    assert!(is_open(&facts, "bybit#INV", "BTCUSD"), "flat past the grace and still held");
+    assert!(tap.marks_symbol("bybit", "BTCUSD"));
+    assert_eq!(log.lock().unwrap().len(), 1, "never handed back, never opened again");
+}
+
+/// **The lane twin is held by the same rule and keeps its own warm-up**: its hold and its warm share the one
+/// subscription, and when the hold is handed back the pump stays, because the running twin warmed it.
+#[test]
+fn a_lane_twin_that_holds_something_keeps_the_pump_it_warmed() {
+    crate::testutil::note_the_binance_lane_twin();
+    let (facts, _feed, log) = registry_with_twin_facts();
+    facts.warm_price("binance#PERP", "binance", "BTCUSDT.P");
+    facts.hold_price("binance#PERP", "binance", "BTCUSDT.P");
+    assert!(is_open(&facts, "binance#PERP", "BTCUSDT.P"), "the twin holds like any engine");
+    assert_eq!(*log.lock().unwrap(), ["quotes BTCUSDT.P".to_string()], "one subscription");
+
+    facts
+        .held
+        .lock()
+        .unwrap()
+        .insert(key("binance#PERP", "BTCUSDT.P"), Hold::Open { seen: past_the_grace() });
+    facts.keep_lanes(&[]);
+    assert_eq!(held_state(&facts, "binance#PERP", "BTCUSDT.P"), None, "flat: the hold is released");
+    assert_eq!(
+        entry(&facts, "binance", "BTCUSDT.P"),
+        Some(Sub::Open),
+        "the twin's warm keeps the pump"
+    );
+    facts.set_idle_ttl(Duration::ZERO);
+    assert_eq!(facts.close_idle_pumps(), 0);
+    assert_eq!(log.lock().unwrap().len(), 1, "nothing was closed under the running twin");
+}
+
+// ---- the rate timer's long-lived workers (A53) ---------------------------------------------------------
+
+/// A pool of long-lived rate workers over a registry nobody leased, with a `held` the test controls. Every call of
+/// `held` reports `(route key)` on `entered`; a call for the route key `"slow"` then WAITS for a permit, so a
+/// worker is inside a read exactly while the test withholds one. A call for any other route key answers `true` at
+/// once. `panic_once` makes the first call panic instead.
+struct RatePoolRig {
+    pool: RatePool,
+    entered: std::sync::mpsc::Receiver<String>,
+    permits: std::sync::mpsc::Sender<()>,
+    /// Kept alive: the workers hold only a `Weak`.
+    _facts: Arc<TradeLeaseRegistry>,
+}
+
+fn rate_pool_rig(panic_once: bool) -> RatePoolRig {
+    let facts = Arc::new(TradeLeaseRegistry::default());
+    let (entered_tx, entered) = std::sync::mpsc::channel::<String>();
+    let (permits, permit_rx) = std::sync::mpsc::channel::<()>();
+    let (entered_tx, permit_rx) = (Mutex::new(entered_tx), Mutex::new(permit_rx));
+    let panic_once = AtomicBool::new(panic_once);
+    let held = move |route_key: &str, _symbol: &str| {
+        entered_tx.lock().unwrap().send(route_key.to_string()).unwrap();
+        if panic_once.swap(false, Ordering::SeqCst) {
+            panic!("the read panics once");
+        }
+        route_key != "slow" || permit_rx.lock().unwrap().recv().is_ok()
+    };
+    let pool = RatePool::new(Arc::downgrade(&facts), Arc::new(held));
+    RatePoolRig { pool, entered, permits, _facts: facts }
+}
+
+/// One venue's share: one symbol, held by the rig's `held`.
+fn rate_share(route_key: &str) -> VenueShare {
+    (vec![(route_key.to_string(), "GBPUSD".to_string())], Vec::new())
+}
+
+impl RatePoolRig {
+    /// The route key of the next read that started (the worker is inside `held`).
+    fn next_read(&self) -> String {
+        self.entered.recv_timeout(Duration::from_secs(10)).expect("a worker started a read")
+    }
+
+    /// Hand `venue` its share once its worker is idle. ⚠ The wait comes BEFORE the hand-over and the hand-over is
+    /// never retried: a hand-over that finds the worker still finishing its last share is a SKIPPED tick, which the
+    /// pool answers with a catch-up read the test did not ask for (an extra event on `entered`, read in place of the
+    /// one the test waits for). The test thread is the only one that hands over, so an idle worker stays idle.
+    fn hand_over_when_free(&mut self, venue: &str, route_key: &str) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while self.pool.workers.get(venue).is_some_and(|w| w.state.lock().unwrap().busy) {
+            assert!(Instant::now() < until, "the worker never freed");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        match self.pool.hand_over(venue, rate_share(route_key)) {
+            Handed::Queued => {}
+            Handed::Busy => {
+                panic!("the worker was idle and the only thing that hands over is this thread")
+            }
+            Handed::Failed(_) => panic!("a worker was expected"),
+        }
+    }
+}
+
+/// **One slow venue delays no other venue's tick** (A53): the rate timer used to read every venue's symbols on
+/// scoped threads it joined before the next tick, so a venue whose read outlasts the period held the NEXT tick of
+/// every venue behind it. Here `slow` is inside a read it cannot finish, and `oanda` is handed share after share
+/// and reads each at once; the slow venue's next share is skipped, not queued, and nothing waits for it.
+#[test]
+fn a_slow_venue_holds_up_no_other_venues_tick() {
+    let mut rig = rate_pool_rig(false);
+    assert!(matches!(rig.pool.hand_over("ibkr", rate_share("slow")), Handed::Queued));
+    assert_eq!(rig.next_read(), "slow", "the slow venue's worker is inside its read");
+
+    for _ in 0..3 {
+        rig.hand_over_when_free("oanda", "oanda");
+        assert_eq!(rig.next_read(), "oanda", "oanda is read while ibkr is stuck");
+    }
+    assert!(
+        matches!(rig.pool.hand_over("ibkr", rate_share("slow")), Handed::Busy),
+        "the stuck venue's next tick is skipped, not queued behind the read"
+    );
+
+    // Release the slow venue: its first read ends, and the skipped tick is answered by ONE more read.
+    rig.permits.send(()).unwrap();
+    assert_eq!(rig.next_read(), "slow", "the tick that was skipped is read once more, at once");
+    rig.permits.send(()).unwrap();
+}
+
+/// **A tick that comes while a venue is still reading is answered by one more read when it is done, at once,
+/// with no new tick** (the old timer followed a tick that outlasted its period with the next at once): the
+/// sequence is deterministic because the second read starts with nothing but the worker's own memory of the skip.
+/// Two skipped ticks cost one more read, not two; with no skip there is no more read, and the worker is free
+/// again for the next hand-over.
+#[test]
+fn a_skipped_tick_is_answered_by_one_more_read_and_two_by_one() {
+    let mut rig = rate_pool_rig(false);
+    assert!(matches!(rig.pool.hand_over("ibkr", rate_share("slow")), Handed::Queued));
+    assert_eq!(rig.next_read(), "slow");
+    assert!(matches!(rig.pool.hand_over("ibkr", rate_share("slow")), Handed::Busy));
+    assert!(matches!(rig.pool.hand_over("ibkr", rate_share("slow")), Handed::Busy));
+
+    rig.permits.send(()).unwrap();
+    assert_eq!(rig.next_read(), "slow", "one more read for the skipped ticks");
+    rig.permits.send(()).unwrap();
+    assert!(
+        rig.entered.recv_timeout(Duration::from_millis(300)).is_err(),
+        "two skips are one catch-up, not two"
+    );
+
+    rig.hand_over_when_free("ibkr", "slow");
+    assert_eq!(rig.next_read(), "slow", "free again: the next tick's share is read");
+    rig.permits.send(()).unwrap();
+}
+
+/// **A worker whose read panics survives it**: the panic costs that read (the symbols keep the rate they have) and
+/// the next tick reads again. A worker that died would leave its venue's `busy` set for ever and the venue would
+/// never be refreshed again.
+#[test]
+fn a_worker_that_panics_in_a_read_is_still_there_for_the_next_tick() {
+    let mut rig = rate_pool_rig(true);
+    assert!(matches!(rig.pool.hand_over("oanda", rate_share("oanda")), Handed::Queued));
+    assert_eq!(rig.next_read(), "oanda", "the read that panics");
+    rig.hand_over_when_free("oanda", "oanda");
+    assert_eq!(rig.next_read(), "oanda", "the same worker reads the next share");
+}
+
+/// What a worker read comes back on the pool's channel, to be sent on as it arrives, and nothing is sent after the
+/// deadline passes with nothing finished.
+#[test]
+fn what_the_workers_read_is_sent_on_until_the_deadline() {
+    let mut rig = rate_pool_rig(false);
+    rig.hand_over_when_free("oanda", "oanda");
+    assert_eq!(rig.next_read(), "oanda");
+    let mut sent = Vec::new();
+    let began = Instant::now();
+    rig.pool.send_finished_until(began + Duration::from_millis(400), &mut |c| sent.push(c));
+    assert!(began.elapsed() >= Duration::from_millis(400), "it waits for the deadline");
+    assert!(sent.is_empty(), "no lease, no fresh admission to send: {sent:?}");
+}
+
+/// **Only a PROVEN stamp of the engine's own anchor raises the lift flag of an assumed hold** (A52 (b)): the
+/// gatewayhub stamps an assumed USD as `USD` exactly as a stated one, so an equal stamp proves nothing; the proof is
+/// `account_currency_stated`, and it must be for the very currency the ledger is anchored to (case aside), on the account
+/// the flag belongs to. A new start forgets the previous start's flag (its engine is gone).
+#[test]
+fn only_a_proven_stamp_of_the_anchor_raises_the_lift_of_an_assumed_hold() {
+    use vike_gatewayhub_client::proto::SymbolPropertiesWire;
+    let stamp = |currency: Option<&str>, stated: bool| SymbolPropertiesWire {
+        account_currency: currency.map(str::to_string),
+        account_currency_stated: stated,
+        ..SymbolPropertiesWire::default()
+    };
+    let facts = TradeLeaseRegistry::default();
+    facts.anchor_currency("oanda", Some("USD"));
+    let lift = Arc::new(AtomicBool::new(false));
+    facts.note_assumed_hold("oanda", Arc::clone(&lift));
+
+    for (answer, why) in [
+        (stamp(None, false), "no stamp at all"),
+        (stamp(Some("USD"), false), "a stamp equal to the anchor proves nothing"),
+        (stamp(None, true), "a proof with no currency beside it"),
+        (stamp(Some("EUR"), true), "the venue named ANOTHER currency than the assumed one"),
+    ] {
+        facts.confirm_assumed_anchor("oanda", "oanda", &answer);
+        assert!(!lift.load(Ordering::SeqCst), "{why}");
+    }
+    facts.confirm_assumed_anchor("oanda#ALT", "oanda", &stamp(Some("USD"), true));
+    assert!(!lift.load(Ordering::SeqCst), "another account's proof lifts nothing");
+    let (_, events) = vike_log::capture::captured(|| {
+        facts.confirm_assumed_anchor("oanda", "oanda", &stamp(Some(" usd "), true));
+    });
+    assert!(lift.load(Ordering::SeqCst), "the venue named the very USD the engine assumed");
+    assert!(
+        events.iter().any(|e| e.level == tracing::Level::INFO
+            && e.message.contains("the venue named the account's currency")),
+        "said once: {events:?}"
+    );
+    let (_, again) = vike_log::capture::captured(|| {
+        facts.confirm_assumed_anchor("oanda", "oanda", &stamp(Some("USD"), true));
+    });
+    assert!(again.is_empty(), "a flag already raised is not announced again: {again:?}");
+
+    // a new start of the account anchors afresh and forgets the flag of the engine it replaces
+    let next = Arc::new(AtomicBool::new(false));
+    facts.note_assumed_hold("oanda", Arc::clone(&next));
+    facts.anchor_currency("oanda", Some("USD"));
+    facts.confirm_assumed_anchor("oanda", "oanda", &stamp(Some("USD"), true));
+    assert!(!next.load(Ordering::SeqCst), "the previous start's flag is void");
+    // ...and an account anchored to something else is not lifted by a USD proof
+    facts.anchor_currency("oanda", Some("EUR"));
+    let eur = Arc::new(AtomicBool::new(false));
+    facts.note_assumed_hold("oanda", Arc::clone(&eur));
+    facts.confirm_assumed_anchor("oanda", "oanda", &stamp(Some("USD"), true));
+    assert!(!eur.load(Ordering::SeqCst), "the anchor is EUR: a stated USD is not its confirmation");
+    // a lease that is forgotten (a refused start, a stopped engine) takes its flag with it
+    facts.forget_lease("oanda");
+    assert!(facts.assumed_holds.lock().unwrap().is_empty());
+}
+
+// ---- the admitted-pair reaper (A39) ---------------------------------------------------------------------------
+
+/// What [`registry_with_admitted_pairs`] builds: the registry, the feed and tap it keeps alive, and the dial's log.
+type AdmittedPairs = (
+    TradeLeaseRegistry,
+    crate::feeds::StrategyLaneQuote,
+    Arc<crate::feeds::PriceTap>,
+    Arc<Mutex<Vec<String>>>,
+);
+
+/// A registry whose `fxcm` and `binance` share one scripted feed, with each of `admitted` (`route key`, `symbol`)
+/// admitted, its facts kept (the cache stands in for the gatewayhub) and its pump opened by the door's own ask.
+fn registry_with_admitted_pairs(admitted: &[(&str, &str)]) -> AdmittedPairs {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let tap = Arc::new(crate::feeds::PriceTap::default());
+    let feed = crate::feeds::StrategyLaneQuote::new(
+        crate::feeds::DataClientTracking::new(Box::new(Lanes(Arc::clone(&log), 0))),
+        Arc::clone(&tap),
+    );
+    let facts = TradeLeaseRegistry::default();
+    facts.bind_prices(HashMap::from([
+        ("fxcm".to_string(), feed.watcher()),
+        ("binance".to_string(), feed.watcher()),
+    ]));
+    for (route_key, symbol) in admitted {
+        let venue = vike_model::accounts::account_keys::venue_of_route_key(route_key);
+        keep_facts(&facts, route_key, symbol);
+        facts.admitted(route_key, venue, symbol);
+        SymbolAdmitter::price(&facts, route_key, venue, symbol, true)
+            .expect("the door opens the pump");
+    }
+    (facts, feed, tap, log)
+}
+
+/// The snapshot's view: the route keys it has a block for, and what they hold.
+fn holdings(known: &[&str], held: &[(&str, &str)]) -> crate::readmit::ReadmitHoldings {
+    crate::readmit::ReadmitHoldings {
+        known: known.iter().map(|k| k.to_string()).collect(),
+        held: held.iter().map(|(route_key, symbol)| wanted(route_key, symbol)).collect(),
+        ..Default::default()
+    }
+}
+
+/// Pretend the reaper first saw `route_key`'s `symbol` idle `ago` ago.
+fn idle_for(facts: &TradeLeaseRegistry, route_key: &str, symbol: &str, ago: Duration) {
+    facts
+        .idle_admitted
+        .lock()
+        .unwrap()
+        .insert(key(route_key, symbol), Instant::now().checked_sub(ago).unwrap());
+}
+
+fn stamped(facts: &TradeLeaseRegistry, route_key: &str, symbol: &str) -> bool {
+    facts.idle_admitted.lock().unwrap().contains_key(&key(route_key, symbol))
+}
+
+fn reaped(facts: &TradeLeaseRegistry, venue: &str, symbol: &str) -> bool {
+    facts.reaped.lock().unwrap().contains_key(&key(venue, symbol))
+}
+
+fn past_the_idle_grace() -> Duration {
+    ADMITTED_IDLE_GRACE + Duration::from_secs(1)
+}
+
+fn log_of(log: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+    log.lock().unwrap().clone()
+}
+
+/// **An admitted pair nobody holds anything in goes back after the grace, and comes back when one does.** Before this
+/// an admitted symbol's pump was permanent, and fxcm's lane is one poll of a shared login for as long as any pair is
+/// wanted: the first sighting only stamps, the grace passes, the pump is unsubscribed (the admission is untouched),
+/// a second sweep closes nothing more, and the engine holding something in the pair opens it again.
+#[test]
+fn an_idle_admitted_fxcm_pair_goes_back_after_the_grace_and_a_holding_opens_it_again() {
+    let (facts, _feed, _tap, log) = registry_with_admitted_pairs(&[("fxcm", "EURGBP")]);
+    assert_eq!(log_of(&log), ["quotes EURGBP"], "the door left the pump open");
+    let nothing = holdings(&["fxcm"], &[]);
+
+    facts.reap_idle_admitted(&nothing);
+    assert!(stamped(&facts, "fxcm", "EURGBP"), "the first sighting starts the count");
+    assert_eq!(log_of(&log).len(), 1, "and closes nothing");
+
+    idle_for(&facts, "fxcm", "EURGBP", past_the_idle_grace());
+    facts.reap_idle_admitted(&nothing);
+    assert_eq!(log_of(&log), ["quotes EURGBP", "unsubscribe 1"], "the pump went back");
+    assert!(reaped(&facts, "fxcm", "EURGBP"));
+    assert!(facts.admitted_on_venue("fxcm", "EURGBP"), "the admission is the engine's and stays");
+    facts.reap_idle_admitted(&nothing);
+    assert_eq!(log_of(&log).len(), 2, "a closed pump is not closed twice");
+
+    facts.reap_idle_admitted(&holdings(&["fxcm"], &[("fxcm", "EURGBP")]));
+    assert_eq!(log_of(&log), ["quotes EURGBP", "unsubscribe 1", "quotes EURGBP"], "opened again");
+    assert!(!reaped(&facts, "fxcm", "EURGBP") && !stamped(&facts, "fxcm", "EURGBP"));
+}
+
+/// An engine that holds something in the pair keeps it, whatever its count said, and a pair is not closed before the
+/// grace is over.
+#[test]
+fn a_held_admitted_pair_and_a_pair_inside_the_grace_keep_their_pump() {
+    let (facts, _feed, _tap, log) = registry_with_admitted_pairs(&[("fxcm", "EURGBP")]);
+    idle_for(&facts, "fxcm", "EURGBP", past_the_idle_grace());
+    facts.reap_idle_admitted(&holdings(&["fxcm"], &[("fxcm", "EURGBP")]));
+    assert_eq!(log_of(&log).len(), 1, "held: nothing closed");
+    assert!(!stamped(&facts, "fxcm", "EURGBP"), "and the count is gone");
+
+    idle_for(&facts, "fxcm", "EURGBP", ADMITTED_IDLE_GRACE - Duration::from_secs(5));
+    facts.reap_idle_admitted(&holdings(&["fxcm"], &[]));
+    assert_eq!(log_of(&log).len(), 1, "idle, but not for the grace yet");
+}
+
+/// **Unknown is not idle**: an engine the snapshot has no block for has said nothing, so its pair is neither counted
+/// nor closed, however old a stale count is.
+#[test]
+fn an_engine_the_snapshot_says_nothing_of_loses_its_count_and_keeps_its_pump() {
+    let (facts, _feed, _tap, log) = registry_with_admitted_pairs(&[("fxcm", "EURGBP")]);
+    idle_for(&facts, "fxcm", "EURGBP", past_the_idle_grace());
+    facts.reap_idle_admitted(&holdings(&[], &[]));
+    assert!(!stamped(&facts, "fxcm", "EURGBP"));
+    assert_eq!(log_of(&log).len(), 1, "nothing closed on a snapshot that does not know the engine");
+}
+
+/// A committing ask at the door is activity: the order is not in the snapshot yet, so the count starts over.
+#[test]
+fn a_door_ask_for_an_admitted_pair_restarts_its_idle_count() {
+    let (facts, _feed, _tap, log) = registry_with_admitted_pairs(&[("fxcm", "EURGBP")]);
+    idle_for(&facts, "fxcm", "EURGBP", past_the_idle_grace());
+    SymbolAdmitter::price(&facts, "fxcm", "fxcm", "EURGBP", true).expect("the door asks");
+    assert!(!stamped(&facts, "fxcm", "EURGBP"));
+    facts.reap_idle_admitted(&holdings(&["fxcm"], &[]));
+    assert_eq!(log_of(&log).len(), 1, "a fresh count: nothing closed yet");
+}
+
+/// The rule is per venue (`vike_gatewayhub_client::credentialed_limits::reaps_idle_admitted`, whose own pin names the
+/// venues): a venue whose row reaps nothing keeps every admitted pump for good.
+#[test]
+fn a_venue_that_does_not_reap_keeps_its_admitted_pumps() {
+    let (facts, _feed, _tap, log) = registry_with_admitted_pairs(&[("binance", "ETHUSDT")]);
+    idle_for(&facts, "binance", "ETHUSDT", past_the_idle_grace());
+    facts.reap_idle_admitted(&holdings(&["binance"], &[]));
+    assert!(!stamped(&facts, "binance", "ETHUSDT"), "not even counted");
+    assert_eq!(log_of(&log).len(), 1);
+}
+
+/// Several accounts admitting one pair share ONE pump: it goes only when every one of them is idle for the grace, and
+/// comes back for whichever holds something.
+#[test]
+fn accounts_sharing_a_pair_keep_its_pump_until_all_of_them_are_idle() {
+    let (facts, _feed, _tap, log) =
+        registry_with_admitted_pairs(&[("fxcm", "EURGBP"), ("fxcm#ALT", "EURGBP")]);
+    let known = ["fxcm", "fxcm#ALT"];
+    idle_for(&facts, "fxcm", "EURGBP", past_the_idle_grace());
+    idle_for(&facts, "fxcm#ALT", "EURGBP", past_the_idle_grace());
+    facts.reap_idle_admitted(&holdings(&known, &[("fxcm#ALT", "EURGBP")]));
+    assert!(!reaped(&facts, "fxcm", "EURGBP"), "ALT holds something in it");
+
+    idle_for(&facts, "fxcm", "EURGBP", past_the_idle_grace());
+    idle_for(&facts, "fxcm#ALT", "EURGBP", ADMITTED_IDLE_GRACE - Duration::from_secs(5));
+    facts.reap_idle_admitted(&holdings(&known, &[]));
+    assert!(!reaped(&facts, "fxcm", "EURGBP"), "ALT has only just gone idle");
+
+    idle_for(&facts, "fxcm#ALT", "EURGBP", past_the_idle_grace());
+    facts.reap_idle_admitted(&holdings(&known, &[]));
+    assert!(reaped(&facts, "fxcm", "EURGBP"), "both idle for the grace");
+    assert_eq!(log_of(&log).iter().filter(|l| l.starts_with("unsubscribe")).count(), 1);
+
+    facts.reap_idle_admitted(&holdings(&known, &[("fxcm", "EURGBP")]));
+    assert!(!reaped(&facts, "fxcm", "EURGBP"), "opened again for whichever account holds it");
+}
+
+/// A pump a strategy mount prices is not closed; one under an open venue gap IS, and the gap ends with it (A55: the
+/// close says `Live` for the symbol, so the core's link dead-man window closes with the pump instead of tripping).
+#[test]
+fn a_mounted_pair_keeps_its_pump_and_a_pair_under_an_open_gap_is_reaped_with_its_gap() {
+    use vike_model::StreamStatus;
+    let (facts, _feed, tap, log) = registry_with_admitted_pairs(&[("fxcm", "EURGBP")]);
+    idle_for(&facts, "fxcm", "EURGBP", past_the_idle_grace());
+    tap.note_status("fxcm", "EURGBP", "quotes", StreamStatus::GapStart { at_timestamp_ms: 1 });
+    assert!(tap.gap_open("fxcm", "EURGBP"));
+    facts.reap_idle_admitted(&holdings(&["fxcm"], &[]));
+    assert!(reaped(&facts, "fxcm", "EURGBP"), "the gap does not hold an idle admitted pump");
+    assert_eq!(log_of(&log).iter().filter(|l| l.starts_with("unsubscribe")).count(), 1);
+    assert!(!tap.gap_open("fxcm", "EURGBP"), "the gap ended with the pump");
+
+    let (facts, _feed, _tap, log) = registry_with_admitted_pairs(&[("fxcm", "EURGBP")]);
+    facts.bind_mounted(|venue, symbol| venue == "fxcm" && symbol == "EURGBP");
+    idle_for(&facts, "fxcm", "EURGBP", past_the_idle_grace());
+    facts.reap_idle_admitted(&holdings(&["fxcm"], &[]));
+    assert!(!reaped(&facts, "fxcm", "EURGBP"), "a mount prices it");
+    assert_eq!(log_of(&log).len(), 1);
+}
+
+/// A pair that cannot be opened again (the facts are gone and the lease with them) is said once and not retried
+/// before the pause, and the engine's stop forgets every mark.
+#[test]
+fn a_failed_reopen_is_not_retried_at_every_tick_and_a_stop_forgets_the_marks() {
+    let (facts, _feed, _tap, log) = registry_with_admitted_pairs(&[("fxcm", "EURGBP")]);
+    idle_for(&facts, "fxcm", "EURGBP", past_the_idle_grace());
+    facts.reap_idle_admitted(&holdings(&["fxcm"], &[]));
+    assert!(reaped(&facts, "fxcm", "EURGBP"));
+
+    facts.answers.lock().unwrap().clear(); // the facts are gone, and no lease can say them again
+    let held = holdings(&["fxcm"], &[("fxcm", "EURGBP")]);
+    facts.reap_idle_admitted(&held);
+    let tried = facts.reaped.lock().unwrap()[&key("fxcm", "EURGBP")];
+    assert!(tried.is_some(), "the failed try is remembered");
+    facts.reap_idle_admitted(&held);
+    assert_eq!(
+        facts.reaped.lock().unwrap()[&key("fxcm", "EURGBP")],
+        tried,
+        "and not repeated at once"
+    );
+    assert_eq!(log_of(&log).len(), 2, "no pump was opened");
+
+    idle_for(&facts, "fxcm", "EURGBP", Duration::from_secs(1));
+    facts.engine_stopped("fxcm");
+    assert!(!stamped(&facts, "fxcm", "EURGBP") && !reaped(&facts, "fxcm", "EURGBP"));
+}
+
+// ---- the give-back of an admitted symbol (decision 0205) ------------------------------------------------------
+
+/// The snapshot's view for the settler: the route keys it has a block for, and the extra symbols each lists.
+fn listing(known: &[&str], listed: &[(&str, &str)]) -> crate::readmit::ReadmitHoldings {
+    crate::readmit::ReadmitHoldings {
+        known: known.iter().map(|k| k.to_string()).collect(),
+        listed: listed.iter().map(|(route_key, symbol)| key(route_key, symbol)).collect(),
+        ..Default::default()
+    }
+}
+
+fn requested(facts: &TradeLeaseRegistry, route_key: &str, symbol: &str) -> bool {
+    facts.releasing.lock().unwrap().contains_key(&key(route_key, symbol))
+}
+
+fn long_ago(by: Duration) -> Instant {
+    Instant::now().checked_sub(by).unwrap()
+}
+
+/// **A symbol the engine let go is forgotten by the registry, and its pump goes to the idle reaper.** The door
+/// recorded the request; while the published block still lists the symbol nothing is forgotten; once the block
+/// stops listing it the admitted set, the cached facts, the margin figure and the reaper's stamp go, the
+/// request is done, the pair another symbol of the account keeps is untouched, and the pump nobody admits
+/// any more is closed by the idle reaper.
+#[test]
+fn a_symbol_the_engine_let_go_is_forgotten_and_its_pump_goes_to_the_idle_reaper() {
+    let (facts, _feed, _tap, log) =
+        registry_with_admitted_pairs(&[("fxcm", "EURGBP"), ("fxcm", "USDJPY")]);
+    facts.set_idle_ttl(Duration::ZERO);
+    facts.leverage.lock().unwrap().insert(key("fxcm", "EURGBP"), 5.0);
+    idle_for(&facts, "fxcm", "EURGBP", Duration::from_secs(1));
+    SymbolAdmitter::release_requested(&facts, "fxcm", "fxcm", "EURGBP");
+    assert!(requested(&facts, "fxcm", "EURGBP"));
+
+    // The snapshot has not caught up: the engine still lists it. Nothing is forgotten, the request waits.
+    facts.settle_releases(&listing(&["fxcm"], &[("fxcm", "EURGBP"), ("fxcm", "USDJPY")]));
+    assert!(facts.admitted_on_venue("fxcm", "EURGBP") && requested(&facts, "fxcm", "EURGBP"));
+
+    // The engine let it go.
+    facts.settle_releases(&listing(&["fxcm"], &[("fxcm", "USDJPY")]));
+    assert!(!facts.admitted_on_venue("fxcm", "EURGBP"), "no longer admitted here");
+    assert!(facts.admitted_on_venue("fxcm", "USDJPY"), "the other pair is untouched");
+    assert!(!requested(&facts, "fxcm", "EURGBP"), "the request is done");
+    assert!(!facts.answers.lock().unwrap().contains_key(&key("fxcm", "EURGBP")), "its facts");
+    assert!(facts.answers.lock().unwrap().contains_key(&key("fxcm", "USDJPY")));
+    assert!(
+        !facts.leverage.lock().unwrap().contains_key(&key("fxcm", "EURGBP")),
+        "its margin figure"
+    );
+    assert!(!stamped(&facts, "fxcm", "EURGBP"), "the admitted-pair reaper's count");
+    assert!(
+        matches!(entry(&facts, "fxcm", "EURGBP"), Some(Sub::Idle(_))),
+        "the pump is the reaper's"
+    );
+
+    assert_eq!(facts.close_idle_pumps(), 1);
+    assert_eq!(
+        log_of(&log).iter().filter(|l| l.starts_with("unsubscribe")).count(),
+        1,
+        "the pump nobody admits any more is closed, the other pair's stays: {:?}",
+        log_of(&log)
+    );
+}
+
+/// **The engine's refusal forgets nothing**: a symbol still listed once the wait is over was refused (a
+/// position, an order, a declared leg), the request is dropped and the symbol stays admitted here. An engine
+/// that published nothing is waited for much longer.
+#[test]
+fn a_symbol_the_engine_kept_is_not_forgotten_and_an_unknown_engine_is_waited_for() {
+    let (facts, _feed, _tap, _log) = registry_with_admitted_pairs(&[("fxcm", "EURGBP")]);
+    let listed = listing(&["fxcm"], &[("fxcm", "EURGBP")]);
+    SymbolAdmitter::release_requested(&facts, "fxcm", "fxcm", "EURGBP");
+    facts
+        .releasing
+        .lock()
+        .unwrap()
+        .insert(key("fxcm", "EURGBP"), long_ago(RELEASE_WAIT + Duration::from_secs(1)));
+    facts.settle_releases(&listed);
+    assert!(!requested(&facts, "fxcm", "EURGBP"), "the engine refused: the request is dropped");
+    assert!(facts.admitted_on_venue("fxcm", "EURGBP"), "and the symbol stays");
+
+    // An engine with no block: kept (even past the short wait), given up only after the long one.
+    facts
+        .releasing
+        .lock()
+        .unwrap()
+        .insert(key("fxcm", "EURGBP"), long_ago(RELEASE_WAIT + Duration::from_secs(1)));
+    facts.settle_releases(&listing(&[], &[]));
+    assert!(requested(&facts, "fxcm", "EURGBP"));
+    facts
+        .releasing
+        .lock()
+        .unwrap()
+        .insert(key("fxcm", "EURGBP"), long_ago(RELEASE_RETRY_FOR + Duration::from_secs(1)));
+    facts.settle_releases(&listing(&[], &[]));
+    assert!(!requested(&facts, "fxcm", "EURGBP") && facts.admitted_on_venue("fxcm", "EURGBP"));
+}
+
+/// **A re-admission is the newer word**: an order that admits the symbol again drops the request, so a settler
+/// that sees the engine list nothing yet cannot forget a symbol that is wanted again.
+#[test]
+fn an_admission_after_the_request_drops_it_and_a_stop_forgets_every_request() {
+    let (facts, _feed, _tap, _log) =
+        registry_with_admitted_pairs(&[("fxcm", "EURGBP"), ("fxcm#ALT", "EURGBP")]);
+    SymbolAdmitter::release_requested(&facts, "fxcm", "fxcm", "EURGBP");
+    facts.admitted("fxcm", "fxcm", "EURGBP");
+    assert!(!requested(&facts, "fxcm", "EURGBP"));
+    facts.settle_releases(&listing(&["fxcm"], &[]));
+    assert!(facts.admitted_on_venue("fxcm", "EURGBP"), "nothing was forgotten");
+
+    SymbolAdmitter::release_requested(&facts, "fxcm#ALT", "fxcm", "EURGBP");
+    facts.engine_stopped("fxcm#ALT");
+    assert!(!requested(&facts, "fxcm#ALT", "EURGBP"), "a stopped engine's requests die with it");
+}
+
+/// Two accounts admit one pair: giving it back from ONE leaves the other's admission, and the shared pump stays
+/// (the idle reaper keeps a pump somebody admitted).
+#[test]
+fn a_pair_another_account_admitted_keeps_its_pump_when_one_gives_it_back() {
+    let (facts, _feed, _tap, log) =
+        registry_with_admitted_pairs(&[("fxcm", "EURGBP"), ("fxcm#ALT", "EURGBP")]);
+    facts.set_idle_ttl(Duration::ZERO);
+    SymbolAdmitter::release_requested(&facts, "fxcm#ALT", "fxcm", "EURGBP");
+    facts.settle_releases(&listing(&["fxcm", "fxcm#ALT"], &[("fxcm", "EURGBP")]));
+    assert!(!facts.admitted.lock().unwrap().contains(&key("fxcm#ALT", "EURGBP")));
+    assert!(facts.admitted.lock().unwrap().contains(&key("fxcm", "EURGBP")));
+    assert_eq!(entry(&facts, "fxcm", "EURGBP"), None, "an admitted pair is nobody's idle pump");
+    facts.close_idle_pumps();
+    assert_eq!(log_of(&log).iter().filter(|l| l.starts_with("unsubscribe")).count(), 0);
+}
+
+/// A scripted gatewayhub for the forget round trip: it answers a forget with `forgot` (after `hold`, telling `heard`
+/// it arrived) and every commit with the facts of a symbol it lists.
+fn forget_peer(
+    forgot: (vike_gatewayhub_client::proto::SymbolPropertiesRefusalCode, &'static str),
+    hold: Duration,
+    heard: std::sync::mpsc::Sender<()>,
+) -> vike_gatewayhub_client::test_support::fake_trade_peer::TradePeer {
+    use vike_gatewayhub_client::proto::{TradeDown, TradeUp};
+    use vike_gatewayhub_client::test_support::fake_trade_peer::{
+        Step, TradePeer, TradePeerConfig, default_script, symbol_facts,
+    };
+    let (rest, heard) = (default_script(), Mutex::new(heard));
+    TradePeer::start(TradePeerConfig::new().with_script(move |frame| match frame {
+        TradeUp::SymbolProperties { rid, forget: true, .. } => {
+            let _ = heard.lock().unwrap().send(());
+            vec![
+                Step::Sleep(hold),
+                Step::Send(TradeDown::SymbolPropertiesReply {
+                    rid: *rid,
+                    properties: Err(vike_gatewayhub_client::proto::SymbolPropertiesRefusal {
+                        code: forgot.0,
+                        reason: forgot.1.to_string(),
+                        refusal_id: None,
+                    }),
+                }),
+            ]
+        }
+        TradeUp::SymbolProperties { rid, .. } => {
+            vec![Step::Send(TradeDown::SymbolPropertiesReply {
+                rid: *rid,
+                properties: Ok(symbol_facts(0.001, None)),
+            })]
+        }
+        other => rest(other),
+    }))
+}
+
+/// **An order that admits the symbol while the forget is on the wire keeps it.** The engine let go, the settler took the
+/// request and asked the gatewayhub to forget; the door's order re-admitted the symbol during that round trip, so the
+/// engine holds it. The answer used to clear the admitted set and hand the pump to the idle reaper, which closed it a
+/// half minute later: no tick for a symbol the engine holds, the engine out of the clock's margin call, and with the
+/// admission gone no later order told the gatewayhub again. Here the node keeps all of it and commits once more, so the
+/// gatewayhub's FIFO ends on the admission.
+#[test]
+fn an_admission_during_the_forget_round_trip_keeps_the_symbol() {
+    use vike_gatewayhub_client::proto::{SYMBOL_FORGOTTEN, SymbolPropertiesRefusalCode, TradeUp};
+    use vike_gatewayhub_client::test_support::fake_trade_peer::open;
+
+    let (tell, forget_asked) = std::sync::mpsc::channel();
+    let peer = forget_peer(
+        (SymbolPropertiesRefusalCode::Forgotten, SYMBOL_FORGOTTEN),
+        Duration::from_millis(300),
+        tell,
+    );
+    let (session, _lane) = open(&peer, "node");
+    let (facts, _feed, _tap, log) = registry_with_admitted_pairs(&[("binance", "ETHUSDT")]);
+    facts.set_idle_ttl(Duration::ZERO);
+    facts.register("binance", session);
+    let facts = Arc::new(facts);
+    SymbolAdmitter::release_requested(&*facts, "binance", "binance", "ETHUSDT");
+
+    let settler = {
+        let facts = Arc::clone(&facts);
+        std::thread::spawn(move || facts.settle_releases(&listing(&["binance"], &[])))
+    };
+    forget_asked.recv_timeout(Duration::from_secs(5)).expect("the settler asks the gatewayhub");
+    SymbolAdmitter::admitted(&*facts, "binance", "binance", "ETHUSDT");
+    settler.join().unwrap();
+
+    assert!(facts.admitted_on_venue("binance", "ETHUSDT"), "the engine holds it, so the node does");
+    assert!(!requested(&facts, "binance", "ETHUSDT"));
+    assert_eq!(entry(&facts, "binance", "ETHUSDT"), None, "its pump is nobody's idle pump");
+    facts.close_idle_pumps();
+    assert_eq!(log_of(&log).iter().filter(|l| l.starts_with("unsubscribe")).count(), 0);
+    assert!(facts.sessions.lock().unwrap()["binance"].has_told("ETHUSDT"));
+    let asks: Vec<bool> = peer
+        .ups()
+        .iter()
+        .filter_map(|frame| match frame {
+            TradeUp::SymbolProperties { forget, .. } => Some(*forget),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asks.first(), Some(&true), "the forget went first: {asks:?}");
+    assert_eq!(asks.last(), Some(&false), "the gatewayhub's FIFO ends on an admission: {asks:?}");
+}
+
+/// An ig DEMO account's lease on a scripted gatewayhub that answers `epic`'s facts with a Mini's contract size
+/// (10 000), and refuses every other symbol.
+fn ig_demo_lease(
+    epic: &'static str,
+) -> (
+    vike_gatewayhub_client::test_support::fake_trade_peer::TradePeer,
+    TradeLease,
+    vike_gatewayhub_client::test_support::fake_trade_peer::Lane,
+) {
+    use vike_gatewayhub_client::proto::{
+        SymbolPropertiesRefusal, SymbolPropertiesRefusalCode, SymbolPropertiesWire, TradeDown,
+        TradeUp,
+    };
+    use vike_gatewayhub_client::test_support::fake_trade_peer::{
+        Step, TradePeer, TradePeerConfig, account, default_script, fast_trade_timings, lane,
+    };
+    let rest = default_script();
+    let mut config = TradePeerConfig::new().with_script(move |frame| match frame {
+        TradeUp::SymbolProperties { rid, symbol, .. } => {
+            vec![Step::Send(TradeDown::SymbolPropertiesReply {
+                rid: *rid,
+                properties: if symbol == epic {
+                    Ok(SymbolPropertiesWire {
+                        contract_value: Some(vike_model::ContractValue::linear(10_000.0)),
+                        ..vike_gatewayhub_client::test_support::fake_trade_peer::symbol_facts(
+                            0.1, None,
+                        )
+                    })
+                } else {
+                    Err(SymbolPropertiesRefusal {
+                        code: SymbolPropertiesRefusalCode::NoInstrument,
+                        reason: format!("ig: no epic {symbol}"),
+                        refusal_id: None,
+                    })
+                },
+            })]
+        }
+        other => rest(other),
+    });
+    config.features.push(vike_gatewayhub_client::proto::trade_venue_feature("ig"));
+    config.route_key = "ig".into();
+    let peer = TradePeer::start(config);
+    let (events, lane) = lane();
+    let demo = vike_gatewayhub_client::trade::TradeAccount {
+        venue: "ig".into(),
+        route_key: "ig".into(),
+        ..account("node")
+    };
+    let session = vike_gatewayhub_client::trade::TradeLeaseBuilder::new(peer.link(), demo, events)
+        .with_timings(fast_trade_timings())
+        .open()
+        .expect("the fake peer opens the lease");
+    (peer, session, lane)
+}
+
+/// **A PAPER ig account's epic gets its contract size over ig's DEMO login, once per engine** (the owner's ruling of
+/// 2026-11-16). With no demo login nothing is sent (the book refuses the epic in the owner's words). With one, the
+/// facts are asked over ITS lease and the paper engine is sent the journaled `AdmitSymbol` of its mounted epic,
+/// carrying the Mini's 10 000 and nothing else; the next tick sends nothing, a restarted engine is stated again, a
+/// paper engine of another venue and a demo engine are never stated, and an epic in another money than the paper
+/// ledger's is not stated.
+#[test]
+fn a_paper_ig_engine_is_stated_its_epics_contract_size_over_the_demo_login() {
+    const EPIC: &str = "CS.D.EURUSD.MINI.IP";
+    let paper =
+        |route_key: &str, venue: &str, symbol: &str, tier: vike_model::AccountTier| VenueBlock {
+            route_key: route_key.into(),
+            venue: venue.into(),
+            symbol: symbol.into(),
+            tier: Some(tier),
+            ..VenueBlock::default()
+        };
+    let blocks = [
+        paper("ig#P", "ig", EPIC, vike_model::AccountTier::Paper),
+        paper("ig", "ig", EPIC, vike_model::AccountTier::Demo),
+        paper("oanda#P", "oanda", "EUR_USD", vike_model::AccountTier::Paper),
+    ];
+    let facts = TradeLeaseRegistry::default();
+    let mut sent = Vec::new();
+    assert_eq!(
+        facts.state_paper_units(&blocks, WEDNESDAY_NOON, &mut |c| sent.push(c)),
+        0,
+        "no demo login: nothing"
+    );
+
+    let (_peer, session, _lane) = ig_demo_lease(EPIC);
+    facts.register("ig", session);
+    facts.anchor_currency("ig", Some("USD"));
+    assert_eq!(facts.state_paper_units(&blocks, WEDNESDAY_NOON, &mut |c| sent.push(c)), 1);
+    let [Command::AdmitSymbol(stated)] = sent.as_slice() else { panic!("{sent:?}") };
+    assert_eq!((stated.route_key.as_str(), stated.symbol.as_str()), ("ig#P", EPIC));
+    assert_eq!(stated.contract_value, Some(vike_model::ContractValue::linear(10_000.0)));
+    assert_eq!((stated.quote_currency.as_ref(), stated.initial_mark), (None, None));
+    assert_eq!(
+        facts.state_paper_units(&blocks, WEDNESDAY_NOON, &mut |c| sent.push(c)),
+        0,
+        "stated once per engine"
+    );
+    facts.engine_starting("ig#P", false);
+    assert_eq!(
+        facts.state_paper_units(&blocks, WEDNESDAY_NOON, &mut |c| sent.push(c)),
+        1,
+        "a new engine is stated again"
+    );
+
+    let other = TradeLeaseRegistry::default();
+    let (_peer, session, _lane) = ig_demo_lease(EPIC);
+    other.register("ig", session);
+    other.anchor_currency("ig", Some("EUR"));
+    assert_eq!(
+        other.state_paper_units(&blocks, WEDNESDAY_NOON, &mut |c| sent.push(c)),
+        0,
+        "another money: not stated"
+    );
+}
+
+/// **The boot's order: the paper ig engine is asked for BEFORE any demo login exists** (the CI box, 2026-11-19: the paper
+/// start said `no price: no demo login for ig` at `error` on every boot, a millisecond after the demo login came up,
+/// and the size landed seconds later). The start no longer judges it (`vike_paper::unit_stated_over_demo_login`); the
+/// stater does, where it is known: its first tick with no demo login says it ONCE at `error`, the next says nothing,
+/// and the first tick after the login comes up states the size.
+#[test]
+fn a_paper_ig_engine_asked_before_its_demo_login_says_so_once_then_is_stated() {
+    const EPIC: &str = "CS.D.EURUSD.MINI.IP";
+    let blocks = [VenueBlock {
+        route_key: "ig#P".into(),
+        venue: "ig".into(),
+        symbol: EPIC.into(),
+        tier: Some(vike_model::AccountTier::Paper),
+        ..VenueBlock::default()
+    }];
+    let facts = TradeLeaseRegistry::default();
+    let mut sent = Vec::new();
+    let (first, events) = vike_log::capture::captured(|| {
+        facts.state_paper_units(&blocks, WEDNESDAY_NOON, &mut |c| sent.push(c))
+    });
+    assert_eq!(first, 0, "no demo login: nothing stated");
+    assert!(
+        events.iter().any(|e| e.level == tracing::Level::ERROR
+            && e.message.starts_with("no price: no demo login for ig")
+            && e.message.contains(EPIC)),
+        "the missing demo login is said where it is known: {events:?}"
+    );
+    let (again, events) = vike_log::capture::captured(|| {
+        facts.state_paper_units(&blocks, WEDNESDAY_NOON, &mut |c| sent.push(c))
+    });
+    assert_eq!(again, 0);
+    assert!(events.is_empty(), "said once: {events:?}");
+
+    let (_peer, session, _lane) = ig_demo_lease(EPIC);
+    facts.register("ig", session);
+    facts.anchor_currency("ig", Some("USD"));
+    assert_eq!(
+        facts.state_paper_units(&blocks, WEDNESDAY_NOON, &mut |c| sent.push(c)),
+        1,
+        "the login states it"
+    );
+    let [Command::AdmitSymbol(stated)] = sent.as_slice() else { panic!("{sent:?}") };
+    assert_eq!(stated.contract_value, Some(vike_model::ContractValue::linear(10_000.0)));
+}
+
+/// **A PAPER ig account follows ig's market clock** (the owner, 2026-11-21; the CI box's Saturday restart said `no price: no
+/// demo login for ig` at `error`). While the FX week is closed nothing is asked, even with a demo login there to ask
+/// (its size would have been stated), and the wait is said ONCE at `info`, with the open; no `error`, no `warn`. The
+/// first tick after the open states the size with no restart.
+#[test]
+fn a_paper_ig_engine_waits_for_the_fx_open_said_once_then_is_stated_at_the_open() {
+    const EPIC: &str = "CS.D.EURUSD.MINI.IP";
+    assert_eq!(WEDNESDAY_NOON, utc_ms(2026, 11, 11, 12, 0));
+    let blocks = [VenueBlock {
+        route_key: "ig#PAPER".into(),
+        venue: "ig".into(),
+        symbol: EPIC.into(),
+        tier: Some(vike_model::AccountTier::Paper),
+        ..VenueBlock::default()
+    }];
+    let facts = TradeLeaseRegistry::default();
+    let (_peer, session, _lane) = ig_demo_lease(EPIC);
+    facts.register("ig", session);
+    facts.anchor_currency("ig", Some("USD"));
+    let mut sent = Vec::new();
+    let saturday = utc_ms(2026, 11, 14, 12, 0);
+    let (stated, events) = vike_log::capture::captured(|| {
+        facts.state_paper_units(&blocks, saturday, &mut |c| sent.push(c))
+    });
+    assert_eq!(stated, 0, "the market is closed: nothing is asked");
+    let [said] = events.as_slice() else { panic!("one line: {events:?}") };
+    assert_eq!(said.level, tracing::Level::INFO, "{said:?}");
+    assert!(
+        said.message.starts_with(
+            "ig/PAPER: waits for the open: FX market closed: login at 2026-11-15T21:00:00Z"
+        ),
+        "{}",
+        said.message
+    );
+    let (stated, events) = vike_log::capture::captured(|| {
+        facts.state_paper_units(&blocks, saturday + 3_600_000, &mut |c| sent.push(c))
+    });
+    assert_eq!((stated, events.len()), (0, 0), "said once: {events:?}");
+
+    let open = utc_ms(2026, 11, 15, 21, 0);
+    assert_eq!(
+        facts.state_paper_units(&blocks, open, &mut |c| sent.push(c)),
+        1,
+        "stated at the open"
+    );
+    let [Command::AdmitSymbol(stated)] = sent.as_slice() else { panic!("{sent:?}") };
+    assert_eq!(stated.contract_value, Some(vike_model::ContractValue::linear(10_000.0)));
+}
+
+/// **The open's first minutes: the demo login the clock held back is still logging in** ([`PAPER_UNITS_OPEN_GRACE`]),
+/// so its absence says nothing; once the grace is over a demo login that still does not run is the missing login of
+/// every weekday, said once at `error`.
+#[test]
+fn right_after_the_open_a_missing_demo_login_is_the_login_coming_up_then_an_error() {
+    let blocks = [VenueBlock {
+        route_key: "ig#PAPER".into(),
+        venue: "ig".into(),
+        symbol: "CS.D.EURUSD.MINI.IP".into(),
+        tier: Some(vike_model::AccountTier::Paper),
+        ..VenueBlock::default()
+    }];
+    let facts = TradeLeaseRegistry::default();
+    let mut sent = Vec::new();
+    let mut tick = |at: i64| {
+        vike_log::capture::captured(|| facts.state_paper_units(&blocks, at, &mut |c| sent.push(c)))
+    };
+    let (_, events) = tick(utc_ms(2026, 11, 14, 12, 0));
+    assert!(events.iter().all(|e| e.level == tracing::Level::INFO), "{events:?}");
+    let (_, events) = tick(utc_ms(2026, 11, 15, 21, 1));
+    assert!(events.is_empty(), "the login is coming up: {events:?}");
+    let (_, events) = tick(utc_ms(2026, 11, 15, 21, 3));
+    let [said] = events.as_slice() else { panic!("one line: {events:?}") };
+    assert_eq!(said.level, tracing::Level::ERROR, "{said:?}");
+    assert!(said.message.starts_with("no price: no demo login for ig"), "{}", said.message);
+    assert!(sent.is_empty(), "nothing stated with no demo login");
+}
+
+/// What [`ig_paper_registry`] builds.
+type IgPaperRegistry =
+    (TradeLeaseRegistry, crate::feeds::StrategyLaneQuote, Arc<Mutex<Vec<String>>>, Arc<Mutex<u32>>);
+
+/// A registry whose ig feed is a [`Lanes`] dial, with a keyless look-up that refuses ig as the datahub does (no store
+/// row, no public catalog) and counts its asks; the feed, the dial's log and the count.
+fn ig_paper_registry() -> IgPaperRegistry {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let feed = crate::feeds::StrategyLaneQuote::new(
+        crate::feeds::DataClientTracking::new(Box::new(Lanes(Arc::clone(&log), 0))),
+        Arc::new(crate::feeds::PriceTap::default()),
+    );
+    let facts = TradeLeaseRegistry::default();
+    facts.bind_prices(HashMap::from([("ig".to_string(), feed.watcher())]));
+    let asked = Arc::new(Mutex::new(0));
+    let count = Arc::clone(&asked);
+    facts.bind_keyless_facts(move |route_key, venue, symbol| {
+        *count.lock().unwrap() += 1;
+        (route_key == "ig#PAPER").then(|| {
+            Err((
+                FailureOutcome::Refused,
+                format!("no facts of `{symbol}` on {venue}: {venue}'s public catalog lists none"),
+            ))
+        })
+    });
+    (facts, feed, log, asked)
+}
+
+/// **A PAPER ig account with no ig demo login running is refused in THOSE words**, never the datahub's "public catalog"
+/// ones: the keyless look-up is not asked, and nothing is subscribed.
+#[test]
+fn a_paper_ig_account_with_no_demo_login_is_refused_naming_the_demo_login() {
+    let (facts, _feed, log, asked) = ig_paper_registry();
+    let why = SymbolAdmitter::price(&facts, "ig#PAPER", "ig", "EURUSD", true)
+        .expect_err("no demo login: no tick");
+    assert!(
+        why.contains("no ig demo login is running, so ig/PAPER has no tick for `EURUSD`")
+            && why.contains("ig publishes none publicly"),
+        "{why}"
+    );
+    assert_eq!(
+        why,
+        "no ig demo login is running, so ig/PAPER has no tick for `EURUSD`: ig publishes none \
+         publicly and its kept list states none. Arm a ig demo account (`account.active = 1` on \
+         its `demo` row)",
+        "the demo login's words, never the datahub's \"public catalog\" ones"
+    );
+    assert_eq!(*asked.lock().unwrap(), 0, "the keyless look-up is not asked");
+    assert!(log.lock().unwrap().is_empty(), "nothing subscribed");
+}
+
+/// **A PAPER ig account's own epic's quote lane opens on the tick of ig's DEMO login** (the CI box, 2026-11-17: every
+/// `ig/PAPER EURUSD` order was refused). ig's kept row states no grid and no public catalog answers ig, so the datahub's
+/// keyless facts refuse; the tick is read over the running demo lease its contract size is read over.
+#[test]
+fn a_paper_ig_accounts_own_lane_opens_on_the_demo_logins_tick() {
+    let (facts, _feed, log, asked) = ig_paper_registry();
+    let (_peer, session, _lane) = ig_demo_lease("EURUSD");
+    facts.register("ig", session);
+    assert_eq!(SymbolAdmitter::price(&facts, "ig#PAPER", "ig", "EURUSD", true), Ok(None));
+    assert_eq!(*log.lock().unwrap(), ["quotes EURUSD".to_string()], "the lane is open");
+    let tick =
+        facts.answers.lock().unwrap().get(&key("ig", "EURUSD")).map(|(_, a)| a.grid.tick_size);
+    assert_eq!(tick, Some(Some(0.01)), "the demo login's facts");
+    assert_eq!(*asked.lock().unwrap(), 0, "the keyless look-up is not asked");
+}
+
+/// **A forget the gatewayhub did not answer forgets nothing, and the request stays** for the next tick, until
+/// [`RELEASE_RETRY_FOR`] drops it with the symbol still admitted here.
+#[test]
+fn a_forget_with_no_answer_keeps_the_request_until_the_retry_runs_out() {
+    use vike_gatewayhub_client::proto::{PROPERTIES_BUSY, SymbolPropertiesRefusalCode};
+    use vike_gatewayhub_client::test_support::fake_trade_peer::open;
+
+    let (tell, _heard) = std::sync::mpsc::channel();
+    let peer =
+        forget_peer((SymbolPropertiesRefusalCode::Busy, PROPERTIES_BUSY), Duration::ZERO, tell);
+    let (session, _lane) = open(&peer, "node");
+    let (facts, _feed, _tap, _log) = registry_with_admitted_pairs(&[("binance", "ETHUSDT")]);
+    facts.register("binance", session);
+    SymbolAdmitter::release_requested(&facts, "binance", "binance", "ETHUSDT");
+    let gone = listing(&["binance"], &[]);
+
+    facts.settle_releases(&gone);
+    assert!(requested(&facts, "binance", "ETHUSDT"), "asked again at the next tick");
+    assert!(facts.admitted_on_venue("binance", "ETHUSDT"), "and nothing forgotten");
+
+    facts
+        .releasing
+        .lock()
+        .unwrap()
+        .insert(key("binance", "ETHUSDT"), long_ago(RELEASE_RETRY_FOR + Duration::from_secs(1)));
+    facts.settle_releases(&gone);
+    assert!(!requested(&facts, "binance", "ETHUSDT"), "given up");
+    assert!(facts.admitted_on_venue("binance", "ETHUSDT"), "still nothing forgotten");
+}
+
+// ---- the bar lane of a mount the boot did not wire (decision 0245) ------------------------------------
+
+/// A scripted dial for bar lanes: it records each series asked of it and, when `refuse`, answers as a venue with
+/// no bar lane of its own does.
+struct BarDial(Arc<Mutex<Vec<String>>>, bool);
+
+impl vike_data::DataClient for BarDial {
+    fn subscribe_bars(
+        &mut self,
+        symbol: &str,
+        interval: &str,
+    ) -> Result<vike_data::DataClientSubscriptionId, vike_data::DataClientError> {
+        let mut log = self.0.lock().unwrap();
+        log.push(format!("bars {symbol}@{interval}"));
+        if self.1 {
+            return Err(vike_data::DataClientError::Subscribe(
+                "this venue serves no bar lane".into(),
+            ));
+        }
+        Ok(vike_data::DataClientSubscriptionId(log.len() as u64))
+    }
+    crate::testutil::lanes_answer!(
+        self => unreachable!("the bar keeper subscribes bars only");
+        quotes, trades, book
+    );
+    fn unsubscribe(&mut self, _: vike_data::DataClientSubscriptionId) {}
+    fn shutdown(&mut self) {}
+}
+
+fn series(venue: &str, symbol: &str, interval: &str) -> SeriesKey {
+    (venue.to_string(), symbol.to_string(), interval.to_string())
+}
+
+/// A registry whose `oanda` feed is a [`BarDial`], and the dial's log.
+fn bar_registry(
+    refuse: bool,
+) -> (Arc<TradeLeaseRegistry>, crate::feeds::StrategyLaneQuote, Arc<Mutex<Vec<String>>>) {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let feed = crate::feeds::StrategyLaneQuote::new(
+        crate::feeds::DataClientTracking::new(Box::new(BarDial(Arc::clone(&log), refuse))),
+        Arc::new(crate::feeds::PriceTap::default()),
+    );
+    let facts = Arc::new(TradeLeaseRegistry::default());
+    facts.bind_prices(HashMap::from([("oanda".to_string(), feed.watcher())]));
+    (facts, feed, log)
+}
+
+fn bar_state(facts: &TradeLeaseRegistry, s: &SeriesKey) -> Option<BarHold> {
+    facts.bars.lock().unwrap().get(s).copied()
+}
+
+/// **A mount the boot did not wire gets its bar series, once** (decision 0245): a series the boot subscribed is
+/// never asked again, a series asked twice (two mounts, or the next keeper tick) is asked once, and with no
+/// keeper handle nothing opens. The bars reach the core through the dial the mounted arm built.
+#[test]
+fn a_mount_the_boot_did_not_wire_gets_its_bar_series_once() {
+    let (facts, _feed, log) = bar_registry(false);
+    facts.bind_boot_bars(HashSet::from([series("oanda", "EURUSD", "1m")]));
+    let (boot, five) = (series("oanda", "EURUSD", "1m"), series("oanda", "EURUSD", "5m"));
+
+    facts.keep_bars(std::slice::from_ref(&five));
+    assert!(log.lock().unwrap().is_empty(), "no keeper handle: nothing can open a lane");
+
+    facts.me.set(Arc::downgrade(&facts)).unwrap();
+    facts.keep_bars(&[boot, five.clone(), five.clone()]);
+    wait_for(WAIT_FOR, "the 5m series to open", || bar_state(&facts, &five) == Some(BarHold::Open));
+    facts.keep_bars(std::slice::from_ref(&five));
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["bars EURUSD@5m".to_string()],
+        "the boot's series and the repeats were not asked"
+    );
+}
+
+/// **A venue with no bar lane fails soft**: the refusal settles the entry, the series is not asked again inside
+/// [`HOLD_RETRY_AFTER`], and the retry after it asks once more. A venue this node wired no feed for is a refusal
+/// too, and neither touches an order.
+#[test]
+fn a_refused_bar_lane_is_not_asked_again_inside_the_retry_pause() {
+    let (facts, _feed, log) = bar_registry(true);
+    facts.me.set(Arc::downgrade(&facts)).unwrap();
+    let five = series("oanda", "EURUSD", "5m");
+    facts.keep_bars(std::slice::from_ref(&five));
+    wait_for(WAIT_FOR, "the refusal", || {
+        matches!(bar_state(&facts, &five), Some(BarHold::Refused { .. }))
+    });
+    facts.keep_bars(std::slice::from_ref(&five));
+    assert_eq!(log.lock().unwrap().len(), 1, "not asked again inside the pause");
+
+    facts.bars.lock().unwrap().insert(
+        five.clone(),
+        BarHold::Refused { at: Instant::now().checked_sub(HOLD_RETRY_AFTER).unwrap() },
+    );
+    facts.keep_bars(std::slice::from_ref(&five));
+    wait_for(WAIT_FOR, "the retry", || log.lock().unwrap().len() == 2);
+
+    let nowhere = series("ig", "CS.D.EURUSD.MINI.IP", "1m");
+    facts.keep_bars(std::slice::from_ref(&nowhere));
+    wait_for(WAIT_FOR, "the unwired venue's refusal", || {
+        matches!(bar_state(&facts, &nowhere), Some(BarHold::Refused { .. }))
+    });
+    assert_eq!(log.lock().unwrap().len(), 2, "a venue with no feed asks no dial");
+}
+
+/// **A mount on a labelled account is marked through the registry's watcher, exactly while it is wanted**
+/// (decision 0245): the keeper hands the pairs each tick, a venue with no feed is skipped, the tap then hands the
+/// core a mark for the symbol (the venue's own mark, when it states one, takes its place), and a pair that left
+/// the list (the mount is gone) is switched off again.
+#[test]
+fn a_mount_on_a_labelled_account_is_marked_through_its_venues_watcher_while_wanted() {
+    let (facts, _feed, _log, tap) = registry_with_tap("oanda", "EURUSD");
+    let wanted = HashSet::from([
+        ("oanda".to_string(), "EURUSD".to_string()),
+        ("ig".to_string(), "CS.D.EURUSD.MINI.IP".to_string()),
+    ]);
+    facts.sync_mount_marks(wanted.clone());
+    assert!(tap.marks_symbol("oanda", "EURUSD"), "the mounted symbol of a wired venue is marked");
+    assert!(!tap.marks_symbol("oanda", "GBPUSD"), "no other symbol is");
+    assert!(
+        !tap.marks_symbol("ig", "CS.D.EURUSD.MINI.IP"),
+        "a venue with no feed has nothing to switch"
+    );
+    facts.sync_mount_marks(wanted);
+    assert!(
+        tap.marks_symbol("oanda", "EURUSD"),
+        "a second tick with the same list changes nothing"
+    );
+
+    facts.sync_mount_marks(HashSet::new());
+    assert!(!tap.marks_symbol("oanda", "EURUSD"), "the mount is gone: the switch is off again");
+}
+
+/// **A PAPER engine of a venue priced through its demo login** (the owner's ruling of 2026-11-16: dukascopy, fxcm,
+/// ibkr): while the keeper lists it, the tap folds its own symbol's quotes into its book's bars (both sides), and with
+/// no demo lease of its venue it is said on every frame in the words its orders are refused with (`trade health`'s
+/// engine row reads them). A demo lease of ANOTHER venue prices nothing here, and the fold and the statement go when
+/// the engine leaves the list.
+#[test]
+fn a_paper_engine_priced_through_its_demo_login_is_folded_and_says_when_no_login_runs() {
+    use vike_gatewayhub_client::test_support::fake_trade_peer::{TradePeer, TradePeerConfig, open};
+    let (facts, _feed, _log, tap) = registry_with_tap("dukascopy", "EURUSD");
+    let peer = TradePeer::start(TradePeerConfig::new());
+    let (session, _lane) = open(&peer, "node");
+    facts.register("binance", session);
+    assert!(
+        !SymbolAdmitter::demo_login(&facts, "dukascopy"),
+        "a running demo lease of ANOTHER venue is no demo login of dukascopy"
+    );
+    assert!(
+        !SymbolAdmitter::demo_login(&facts, "binance"),
+        "binance's paper accounts are not priced through a demo login, so it has none to ask"
+    );
+
+    let paper = crate::readmit::ReadmitTarget {
+        route_key: "dukascopy#P".into(),
+        venue: "dukascopy".into(),
+        symbol: "EURUSD".into(),
+        flat: false,
+    };
+    facts.sync_paper_quotes(std::slice::from_ref(&paper), WEDNESDAY_NOON);
+    let said = LinkHealth::venue_link_down(&facts);
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert_eq!(
+        (said[0].route_key.as_str(), said[0].why.as_str()),
+        ("dukascopy#P", "no price: no demo login for dukascopy")
+    );
+    assert!(said[0].say().contains("no price: no demo login for dukascopy"), "{}", said[0].say());
+
+    let quote = |ts: i64| vike_marketdata::TickQuote {
+        timestamp: ts,
+        local_timestamp: 0,
+        bid: 1.08495,
+        ask: 1.08505,
+        bid_size: 0.0,
+        ask_size: 0.0,
+        symbol: Default::default(),
+    };
+    assert!(
+        tap.paper_bar("dukascopy", "EURUSD", &quote(1_000)).is_none(),
+        "the first window opens"
+    );
+    assert!(
+        tap.paper_bar("dukascopy", "GBPUSD", &quote(61_000)).is_none(),
+        "no other symbol is folded"
+    );
+    let (bar, sides) =
+        tap.paper_bar("dukascopy", "EURUSD", &quote(61_000)).expect("the next window closes it");
+    let sides = sides.expect("a bar folded from quotes carries both sides");
+    assert_eq!(bar.timestamp, 60_000, "stamped with its window's close");
+    assert_eq!((sides.bid.open, sides.ask.open), (1.08495, 1.08505));
+
+    assert!(
+        said[0].say().contains("a running demo account of dukascopy holds"),
+        "{}",
+        said[0].say()
+    );
+
+    facts.sync_paper_quotes(&[], WEDNESDAY_NOON);
+    assert!(LinkHealth::venue_link_down(&facts).is_empty(), "the engine left: nothing is said");
+    assert!(tap.paper_bar("dukascopy", "EURUSD", &quote(200_000)).is_none());
+    assert!(tap.paper_bar("dukascopy", "EURUSD", &quote(300_000)).is_none(), "the fold is off");
+}
+
+/// **While its venue's market is closed a paper account priced through the demo login says it waits for the open**,
+/// not that no demo login runs (that login itself waits for the open); open again, the weekday's statement is back.
+#[test]
+fn a_paper_engine_priced_through_its_demo_login_says_the_market_is_closed_while_it_is() {
+    let (facts, _feed, _log, _tap) = registry_with_tap("fxcm", "EURUSD");
+    let paper = crate::readmit::ReadmitTarget {
+        route_key: "fxcm#P".into(),
+        venue: "fxcm".into(),
+        symbol: "EURUSD".into(),
+        flat: false,
+    };
+    facts.sync_paper_quotes(std::slice::from_ref(&paper), utc_ms(2026, 11, 14, 12, 0));
+    let said = LinkHealth::venue_link_down(&facts);
+    let [said] = said.as_slice() else { panic!("{said:?}") };
+    assert!(
+        said.why.starts_with(
+            "FX market closed: login at 2026-11-15T21:00:00Z: a paper account of fxcm"
+        ),
+        "{}",
+        said.why
+    );
+    assert_eq!(said.effect, "this paper account's orders are refused until the open");
+
+    facts.sync_paper_quotes(std::slice::from_ref(&paper), WEDNESDAY_NOON);
+    let said = LinkHealth::venue_link_down(&facts);
+    assert_eq!(said[0].why, "no price: no demo login for fxcm", "{said:?}");
+}
+
+/// **The demo login a paper account waits on is the one its venue's stream logs in as**: ibkr's stream is its DEFAULT
+/// account's session, so only the default account's own `demo` lease counts (a labelled demo lease, a live default lease
+/// and another venue's lease do not); dukascopy's and fxcm's ride any running demo session, the lowest route key first;
+/// a keyless venue and a venue not priced this way have none.
+#[test]
+fn the_demo_login_is_the_lease_the_venues_stream_logs_in_as() {
+    use vike_model::AccountTier::{Demo, Live};
+    let pick = |venue: &str, leases: &[(&'static str, &'static str, vike_model::AccountTier)]| {
+        pick_demo_login(crate::feeds::paper_price_login(venue), venue, leases.iter().copied())
+    };
+    assert_eq!(pick("ibkr", &[("ibkr#D", "ibkr", Demo)]), None, "a labelled demo lease");
+    assert_eq!(pick("ibkr", &[("ibkr", "ibkr", Live)]), None, "the default account at live");
+    assert_eq!(
+        pick("ibkr", &[("ibkr#D", "ibkr", Demo), ("ibkr", "ibkr", Demo)]),
+        Some("ibkr".into())
+    );
+    assert_eq!(pick("ibkr", &[("dukascopy", "dukascopy", Demo)]), None, "another venue's lease");
+    for venue in ["dukascopy", "fxcm"] {
+        let labelled = format!("{venue}#B");
+        let leases = [(labelled.as_str(), venue, Demo), ("binance", "binance", Demo)];
+        assert_eq!(
+            pick_demo_login(crate::feeds::paper_price_login(venue), venue, leases.iter().copied()),
+            Some(labelled.clone()),
+            "{venue}: any running demo session"
+        );
+        assert_eq!(pick(venue, &[]), None);
+    }
+    assert_eq!(
+        pick("binance", &[("binance", "binance", Demo)]),
+        None,
+        "not priced through a demo login"
+    );
+    assert_eq!(crate::feeds::paper_price_login("deribit"), None);
+}
+
+/// **A bar series of a pair reaches this node** when a boot mount or the boot's bar subscriptions name it, or the bar
+/// keeper has opened (or is opening) its lane for a mount since; a lane the keeper was refused, another symbol, a lane
+/// only a price alert asked for (candles, no quotes: REVIEW-FIX finding 4) and a node that mounts nothing do not count.
+#[test]
+fn a_bar_series_reaches_a_pair_through_a_mount_or_the_bar_keeper() {
+    let facts = TradeLeaseRegistry::default();
+    assert!(!SymbolAdmitter::bar_series(&facts, "bybit", "BTCUSDT"), "nothing is mounted");
+    facts.bind_mounted(|venue, symbol| (venue, symbol) == ("bybit", "BTCUSDT"));
+    facts.bind_boot_bars(HashSet::from([series("oanda", "EURUSD", "1m")]));
+    facts.mount_bars.lock().unwrap().extend([
+        series("ig", "CS.D.EURUSD.MINI.IP", "1m"),
+        series("okx", "BTC-USDT-SWAP", "1m"),
+        series("alpaca", "AAPL", "1m"),
+    ]);
+    facts.bars.lock().unwrap().insert(series("ig", "CS.D.EURUSD.MINI.IP", "1m"), BarHold::Open);
+    facts.bars.lock().unwrap().insert(series("okx", "BTC-USDT-SWAP", "1m"), BarHold::Opening);
+    facts.bars.lock().unwrap().insert(series("bybit", "ETHUSDT", "1m"), BarHold::Open);
+    facts
+        .bars
+        .lock()
+        .unwrap()
+        .insert(series("alpaca", "AAPL", "1m"), BarHold::Refused { at: Instant::now() });
+    for (venue, symbol) in [
+        ("bybit", "BTCUSDT"),
+        ("oanda", "EURUSD"),
+        ("ig", "CS.D.EURUSD.MINI.IP"),
+        ("okx", "BTC-USDT-SWAP"),
+    ] {
+        assert!(SymbolAdmitter::bar_series(&facts, venue, symbol), "{venue} {symbol}");
+    }
+    assert!(!SymbolAdmitter::bar_series(&facts, "alpaca", "AAPL"), "a refused bar lane");
+    assert!(!SymbolAdmitter::bar_series(&facts, "bybit", "ETHUSDT"), "an alert's lane only");
+    assert!(!SymbolAdmitter::bar_series(&facts, "bybit", "SOLUSDT"), "another symbol");
+}
+
+/// **A price alert's bar lane is no paper price source** (REVIEW-FIX finding 4): the alert opens its pair's `1m` lane
+/// through the same dial a mount's goes through, but its candles carry no quotes, so a paper book on the pair would
+/// fill a manual market order at a bar's open from before the order, on no side; the paper "no price" refusal must
+/// keep firing. Once a mount asks for the same series (the bar keeper), the lane counts.
+#[test]
+fn a_price_alerts_bar_lane_is_no_paper_price_source() {
+    let (facts, _feed, log) = bar_registry(false);
+    facts.me.set(Arc::downgrade(&facts)).unwrap();
+    let pair = series("oanda", "EURUSD", "1m");
+    SymbolAdmitter::keep_bars(&*facts, std::slice::from_ref(&pair));
+    wait_for(WAIT_FOR, "the alert's lane to open", || {
+        bar_state(&facts, &pair) == Some(BarHold::Open)
+    });
+    assert!(
+        !SymbolAdmitter::bar_series(&*facts, "oanda", "EURUSD"),
+        "an alert's lane is no price source"
+    );
+    facts.keep_bars(std::slice::from_ref(&pair));
+    assert!(SymbolAdmitter::bar_series(&*facts, "oanda", "EURUSD"), "a mount wants it now");
+    assert_eq!(log.lock().unwrap().len(), 1, "the lane was opened once, by the alert");
+    facts.keep_bars(&[]);
+    assert!(!SymbolAdmitter::bar_series(&*facts, "oanda", "EURUSD"), "the mount went away");
+}
+
+/// **A paper account with no trade lease is admitted on the datahub's facts** (`bind_keyless_facts`, decision 0285's
+/// amendment of 2026-11-16): unbound, or bound but silent for the route key (not a paper account), the look-up is the
+/// no-lease refusal as ever; bound, the facts' grid is the admission, cached like a lease's answer (asked once); a
+/// look-up that fails is refused in its words and remembered, so a second order asks nothing.
+#[test]
+fn a_paper_account_with_no_lease_is_admitted_on_the_datahubs_facts() {
+    const TOKEN: &str =
+        "71321045679252212594626385532706912750332728571942532289631379312455583992563";
+    let unbound = TradeLeaseRegistry::default();
+    let why = SymbolAdmitter::admission(&unbound, "polymarket#paper", "polymarket", TOKEN)
+        .expect_err("no lease, no look-up");
+    assert!(why.text().contains("no open trade lease"), "{}", why.text());
+
+    let facts = TradeLeaseRegistry::default();
+    let asked = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen = Arc::clone(&asked);
+    facts.bind_keyless_facts(move |route_key, _venue, symbol| {
+        seen.lock().unwrap().push(symbol.to_string());
+        (route_key == "polymarket#paper").then(|| {
+            if symbol == TOKEN {
+                Ok(vike_model::SymbolProperties {
+                    tick_size: 0.01,
+                    step_size: 0.01,
+                    min_qty: 5.0,
+                    ..Default::default()
+                })
+            } else {
+                Err((FailureOutcome::Refused, "no facts of `2` on polymarket".to_string()))
+            }
+        })
+    });
+    let why = SymbolAdmitter::admission(&facts, "polymarket#demo", "polymarket", TOKEN)
+        .expect_err("not a paper account");
+    assert!(why.text().contains("no open trade lease"), "{}", why.text());
+
+    for _ in 0..2 {
+        let admission = SymbolAdmitter::admission(&facts, "polymarket#paper", "polymarket", TOKEN)
+            .expect("admitted on the datahub's facts");
+        assert_eq!(
+            (admission.route_key.as_str(), admission.symbol.as_str()),
+            ("polymarket#paper", TOKEN)
+        );
+        assert_eq!(admission.grid.tick_size, Some(0.01), "the token's own tick");
+        assert_eq!(admission.grid.min_qty, Some(5.0), "the token's own minimum");
+        assert_eq!(admission.quote_rate, None, "a paper ledger converts nothing");
+    }
+    for _ in 0..2 {
+        let why = SymbolAdmitter::admission(&facts, "polymarket#paper", "polymarket", "2")
+            .expect_err("neither source knows it");
+        assert!(why.text().contains("no facts of `2` on polymarket"), "{}", why.text());
+    }
+    assert_eq!(
+        *asked.lock().unwrap(),
+        [TOKEN, TOKEN, "2"],
+        "the demo account's ask, then one per symbol: the answer and the refusal are both kept"
+    );
+}
+
+/// **A datahub that does not answer is no verdict about a paper account's symbol**: the look-up's link failure (a
+/// datahub restarting, a deploy) is `Unavailable`, transient, and NOT remembered, so the next order asks again, where
+/// the datahub's own refusal above is kept for [`NEGATIVE_TTL`].
+#[test]
+fn a_link_failure_of_the_keyless_look_up_is_not_cached_as_a_refusal() {
+    let facts = TradeLeaseRegistry::default();
+    let asked = Arc::new(Mutex::new(0));
+    let count = Arc::clone(&asked);
+    facts.bind_keyless_facts(move |_route_key, _venue, _symbol| {
+        *count.lock().unwrap() += 1;
+        Some(Err((FailureOutcome::NotSent, "datahub 127.0.0.1:1: connection refused".to_string())))
+    });
+    for _ in 0..2 {
+        let why = SymbolAdmitter::admission(&facts, "polymarket#paper", "polymarket", "2")
+            .expect_err("the datahub did not answer");
+        assert!(why.is_transient(), "not a verdict about the symbol: {}", why.text());
+        assert!(why.text().contains("connection refused"), "{}", why.text());
+    }
+    assert_eq!(*asked.lock().unwrap(), 2, "nothing was remembered: each order asks again");
+}

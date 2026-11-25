@@ -1,0 +1,26 @@
+[package]
+name = "vike-rag"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — retrieval for RAG (the book's W17): the R and the A, never the G. `chunk` cuts a stored text (a news item, an SEC section) into the chunks `vike-nlp` embeds host-side, one rule both sides share so a stored vector joins its chunk by index; `search` ranks chunks against a query by BM25 keywords and by cosine over the stored embeddings, brute force, each ranking point-in-time on the chunks' received time, and fuses the two by reciprocal rank fusion; `context` assembles the top chunks with their citations. Pure: no network, no process, no file, no clock. Reachable by a research study file through the study template."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `leaf`: its one
+# vike-* edge is `vike-model` (10), for the citation's timestamp. A study reaches it through
+# `vike-user-research` (25) and the study template; `vike-nlp` (30) names it for the chunking rule.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+# `time::epoch_ms_to_utc_timestamp`: a citation's published time, as a reader reads it. Already in
+# every study's closure.
+vike-model = { path = "../vike-model" }
+# `libm::log`, BM25's inverse document frequency: the portable logarithm, never the platform's
+# (docs/decisions/0032-transcendentals-come-from-the-libm-crate-not-the-platform.md), so a keyword
+# score is the same bits on every box. Already a lockfile crate.
+libm = { workspace = true }
+
+[lints]
+workspace = true

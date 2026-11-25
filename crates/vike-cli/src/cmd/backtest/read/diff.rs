@@ -1,0 +1,421 @@
+//! `vike-cli backtest diff <a> <b>` — what differed in the INPUTS beside what differed in the
+//! OUTPUTS (`docs/superpowers/specs/2026-09-12-backtest-cli-surface-design.md` §6.3).
+//!
+//! # It diffs the DOCUMENT, not a list of fields, and that is the load-bearing decision
+//!
+//! §6.3 argues the input half is "a real diff rather than a guess" BECAUSE the resolved config, the
+//! data fingerprint and the build stamp are in the run record. When this was designed, none of the
+//! three was: `crates/vike-backtesthub/src/backtest_cli.rs`'s `persist_run` wrote `git_sha: None`
+//! outright and there was no resolved config anywhere — only the profile path the operator typed.
+//!
+//! So this walks the two JSON documents themselves. `crate::cmd::backtest::read::jsondoc`'s `leaves` flattens
+//! each to sorted dotted leaf paths and the diff walks two sorted lists in lockstep. Three
+//! consequences, and the third is why the design did not have to wait:
+//!
+//! * it diffs exactly what is RECORDED today — the profile path and name, the kind, the producer,
+//!   the git sha, the fingerprint, the strategy, the data window, the series, the store root;
+//! * every field the run record GAINS joins the diff with no edit here, so widening the record
+//!   cannot make this verb obsolete, only richer;
+//! * it works on a research run, and on a kind invented next year — the same property
+//!   `crates/vike-study-runner/src/listing.rs` has, for the same reason. That stopped being
+//!   hypothetical when `research` became a top-level plane: `kind: "study"` runs
+//!   (`crates/vike-studio-core/src/study_run.rs`'s `STUDY_RUN_KIND`) are a first-class product this
+//!   verb is expected to diff, and a typed comparison of `TradingResults`'s named fields would have
+//!   needed a second arm for them.
+//!
+//! What it costs: no field gets a bespoke renderer. A moved data window renders as two changed leaf
+//! rows (`detail.data.from`, `detail.data.to`) rather than as one "the window moved" sentence.
+//!
+//! # ⚠ Arrays are INDEX-keyed, never compared as sets
+//!
+//! A reordered array renders as N changed rows rather than "reordered". Deliberate:
+//! `per_symbol_pnl`'s ORDER is what `vike_math::summation::compensated_sum` bit-parity depends on, so a set comparison
+//! would hide a real change in the one place this workspace cares most about ordering.
+//!
+//! ⚠ The DECLARED RESIDUAL of that choice: an element INSERTED near the front of a long array
+//! cascades into a changed row for every element after it. `--trades` is where that bites hardest —
+//! a ledger whose first trade differs re-indexes the whole list — so the trades section prints the
+//! two lengths first, which is the fact that explains the cascade.
+//!
+//! # ⚠ A diff NEVER breaches
+//!
+//! Judging is `crate::cmd::backtest::read::gate`'s job. A `diff` that could exit on `Exit::Breach` would give
+//! a CI step two verbs producing one number for different reasons, and the number would stop meaning
+//! anything. Two identical runs diff to nothing and exit `0`: "no change" is an answer.
+//!
+//! # ⚠ It reads `report.json` as a `Value`
+//!
+//! `crates/vike-analytics/src/results.rs`'s `TradingResults` derives `Serialize` only, and this crate
+//! does not link that one at all. That is not a workaround here — a document diff has no use for a
+//! typed struct, and a typed one would have to be edited every time the report grows.
+
+use serde_json::Value;
+use vike_runs::{MANIFEST_FILE, REPORT_FILE, ScannedRun, TRADES_FILE, scan_runs};
+
+use crate::cmd::backtest::read::ReadArgs;
+use crate::cmd::backtest::read::{Context, jsondoc, selector::resolve_one};
+use crate::exit::{CliError, CommandResult};
+
+/// Manifest keys EXCLUDED from the input diff, because they differ between any two runs by
+/// construction.
+///
+/// They are not hidden: they render in the HEADER, which is where identity belongs. Leaving them in
+/// the diff would mean three guaranteed rows in a view whose entire job is removing noise, and a
+/// reader who has learned to skip the first three rows of every diff is a reader who will skip a
+/// fourth.
+const VOLATILE: &[&str] = &["run_id", "started_at", "finished_at"];
+
+/// One leaf, on both sides. `crate::cmd::strategy::sdk_diff` diffs its two reports with it too.
+pub(crate) struct Row {
+    pub(crate) key: String,
+    pub(crate) a: Option<Value>,
+    pub(crate) b: Option<Value>,
+}
+
+impl Row {
+    /// `+` added, `-` removed, `~` changed, ` ` same — one spelling for the table and the JSON.
+    fn class(&self) -> &'static str {
+        match (&self.a, &self.b) {
+            (None, Some(_)) => "added",
+            (Some(_), None) => "removed",
+            (Some(x), Some(y)) if x != y => "changed",
+            _ => "same",
+        }
+    }
+
+    pub(crate) fn changed(&self) -> bool {
+        self.class() != "same"
+    }
+
+    /// The percent move, when both sides are finite numbers and the left is not zero.
+    ///
+    /// `None` at a zero baseline rather than an infinity: "it went from 0 to 4" has no percentage,
+    /// and printing one would be a number nobody can act on.
+    fn percent(&self) -> Option<f64> {
+        let (x, y) = (self.a.as_ref()?.as_f64()?, self.b.as_ref()?.as_f64()?);
+        (x.is_finite() && y.is_finite() && x != 0.0).then(|| (y - x) / x.abs() * 100.0)
+    }
+}
+
+/// Walk two sorted leaf lists in lockstep. Linear, and stable because both sides are sorted.
+pub(crate) fn diff_docs(a: &Value, b: &Value, skip: &[&str]) -> Vec<Row> {
+    let (la, lb) = (jsondoc::leaves(a), jsondoc::leaves(b));
+    let keep = |k: &str| !skip.contains(&k);
+    let (mut i, mut j, mut out) = (0, 0, Vec::new());
+    while i < la.len() || j < lb.len() {
+        let row = match (la.get(i), lb.get(j)) {
+            (Some((ka, va)), Some((kb, vb))) if ka == kb => {
+                i += 1;
+                j += 1;
+                Row { key: ka.clone(), a: Some(va.clone()), b: Some(vb.clone()) }
+            }
+            (Some((ka, va)), Some((kb, _))) if ka < kb => {
+                i += 1;
+                Row { key: ka.clone(), a: Some(va.clone()), b: None }
+            }
+            (Some(_), Some((kb, vb))) => {
+                j += 1;
+                Row { key: kb.clone(), a: None, b: Some(vb.clone()) }
+            }
+            (Some((ka, va)), None) => {
+                i += 1;
+                Row { key: ka.clone(), a: Some(va.clone()), b: None }
+            }
+            (None, Some((kb, vb))) => {
+                j += 1;
+                Row { key: kb.clone(), a: None, b: Some(vb.clone()) }
+            }
+            (None, None) => break,
+        };
+        if keep(&row.key) {
+            out.push(row);
+        }
+    }
+    out
+}
+
+pub(crate) fn run_diff(ctx: &Context<'_>, a: &ReadArgs) -> CommandResult<()> {
+    let root = ctx.runs_root.ok_or_else(|| {
+        CliError::failed(
+            "no project directory above the working directory, so there is no runs directory to \
+             compare in. `vike-cli init` creates one, or name it with VIKE_USER_DATA_DIR.",
+        )
+    })?;
+    let scan = scan_runs(root);
+    for problem in &scan.diagnostics {
+        eprintln!("vike-cli backtest diff: {problem}");
+    }
+    let left = resolve_one(&scan, ctx.marks_root, a.selector.as_deref().unwrap_or_default())?;
+    let right = resolve_one(&scan, ctx.marks_root, a.file.as_deref().unwrap_or_default())?;
+
+    let inputs = diff_docs(
+        &serde_json::to_value(&left.manifest).unwrap_or(Value::Null),
+        &serde_json::to_value(&right.manifest).unwrap_or(Value::Null),
+        VOLATILE,
+    );
+    let outputs = diff_docs(&read_report(left)?, &read_report(right)?, &[]);
+    let trades = if a.trades {
+        Some(diff_docs(&read_doc(left, TRADES_FILE)?, &read_doc(right, TRADES_FILE)?, &[]))
+    } else {
+        None
+    };
+
+    let notes = unattributable(&left.manifest, &right.manifest);
+    let show_all = a.all;
+    if a.json {
+        render_json(left, right, &inputs, &outputs, trades.as_deref(), &notes, show_all);
+    } else if a.markdown {
+        render_markdown(left, right, &inputs, &outputs, trades.as_deref(), &notes, show_all);
+    } else {
+        render_human(left, right, &inputs, &outputs, trades.as_deref(), &notes, show_all);
+    }
+    Ok(())
+}
+
+fn read_report(run: &ScannedRun) -> Result<Value, CliError> {
+    read_doc(run, REPORT_FILE)
+}
+
+/// One document out of a run directory, as a `Value`.
+///
+/// ⚠ An ABSENT document is [`crate::exit::Exit::Empty`], not a failure and not an empty diff: "there
+/// was nothing to compare" and "the two are identical" must never look the same to a script. That is
+/// this verb's only non-zero rung.
+fn read_doc(run: &ScannedRun, file: &str) -> Result<Value, CliError> {
+    let path = run.dir.join(file);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(CliError::empty(format!(
+                "run {} has no {file} — there is nothing to compare. An empty diff and an \
+                 impossible one are different answers.",
+                run.run_id
+            )));
+        }
+        Err(e) => {
+            return Err(CliError::failed(format!("cannot read {}: {e}", path.display())));
+        }
+    };
+    serde_json::from_str(&text)
+        .map_err(|e| CliError::failed(format!("cannot parse {}: {e}", path.display())))
+}
+
+/// ⚠ **What the record CANNOT attribute, said by name rather than by omission.**
+///
+/// Without these lines a diff showing only a config change reads as "the config is why", when the
+/// truth is that the other two causes were never recorded. Both conditions are properties of the
+/// DOCUMENTS rather than version checks, so each line disappears on its own the day a producer fills
+/// the field in.
+///
+/// ⚠ **An ABSENT fingerprint is not a DIFFERENT one, and a DIFFERENT one is not proof the data
+/// moved.** Both halves are stated because both are inferences a reader makes unprompted, and both
+/// are wrong:
+///
+/// * **absent** — `vike_runs::RunManifest::fingerprint` is `None` for more than one reason
+///   and this verb cannot tell them apart from the document: a producer that computes no address at
+///   all, and a producer whose STORE could not be inventoried (it refuses to address a run whose
+///   data slice it could not read, rather than addressing it wrongly). So a null means "we do not
+///   know", and this note may not name one cause as though it were the only one. It did, and the
+///   sentence was already a third of the truth when it was written.
+///
+///   ⚠ **A SEARCH PARENT was the third cause and has stopped being one.** It carried no address
+///   because `crates/vike-backtesthub/src/backtest_cli.rs` collected the fingerprint below its sweep
+///   branch to keep a search's manifest reads down, and
+///   `vike_store::HistoryStoreDataFusion::series_facts` removed the read that cost bought. A search run now
+///   addresses its inputs exactly as a single run does. The note is written with no COUNT in it
+///   this time: the previous two spellings of this paragraph both carried one and both were wrong.
+/// * **different** — a GROUPED series contributes its WHOLE GROUP's coverage to the address, so an
+///   unrelated symbol's rows landing in the same group move it while this run's inputs are
+///   byte-identical (spec §18 row 10). A differing address is a reason to LOOK, never a finding on
+///   its own.
+fn unattributable(a: &vike_runs::RunManifest, b: &vike_runs::RunManifest) -> Vec<String> {
+    let mut out = Vec::new();
+    if a.git_sha.is_none() && b.git_sha.is_none() {
+        out.push(
+            "no build stamp on either run — a metric move cannot be attributed to a code change"
+                .to_string(),
+        );
+    }
+    match (&a.fingerprint, &b.fingerprint) {
+        (Some(x), Some(y)) if x != y => out.push(
+            "the two runs carry DIFFERENT data fingerprints — worth looking at, but not a finding \
+             on its own: a grouped series contributes its whole group's coverage, so an unrelated \
+             symbol's rows move the address while these inputs are identical"
+                .to_string(),
+        ),
+        (Some(_), Some(_)) => {}
+        _ => out.push(
+            "no data fingerprint on at least one run — a metric move cannot be attributed to a \
+             data change, and a MISSING address is not a different one. A null has more than one \
+             cause this document cannot tell apart: a producer that computes no address, and a \
+             store that could not be inventoried"
+                .to_string(),
+        ),
+    }
+    out
+}
+
+fn render_value(v: Option<&Value>) -> String {
+    match v {
+        None => "—".to_string(),
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+    }
+}
+
+pub(crate) fn section(title: &str, rows: &[Row], show_all: bool) {
+    let shown: Vec<&Row> = rows.iter().filter(|r| show_all || r.changed()).collect();
+    println!();
+    println!("{title}");
+    if shown.is_empty() {
+        println!("  no change");
+        return;
+    }
+    for r in shown {
+        let sign = match r.class() {
+            "added" => '+',
+            "removed" => '-',
+            "changed" => '~',
+            _ => ' ',
+        };
+        let pct = r.percent().map_or_else(String::new, |p| format!("   ({p:+.2}%)"));
+        if r.class() == "same" {
+            println!("  {sign} {:<28}{}", r.key, render_value(r.a.as_ref()));
+        } else {
+            println!(
+                "  {sign} {:<28}{} → {}{pct}",
+                r.key,
+                render_value(r.a.as_ref()),
+                render_value(r.b.as_ref())
+            );
+        }
+    }
+}
+
+fn header(left: &ScannedRun, right: &ScannedRun) {
+    println!("diff {} → {}", left.run_id, right.run_id);
+    // ⚠ The VOLATILE keys live here, which is why excluding them from the rows hides nothing.
+    println!(
+        "  a  {}  {}  {}",
+        left.manifest.finished_at,
+        left.manifest.kind,
+        left.manifest.config.path.as_deref().unwrap_or("—")
+    );
+    println!(
+        "  b  {}  {}  {}",
+        right.manifest.finished_at,
+        right.manifest.kind,
+        right.manifest.config.path.as_deref().unwrap_or("—")
+    );
+}
+
+fn render_human(
+    left: &ScannedRun,
+    right: &ScannedRun,
+    inputs: &[Row],
+    outputs: &[Row],
+    trades: Option<&[Row]>,
+    notes: &[String],
+    show_all: bool,
+) {
+    header(left, right);
+    section(&format!("INPUTS ({MANIFEST_FILE})"), inputs, show_all);
+    for note in notes {
+        println!("  ⓘ {note}");
+    }
+    section(&format!("OUTPUTS ({REPORT_FILE})"), outputs, show_all);
+    if let Some(rows) = trades {
+        section(&format!("TRADES ({TRADES_FILE})"), rows, show_all);
+    }
+    if inputs.iter().chain(outputs).all(|r| !r.changed())
+        && trades.is_none_or(|t| t.iter().all(|r| !r.changed()))
+    {
+        println!();
+        println!("the two runs are identical in every recorded field — no change");
+    }
+}
+
+fn render_markdown(
+    left: &ScannedRun,
+    right: &ScannedRun,
+    inputs: &[Row],
+    outputs: &[Row],
+    trades: Option<&[Row]>,
+    notes: &[String],
+    show_all: bool,
+) {
+    println!("# diff {} → {}", left.run_id, right.run_id);
+    let markdown_section = |title: &str, rows: &[Row]| {
+        println!();
+        println!("## {title}");
+        println!();
+        println!("| | key | a | b |");
+        println!("|---|---|---|---|");
+        let mut any = false;
+        for r in rows.iter().filter(|r| show_all || r.changed()) {
+            any = true;
+            println!(
+                "| {} | `{}` | {} | {} |",
+                r.class(),
+                r.key,
+                render_value(r.a.as_ref()),
+                render_value(r.b.as_ref())
+            );
+        }
+        if !any {
+            println!("| | _no change_ | | |");
+        }
+    };
+    markdown_section(&format!("INPUTS ({MANIFEST_FILE})"), inputs);
+    for note in notes {
+        println!();
+        println!("> {note}");
+    }
+    markdown_section(&format!("OUTPUTS ({REPORT_FILE})"), outputs);
+    if let Some(rows) = trades {
+        markdown_section(&format!("TRADES ({TRADES_FILE})"), rows);
+    }
+}
+
+pub(crate) fn rows_json(rows: &[Row], show_all: bool) -> Vec<Value> {
+    rows.iter()
+        .filter(|r| show_all || r.changed())
+        .map(|r| {
+            serde_json::json!({
+                "key": r.key,
+                "change": r.class(),
+                "a": r.a,
+                "b": r.b,
+                "percent": r.percent(),
+            })
+        })
+        .collect()
+}
+
+fn render_json(
+    left: &ScannedRun,
+    right: &ScannedRun,
+    inputs: &[Row],
+    outputs: &[Row],
+    trades: Option<&[Row]>,
+    notes: &[String],
+    show_all: bool,
+) {
+    let doc = serde_json::json!({
+        "schema": 1,
+        "a": { "run": left.run_id, "finished_at": left.manifest.finished_at },
+        "b": { "run": right.run_id, "finished_at": right.manifest.finished_at },
+        "inputs": rows_json(inputs, show_all),
+        "outputs": rows_json(outputs, show_all),
+        "trades": trades.map(|rows| rows_json(rows, show_all)),
+        "notes": notes,
+    });
+    match serde_json::to_string_pretty(&doc) {
+        Ok(text) => println!("{text}"),
+        Err(e) => eprintln!("vike-cli backtest diff: cannot render the JSON document: {e}"),
+    }
+}
+
+#[path = "diff_tests.rs"]
+#[cfg(test)]
+mod diff_tests;

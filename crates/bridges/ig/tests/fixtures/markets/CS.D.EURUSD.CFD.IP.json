@@ -1,0 +1,119 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 20.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "PERCENTAGE",
+   "value": 75.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "POINTS",
+   "value": 5.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 2.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 5.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": "EURUSD",
+  "contractSize": "100000",
+  "controlledRiskAllowed": true,
+  "country": null,
+  "currencies": [
+   {
+    "baseExchangeRate": 1.0,
+    "code": "USD",
+    "exchangeRate": 0.66,
+    "isDefault": true,
+    "symbol": "$"
+   }
+  ],
+  "epic": "CS.D.EURUSD.CFD.IP",
+  "expiry": "-",
+  "expiryDetails": null,
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "POINTS",
+   "value": 1.2
+  },
+  "lotSize": 10.0,
+  "marginDepositBands": [
+   {
+    "currency": "USD",
+    "margin": 0.5,
+    "max": 57.8,
+    "min": 0
+   },
+   {
+    "currency": "USD",
+    "margin": 1,
+    "max": 289,
+    "min": 57.8
+   },
+   {
+    "currency": "USD",
+    "margin": 3,
+    "max": 462.4,
+    "min": 289
+   },
+   {
+    "currency": "USD",
+    "margin": 15,
+    "max": null,
+    "min": 462.4
+   }
+  ],
+  "marginFactor": 0.5,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "EURUSD",
+  "name": "EUR/USD",
+  "newsCode": "EUR=",
+  "onePipMeans": "0.0001 USD/EUR",
+  "openingHours": null,
+  "rolloverDetails": null,
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 50.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MIN KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": true,
+  "type": "CURRENCIES",
+  "unit": "CONTRACTS",
+  "valueOfOnePip": "10.00"
+ },
+ "snapshot": {
+  "bid": 1.10097,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 5,
+  "delayTime": 0,
+  "high": 1.1024,
+  "low": 1.09676,
+  "marketStatus": "TRADEABLE",
+  "netChange": 0.00119,
+  "offer": 1.10106,
+  "percentageChange": 0.11,
+  "scalingFactor": 10000,
+  "updateTime": "19:34:35"
+ }
+}

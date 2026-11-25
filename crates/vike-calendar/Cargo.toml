@@ -1,0 +1,27 @@
+[package]
+name = "vike-calendar"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The Calendar window: the economic week and the week's earnings, dividends and IPOs over a 7-day day strip in the display time zone, its per-window view state, the currency-to-country map and the bundled flag PNGs. egui without eframe/wgpu, so it builds and tests on CI."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `ui-widget` — an egui widget / engine crate (no eframe/wgpu).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 75
+
+[dependencies]
+# The RAW rows (`tool_feeds::CalendarEconomicEvent`, `poll::CalendarEquityWeek`), the ONE datahub poll's snapshot
+# and link the window records its week and interest on, and the week rule `poll::monday_of` (`poll` is behind
+# `tool-feeds-poll`).
+vike-datahub-client = { path = "../vike-datahub-client", features = ["tool-feeds-poll"] }
+# The design system: tokens, text roles, icons, the `calendar` value group, the `importance` map and the
+# display time zone (`time_zone::ThemeDisplayTimeZone`, the one clock every date here is drawn in).
+vike-ui-theme = { path = "../vike-ui-theme" }
+egui = { workspace = true }
+chrono = { workspace = true } # the week's dates, day labels and clock times
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

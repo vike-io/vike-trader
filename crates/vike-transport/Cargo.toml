@@ -1,0 +1,45 @@
+[package]
+name = "vike-transport"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The ONE generic network layer below the bridges and the hubs: the blocking ureq agents and their finishers (no redirect on a credentialed call, a stated limit on a keyless GET, the DNS resolver, the bounded body read), the send-outcome rules over a ureq error (definite only before the write), the rustls client configs (verified webpki roots; the loopback-only unverified one) and, behind the opt-in `websocket` feature, the bounded WebSocket dial and its SOCKS5 arm (`socks-proxy`). It names NO vike-* crate and holds no signer: a crate that may not link the venue layer (vike-alerting, the datahub, vike-backfill) builds its agent here instead of copying one (docs/decisions/0299-one-network-layer-vike-transport.md)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `transport` (4): the
+# one network stack, with no vike-* dependency. Its lowest consumer is vike-alerting (15), which may name it only
+# through a `FLOOR_EDGES` row (`layer_gate/vike_free.rs`), and that row holds this crate to "links no vike-* crate".
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer. There is none.
+[package.metadata.vike]
+layer = 4
+
+# ⚠ **No default features, and `websocket` stays OFF unless a crate that dials a WebSocket asks for it.** Guard (G)
+# in `.github/workflows/ci.yml` refuses tungstenite in the tradehub's all-features tree, and the tradehub reaches this
+# crate through vike-alerting: a `websocket` turned on by default, or by vike-alerting, would put the WS stack there.
+[dependencies]
+ureq = { workspace = true }       # the blocking HTTP agents (rustls, no OpenSSL)
+# `send_outcome::send_error_is_definite` downcasts a lazy-handshake `Io(InvalidData)` to `rustls::Error`, and
+# `tls` builds the two client configs. The SAME package ureq and tungstenite resolve: no new tree.
+rustls = { workspace = true }
+webpki-roots = { workspace = true } # `tls::verified_client_config`'s root store (the one ureq already resolves)
+serde_json = { workspace = true }   # `http::get_json` / `json_body`
+# Blocking WS: `websocket` and `websocket_proxy`, behind the `websocket` feature.
+tungstenite = { workspace = true, optional = true }
+
+[features]
+default = []
+# The WebSocket half: `websocket` (`WsSocket`, `configure_websocket_stream`, `is_timeout`) and `websocket_proxy` (the
+# bounded dial). vike-bridge-core turns it on; nothing below the bridges may.
+websocket = ["dep:tungstenite"]
+# The one SOCKS client (`socks`: the HTTP lane's `SocksDial` and the SOCKS5 arm of the WS dial), this crate's own code
+# over std sockets, no dependency of its own. Off, `connect_websocket(url, Some(proxy), _)` is a named error, never a
+# silent direct dial. `vike-polymarket/feeds` turns it on (its CLOB hosts are geo-blocked).
+socks-proxy = ["websocket"]
+
+[dev-dependencies]
+# Self-referential dev-dep: this crate's own tests compile the WebSocket half and both arms of the dial.
+vike-transport = { path = ".", features = ["socks-proxy"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

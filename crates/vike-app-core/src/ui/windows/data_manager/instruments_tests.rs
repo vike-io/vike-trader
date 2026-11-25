@@ -1,0 +1,139 @@
+use super::*;
+use crate::data::catalog_refresh::DatahubCatalogRefreshOutcome;
+use crate::test_support::catalog_row;
+use vike_catalog::{CatalogCacheVenueStamp, CatalogMode, CatalogRoute};
+
+fn direct(venue: &str) -> CatalogRefreshVenueRow {
+    catalog_row(venue, Some(CatalogRoute::Direct), Some(CatalogMode::Enumerable))
+}
+
+#[test]
+fn an_idle_row_states_why_it_cannot_be_refreshed_and_names_the_kind_of_fact() {
+    assert_eq!(status_line(&direct("deribit")), "", "a live row says nothing until pressed");
+    assert!(
+        status_line(&catalog_row("binance", Some(CatalogRoute::ServerBacked), None))
+            .contains("backend's datahub"),
+        "a routed row says where its list comes from"
+    );
+    // The facts that are NOT about this build.
+    let alpaca = status_line(&catalog_row("alpaca", None, None));
+    assert!(alpaca.contains("credentials"), "{alpaca}");
+    assert!(alpaca.contains("alpaca"), "the sentence names the venue: {alpaca}");
+    let ibkr = status_line(&catalog_row("ibkr", None, None));
+    assert!(ibkr.contains("publishes no bulk instrument list"), "{ibkr}");
+    assert!(ibkr.contains("nothing to arm and nothing to rebuild"), "{ibkr}");
+    // ...and none of them reads as an empty venue.
+    for line in [&alpaca, &ibkr] {
+        assert!(!line.contains("0 instruments"), "an empty list is a LIE here: {line}");
+    }
+}
+
+/// The outcome wins over the note — otherwise the one venue you CAN refresh renders a blank
+/// Status cell after a failure, which is the state the operator most needs to see.
+#[test]
+fn an_outcome_outranks_the_availability_note() {
+    let mut r = direct("deribit");
+    r.state = CatalogRefreshVenueState::Done {
+        at_ms: 1,
+        outcome: DatahubCatalogRefreshOutcome::Failed { error: "reset".into(), kept: 412 },
+    };
+    let line = status_line(&r);
+    assert!(line.contains("kept the 412"), "{line}");
+    r.state = CatalogRefreshVenueState::InFlight { since_ms: 1 };
+    assert_eq!(status_line(&r), "fetching…");
+}
+
+/// A refusal that came back over the WIRE renders the server's own sentence on the row, not a
+/// failure and not a count.
+#[test]
+fn a_wire_refusal_renders_as_itself() {
+    let mut r = catalog_row("binance", Some(CatalogRoute::ServerBacked), None);
+    r.state = CatalogRefreshVenueState::Done {
+        at_ms: 1,
+        outcome: DatahubCatalogRefreshOutcome::Refused {
+            why: "this datahub serves no venue catalog because its operator REFUSED the lane \
+                      — `venue_catalog_off = true`"
+                .into(),
+            kept: 0,
+        },
+    };
+    let line = status_line(&r);
+    assert!(line.contains("venue_catalog_off"), "{line}");
+    assert!(!line.contains("failed"), "a refusal is not a failure: {line}");
+}
+
+#[test]
+fn the_summary_counts_only_venues_that_could_be_fetched() {
+    let mut fetched = direct("deribit");
+    fetched.stamp =
+        Some(CatalogCacheVenueStamp { venue: "deribit".into(), last_refreshed_ms: 1, count: 3 });
+    assert_eq!(instruments_summary(&[fetched.clone()], 3), "3 instruments across 1 venues");
+    assert_eq!(
+        instruments_summary(&[fetched.clone(), catalog_row("ibkr", None, None)], 3),
+        "3 instruments across 2 venues",
+        "a venue that can never be fetched is not an outstanding task"
+    );
+    assert!(
+        instruments_summary(
+            &[fetched, catalog_row("binance", Some(CatalogRoute::ServerBacked), None)],
+            3
+        )
+        .contains("1 venues never fetched")
+    );
+}
+
+/// **A LOCALLY fetched list is spelled as the operator's own: a fetch DATE, never an age, and its
+/// qualifier.** `docs/decisions/0066` decision 9.
+///
+/// ⚠ Mutation proof: make `age_cell` fall through to `refreshed_label` for a local list row and
+/// the second assertion goes red: a venue with a real count renders `never`, the word for
+/// "nothing has ever measured this".
+#[test]
+fn a_locally_fetched_list_is_spelled_as_theirs() {
+    let mut r = catalog_row("alpaca", None, None);
+    r.local = Some(vike_catalog::InstrumentList {
+        venue: "alpaca".into(),
+        fetched: "2026-09-16".into(),
+        qualifier: "demo".into(),
+        instruments: vec![],
+    });
+    assert_eq!(r.answer(), vike_catalog::CatalogAnswer::LocalCredentialed);
+    let age = age_cell(&r, 1);
+    assert_eq!(age, "yours 2026-09-16", "their own list, their own date");
+    assert!(!age.contains("never"), "{age}");
+    assert!(!age.contains("ago"), "a fetch DATE is not an age: {age}");
+
+    let line = status_line(&r);
+    assert!(line.contains("this list is YOURS"), "{line}");
+    assert!(line.contains("vike-backend catalog refresh alpaca"), "{line}");
+    assert!(line.contains("demo"), "the qualifier rides the Status cell: {line}");
+    // …and the server's refusal still stands beside it, because the SERVER still refuses.
+    assert!(line.contains("credentials"), "{line}");
+}
+
+/// **The kept list WINS, and the row stops mentioning the operator's own.**
+#[test]
+fn a_kept_list_outranks_a_local_list_even_at_zero() {
+    let mut r = catalog_row("alpaca", None, None);
+    r.local = Some(vike_catalog::InstrumentList {
+        venue: "alpaca".into(),
+        fetched: "2026-09-16".into(),
+        qualifier: "demo".into(),
+        instruments: vec![],
+    });
+    r.stamp =
+        Some(CatalogCacheVenueStamp { venue: "alpaca".into(), last_refreshed_ms: 0, count: 0 });
+    assert!(age_cell(&r, 1_000).contains("just now"), "{}", age_cell(&r, 1_000));
+    assert!(
+        !status_line(&r).contains("this list is YOURS"),
+        "a measured venue must not advertise the list it no longer uses: {}",
+        status_line(&r)
+    );
+}
+
+#[test]
+fn the_hover_says_which_box_the_press_spends() {
+    assert!(press_hint(&direct("deribit")).contains("from its API"));
+    let routed = press_hint(&catalog_row("binance", Some(CatalogRoute::ServerBacked), None));
+    assert!(routed.contains("datahub at 127.0.0.1:7878"), "{routed}");
+}

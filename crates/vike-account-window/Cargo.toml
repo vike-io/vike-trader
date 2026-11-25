@@ -1,0 +1,65 @@
+[package]
+name = "vike-account-window"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The desktop's Account window, one window: the per-tier equity header and its view-model, and the tabs Accounts · Positions · Orders · Strategies · History (History: Fills · Order history · Summary over the page vike-app-core reads from the datahub's store). egui, no eframe/wgpu, mounted by vike-app-core; it opens no connection."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `ui-widget` — an egui widget / engine crate (no eframe/wgpu).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 75
+
+[dependencies]
+# The read model the window draws (`CoreSnapshot`, `VenueBlock`, `OrderView`, `AccountLedgerTotals`). The
+# read model only: `default-features = false` leaves out the `runtime` feature's tokio and core_affinity
+# (its lane senders), which nothing here names (vike-tradehub-client's edge makes the same cut).
+vike-execution = { path = "../vike-execution", default-features = false }
+vike-model = { path = "../vike-model" }
+# What the observe frame says beyond the snapshot (`node_words::BackendNodeWords`: the accounts' links and the
+# mounts), the tier decoder (`observe_decode::map_tier`), and the wire types the window reads
+# (`MountViewWire`, `AccountDirectoryWire`, `book_of_route_key`, `quote_rate_phrase`).
+vike-tradehub-client = { path = "../vike-tradehub-client" }
+# The history page's wire rows (`execution_stream::ExecutionAccountPositionsWire`, the Summary's opening snapshot) and
+# the `Welcome` feature words `ExecutionHistoryServed::from_features` reads. Types only: this crate dials nothing,
+# the History read is vike-app-core's (`crates/vike-app-core/src/data/execution_history.rs`).
+vike-datahub-client = { path = "../vike-datahub-client" }
+# The stored execution rows (`ExecFillRow`, `ExecOrderRow`, `execution_index`) the page carries: the pure seam
+# only, no DataFusion.
+vike-data = { path = "../vike-data" }
+# The METRIC TAXONOMY, for the history's Summary tab: `metric_catalog::METRICS` (the one roster, whose
+# declaration order IS the render order) and `MetricUnit::render` (the one home for a metric's scaling and
+# precision) — and the `TradingResultsTable` document itself (with `TradingResultsTableMetricValues`, `NOT_RECORDED` and
+# `TRADING_RESULTS_TABLE_SCHEMA`). Also the FOLD: the Summary folds the fills the execution-history load read from the
+# datahub through `vike_analytics::trading_results_table_from_fills` (stored rows -> `vike_data::ExecFillRow::fill_events`
+# -> fills -> `TradingResultsTableFillOrder::ByTime`). ⚠ It read a LOCAL command journal until 2026-10-11, which a thin
+# client never has; the journal READ (`vike_journal::fills_from_journal`) is not this crate's.
+#
+# ⚠ The edge exists to DELETE a hand copy, and that is the whole of its justification. The panel used to carry
+# its own twenty-row roster with its own per-row precision and its own `* 100.0` on the percent rows, against a
+# catalog of thirty-eight — the fourth such copy in the tree, and `MetricUnit::render`'s own doc records what the
+# earlier three published (a three-percent drawdown as `0.0310%`, which reads as three basis points). It was
+# vike-app-core's edge until the window moved here (top layers, wave 2), and that crate's only reader of it.
+#
+# Depends on vike-model ALONE (layer 15), carries no engine, no execution plane and no data layer, and is
+# DataFusion-free, so this crate stays on the fast CI lane.
+vike-analytics = { path = "../vike-analytics" }
+# The Summary's foreign-quote refusal (`foreign_fiat_quoted_list`) and its periods a year (`trades_every_day`).
+vike-catalog = { path = "../vike-catalog" }
+vike-ui-theme = { path = "../vike-ui-theme" }
+# `mutex::lock` (the load slot) and `number_text::format_number`.
+vike-utility = { path = "../vike-utility" }
+egui = { workspace = true }
+
+[dev-dependencies]
+# `harness::type_ready`, the first-frame guard `tests/history_screen.rs`'s kittest harnesses open with.
+# A dev-only FEATURE on a crate linked normally above.
+vike-ui-theme = { path = "../vike-ui-theme", features = ["test-support"] }
+# The history's headless render gate (`tests/history_screen.rs`) reads the accessibility tree: NO wgpu / NO
+# snapshot (the workspace manifest's `egui_kittest` rationale).
+egui_kittest = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

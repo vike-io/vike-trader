@@ -1,0 +1,55 @@
+//! `TradingState`: the three-way switch the pre-trade gate and the operator's kill switch share.
+//!
+//! Pure data, plus the one fact about it every consumer that COMPARES two of them needs: how strict
+//! each is ([`TradingState::strictness`]). The GATE that judges an order against it is vike-execution's
+//! `RiskGate`, and the verbs that move it (`SetTradingState`, the halt sentinel) are the exec and
+//! core planes'. It sits here because the engine snapshot, the published read model, the journaled
+//! command lane and the GUI all name it, and none of them may link the gate to do so.
+
+/// Whether the engine admits new orders.
+///
+/// ⚠ Two spellings, one type: the journal, the snapshot and every wire write the variant name
+/// (`"Active"`) and keep it; a run profile's `guards.initial_trading_state` reads the lowercase word
+/// (`active`), taken by the per-variant `alias`. `Default` is `Active`, the profile's absent key.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum TradingState {
+    #[default]
+    #[serde(alias = "active")]
+    Active,
+    /// only position-reducing orders allowed
+    #[serde(alias = "reducing")]
+    Reducing,
+    /// no new orders (kill switch)
+    #[serde(alias = "halted")]
+    Halted,
+}
+
+// The operator's word for each state: the lowercase spelling the per-variant serde `alias` reads,
+// and the ONE case rule for typing it (`parse`, case-insensitive like `AccountTier`'s `FromStr`).
+// IMPL-ONLY, so the serde attributes stay on the literal block above.
+vike_utility::word_enum! {
+    impl TradingState {
+        Active => "active",
+        Reducing => "reducing",
+        Halted => "halted",
+    }
+}
+
+impl TradingState {
+    /// How strict the state is: `Active` 0 < `Reducing` 1 < `Halted` 2. A larger number admits
+    /// less. Used wherever one state must not LOOSEN another (a run profile's
+    /// `guards.initial_trading_state` is never sent over a stricter state the journal restored) —
+    /// compare these numbers, never the variants' declaration order.
+    #[must_use]
+    pub const fn strictness(self) -> u8 {
+        match self {
+            TradingState::Active => 0,
+            TradingState::Reducing => 1,
+            TradingState::Halted => 2,
+        }
+    }
+}
+
+#[path = "trading_state_tests.rs"]
+#[cfg(test)]
+mod trading_state_tests;

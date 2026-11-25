@@ -1,0 +1,157 @@
+[package]
+name = "vike-strategy-lab"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike's check of the SHIPPED strategy files (`strategies/**` at the repository root): its tests compile every shipped file in-process as a `#[path]` module and run it on the simulator and read every file's header, and its examples are the two strategy labs that run the files. DEV-ONLY: no crate may name it as a normal dependency, so no binary links it and no strategy is compiled into a program."
+# The integration tests are ONE test binary, `tests/integration.rs` (every `tests/<name>.rs` a `mod` of it), declared
+# below: one binary links instead of one per file. Discovery is off so each file keeps the path its citations name; a
+# new root file builds only as a `mod` there or a `[[test]]` row (`crates/vike-ops/tests/hygiene/test_registry_gate.rs`'s `every_root_test_file_is_built_where_discovery_is_off`).
+autotests = false
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier
+# `domain-stacked`, its arithmetic floor: one hop over its highest normal edge, `vike-strategy` (20).
+# That no crate names this one as a normal dependency is held by NAME, not by rank
+# (`crates/vike-ops/tests/architecture/layer_gate/fences.rs`'s `no_crate_names_the_strategy_lab_normally`,
+# decision 0089's shape); a dev-dependency may still point here (the core, hub and harness tests).
+[package.metadata.vike]
+layer = 25
+
+# `cargo shear` cannot see it used: the gallery files reach the lib through `include!` of a build.rs output.
+[package.metadata.cargo-shear]
+ignored = ["vike-utility"]
+
+# The library holds the gallery-born files (`src/gallery.rs`), which the strategy lab runs, and the
+# taker files (`src/takers.rs`), which the harness, hub and core tests build through `stand_in`: what
+# they name.
+[dependencies]
+# `vike_strategy::file`: the header parser (`gallery_file`'s `[run]`) and the folder scan the header
+# test runs; the library halves the taker files name (`Controller`, `ControllerHarness`, `fair_value`,
+# `TokenId`, `SignalTracker`).
+vike-strategy = { path = "../vike-strategy" }
+# What a shipped file names: `vike_model::{OrderBroker, Strategy, params}`.
+vike-model = { path = "../vike-model" }
+# `vike_marketdata::Bar`.
+vike-marketdata = { path = "../vike-marketdata" }
+# The order language a gallery-born file is written in, and its shared vocabulary (`signal`, `helpers`, `higher`, ...).
+vike-tactics = { path = "../vike-tactics" }
+# The indicators a gallery-born file reads, and `strategy_kit` (the vocabulary that reads one).
+vike-indicators = { path = "../vike-indicators" }
+# The UTC civil calendar a gallery-born file's session and month reads take (`vike_utility::calendar`).
+vike-utility = { path = "../vike-utility" }
+# The platform-independent transcendentals a gallery-born file takes (decision 0032).
+libm = { workspace = true }
+# What a taker file names beyond the files' usual surface: `strategies/funding/funding_carry.rs`
+# prices each leg's taker fee from `vike_venues::fee_schedule_for` (`strategies/pairs/pairs_zscore.rs`'s
+# `vike_indicators::pairs::HalfLife` comes with the `vike-indicators` edge above).
+vike-venues = { path = "../vike-venues" }
+# What the options file names: `strategies/options/covered_call.rs` inverts a leg's IV and picks its strike by delta
+# with `vike_options::{years_to_expiry_ms, delta_at_quote}`.
+vike-options = { path = "../vike-options" }
+# What the two maker files (`src/makers.rs`) name: the makers' maths (`vike_market_making`), their saved state's
+# serde shapes and JSON, and their edge-triggered HOLD/RESUMING and load-state `tracing` lines.
+vike-market-making = { path = "../vike-market-making" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+# The gallery-born files (`src/gallery.rs`, `gallery_file`; `build.rs` lists them from `strategies/` at build
+# time, so adding or removing one edits nothing here): the shipped-strategies check proper.
+# OFF for the nine crates that dev-depend on this one for `stand_in` and the makers, so their test
+# builds compile the takers and makers alone; ON for this crate's own tests and examples through the
+# self dev-dependency below. CI builds this crate (and so the gallery) on a pull request only when a
+# strategy-visible file changed: `xtask/src/ci/selection.rs`'s `strategy_lab_touched`.
+gallery = []
+
+[dev-dependencies]
+# Self-referential dev-dep (the `vike-execution`/`vike-model` idiom): turns `gallery` on for THIS
+# crate's own test and example builds, and for nothing that only dev-depends on it.
+vike-strategy-lab = { path = ".", features = ["gallery"] }
+# TEST-ONLY: the compensated sum a test or example reproduces (`vike_math::summation::compensated_sum`,
+# decision 0294); layer 2, `libm` only, already in this crate's closure through vike-model.
+vike-math = { path = "../vike-math" }
+# The shared `OrderBrokerMock` double (`test-support`) the example test drives a file on.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# `vike_marketdata::Bar`'s `test_support` bar builders.
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+# The maker files' own tests (moved from vike-market-making with the makers): the concrete `LiveBroker` they
+# mount a maker on, and the workspace's one scoped `tracing` capture their HOLD-warn tests read through.
+vike-core = { path = "../vike-core" }
+vike-log = { path = "../vike-log", features = ["test-support"] }
+# The simulator the taker files run on (`StrategyEngine` over `OrderBrokerSimulator`, `tests/takers.rs` and the
+# files' own tests); a maker backtest runs on it too (`tests/makers.rs`, with `test-support`).
+vike-simulator = { path = "../vike-simulator", features = ["test-support"] }
+# `TradingRecord`, which a run returns (named at its owner, as every caller does).
+vike-analytics = { path = "../vike-analytics" }
+# The closed-trade ledger the set-A and set-B examples book every run in (`vike_trade_ledger::TradeClosedLedger`,
+# named at its owner).
+vike-trade-ledger = { path = "../vike-trade-ledger" }
+# The static fee lane's break-even round trip a live mount's facts carry
+# (`maker_round_trip_fee_for`, `tests/makers/facts.rs`).
+vike-tradehub-core = { path = "../vike-tradehub-core" }
+# The files' own tests write their params tables as TOML text (`toml::from_str` into `Params`).
+toml = { workspace = true }
+# What the two research runners in `examples/` read with beyond those (they were
+# `vike-backtesthub`'s bins until plan 2b deleted the library copies of the strategies they drive):
+# `vike_backtesthub::binutil` (`CommaList`, `bin_version_line`, `routed_history`), the history route
+# and its `HistoryStore`, and their argv through `vike_utility::cli` on top of `clap`. DEV edges: an
+# example is no shipped program.
+vike-backtesthub = { path = "../vike-backtesthub" }
+vike-datahub-client = { path = "../vike-datahub-client", features = ["hist-route"] }
+# `test-support` for `vike_data::HistoryStoreMemory`: the store the strategy labs serve the bars they read once to
+# every run (`examples/strategy_lab/desk.rs`'s `store_of`).
+vike-data = { path = "../vike-data", features = ["test-support"] }
+# `cli` for the examples' argv (above), and `test-support` for `vike_utility::libm_walk`, the source parser
+# behind `tests/gallery.rs`'s platform-call scan (decision 0074). DEV-only features.
+vike-utility = { path = "../vike-utility", features = ["cli", "test-support"] }
+clap = { workspace = true }
+# `cheap_np_run`'s own unit tests write their scratch window files under a temporary directory.
+tempfile = { workspace = true }
+# What the two strategy labs (`examples/strategy_lab/`, `examples/strategy_lab_b/`; moved from vike-simulator's
+# examples on 2026-11-17) name beyond the edges above. Every lab run is a backtest profile's run (decision 0269,
+# wave 4): `vike_backtest::run::run_backtest` over a profile the lab writes (`examples/strategy_lab/desk.rs`'s
+# `run_profile`). They read their bars through the datahub as a backtest's one-shot readers do (decision 0084,
+# `examples/strategy_lab/bars.rs`): the observe key's name from `vike-hub-protocol` and the project's hub-key store
+# through `vike-secrets`. Set B prices a lot from the instrument rows (`vike_catalog::kept_row`) and set A books a
+# commission as the fill law does (`vike_fills::broker_sim::commission`). DEV edges: an example is no shipped program.
+vike-backtest = { path = "../vike-backtest" }
+vike-catalog = { path = "../vike-catalog" }
+vike-fills = { path = "../vike-fills" }
+vike-hub-protocol = { path = "../vike-hub-protocol" }
+vike-secrets = { path = "../vike-secrets" }
+# `tests/sdk_adapters.rs`, the check of every SDK adapter at its real tag (decision 0296's verdict 8): the SDK
+# vocabulary and the loader, and the builder that builds through the adapter. DEV edges, upward, as the layer
+# gate allows; a pull request runs them only when it plans this crate (a strategy-visible change).
+vike-rust-strategy = { path = "../vike-rust-strategy" }
+vike-strategy-builder = { path = "../vike-strategy-builder" }
+
+[[example]]
+# Datahub-driven `cheap_np` runner: drives the REAL StrategyEngine over the ingested Polymarket tape
+# + spot series, window by window, with the shipped file's `CheapNp`. Opens no store; `--store` is
+# refused. `test = true` keeps its unit tests running (they ran with the bin's).
+name = "cheap_np_run"
+test = true
+
+[[example]]
+# Sport taker runner, with the shipped file's `SportTaker`: opens NO store (it reads the tape from
+# files) and uses no harness module.
+name = "sport_taker_run"
+
+[[example]]
+# Strategy lab, set A: each strategy checked trade by trade against reference trade lists, every run a backtest
+# profile's run over the datahub's bars (`examples/strategy_lab/main.rs`'s `//!` has the usage line).
+name = "strategy_lab"
+
+[[example]]
+# Strategy lab, set B: each published strategy checked against its reference trade count and net profit; it shares
+# set A's `desk.rs` and `bars.rs` by `#[path]`.
+name = "strategy_lab_b"
+
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

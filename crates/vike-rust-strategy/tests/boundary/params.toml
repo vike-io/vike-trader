@@ -1,0 +1,8 @@
+fast = 12
+levels = [1, 2.5, "three"]
+on = true
+ratio = 0.5
+symbol = "BTCUSDT"
+
+[route]
+venue = "bybit"

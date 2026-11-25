@@ -1,0 +1,503 @@
+//! The `Welcome` advertisement (`served_features`), the build it states, and the key-less delete refusal.
+
+use std::path::Path;
+use std::sync::OnceLock;
+
+use vike_datahub_client::proto::{
+    FEATURE_BACKFILL_CANCEL, FEATURE_BAR_COLUMNS, FEATURE_CREDENTIALS_CHANGED,
+    FEATURE_EXECUTION_SERIES, FEATURE_EXECUTION_STREAM, FEATURE_EXECUTIONS_RECORDED,
+    FEATURE_FORECASTS, FEATURE_FUNDING_HISTORY, FEATURE_GATEWAY_LINKS, FEATURE_HISTORY_CHANNELS,
+    FEATURE_INPUT_BARS, FEATURE_INSTRUMENT_LISTS, FEATURE_LIVE_FAMILY_TOKENS,
+    FEATURE_MARKET_DATA_LANE_QUOTES, FEATURE_OPERATOR_INSTRUMENTS, FEATURE_OPTIONS_CHAIN,
+    FEATURE_OPTIONS_REFRESH, FEATURE_SCAN_CHAIN, FEATURE_SCAN_EXECUTION_FILLS_RANGE,
+    FEATURE_SCAN_EXECUTION_ORDERS, FEATURE_SCAN_FORECASTS, FEATURE_SCAN_SEC_TABLES,
+    FEATURE_SCAN_TEXT_SCORES, FEATURE_SCAN_TEXTS, FEATURE_SERIES_DAYS, FEATURE_SPLIT_WARNINGS,
+    FEATURE_STRATEGY_LANE, FEATURE_STRATEGY_LANE_BARS, FEATURE_STRATEGY_LANE_BOOK,
+    FEATURE_STRATEGY_LANE_QUOTES, FEATURE_STRATEGY_LANE_TICKS, FEATURE_STREAM_BINARY_TICKS,
+    FEATURE_STREAM_CLASS, FEATURE_STREAM_FUNDING, FEATURE_SYMBOL_FACTS, FEATURE_SYMBOL_SETS,
+    FEATURE_TOOL_FEEDS, build_feature, strategy_venue_feature,
+};
+use vike_datahub_client::{
+    FEATURE_BACKFILL, FEATURE_BACKFILL_FUNDING, FEATURE_BACKFILL_MARKET_RULES,
+    FEATURE_BACKFILL_OPTION_TRADES, FEATURE_BAR_SOURCE, FEATURE_COVERAGE, FEATURE_DELETE_SERIES,
+    FEATURE_MARKET_DATA, FEATURE_SCAN_BOOK_UPDATES, FEATURE_SCAN_COHORT, FEATURE_SCAN_DEPTH,
+    FEATURE_SCAN_EQUITY, FEATURE_SCAN_EXECUTION_FILLS, FEATURE_SCAN_LIMIT,
+    FEATURE_SCAN_PERP_METRICS, FEATURE_SEED_CLASS, FEATURE_SEED_SERIES, FEATURE_SERIES_FACTS,
+    FEATURE_SOURCE, FEATURE_VENUE_CATALOG,
+};
+use vike_hub_protocol::auth::FEATURE_AUTH;
+use vike_hub_protocol::features::{
+    FEATURE_GATEWAY_STATUS, FEATURE_WIRE_MSGPACK, market_data_venue_feature,
+};
+use vike_hub_protocol::plane::DATA_PLANE_SENTINEL;
+
+use crate::import::ImportLane;
+use crate::market_data::MarketDataHub;
+use crate::strat::StrategyLane;
+
+/// This datahub's BUILD as its `Welcome` states it (`vike_datahub_client::proto::FEATURE_BUILD_PREFIX`): the sha256 of
+/// the program it runs, set once by [`advertise_running_program`]. Unset, the `Welcome` states none.
+static BUILD: OnceLock<String> = OnceLock::new();
+
+/// **State the program this process runs as its build in every later `Welcome`** (decision 0078's amendment of
+/// 2026-11-20, the owner's yes): its sha256, hashed on a thread of its own so the port binds at once. A `Welcome` before
+/// the hash is done states no build, and its reader falls back as for an older datahub. The RUNNING image is hashed
+/// (`/proc/self/exe` where it exists), so a binary replaced on disk under a running datahub is never named for it.
+/// Called by the serving root (`crate::datahub_cli`) alone: a test's in-process server states no build.
+pub fn advertise_running_program() {
+    let spawned = std::thread::Builder::new().name("datahub-build".to_string()).spawn(|| {
+        let hashed = vike_hub_protocol::hash::sha256_hex_of_file(Path::new("/proc/self/exe"))
+            .or_else(|_| {
+                let program = std::env::current_exe()?;
+                vike_hub_protocol::hash::sha256_hex_of_file(&program)
+            });
+        match hashed {
+            Ok(sha256) => {
+                tracing::info!("vike-datahub: its Welcome states build {sha256}, the sha256 of this program");
+                let _ = BUILD.set(sha256);
+            }
+            Err(e) => tracing::warn!(
+                "vike-datahub: this program could not be hashed ({e}), so its Welcome states no build"
+            ),
+        }
+    });
+    if let Err(e) = spawned {
+        tracing::warn!(
+            "vike-datahub: no thread hashes this program ({e}), so its Welcome states no build"
+        );
+    }
+}
+
+/// The verbs THIS server answers, advertised in the handshake's `Welcome`. Kept in sync
+/// with the arms of [`handle_request`]: the four `HistoryStore` read verbs the `HistoryStoreDatahub` seam
+/// consumes, and the four store-metadata verbs beside them
+/// (`list_series`/`inventory`/`series_gaps`/[`FEATURE_COVERAGE`]).
+///
+/// ⚠ **The compute strings are GONE, and their absence is the negotiation** (ruling 7 of
+/// `docs/superpowers/specs/2026-09-09-datahub-market-data-wire-design.md`). This list used to open
+/// with `backtest` and carry `list_strategies`, `run_sweep_profile`, `run_walkforward_profile` and
+/// — on a `datafusion-serve` build — `run_slice`/`run_sweep`/`run_walkforward`. Those seven verbs
+/// are served by `vike-backend backtesthub --addr` now, and a well-behaved client that reads this list
+/// learns so at the HANDSHAKE, before it ships a profile it would only be refused for. A client
+/// that sends one anyway still gets the named refusal
+/// (`vike_hub_protocol::plane`'s `wrong_plane_message`) rather than a drop — the advertisement is
+/// what stops the send, the refusal is what holds for a client that does not read it, and neither
+/// substitutes for the other. This is the same three-legged shape [`FEATURE_BACKFILL`] and
+/// [`FEATURE_DELETE_SERIES`] already use, applied to a REMOVAL rather than an addition.
+///
+/// ⚠ **`run_sweep_profile` and `run_sweep` are spelled the old way deliberately.** The
+/// `sweep` -> `paramscan` rename moved the Rust identifiers and left every NEGOTIATED TOKEN where
+/// it was — an older client compares a capability string literally, so renaming one refuses every
+/// peer that shipped before the rename. The rename pass rewrote this paragraph anyway, which is how
+/// a doc naming two strings that appear on no wire shipped once already; the backtesthub's
+/// `served_features` (`crates/vike-backtesthub/src/backtesthub_server.rs`) is what actually pushes them,
+/// and it is the authority.
+///
+/// `has_backfill` is a RUNTIME fact, not a cfg: [`FEATURE_BACKFILL`] is advertised exactly when a
+/// collector table is MOUNTED, because "compiled with `backfill-serve`" and "can actually serve a
+/// backfill" are the same thing only when the bin wired a table in — a `serve()` entry inside a
+/// `backfill-serve` test build still must not advertise what it will refuse. [`FEATURE_BACKFILL_CANCEL`]
+/// rides the same fact: the registry it opens is the mounted table's. `has_backfill_funding`
+/// is the same fact one level down: the mounted table carries a FUNDING lane
+/// (`crate::backfill::BackfillTable::has_funding`). `import` is the same fact for the archive import
+/// lane: `crate::import::advertised` pushes the capability and its format entries exactly when a
+/// lane is mounted.
+///
+/// `execution_stream_served` is the same kind of RUNTIME fact: whether THIS process mounts the
+/// execution stream (`crate::execution_stream`, mounted when the datahub keeps a settings database to
+/// hold its cursors), so a tradehub's live executions land in `kind=exec_fill` / `kind=execution_order`
+/// at all. It gates [`FEATURE_EXECUTION_STREAM`] and [`FEATURE_EXECUTIONS_RECORDED`] and nothing else:
+/// the two exec READS are build facts served either way.
+// One positional fact per advertised lane: E1b's option-trades and E4's market-rules bools made it eleven.
+#[expect(clippy::too_many_arguments)]
+pub(super) fn served_features(
+    has_backfill: bool,
+    has_backfill_funding: bool,
+    has_backfill_option_trades: bool,
+    has_backfill_market_rules: bool,
+    requires_auth: bool,
+    market_data: Option<&MarketDataHub>,
+    has_seed: bool,
+    has_catalog: bool,
+    import: Option<&ImportLane>,
+    execution_stream_served: bool,
+    strat: Option<&StrategyLane>,
+    keeps_instrument_lists: bool,
+) -> Vec<String> {
+    let mut features = vec![
+        // ⚠ The PLANE SENTINEL, pushed through the shared constant rather than spelled here: a
+        // client (`vike_datahub_client::DatahubClient::connect_authed_on`) reads it to tell THIS
+        // daemon — whose Write scope carries `Backfill` and `DeleteSeries` — from the compute one
+        // before it signs anything. A literal that drifted from the client's copy would make this
+        // daemon an unplaceable peer: still refused a backtest-plane key, but refused to every
+        // caller that asks for the data plane by name as well. The value is the frozen token it
+        // always was — `"load_bars"`.
+        DATA_PLANE_SENTINEL.to_string(),
+        "scan_quotes".to_string(),
+        "scan_trades".to_string(),
+        "properties_as_of".to_string(),
+        // PR-6 store-metadata verbs — served on EVERY build (HistoryStore trait methods, no DataFusion).
+        "list_series".to_string(),
+        "inventory".to_string(),
+        "series_gaps".to_string(),
+        // Their §6-Q2 sibling, likewise a trait verb on every build. UNCONDITIONAL, unlike
+        // `backfill` below: there is no table to mount and nothing runtime about it, so the only
+        // question its advertisement answers is "is this server older than the verb" — which is
+        // precisely what the GUI's Partial column needs in order to choose between the wire answer
+        // and an honest note.
+        FEATURE_COVERAGE.to_string(),
+        // The CHART-GAP SEED's CLASS field (`docs/decisions/0061` Phase 3). ⚠ **UNCONDITIONAL, and
+        // deliberately NOT beside `FEATURE_SEED_SERIES` below**, although the two describe one
+        // verb. That one is a RUNTIME fact — is this box's lane armed — and this one is a BUILD
+        // fact, the `FEATURE_COVERAGE` shape: the only question its advertisement answers is "is
+        // this daemon older than the field", and a build that decodes the field honours it whether
+        // or not any lane is armed. Gating it on `has_seed` would make an unarmed-but-modern daemon
+        // indistinguishable from an old one, and a client would then withhold a class from a server
+        // that understands it perfectly well — and withholding it is the silent downgrade the field
+        // exists to prevent. `FEATURE_SEED_CLASS`' own doc carries the three legs.
+        FEATURE_SEED_CLASS.to_string(),
+        // The SIX tick-level and research reads `docs/decisions/0084-only-the-datahub-touches-
+        // the-store.md` asked this wire to grow. UNCONDITIONAL, the `FEATURE_COVERAGE` shape:
+        // they are `vike_data::HistoryStore` trait verbs with no table to mount, so every build
+        // that serves at all serves them and the advertisement answers exactly one question —
+        // is this server older than the verb? Six strings rather than one family string;
+        // `FEATURE_SCAN_BOOK_UPDATES`' own doc argues why.
+        FEATURE_SCAN_BOOK_UPDATES.to_string(),
+        FEATURE_SCAN_DEPTH.to_string(),
+        FEATURE_SCAN_COHORT.to_string(),
+        FEATURE_SCAN_PERP_METRICS.to_string(),
+        FEATURE_SCAN_EQUITY.to_string(),
+        FEATURE_SCAN_EXECUTION_FILLS.to_string(),
+        // The text history (`kind=text`): a store trait verb like the six above, so the same
+        // unconditional build fact.
+        FEATURE_SCAN_TEXTS.to_string(),
+        // ...and the option-chain read that joined them later for the studies, the same shape.
+        FEATURE_SCAN_CHAIN.to_string(),
+        // The two SEC tables (`kind=financial_fact`, `kind=institutional_holding`): the same build fact.
+        FEATURE_SCAN_SEC_TABLES.to_string(),
+        FEATURE_SCAN_TEXT_SCORES.to_string(),
+        // ...and the live strategies' published forecasts (`kind=exec_forecast`) on the Observe key:
+        // likewise unconditional, unlike the lane's `forecasts`, which rides a mounted strategy lane.
+        FEATURE_SCAN_FORECASTS.to_string(),
+        // The execution-history pair (the GUI's Tearsheet history): the WINDOW on `ScanExecFills`
+        // and the order-lifecycle verb. UNCONDITIONAL build facts like the six above; the window's
+        // string is load-bearing because an older server would IGNORE the window and answer the whole
+        // series (`FEATURE_SCAN_EXECUTION_FILLS_RANGE`'s own doc).
+        FEATURE_SCAN_EXECUTION_FILLS_RANGE.to_string(),
+        FEATURE_SCAN_EXECUTION_ORDERS.to_string(),
+        // ...and their catalog of one window, folded from the store's inventory: the same build fact.
+        FEATURE_EXECUTION_SERIES.to_string(),
+        // The ROW CAP on a range scan. UNCONDITIONAL like the six above and for the same reason —
+        // it is a property of this build's `handle_request`, not of a mounted table — and the
+        // advertisement is load-bearing rather than informational: an older server IGNORES an
+        // unknown `limit` field (serde skips unknown fields) and answers with EVERY row, so a
+        // client that assumed the cap without checking would ask for a page and get a frame that
+        // overruns `MAX_FRAME_LEN`. Silence here means "do not send one".
+        FEATURE_SCAN_LIMIT.to_string(),
+        // NAMING a `source=` lane on the read and the delete: UNCONDITIONAL, and load-bearing for the same
+        // reason, at a worse cost: an older server would act on the archive (`FEATURE_SOURCE`'s doc).
+        FEATURE_SOURCE.to_string(),
+        // NAMING a lane on the bar read: its own string, because a server that advertises the one above
+        // and predates this one would answer the venue's candles as the lane's (`FEATURE_BAR_SOURCE`'s doc).
+        FEATURE_BAR_SOURCE.to_string(),
+        // A bar read answered as binary COLUMNS (decision 0107's amendment of 2026-11-18). UNCONDITIONAL: a
+        // property of this build's `dispatch`, like the cap above.
+        FEATURE_BAR_COLUMNS.to_string(),
+        // Every frame in msgpack (and LZ4) for a client that writes it (`super::connection`'s loop answers each
+        // request in its own form): a property of this build's connection loop, so unconditional.
+        FEATURE_WIRE_MSGPACK.to_string(),
+        // The refusal frame, and the refusal classes on a strategy-lane session, for a client that says it reads
+        // them (`vike_hub_protocol::handshake::HandshakeFrame::Reads`, `super::connection`'s loop): a property of this
+        // build's connection loop, so unconditional.
+        vike_hub_protocol::features::FEATURE_REFUSAL_FRAME.to_string(),
+        // The tick-level scans answered as binary COLUMNS (`ScanQuotes` and its siblings): `dispatch`'s
+        // property too, so unconditional.
+        vike_datahub_client::proto::FEATURE_TICK_COLUMNS.to_string(),
+        // ...and every other row-shaped scan, `StrategyForecasts` among them: the same.
+        vike_datahub_client::proto::FEATURE_SCAN_COLUMNS.to_string(),
+        // A bar read RESAMPLED to a coarser interval (`super::bar_resample`): a property of this build's
+        // `dispatch` too, so unconditional.
+        vike_datahub_client::proto::FEATURE_BAR_RESAMPLE.to_string(),
+        // 0084's SEVENTH verb — the one that record did not price, because it measured the
+        // `HistoryStore` trait and this was inherent to `HistoryStoreDataFusion`. Unconditional, the
+        // `FEATURE_COVERAGE` shape.
+        FEATURE_SERIES_FACTS.to_string(),
+        // ...and a bar range's stamped days, a trait read like it: the same build fact.
+        FEATURE_SERIES_DAYS.to_string(),
+        // ...and of a tick read's, by its `kind`.
+        vike_datahub_client::proto::FEATURE_SERIES_DAYS_KINDS.to_string(),
+        // The HISTORY-CHANNELS read (`docs/decisions/0102`). UNCONDITIONAL, the `FEATURE_COVERAGE`
+        // shape and deliberately NOT `FEATURE_BACKFILL`'s per-mounted-table rule below: whether a
+        // lane is mounted travels INSIDE the answer, so a table-less build still serves the verb,
+        // and gating the string on the table would make an unmounted modern server look like an
+        // old one. The advertisement answers one question — is this server older than the verb.
+        FEATURE_HISTORY_CHANNELS.to_string(),
+        // The gatewayhub's state. UNCONDITIONAL for the same reason: whether it answers travels INSIDE
+        // the reply, so a datahub whose gatewayhub is down never looks like an old one.
+        FEATURE_GATEWAY_STATUS.to_string(),
+        // The venue sessions' history. UNCONDITIONAL too: an empty history is an answer.
+        FEATURE_GATEWAY_LINKS.to_string(),
+        // The relay of a credential change to the gatewayhub (decision 0287). UNCONDITIONAL too: a gatewayhub
+        // that is down, or a datahub started with no link to one, is an answer inside the reply.
+        FEATURE_CREDENTIALS_CHANGED.to_string(),
+        // The user's symbol lists. UNCONDITIONAL too: a datahub with no settings store answers each verb in words.
+        FEATURE_SYMBOL_SETS.to_string(),
+        // The instruments the operator adds by hand. UNCONDITIONAL too: no store or no project is answered in words.
+        FEATURE_OPERATOR_INSTRUMENTS.to_string(),
+        // The open split warnings. UNCONDITIONAL too: a server whose store is not watched answers none.
+        FEATURE_SPLIT_WARNINGS.to_string(),
+        // The live tokens of the families the recorder records. UNCONDITIONAL too: a datahub that runs no recorder says
+        // so inside the answer, so it never looks like an older one.
+        FEATURE_LIVE_FAMILY_TOKENS.to_string(),
+        // The OPTIONS-CHAIN verb. UNCONDITIONAL, the `FEATURE_HISTORY_CHANNELS` shape and NOT the
+        // `has_catalog` rule below: the lane has no runtime switch, a build without it still answers
+        // the verb (`NotArmed`), and gating the string on the lane would make that modern build look
+        // like an OLD one — the one a client must refuse by name. `FEATURE_OPTIONS_CHAIN`'s own doc
+        // carries the three legs.
+        FEATURE_OPTIONS_CHAIN.to_string(),
+        // The options listing's on-demand refresh, its sibling and UNCONDITIONAL for the same reason:
+        // a build without the lane answers it with an error naming the rebuild.
+        FEATURE_OPTIONS_REFRESH.to_string(),
+        // The TOOL-FEEDS verbs (`NewsFeed`, `EconomicCalendar`, `EquityCalendar`). UNCONDITIONAL, the
+        // `FEATURE_OPTIONS_CHAIN` shape and for its reason: the lane has no runtime switch, a build
+        // without it still answers the verbs (`NotArmed`), and gating the string on the lane would make
+        // that modern build look like an OLD one — the one a client must refuse by name.
+        // `FEATURE_TOOL_FEEDS`'s own doc carries the three legs.
+        FEATURE_TOOL_FEEDS.to_string(),
+    ];
+    // The backfill-on-demand verb — advertised per MOUNTED TABLE, not per cfg (see the doc above).
+    // This advertisement is the verb's whole negotiation: it shipped without a PROTO_VERSION bump.
+    if has_backfill {
+        features.push(FEATURE_BACKFILL.to_string());
+        // ...and the operator's door onto the backfills it runs, on the SAME condition: the
+        // registry `ListBackfills` reads and `CancelBackfill` flags lives with the mounted table,
+        // and a server with none runs nothing to list or stop. Not tied to keys — a key-less
+        // loopback server serves both, as it serves `Backfill`
+        // (`docs/decisions/0101-cancelling-a-backfill-is-a-control-verb-served-wherever-backfill-is.md`).
+        features.push(FEATURE_BACKFILL_CANCEL.to_string());
+    }
+    // ...and its FUNDING lane, per mounted funding SOURCE rather than per table: a table with none
+    // can only refuse `interval=funding`, and a server older than the lane refuses it as an
+    // unmeasurable step — so silence here is what makes a client refuse first, sending nothing
+    // (`FEATURE_BACKFILL_FUNDING`'s own doc).
+    if has_backfill_funding {
+        features.push(FEATURE_BACKFILL_FUNDING.to_string());
+    }
+    // ...and its OPTION-TRADES lane, per mounted option-trades source, for the funding lane's reason.
+    if has_backfill_option_trades {
+        features.push(FEATURE_BACKFILL_OPTION_TRADES.to_string());
+    }
+    // ...and its MARKET-RULES lane, per mounted market-rules source, for the funding lane's reason.
+    if has_backfill_market_rules {
+        features.push(FEATURE_BACKFILL_MARKET_RULES.to_string());
+    }
+    // The CHART-GAP SEED lane — advertised per ARMED LANE, a runtime fact like `backfill`'s
+    // per-mounted-table rule. `has_seed` is `SeedLane`'s mere existence, and that is deliberate:
+    // `crate::datahub_cli` builds one only under the `flags.datahub_chart_seed` row, so there is no
+    // `enabled: bool` for this advertisement to get out of step with.
+    //
+    // ⚠ Its absence does NOT make the verb refuse, which is the one place this capability differs
+    // from every other on this wire — an unarmed server answers `SeedDone { armed: false }` and
+    // writes nothing. `FEATURE_SEED_SERIES`' own doc argues why that difference IS the Observe
+    // classification rather than a leniency beside it, and
+    // `docs/decisions/0058-a-chart-gap-fetch-is-an-observe-verb.md` puts removing it in the reopen
+    // list. The advertisement is still what stops a well-behaved client sending, so an operator
+    // learns which switch is off instead of watching a chart that never fills.
+    if has_seed {
+        features.push(FEATURE_SEED_SERIES.to_string());
+    }
+    // The venues' KEPT instrument lists — advertised per PROJECT, a runtime fact: a datahub with no project folder keeps
+    // none, and an empty answer would read as "every venue keeps an empty list", which refuses every name a reader
+    // types (decision 0290). Silent, a reader reads its names as typed, the rule for a store that keeps no list. With a
+    // project, an unarmed catalog lane still answers each refresh `NotArmed`.
+    if keeps_instrument_lists {
+        features.push(FEATURE_INSTRUMENT_LISTS.to_string());
+        let of_venues = vike_datahub_client::proto::FEATURE_INSTRUMENT_LISTS_OF_VENUES;
+        features.push(of_venues.to_string());
+        let stamped = vike_datahub_client::proto::FEATURE_KEPT_ROWS_STAMPED;
+        features.push(stamped.to_string());
+    }
+    // The VENUE-CATALOG lane — advertised per ARMED LANE, the same runtime rule as `seed_series`
+    // above, and `has_catalog` is `CatalogLane`'s mere existence for the same reason (there is no
+    // `enabled: bool` for the advertisement to get out of step with).
+    //
+    // ⚠ Its absence does NOT make the verb refuse either: an unarmed server answers
+    // `CatalogOutcome::NotArmed` and calls no venue. What the advertisement buys here is
+    // specifically the thing an EMPTY LIST would destroy — a client that knows the lane is unarmed
+    // says so, where a client that merely got no instruments could not tell that apart from `ig`
+    // and `ibkr`, which genuinely have none (`docs/decisions/0062`'s decision 5).
+    if has_catalog {
+        features.push(FEATURE_VENUE_CATALOG.to_string());
+    }
+    // The ARCHIVE IMPORT lane — advertised per MOUNTED LANE, the `backfill` rule, and the
+    // capability rides TOGETHER with one `import_format=<id>` entry per registered format. A daemon
+    // with no project above it, or a build without the format registry, mounts none and pushes
+    // nothing here (`crate::import::mount`), so "can serve" and "will serve" stay one answer.
+    features.extend(crate::import::advertised(import));
+    // The EXECUTION STREAM — a RUNTIME fact, the `market_data_venue=` rule rather than the build-fact
+    // rule of the two exec reads above: those are served whether or not anything WRITES the
+    // series, and this says whether live executions are being written at all. Silence is
+    // ambiguous by construction (an older server, or one with nowhere to keep a cursor), which is what
+    // `FEATURE_EXECUTIONS_RECORDED`'s own doc tells a reader to make of it; its stored word
+    // `exec_materialize` keeps the spelling an older desktop reads.
+    if execution_stream_served {
+        features.push(FEATURE_EXECUTION_STREAM.to_string());
+        features.push(FEATURE_EXECUTIONS_RECORDED.to_string());
+    }
+    // The MARKET-DATA plane, advertised per MOUNTED HUB — a RUNTIME fact exactly like `backfill`'s
+    // per-mounted-table rule, NOT a build fact like `coverage`. A binary whose
+    // operator did not arm `flags.datahub_live` mounts no hub and advertises nothing, which is what
+    // keeps "can serve" and "will serve" one answer.
+    //
+    // ⚠ The per-venue entries ride BESIDE the named capability rather than replacing it, and they are
+    // collision-safe by construction: every capability check in this protocol family is whole-string
+    // equality, so a `market_data_venue=binance` entry can neither satisfy nor shadow a named capability.
+    // They are what lets a client learn at the HANDSHAKE which venues it may name, instead of one
+    // `VenueNotServed` refusal at a time.
+    if let Some(hub) = market_data {
+        features.push(FEATURE_MARKET_DATA.to_string());
+        features.push(FEATURE_MARKET_DATA_LANE_QUOTES.to_string());
+        for venue in hub.served_venues() {
+            features.push(market_data_venue_feature(venue));
+        }
+    }
+    // THE RECORDING plane's venue roster — `rec_venue=<slug>`, one entry per venue this build can
+    // RECORD, and the twin of the `market_data_venue=` block directly above.
+    //
+    // ⚠ **A BUILD fact, like `FEATURE_COVERAGE` and UNLIKE the `market_data_venue=` entries it sits beside.**
+    // The difference is deliberate and it follows the QUESTION each answers. `market_data_venue=` answers
+    // "will this process serve me a live tick", which is false without a mounted hub however the
+    // binary was compiled — a runtime fact. This one answers "if I write `okx` into a subscription
+    // row, will the daemon refuse to start at its next restart", and that is decided by
+    // `crate::recording::build_recording_feed`'s arms alone: a serve-only invocation of a
+    // `record` build still could not record `okx`, and could record `binance` the moment an
+    // operator adds the flag. Gating this on the `--record` flag would make the advertisement
+    // answer a different question from the one a client asks it.
+    //
+    // ⚠ A build with NO recording plane pushes NOTHING here, and `FEATURE_REC_VENUE_PREFIX`'s own
+    // doc carries what a client must do about it: an empty advertisement is AMBIGUOUS (an old
+    // server, or a `record`-less build) and is therefore the same answer as an unreachable server —
+    // warn and proceed, never refuse. The refusal is available only where the server advertised at
+    // least one venue.
+    #[cfg(feature = "record")]
+    for venue in crate::recording::supported() {
+        features.push(vike_datahub_client::proto::rec_venue_feature(venue));
+    }
+    // The STRATEGY LANE, advertised per MOUNTED HUB and ONLY on a keyed server: the lane is fenced by
+    // `Scope::Trade`, which a key-less server cannot enforce, so it fails CLOSED there whatever is
+    // mounted (`crate::server`'s `strategy_open_verb` refuses it too, and the advertisement is what stops
+    // a well-behaved client). `datahub_cli` mounts a hub only when this box holds the strategy-lane key,
+    // so "advertised" is "the key is held". One string per lane family beside the base string, so a
+    // client refuses a lane this build does not serve BY NAME, and one `strategy_venue=` entry per venue
+    // served - separate from `market_data_venue=`, because the market-data plane serves a credentialed venue only
+    // when the operator's row opened it, and then only attaches.
+    // `FEATURE_STREAM_CLASS` rides with it: the session honours a `Sub`'s delivery class.
+    if requires_auth && let Some(hub) = strat {
+        features.push(FEATURE_STRATEGY_LANE.to_string());
+        features.push(FEATURE_STRATEGY_LANE_QUOTES.to_string());
+        features.push(FEATURE_STRATEGY_LANE_BARS.to_string());
+        features.push(FEATURE_STRATEGY_LANE_BOOK.to_string());
+        if hub.serves_ticks() {
+            features.push(FEATURE_STRATEGY_LANE_TICKS.to_string());
+        }
+        features.push(FEATURE_STREAM_CLASS.to_string());
+        // The session carries the venue's funding frames to a client that asks for them.
+        features.push(FEATURE_STREAM_FUNDING.to_string());
+        // ...and writes its per-tick frames as binary bodies to a client that asks (decision 0167's amendment).
+        features.push(FEATURE_STREAM_BINARY_TICKS.to_string());
+        // ...and the lane's key makes its three store reads: the stored funding series (`StrategyFundingHistory`),
+        // a strategy input's bar series (`StrategyInputBars`, decision 0271's live half) and the published
+        // forecasts (`StrategyForecasts`, the tradehub's model drift rule).
+        features.push(FEATURE_FUNDING_HISTORY.to_string());
+        features.push(FEATURE_INPUT_BARS.to_string());
+        // ...which answers a reader that asks as the bar columns (`super::route`'s `dispatch`).
+        features.push(vike_datahub_client::proto::FEATURE_INPUT_BAR_COLUMNS.to_string());
+        features.push(FEATURE_FORECASTS.to_string());
+        // ...and a paper account's symbol facts (`StrategySymbolFacts`, decision 0285's amendment of 2026-11-16).
+        features.push(FEATURE_SYMBOL_FACTS.to_string());
+        for venue in hub.served_venues() {
+            features.push(strategy_venue_feature(venue));
+        }
+    }
+    // ⚠ The AUTH advertisement, and it must be LAST-but-conditional in exactly this way: a key-less
+    // server never pushes it, so its whole `Welcome` — features included — is byte-identical to the
+    // pre-auth protocol's. That identity is the backward-compatibility contract, not a nicety, and
+    // `a_keyless_servers_welcome_is_byte_identical_to_the_pre_auth_protocol` is what holds it.
+    // On a KEYED server this string is how a client learns authentication is mandatory here BEFORE
+    // it sends a verb it would only be refused for.
+    if requires_auth {
+        features.push(FEATURE_AUTH.to_string());
+        // ⚠ The DESTRUCTIVE verb rides the SAME conditional, and that pairing is the whole posture:
+        // it is served exactly when the server can enforce a scope, and never otherwise. A key-less
+        // server therefore does not advertise it AND refuses it (`delete_series_verb`) — the
+        // advertisement is what stops a well-behaved client sending one, and the refusal is what
+        // holds for a client that does. Neither substitutes for the other.
+        features.push(FEATURE_DELETE_SERIES.to_string());
+    }
+    // THE BUILD (`build=`), once this process hashed the program it runs ([`advertise_running_program`]).
+    features.extend(BUILD.get().map(|build| build_feature(build)));
+    features
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The `Welcome` states the build once this process knows it** (`build=`, the backtesthub's key of an identical
+    /// run's answer from a saved run): written through the pair the client reads with.
+    #[test]
+    fn the_build_is_advertised_once_it_is_known() {
+        let _ = BUILD.set("ab12".to_string());
+        let features = served_features(
+            false, false, false, false, false, None, false, false, None, false, None, false,
+        );
+        let advertised = vike_datahub_client::proto::advertised_build(&features);
+        assert!(advertised.is_some(), "{features:?}");
+        assert_eq!(advertised.as_ref(), BUILD.get(), "the build this process states");
+    }
+
+    /// **The `rec_venue=` advertisement is exactly what THIS BUILD can record — both ways.**
+    ///
+    /// ⚠ It is the only thing that proves the push in [`served_features`] happens at all. The
+    /// prefix, the builder and the reader are unit-tested in the light crate
+    /// (`crates/vike-datahub-client/src/proto_tests.rs`'s `the_rec_venue_feature_round_trips`), but a
+    /// round trip in that crate says nothing about whether a server ever WRITES one — and a read
+    /// half with no write half is worse than neither, because a client that refuses an
+    /// unadvertised venue would then refuse every venue against a server that records it perfectly
+    /// well.
+    ///
+    /// ⚠ **The arm that runs is the shipped one.** A `record` build must advertise exactly
+    /// `crate::recording::supported()`, and every test build turns on every shipped feature. A build with no
+    /// recording plane must advertise NOTHING: no test build reaches that arm since CI began testing each hub
+    /// once (decision 0131 as amended).
+    #[test]
+    fn the_recordable_venues_are_advertised_as_this_build_can_record_them() {
+        let features = served_features(
+            false, false, false, false, false, None, false, false, None, false, None, false,
+        );
+        let advertised = vike_datahub_client::proto::advertised_rec_venues(&features);
+
+        #[cfg(feature = "record")]
+        {
+            let can_record: Vec<String> =
+                crate::recording::supported().into_iter().map(str::to_string).collect();
+            assert_eq!(
+                advertised, can_record,
+                "the advertisement must BE `crate::recording::supported()`, in order — a \
+                 client refuses a `record add` for any venue it does not see here"
+            );
+        }
+        #[cfg(not(feature = "record"))]
+        assert!(
+            advertised.is_empty(),
+            "a build with no recording plane records nothing and must advertise nothing — an \
+             empty advertisement is AMBIGUOUS by design and a client degrades on it: {advertised:?}"
+        );
+
+        // …and it never collides with the LIVE plane's entries, whatever this build carries.
+        assert!(
+            vike_hub_protocol::features::advertised_market_data_venues(&features).is_empty(),
+            "no market data hub was mounted, so no `market_data_venue=` entry may appear: {features:?}"
+        );
+    }
+}

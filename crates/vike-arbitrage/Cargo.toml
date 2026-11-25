@@ -1,0 +1,46 @@
+[package]
+name = "vike-arbitrage"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "Arbitrage and relative value, pure maths (book chapters 37 and 38): the Engle–Granger and Johansen cointegration tests with their published critical values, the pair screen (clusters of returns by `vike-portfolio`, or clusters the caller chose) and the PCA-residual spreads over factors the caller computed, a spread's signals through the one z-score and half-life of `vike-indicators` with the feature rows and labels of a model of its reversion, the spot–perpetual basis and funding carry, and the complete-outcome-set arbitrage of a prediction market (buy-all-YES, buy-all-NO, convert or resolve, the p(1−p) fee). On both user-file surfaces, a strategy file's and a research study file's (decision 0089's addendum of 2026-11-17)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain`: it composes
+# `vike-indicators` and `vike-portfolio`, both `leaf` (15), over the vocabulary (`vike-math` 2, `vike-marketdata` 5,
+# `vike-model` 10), so it cannot sit at 15 beside them; it names nothing at 20 or above, so every crate that names it
+# (`vike-user-research` 25, the venue bridges 40) is above it.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+# The formula floor (decision 0294): the workspace's one dense linear algebra and its unit-root statistic, the least
+# squares of the cointegrating regression and of every residualisation, the symmetric eigen-decomposition of
+# Johansen's canonical correlations (`linear_algebra`), and the Dickey-Fuller statistic of the Engle-Granger residual
+# (`stationarity_tests::augmented_dickey_fuller`). This crate writes no regression, decomposition or unit-root test of
+# its own. Layer 2, `libm` only, and on both user-file templates, so a strategy file builds the `Matrix` it hands in.
+vike-math = { path = "../vike-math" }
+# The live book of an outcome set's leg (`L2Book`, `L2BookLevel`): the prediction-market lock walks each leg's asks
+# for size and VWAP. The market-data vocabulary, layer 5, serde only; already on both user-file templates.
+vike-marketdata = { path = "../vike-marketdata" }
+# `FeeSchedule` (the venue's taker fee curve, p(1-p) for a prediction market) and `ContractValue::taker_price` (the
+# one book walk): the lock nets fee and slippage through the shared homes instead of its own copies. Layer 10, already
+# on both user-file templates.
+vike-model = { path = "../vike-model" }
+# The ONE spread z-score and half-life (`series::spread_zscore`, `series::half_life`) and the rolling deviation
+# (`vike_math::rolling::rolling_std`), which `spread::signals` calls so a strategy file that reads the same indicators by name sees
+# the numbers a study trained a model on. Layer 15, published to crates.io (decision 0071: this crate only names it,
+# it never changes it), already on both user-file templates.
+vike-indicators = { path = "../vike-indicators" }
+# The clusterings `pair_discovery::cluster_returns` groups assets by (`hierarchical::clusters_by_silhouette`,
+# `kmeans::kmeans_clusters`). Layer 15, pure maths on `vike-math`, already on both user-file templates.
+vike-portfolio = { path = "../vike-portfolio" }
+# The one transcendental this crate calls, `log1p` of a canonical correlation in Johansen's statistics and `log` of
+# a price and of the basis (decision 0032: from the `libm` crate, never the platform's). Workspace-pinned and already
+# linked through `vike-math`.
+libm = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

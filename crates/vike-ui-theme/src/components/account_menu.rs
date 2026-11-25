@@ -1,0 +1,291 @@
+//! The rows of the Trade window's venue · account menu: ONE line each — the venue and its product in
+//! the Strong role, the account's name or number after it (`Binance Perp  main`,
+//! `Dukascopy  3709890`) — with the account's tier chip at the right and a check on the account the
+//! window is on. **Both are regular weight, and size and ink tell them apart** (the owner chose this
+//! one, "B", from five drawn on an HTML page, 2026-10-05, after calling the semibold venue bold): the
+//! venue in the primary ink at the Strong size, the account in the dim ink at the Body size. A
+//! NUMBER (`3709890`) is JetBrains Mono and a NAME (`main`) is Inter — the design system's rule,
+//! "words are Inter, anything read character by character is mono". A venue
+//! with no account shows the venue and a Connect button where the chip would be. The owner's v3
+//! design drew two lines (the account and the symbol under the venue) and the owner then asked for
+//! one (2026-10-04, "second line remove and put acc name or number after venue"): the symbol the row
+//! opens is on hover instead, and a row that cannot be picked is greyed with its reason on hover.
+//! The menu fetches no price: the design draws one per row, and the owner ruled it out ("you may not
+//! fetch prices for menu").
+//!
+//! The kit knows no venues and no accounts: a row takes strings and a mark. What a row IS is the
+//! Trade window's (`vike_order_entry::trade_window::AccountRow`); this file paints it.
+
+use egui::{
+    Align, CornerRadius, Layout, Rect, Response, Role, Sense, Ui, UiBuilder, WidgetInfo, pos2, vec2,
+};
+use vike_model::AccountTier;
+
+use super::button::ThemeButtonAction;
+use super::chip;
+use super::{ThemeStatus, ThemeTokens, focus_ring};
+use crate::icons;
+use crate::metrics::RADIUS;
+use crate::type_scale::ThemeTextRole;
+
+/// What an account row says about the account's tier.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThemeAccountMenuMark<'a> {
+    /// The tier, as its own chip (LIVE filled in the accent, DEMO and PAPER outlined).
+    Tier(AccountTier),
+    /// The backend did not report a tier: `word` in the muted outline, `why` on hover. Never drawn
+    /// as PAPER (spec §4.3).
+    Unknown { word: &'a str, why: &'a str },
+}
+
+/// One account in the menu.
+#[derive(Clone, Copy, Debug)]
+pub struct ThemeAccountMenuRow<'a> {
+    /// The venue and its product: `Binance Perp`.
+    pub title: &'a str,
+    /// The account's name or number, drawn after the title: `main`.
+    pub account: &'a str,
+    /// The symbol the row opens (the venue's own spelling), empty where the venue does not list the
+    /// instrument. On hover, and in the accessible name — never on the line.
+    pub opens: &'a str,
+    pub mark: ThemeAccountMenuMark<'a>,
+    /// The account the window is on: a check at the right, a Label rather than a Button (a selected
+    /// item is a Label, spec §4.2), the hover fill kept.
+    pub current: bool,
+    /// Why the row cannot be picked (the server does not run the account, the venue does not list
+    /// the instrument): drawn greyed, the reason on hover, and it takes no click.
+    pub why_not: Option<&'a str>,
+    /// The account runs and its way to the venue is lost: `(word, why)`, a badge beside the tier with
+    /// the sentence on hover. It stays pickable, because a window on it still shows its book.
+    pub lost: Option<(&'a str, &'a str)>,
+}
+
+/// The width of the check's slot, kept on every row so the chips line up whether or not a row is
+/// the current one.
+fn check_slot(t: &ThemeTokens) -> f32 {
+    t.text.px(ThemeTextRole::Body) + t.metrics.gap
+}
+
+/// A row's height: its one line and a gap above and below.
+pub fn row_height(ui: &Ui, t: &ThemeTokens) -> f32 {
+    let line =
+        ui.painter().layout_no_wrap("Ag".to_string(), t.font(ThemeTextRole::Strong), t.theme.text);
+    line.size().y + 2.0 * t.metrics.gap
+}
+
+/// Draw an account row across the available width; the response is the click on it (none for a
+/// current or greyed row).
+pub fn account_row(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    row: &ThemeAccountMenuRow<'_>,
+) -> Response {
+    let t = ThemeTokens::of(ui.ctx());
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), row_height(ui, &t)), Sense::hover());
+    let pickable = !row.current && row.why_not.is_none();
+    let sense = if pickable { Sense::click() } else { Sense::hover() };
+    let response = ui.interact(rect, ui.scope_id().with(&id), sense);
+    if row.current || (pickable && response.hovered()) {
+        ui.painter().rect_filled(rect, CornerRadius::same(RADIUS), t.theme.hover);
+    }
+    let ink = if row.why_not.is_some() { t.theme.text_tertiary } else { t.theme.text };
+    paint_line(ui, &t, rect, row.title, row.account, ink);
+    // The chip, right-aligned before the check's slot.
+    let right = rect.right() - t.metrics.padding - check_slot(&t);
+    let chip_area = Rect::from_min_max(pos2(rect.left(), rect.top()), pos2(right, rect.bottom()));
+    let mut at = ui.new_child(
+        UiBuilder::new()
+            .id_salt((&id, "mark"))
+            .max_rect(chip_area)
+            .layout(Layout::right_to_left(Align::Center)),
+    );
+    match row.mark {
+        ThemeAccountMenuMark::Tier(tier) => {
+            chip::tier(&mut at, tier);
+        }
+        ThemeAccountMenuMark::Unknown { word, why } => {
+            chip::badge(&mut at, word, ThemeStatus::Muted).on_hover_text(why);
+        }
+    }
+    if let Some((word, why)) = row.lost {
+        chip::badge(&mut at, word, ThemeStatus::Error).on_hover_text(why);
+    }
+    if row.current {
+        let glyph = egui::FontId::new(t.text.px(ThemeTextRole::Body), icons::family());
+        icons::CHECK.paint(
+            ui.painter(),
+            pos2(rect.right() - t.metrics.padding, rect.center().y),
+            egui::Align2::RIGHT_CENTER,
+            glyph,
+            t.theme.accent,
+        );
+    }
+    focus_ring(ui, &t, &response);
+    let tier_word = match row.mark {
+        ThemeAccountMenuMark::Tier(tier) => chip::tier_label(tier),
+        ThemeAccountMenuMark::Unknown { word, .. } => word,
+    };
+    // The accessible name keeps what the line no longer says: the symbol the row opens, or that the
+    // venue does not list it.
+    let opens = if row.opens.is_empty() { "not listed here" } else { row.opens };
+    let lost = row.lost.map_or(String::new(), |(word, _)| format!(", {word}"));
+    let name = format!("{}, {} · {opens}, {tier_word}{lost}", row.title, row.account);
+    let kind = if pickable { Role::Button } else { Role::Label };
+    response.widget_info(|| WidgetInfo::selected(kind, true, row.current, &name));
+    match (row.why_not, row.opens) {
+        (Some(why), _) => response.on_hover_text(why),
+        (None, opens) if !opens.is_empty() => response.on_hover_text(format!("Opens {opens}")),
+        (None, _) => response,
+    }
+}
+
+/// The venue with no account: its name and a Connect button at the right. The response is the
+/// button's. Its accessible name carries the venue, so a screen reader does not hear the same word
+/// once per row.
+pub fn connect_row(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    title: &str,
+    button_name: &str,
+) -> Response {
+    let t = ThemeTokens::of(ui.ctx());
+    let (rect, _) =
+        ui.allocate_exact_size(vec2(ui.available_width(), row_height(ui, &t)), Sense::hover());
+    paint_line(ui, &t, rect, title, "", t.theme.text_tertiary);
+    let area = Rect::from_min_max(rect.min, pos2(rect.right() - t.metrics.padding, rect.bottom()));
+    let mut at = ui.new_child(
+        UiBuilder::new()
+            .id_salt((&id, "connect"))
+            .max_rect(area)
+            .layout(Layout::right_to_left(Align::Center)),
+    );
+    let button = at.scope_builder(UiBuilder::new().id_salt((&id, "button")), |ui| {
+        ui.add(ThemeButtonAction::secondary("Connect"))
+    });
+    icons::named(button.inner, button_name)
+}
+
+/// The share of a row the line may take, left to right: the rest is the mark's (a long account is
+/// a cTrader number; clipped, never run under the chip).
+const TEXT_SHARE: f32 = 0.7;
+
+/// The title in the Strong role at regular weight and the account after it in the Body role, also
+/// regular, in the dim ink (the owner: "we have to distinguish name of venue and acc"; the bundled
+/// faces have no weight lighter than regular and he found semibold bold, so the difference is SIZE
+/// and INK). An account that is a number is set in the mono face, a name in the words face. A greyed
+/// row (`ink` is already the dim ink) reads as unavailable all the way across. Centred in the row
+/// from its left pad.
+fn paint_line(
+    ui: &Ui,
+    t: &ThemeTokens,
+    rect: Rect,
+    title: &str,
+    account: &str,
+    ink: egui::Color32,
+) {
+    let clip =
+        Rect::from_min_max(rect.min, pos2(rect.left() + rect.width() * TEXT_SHARE, rect.max.y));
+    let p = ui.painter().with_clip_rect(clip);
+    let centre = |x: f32| pos2(x, rect.center().y);
+    let x = rect.left() + t.metrics.padding;
+    let title =
+        p.text(centre(x), egui::Align2::LEFT_CENTER, title, t.font(ThemeTextRole::Strong), ink);
+    if !account.is_empty() {
+        let number = account.chars().all(|c| c.is_ascii_digit());
+        let face = if number { t.mono(ThemeTextRole::Body) } else { t.font(ThemeTextRole::Body) };
+        p.text(
+            centre(title.right() + t.metrics.gap),
+            egui::Align2::LEFT_CENTER,
+            account,
+            face,
+            t.theme.text_tertiary,
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::appearance::ThemeAppearance;
+    use crate::components::testing::paint;
+    use crate::painted::context_with;
+    use crate::type_scale::ThemeTextSize;
+    use egui::{Color32, FontId, Shape};
+
+    /// `(text, font, colour)` of every text one pass painted.
+    fn fonts(shapes: &[Shape]) -> Vec<(String, FontId, Color32)> {
+        shapes
+            .iter()
+            .filter_map(|s| match s {
+                Shape::Text(t) => {
+                    let f = &t.galley.job.sections[0].format;
+                    Some((t.galley.text().to_string(), f.font_id.clone(), f.color))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn row<'a>(account: &'a str, why_not: Option<&'a str>) -> ThemeAccountMenuRow<'a> {
+        ThemeAccountMenuRow {
+            title: "Binance Spot",
+            account,
+            opens: "BTCUSDT",
+            mark: ThemeAccountMenuMark::Tier(AccountTier::Demo),
+            current: false,
+            why_not,
+            lost: None,
+        }
+    }
+
+    /// THE choice the owner made (variant B): the venue is the Strong role at regular weight in the
+    /// primary ink; a name is the Body role in the words face in the dim ink; a number is the Body
+    /// role in the mono face in the dim ink. At every text size, because a literal 12 or 11 passes by
+    /// coincidence at one of them.
+    #[test]
+    fn the_venue_is_regular_and_the_account_is_dim_and_smaller() {
+        for size in ThemeTextSize::ALL {
+            let context =
+                context_with(&ThemeAppearance { text_size: size, ..ThemeAppearance::default() });
+            let t = ThemeTokens::of(&context);
+            for (account, face) in
+                [("main", t.font(ThemeTextRole::Body)), ("3709890", t.mono(ThemeTextRole::Body))]
+            {
+                let shapes = paint(&context, |ui| {
+                    account_row(ui, "r", &row(account, None));
+                });
+                let painted = fonts(&shapes);
+                let get = |text: &str| {
+                    painted.iter().find(|(s, _, _)| s == text).unwrap_or_else(|| {
+                        panic!("{size:?}: {text:?} was not painted: {painted:?}")
+                    })
+                };
+                let (_, venue_font, venue_ink) = get("Binance Spot");
+                assert_eq!(*venue_font, t.font(ThemeTextRole::Strong), "{size:?}: the venue");
+                assert_ne!(
+                    *venue_font,
+                    t.font_semibold(ThemeTextRole::Strong),
+                    "{size:?}: not bold"
+                );
+                assert_eq!(*venue_ink, t.theme.text, "{size:?}: the venue's ink");
+                let (_, account_font, account_ink) = get(account);
+                assert_eq!(*account_font, face, "{size:?}: {account:?}'s face");
+                assert_eq!(*account_ink, t.theme.text_tertiary, "{size:?}: the account's ink");
+            }
+        }
+    }
+
+    /// A row that cannot be picked is dim all the way across: the venue as well as the account.
+    #[test]
+    fn a_greyed_row_is_dim_across() {
+        let context = context_with(&ThemeAppearance::default());
+        let t = ThemeTokens::of(&context);
+        let shapes = paint(&context, |ui| {
+            account_row(ui, "r", &row("main", Some("not listed here")));
+        });
+        for (text, _, ink) in fonts(&shapes).into_iter().filter(|(s, _, _)| s != "DEMO") {
+            assert_eq!(ink, t.theme.text_tertiary, "{text:?} on a greyed row");
+        }
+    }
+}

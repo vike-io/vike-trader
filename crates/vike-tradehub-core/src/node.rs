@@ -1,0 +1,284 @@
+//! The runtime assembly: [`assemble_runtime`] and the types it is configured by and returns
+//! (`src/node/accounts.rs`: accounts and the armed set; `src/node/mounts.rs`: journal records and
+//! leg derivation; `src/node/build.rs`: the build).
+//!
+//! [`assemble_runtime`] is the daemon's runtime assembly: one [`vike_execution::Engine`] per wired
+//! market ([`wired_markets`]) through [`crate::make_engine`] (so this module names NO bridge
+//! crate), the `reconcile_clients` list, the single-writer core ([`vike_core::spawn_core_multi`]) over a
+//! caller-built [`vike_core::CoreConfig`], and the live-event forwarder (the lane every live exec
+//! client pushes into, relayed into core ingest after spawn). ⚠ The desktop has no local core
+//! (#1610): `crates/vike-desktop/tests/app_local_core_gate.rs` refuses this call in the shell.
+//!
+//! ## It names no venue
+//! WHICH markets it mounts is [`wired_markets`]'s answer over [`RuntimeConfig::backend`]'s arming table: one
+//! [`RuntimeMarket`] per venue [`wired_markets`] returns, with its engine rank
+//! (docs/decisions/0098). The assembly is one loop over the rows.
+//!
+//! ## The boundary — what stays with the CALLER
+//! assemble_runtime does NOT create the market-data feeds, the `L2BookStore`/`TickStore`, the
+//! `CoreSinkAdapter` or the [`crate::ReconcileDriver`]: they belong to the composition root
+//! (`vike-tradehub`). ⚠ Not `vike-app`: the desktop builds no core and mounts no feed (#1610). Feeds
+//! are `vike-tradehub`'s dials to the datahub's strategy lane (its `StrategyLanesLive`; the venue sockets
+//! behind them are the gatewayhub's, decision 0164), which this crate does not link; the `ReconcileDriver` reads the feed-status map (`reconcile_feed_statuses`), so it is mounted beside
+//! them from [`RuntimeAssembly::reconcile_clients`] + [`RuntimeAssembly::reconcile_trigger`]. A headless caller mounts recon with an
+//! empty status map (every venue Healthy) or skips it, as `crate::build_paper_strategy_core_with` does.
+//!
+//! ## Inputs/outputs
+//! Everything `make_engine` reads is a [`RuntimeConfig`] field; everything a caller wires the process
+//! from is a [`RuntimeAssembly`] field.
+//!
+//! ## The startup preflight
+//! [`assemble_runtime`] runs [`crate::startup::run_startup_preflight`] before the first `make_engine`, so
+//! no caller has to remember it. The report is ENFORCED per venue ([`assemble_runtime_with_preflight`],
+//! the injected-report twin): a venue's hard FAIL withholds its credentials and stops its
+//! `demo`/`live` accounts (decision 0156: they do not run, with `PreflightFailed` as the reason); a
+//! global no-go only logs, and the mount proceeds. It adds no
+//! [`RuntimeConfig`]/[`RuntimeAssembly`] field: `crates/vike-tradehub/src/tradehub_cli/live_runtime.rs` builds and
+//! destructures both with exhaustive literals, so a new field breaks that caller.
+
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
+use vike_core::{CoreConfig, CoreHandle};
+
+mod accounts;
+mod build;
+mod fee_arm;
+mod hot;
+mod hot_preflight;
+mod mounts;
+
+pub use accounts::{
+    MountRoute, account_symbols_for, armed_live_venues, refuse_unarmed_live_venues,
+    runnable_accounts,
+};
+pub use build::{
+    assemble_runtime, assemble_runtime_armed, assemble_runtime_armed_with_preflight,
+    assemble_runtime_with_preflight,
+};
+pub use fee_arm::{EngineFees, MountFeeRebuild};
+pub use hot::{HotAccountReconcile, HotAccountStart, HotAccountStop, HotAccounts};
+pub use mounts::journal_venue_mounts;
+
+/// One market [`assemble_runtime`] mounts: the venue and where its DEFAULT engine sits in the core — the
+/// view [`wired_markets`] builds from a `vike_model` `VENUE_WIRING` row that carries an engine
+/// (`crates/vike-venues/src/venue_wiring.rs`). Nothing declares one by hand: every fact on it is that
+/// table's. ⚠ It names no symbol: each account's engine is mounted on the symbol the account's row
+/// states ([`account_symbols_for`]; decision 0156, amended 2026-11-13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeMarket {
+    /// A `vike_model::VENUES` id.
+    pub venue: &'static str,
+    /// Position of the DEFAULT engine in the core and of its reconcile leg in
+    /// [`RuntimeAssembly::reconcile_clients`]: ascending, smallest = primary; independent of the table (MOUNT)
+    /// order. Distinct per table (debug [`assemble_runtime`] panics; release holds ties in mount order).
+    pub engine_rank: u8,
+}
+
+/// **Every market the wiring table gives an engine**: the `vike_model` `VENUE_WIRING` rows that
+/// carry an engine, in row (MOUNT) order, with NO registry — the paper arm lists its venues from
+/// this (drift register R21: paper tiers run with no venue connection, so there is no bridge to ask
+/// whether a build carries a venue). A build without the `ibkr`/`fxcm`/`polymarket` feature used to
+/// drop those three from the paper venue list; release builds carry all three.
+///
+/// The LIVE assembly mounts [`crate::ArmingTable::wired_markets`] instead — this list kept where
+/// the backend says the venue's adapter is present (a `FeatureAbsent` venue, a bridge this binary
+/// was built without, drops out) — which is the one place the wiring table meets the build:
+/// [`assemble_runtime`] mounts those, [`armed_live_venues`] claims locks over them, and the xEMM
+/// live mount validates against them.
+#[must_use]
+pub fn wired_markets() -> Vec<RuntimeMarket> {
+    vike_venues::venue_wiring::VENUE_WIRING
+        .iter()
+        .filter_map(|&(venue, wiring)| {
+            let (_, engine_rank) = wiring.engine()?;
+            Some(RuntimeMarket { venue, engine_rank })
+        })
+        .collect()
+}
+
+/// The INPUTS the runtime assembly reads. Consumed BY VALUE: it owns the move-only [`CoreConfig`]
+/// (`Box<dyn FnMut>` closures), which `spawn_core_multi` takes. The reconnect-trigger channel is
+/// no field: the assembly builds it and returns it in [`RuntimeAssembly::reconcile_trigger`].
+pub struct RuntimeConfig {
+    /// **The venue backend** every venue call `assemble_runtime` makes goes through
+    /// ([`crate::VenueBackend`], wave 2 W9a): the gatewayhub's `TradeLaneBridge` over the trade wire (a remote
+    /// backend, W11), a `VenueBackendPaper`
+    /// for a box that dials nothing. This crate's keep half names no bridge. An `Arc` because the
+    /// preflight's probe closures are `'static`.
+    pub backend: Arc<dyn crate::VenueBackend>,
+    /// The opt-in PIT-`SymbolProperties` recorder (`flags.record_properties`), CONSTRUCTED by a
+    /// binary (this crate stays trait-only) and shared by every `make_engine`. `None` = no recorder,
+    /// byte-identical.
+    /// ⚠ No caller constructs one today: the daemon passes `None` (docs/decisions/0084 — the
+    /// surviving recorder runs inside the datahub).
+    pub properties_rec: Option<Arc<vike_data::PropertiesRecorder>>,
+    /// Seed equity for the `extra` engines; the PRIMARY's rides `core_config.seed_cash` (the daemon
+    /// passes its primary mount's `seed_cash` for both).
+    pub seed_cash: f64,
+    /// The caller's reconcile-gate verdict (`vike_tradehub::reconcile_config::reconcile_gate`: ON
+    /// for a mount arming a live account, `flags.reconcile_off` wins, `flags.reconcile` /
+    /// `VIKE_RECONCILE=1` forces). Builds the reconnect-trigger channel; the caller reuses it for
+    /// its `ReconcileDriver`.
+    pub reconcile_enabled: bool,
+    /// The fully-built [`CoreConfig`] (`seed_cash` plus every safety/observer knob), CONSUMED at
+    /// `spawn_core_multi`.
+    pub core_config: CoreConfig,
+    /// The operator's `[risk]` budget, threaded VERBATIM into every `make_engine` (one resolved
+    /// profile — the daemon's ACTIVE `run` row — for all venues). `None` leaves `RiskLimits` as
+    /// `make_engine` builds them (venue grid + `initial_margin_requirement` rescue only); `Some` merges the same
+    /// table a backtest would read via `vike_model::ProfileRisk::apply_to`
+    /// (`crate::make_engine`'s doc).
+    pub risk_profile: Option<vike_model::ProfileRisk>,
+    /// This MACHINE's hard ceilings: the `policy` rows in `<project>/settings/db/vike.db`, loaded by
+    /// the BINARY and projected onto [`crate::AdapterPolicy`], threaded VERBATIM into every
+    /// `make_engine`.
+    ///
+    /// Not [`Self::risk_profile`]: a run profile is per-RUN and operator-owned (file, env, CLI); a
+    /// policy is per-MACHINE, admin-owned, with **no env or CLI layer** — why `vike_config::Policy`
+    /// is its own type.
+    ///
+    /// ⚠ [`crate::AdapterPolicy::default()`] (no `policy` rows, no account table read) runs NO
+    /// account whatever its credentials: an account trades only at the tier its ACTIVE `account`
+    /// row states ([`crate::AdapterPolicy::accounts`]), and a gate whose absence armed everything is
+    /// none. Other fields keep each venue's compiled-in literal. The fold: `crate::make_engine`'s
+    /// doc; `crate::report_table_decision` and `crate::report_not_running` name each account that
+    /// does not run.
+    pub policy: crate::AdapterPolicy,
+}
+
+/// The assembled runtime: the live [`CoreHandle`] plus the handles a caller wires the process from.
+/// Destructure into same-named locals (`let RuntimeAssembly { handle: core, reconcile_clients, reconcile_trigger,
+/// live_venues, forwarder_stop, not_running, hot } = node;`).
+pub struct RuntimeAssembly {
+    /// The single-writer live core (the `th-core` runtime).
+    pub handle: CoreHandle,
+    /// One leg per credentialed venue with a reconcile client (EMPTY on pure paper); the caller
+    /// mounts `vike_tradehub_core::spawn_reconcile` from it beside the feed-status map.
+    /// ⚠ ONE ROW PER ACCOUNT, not per venue: `vike_tradehub_core::ReconcileLeg` carries venue and route key as
+    /// separate facts, both stamped on every payload. No labelled account ⇒ the same rows as
+    /// ever, each `route_key: None`.
+    pub reconcile_clients: Vec<crate::ReconcileLeg>,
+    /// The reconnect-trigger channel (`Some` iff [`RuntimeConfig::reconcile_enabled`]): its `Sender` is in
+    /// every trigger-firing live venue's resync supervisor (binance/bybit/okx/hyperliquid), and
+    /// `vike_tradehub_core::spawn_reconcile` ADOPTS the `(tx, rx)` pair, so triggers reach the SAME driver.
+    pub reconcile_trigger:
+        Option<(std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>)>,
+    /// Venues with a credential-gated LIVE exec client — the DOM's `● LIVE` badge set.
+    pub live_venues: HashSet<String>,
+    /// Raised BEFORE core shutdown so the forwarder drains-and-drops (no teardown deadlock;
+    /// `src/node/build.rs`'s TEARDOWN SAFETY note).
+    pub forwarder_stop: Arc<AtomicBool>,
+    /// **Every account of a wired market that does NOT RUN, with why** (decision 0156): no engine
+    /// for it in the core, and no paper engine in its place. The core holds the same list for its
+    /// refusals; the composition root publishes it (`vike-tradehub`'s observe frame), so a client
+    /// can show each account's reason instead of a bare "not running".
+    pub not_running: Vec<crate::ArmingNotRunning>,
+    /// **What starts one more account in this running node** (decision 0169, slice S1): owned by the
+    /// composition root's account watcher, which calls [`HotAccounts::start_account`] when an account
+    /// becomes active. Holds the core's own ingest lane, so the watcher is stopped before the core is.
+    pub hot: HotAccounts,
+}
+
+/// [`assemble_runtime`] failure: the forwarder thread spawn, a LIVE venue refusing to start without an
+/// account-dependent risk budget (`max_notional_per_order`/`max_total_exposure`;
+/// [`crate::require_live_risk_budget`]'s doc: why no universal default), or a refused arming.
+///
+/// **`Display` is the operator-facing contract, not a label.** The caller (vike-tradehub's
+/// `VIKE_TRADEHUB_LIVE=1` arm) PRINTS it and exits, never `.expect`s: the risk-budget miss is a
+/// FIRST-run mistake. `RiskBudget` forwards [`crate::EngineError`]'s `Display` VERBATIM (resolver,
+/// missing keys, a working `[risk]` example); wrapping would corrupt its TOML block.
+/// `crates/vike-tradehub-core/tests/scripted/risk_budget_diagnostic.rs` pins it.
+#[derive(Debug)]
+pub enum RuntimeError {
+    /// The `live-event-forward` OS thread could not be spawned.
+    ForwarderSpawn(std::io::Error),
+    /// A live venue mount refused to start over a missing account-dependent risk budget.
+    RiskBudget(crate::EngineError),
+    /// **A venue armed live that the pre-assembly armed set did not name** — the
+    /// [`refuse_unarmed_live_venues`] backstop: [`armed_live_venues`]'s probe UNDER-counted, so no
+    /// `vike_boot::live_lock` sentinel guards an account with a real exec session — the Danger-2
+    /// accident the lock exists to prevent.
+    UnarmedLiveVenues {
+        /// The venues that armed live outside the armed set, sorted.
+        venues: Vec<String>,
+        /// The pre-assembly armed set the caller locked from, for the diagnostic.
+        armed: Vec<String>,
+    },
+    /// **A strategy mount names an account this box does not run** — the default account included
+    /// since decision 0156 (`refuse_unarmed_mount_accounts` argues it): falling back to the DEFAULT
+    /// account trades the wrong book silently, and a strategy cannot run on an account that has no
+    /// engine. Names the venue, the account, the mount's symbol and the reason.
+    Mount(String),
+    /// **No account of any wired market runs, and none waits for its venue** (decision 0156): every
+    /// account is held for a cause of its own (no row, no credentials, a wrong tier), which only an
+    /// operator can change, and one that does not run is never given a paper one. Carries every account
+    /// and its reason, so the refusal says what to change. A node whose accounts wait for their venue
+    /// (`vike_model::ArmingBlock::venue_not_connected`) starts with no engine instead
+    /// (`vike_core::spawn_core_without_accounts`, owner 2026-11-15).
+    NoAccountRuns {
+        /// Every account the node knows, each with why it does not run.
+        not_running: Vec<crate::ArmingNotRunning>,
+    },
+    /// **The venue backend could not give the arming table** the whole assembly reads. With the
+    /// in-process backend this cannot happen; once the venues live behind a daemon it is "that
+    /// daemon is down", and the assembly is refused rather than guessing which account is armed.
+    Backend(crate::VenueBackendError),
+}
+
+impl std::fmt::Display for RuntimeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RuntimeError::ForwarderSpawn(e) => write!(f, "spawn live-event-forward thread: {e}"),
+            RuntimeError::RiskBudget(e) => write!(f, "{e}"),
+            RuntimeError::UnarmedLiveVenues { venues, armed } => write!(
+                f,
+                "refusing the runtime: {venues:?} armed a LIVE exec client, but the pre-assembly armed \
+                 set was {armed:?} — so no live-account lock was claimed for {venues:?} and a \
+                 second live process on those accounts would not be refused. This is a probe \
+                 UNDER-COUNT: `vike_tradehub_core::would_go_live_under` carries no row matching the \
+                 arm that fired. Add the row (it lives beside the arm's own credential loader), \
+                 or remove the arm."
+            ),
+            RuntimeError::Mount(m) => write!(f, "refusing the runtime: {m}"),
+            RuntimeError::NoAccountRuns { not_running } => {
+                write!(
+                    f,
+                    "refusing the runtime: no account of any wired market runs — an account runs at \
+                     the tier its active `account` row states (paper, demo or live) or not at all, \
+                     and none here does. `vike-cli account ls` lists the rows; `vike-backend \
+                     venues` names each block. The accounts:"
+                )?;
+                for nr in not_running {
+                    write!(f, "\n  {nr}")?;
+                }
+                Ok(())
+            }
+            RuntimeError::Backend(e) => write!(f, "refusing the runtime: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for RuntimeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            RuntimeError::ForwarderSpawn(e) => Some(e),
+            RuntimeError::RiskBudget(e) => Some(e),
+            RuntimeError::Backend(e) => Some(e),
+            // No inner error: `Display` carries the whole diagnostic.
+            RuntimeError::UnarmedLiveVenues { .. }
+            | RuntimeError::Mount(_)
+            | RuntimeError::NoAccountRuns { .. } => None,
+        }
+    }
+}
+
+#[cfg(test)]
+use accounts::refuse_unarmed_mount_accounts;
+#[cfg(test)]
+use mounts::{in_engine_order, legs_for_venue};
+
+#[path = "node_tests.rs"]
+#[cfg(test)]
+mod node_tests;

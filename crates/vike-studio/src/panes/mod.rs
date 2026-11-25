@@ -1,0 +1,45 @@
+//! The Studio's PANES: one module per surface `StudioState` (`crate::studio`) puts on screen.
+//!
+//! * `editor` — the Rhai code editor (`editor/syntax.rs` is its highlighter);
+//! * `slice_picker` — the data-slice picker (`StudioSlicePicker`);
+//! * `data_browser`, `indicators`, `templates_gallery` — the Data, Indicators and Templates tool
+//!   panes; `csv_upload` is the Data pane's Import CSV form (decision 0272);
+//! * `saved` — saved strategies, and the comparison of several of them over the picked slice;
+//! * `chat` — the AI copilot (`chat/connect.rs` generates its "Connect to Claude" command, behind
+//!   the non-default `mcp` feature);
+//! * `research` — the backtest server's studies and the runs it has kept, plus the surface a
+//!   study's result renders on;
+//! * `results` — the tabbed backtest-result surface;
+//! * `param_scan` — the Param scan & Validate pane's parameter rows, its range reading, and the last
+//!   scan's heatmap and table;
+//! * `sdk_source` — the read-only source of the strategy SDK the open strategy builds against on the
+//!   backtest server: a tree in the Strategy pane, a file in the central panel (decision 0296).
+//!
+//! **What belongs here:** a surface's own state, how it draws itself, and the pure helpers its
+//! tests reach (row builders, summaries, diffs). **What does not:** deciding which pane is showing,
+//! starting a worker, or folding a worker's answer back in — that is `StudioState`'s, in
+//! `crate::studio`. A pane takes one thing from the shell in code today, the shared title strip
+//! `crate::studio::pane_header`.
+//!
+//! A pane may name `crate::backend`, which sits below it (that module's doc carries the direction
+//! rule), but none does in code today: the shell calls `backend` and hands each pane the answer, so
+//! the only mentions are the docs of `slice_picker` and `data_browser` pointing at `backend::catalog`,
+//! and `research`'s at `backend::backtesthub::studies`.
+//!
+//! A pane's child module (`chat/connect.rs`, `editor/syntax.rs`) is private to that pane: nothing
+//! else names it. The nine panes themselves are `pub(crate)` rather than private because `lib.rs`
+//! re-exports the public surface from them (`pub use panes::saved::{...}` and its siblings) and the
+//! shell imports from them, and neither can name a module that stays private to `panes`.
+
+pub(crate) mod chat;
+pub(crate) mod csv_upload;
+pub(crate) mod data_browser;
+pub(crate) mod editor;
+pub(crate) mod indicators;
+pub(crate) mod param_scan;
+pub(crate) mod research;
+pub(crate) mod results;
+pub(crate) mod saved;
+pub(crate) mod sdk_source;
+pub(crate) mod slice_picker;
+pub(crate) mod templates_gallery;

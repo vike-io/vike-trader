@@ -1,0 +1,56 @@
+# @generated — rendered by `crates/vike-strategy-builder/src/render.rs`'s `build_study_file` from this
+# file (`template/study_Cargo.toml.in`). Edit the TEMPLATE, never a rendered copy.
+#
+# The cdylib a research STUDY file is built into (owner's rule, 2026-11-15: a study is a FILE, built,
+# loaded and sandboxed exactly like a strategy file). Its `[dependencies]` IS what a study file may
+# `use`: `vike-user-research`'s own normal dependencies but its wire's `serde`/`rmp-serde` (the
+# user-study surface, each entry argued in `crates/vike-user-research/Cargo.toml`), that crate itself
+# (the contract a study names), and `vike-rust-strategy` (the byte boundary the two exports in `lib.rs`
+# cross). The four non-path pins are the workspace's (root `Cargo.toml`), copied: this crate is rendered
+# OUTSIDE the workspace.
+#
+# Plus ONE crate `vike-user-research` cannot name: `vike-simulator`, so a study runs its own episodes of
+# the event engine (`vike_simulator::RlEnvironment`, the reinforcement-learning environment) inside its
+# jail. It opens no store, reads no environment and names no venue; the strategy hosts stay fenced off it
+# (`docs/decisions/0291-a-research-study-file-may-name-the-event-simulator.md`), and the contract crate sits
+# at its layer. `vike-fills`, the fill cost a study calibrates (`vike_fills::market_impact::calibrate_impact`;
+# owner, 2026-11-18), is a normal edge of the contract crate since 2026-11-19 (decision 0291's amendment).
+
+[package]
+name = "{{NAME}}"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+vike-user-research = { path = "{{VIKE_USER_RESEARCH_PATH}}" }
+vike-model = { path = "{{VIKE_MODEL_PATH}}" }
+vike-paths = { path = "{{VIKE_PATHS_PATH}}" }
+vike-marketdata = { path = "{{VIKE_MARKETDATA_PATH}}" }
+vike-indicators = { path = "{{VIKE_INDICATORS_PATH}}" }
+vike-ml-prediction = { path = "{{VIKE_ML_PREDICTION_PATH}}" }
+vike-ml-training = { path = "{{VIKE_ML_TRAINING_PATH}}" }
+vike-analytics = { path = "{{VIKE_ANALYTICS_PATH}}" }
+vike-rag = { path = "{{VIKE_RAG_PATH}}" }
+vike-data = { path = "{{VIKE_DATA_PATH}}" }
+vike-orderflow = { path = "{{VIKE_ORDERFLOW_PATH}}" }
+vike-math = { path = "{{VIKE_MATH_PATH}}" }
+vike-portfolio = { path = "{{VIKE_PORTFOLIO_PATH}}" }
+vike-options = { path = "{{VIKE_OPTIONS_PATH}}" }
+vike-simulator = { path = "{{VIKE_SIMULATOR_PATH}}" }
+vike-fills = { path = "{{VIKE_FILLS_PATH}}" }
+vike-arbitrage = { path = "{{VIKE_ARBITRAGE_PATH}}" }
+vike-rust-strategy = { path = "{{VIKE_RUST_STRATEGY_PATH}}" }
+toml = "1.1"
+indexmap = { version = "2", features = ["serde"] }
+rand_chacha = "0.10"
+rayon = "1"
+
+[profile.release]
+# The strategy file template's profile and its reason (`Cargo.toml.in`): opt-level 3, no LTO.
+opt-level = 3
+lto = false

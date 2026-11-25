@@ -1,0 +1,76 @@
+{
+  "_provenance": "A RECORDED kept list (the datahub's <project>/instruments/okx.json shape): the two inverse rows `parse_instruments` reads off crates/bridges/okx/tests/fixtures/instruments/swap.json and futures.json (BTC-USD-SWAP read keyless 2026-10-11, which refreshed_ms states), printed by the bridge's own parser on a lane 2026-11-14. Held equal to that parse, row for row, by crates/bridges/okx/src/catalog.rs's the_name_rule_agrees_with_every_row.",
+  "venue": "okx",
+  "refreshed_ms": 1791676800000,
+  "truncated": false,
+  "last_error": null,
+  "last_try_ms": 1791676800000,
+  "instruments": [
+    {
+      "venue": "okx",
+      "raw_symbol": "BTC-USD-SWAP",
+      "base": "BTC",
+      "quote": "USD",
+      "description": "",
+      "contract": {
+        "perp": {
+          "margining": "inverse",
+          "settle": "BTC",
+          "value_currency": "USD",
+          "funding_interval_ms": null,
+          "settling_ms": null
+        }
+      },
+      "wire": {
+        "asset_id": null,
+        "coin": null,
+        "group": null
+      },
+      "properties": {
+        "tick_size": 0.1,
+        "step_size": 0.1,
+        "min_qty": 0.1,
+        "max_qty": 49000.0,
+        "min_notional": 0.0,
+        "contract_size": 100.0,
+        "taker_hold_ms": 0,
+        "asset_class": "CryptoPerp"
+      },
+      "contract_type": "inverse"
+    },
+    {
+      "venue": "okx",
+      "raw_symbol": "BTC-USD-261030",
+      "base": "BTC",
+      "quote": "USD",
+      "description": "",
+      "contract": {
+        "future": {
+          "margining": "inverse",
+          "settle": "BTC",
+          "value_currency": "USD",
+          "expiry_ms": 1793347200000,
+          "tenor": "month",
+          "delivery": "unknown",
+          "family": "crypto"
+        }
+      },
+      "wire": {
+        "asset_id": null,
+        "coin": null,
+        "group": null
+      },
+      "properties": {
+        "tick_size": 0.1,
+        "step_size": 0.1,
+        "min_qty": 0.1,
+        "max_qty": 10000.0,
+        "min_notional": 0.0,
+        "contract_size": 100.0,
+        "taker_hold_ms": 0,
+        "asset_class": "CryptoFuture"
+      },
+      "contract_type": "inverse"
+    }
+  ]
+}

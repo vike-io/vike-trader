@@ -1,0 +1,124 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 25.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "PERCENTAGE",
+   "value": 75.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "POINTS",
+   "value": 25.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 1.0
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 5.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 10.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": null,
+  "contractSize": "2",
+  "controlledRiskAllowed": true,
+  "country": "DE",
+  "currencies": [
+   {
+    "baseExchangeRate": 0.8955,
+    "code": "EUR",
+    "exchangeRate": 0.9,
+    "isDefault": false,
+    "symbol": "E"
+   }
+  ],
+  "epic": "IR.D.FGBL.FWM2.IP",
+  "expiry": "DEC-26",
+  "expiryDetails": {
+   "lastDealingDate": "2026-12-07T16:15",
+   "settlementInfo": "Settles based on the official settlement price of the Eurex Bund futures contract on the last dealing day +/- IG dealing spread."
+  },
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "POINTS",
+   "value": 5
+  },
+  "lotSize": 2.0,
+  "marginDepositBands": [
+   {
+    "currency": "EUR",
+    "margin": 0.75,
+    "max": 37.5,
+    "min": 0
+   },
+   {
+    "currency": "EUR",
+    "margin": 1,
+    "max": 75,
+    "min": 37.5
+   },
+   {
+    "currency": "EUR",
+    "margin": 2.5,
+    "max": 112.5,
+    "min": 75
+   },
+   {
+    "currency": "EUR",
+    "margin": 4,
+    "max": null,
+    "min": 112.5
+   }
+  ],
+  "marginFactor": 0.75,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "FGBL",
+  "name": "Bund (\u20ac2)",
+  "newsCode": "GVD/EUR",
+  "onePipMeans": "1",
+  "openingHours": null,
+  "rolloverDetails": {
+   "lastRolloverTime": "2026-12-07T16:00",
+   "rolloverInfo": "Usually, initial position closed at official closing level of day before last dealing day +/- closing spread; new position in next contract opened at official closing level of the new contract from same day, +/- opening spread."
+  },
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 50.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": true,
+  "type": "RATES",
+  "unit": "CONTRACTS",
+  "valueOfOnePip": "2.00"
+ },
+ "snapshot": {
+  "bid": 12240.0,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 1,
+  "delayTime": 0,
+  "high": 12266.0,
+  "low": 12201.0,
+  "marketStatus": "TRADEABLE",
+  "netChange": 5.5,
+  "offer": 12243.0,
+  "percentageChange": 0.04,
+  "scalingFactor": 1,
+  "updateTime": "19:49:13"
+ }
+}

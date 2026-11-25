@@ -1,0 +1,426 @@
+//! **The venue half's arming: the registry-driven projection, and the producer of the
+//! [`ArmingTableWire`]** (wave 2, W9a; moved into the gatewayhub by W9b). Everything here asks a bridge's own
+//! `VenueAdapter::resolve` through the registry `TradeLaneBridge` holds: the generic fold in the tradehub's
+//! `vike-tradehub-core` never reaches it, it reads the table [`arming_table`] builds, which crosses
+//! the wire as `ArmingTableWire` (`vike_gatewayhub_client::proto`).
+//!
+//! The functions are the ones `arming.rs` carried before the seam, unchanged in body. The `pub`
+//! probes are public for the roster tests in `crates/vike-gatewayhub/tests/trade_roster/mount_roster.rs`,
+//! which run where the registry is (docs/decisions/0096).
+
+use std::collections::{BTreeMap, HashMap};
+
+use vike_bridge_core::venue_adapter::ClockDeclaration;
+use vike_config::account_arming::{
+    PAPER_RUNS, account_ids, account_tier, known_accounts, venue_tier,
+};
+use vike_gatewayhub_client::proto::{ArmingRowWire, ArmingTableWire};
+use vike_model::VenueAdapterDeclarationView;
+use vike_model::accounts::account_keys::AccountLabel;
+use vike_secrets::account_credentials::AccountCredentials;
+use vike_venues::venue_connection::venue_wide_exec_for;
+
+use super::registry::{VenueAdapterRow, row_of};
+use super::snapshot::TradeLaneSnapshot;
+
+/// PRE-CONNECT live-intent probe: would [`crate::make_engine`] build a LIVE exec client for
+/// `venue`'s DEFAULT account, holding `credentials`? Judged PURELY from the account's credentials
+/// and the deployment map through the bridge's own `VenueAdapter::resolve` (the answer its start
+/// acts on, so the two cannot drift), with NO network I/O or side effects — what
+/// lets [`crate::require_live_risk_budget`] refuse BEFORE any venue session exists. A `FeatureAbsent` row
+/// and an unknown id probe `false`: a `demo`/`live` account of either does not run.
+///
+/// INTENT, not outcome: `true` means the operator SUPPLIED this venue's live config, even where the
+/// start later does not come up (ctrader/ibkr connect failure, hyperliquid/polymarket declining a
+/// bad key: the account then does NOT RUN, `ArmingBlock::AdapterFailed`). An intended-live session
+/// must carry a bounded budget; a config the operator never wrote can never refuse a start.
+#[must_use]
+pub fn would_go_live(
+    registry: &'static [VenueAdapterRow],
+    venue: &str,
+    vars: &HashMap<String, String>,
+    flags: &vike_config::Flags,
+    credentials: AccountCredentials<'_>,
+) -> bool {
+    would_go_live_under(registry, venue, vars, flags, credentials, vike_model::AccountTier::Live)
+}
+
+/// [`venue_account_arming`]'s body.
+fn account_arming_in(
+    registry: &'static [VenueAdapterRow],
+    venue: &str,
+    vars: &HashMap<String, String>,
+    policy: Option<&TradeLaneSnapshot>,
+) -> Vec<vike_config::ArmingAccount> {
+    let Some(venue) = vike_model::VENUES.iter().copied().find(|v| *v == venue) else {
+        return Vec::new();
+    };
+    known_accounts(venue, policy.map(|p| &p.accounts))
+        .into_iter()
+        .map(|label| {
+            let (tier, effective, block) = account_arming(registry, venue, &label, vars, policy);
+            let account_ids = account_ids(policy.map(|p| &p.accounts), venue, &label);
+            vike_config::ArmingAccount { venue, label, tier, effective, block, account_ids }
+        })
+        .collect()
+}
+
+/// **One account's whole arming answer** — `(tier, effective, block)`: its tier from the table
+/// ([`vike_config::account_arming::account_tier`]), then [`account_arming_under`] at that tier. `effective` is `None` when the
+/// account does NOT RUN, and `tier` is `None` when no active row states one.
+///
+/// The order is load-bearing: (1) a LABELLED account on a venue that cannot address one is
+/// `NoAccountSupport` whatever its row says (the generic precondition, [`refuses_the_label`] —
+/// inside [`account_arming_raw`] too — answers before the tier is read); (2) an account the TABLE
+/// does not run carries the table's own cause and never reaches the bridge, and a PAPER tier runs
+/// the simulator without reaching it either (`crate::contract`'s `contract_arming` short-circuits);
+/// (3) else the bridge's `resolve` under `AdapterInputs::tier = tier`, and (4) the preflight stop and
+/// the process-exclusive override ([`account_arming_under`]).
+pub(crate) fn account_arming(
+    registry: &'static [VenueAdapterRow],
+    venue: &str,
+    label: &AccountLabel,
+    vars: &HashMap<String, String>,
+    policy: Option<&TradeLaneSnapshot>,
+) -> (Option<vike_model::AccountTier>, Option<vike_model::AccountTier>, vike_model::ArmingBlock) {
+    match account_tier(policy.map(|p| &p.accounts), venue, label) {
+        Ok(tier) => {
+            let (effective, block) =
+                account_arming_under(registry, venue, label, vars, tier, policy);
+            (Some(tier), effective, block)
+        }
+        // The table runs nothing for it — but the label precondition still answers first: no row
+        // could make a labelled account of a one-account venue addressable.
+        Err(_) if refuses_the_label(registry, venue, label) => {
+            (None, None, vike_model::ArmingBlock::NoAccountSupport)
+        }
+        Err(why) => (None, None, why),
+    }
+}
+
+/// **The generic precondition every projection answers BEFORE the tier**: a LABELLED account on a
+/// venue whose start cannot address one (a contract row declaring `addresses_accounts: false`, or
+/// an id the registry does not carry). A `FeatureAbsent` row is judged by its tier instead, as it
+/// always was. `crate::contract`'s `contract_arming` and [`account_arming_raw`] ask the same
+/// question in the same place.
+fn refuses_the_label(
+    registry: &'static [VenueAdapterRow],
+    venue: &str,
+    label: &AccountLabel,
+) -> bool {
+    !label.is_default()
+        && match row_of(registry, venue) {
+            Some(VenueAdapterRow::Adapter(row)) => !row.declaration().addresses_accounts,
+            Some(VenueAdapterRow::FeatureAbsent { .. }) => false,
+            None => true,
+        }
+}
+
+/// [`would_go_live_under`] over a deployment's policy — the spelling every caller that HOLDS a
+/// policy uses, so the preflight and the start cannot disagree. A per-caller `policy.map_or(…)`
+/// would be the second copy where the `None`-means-`Live` mistake lives. A DEFAULT account the
+/// table does not run answers `false`: nothing would be authenticated for it.
+pub fn would_go_live_under_policy(
+    registry: &'static [VenueAdapterRow],
+    venue: &str,
+    vars: &HashMap<String, String>,
+    policy: Option<&TradeLaneSnapshot>,
+) -> bool {
+    let Some(tier) = venue_tier(policy.map(|p| &p.accounts), venue) else { return false };
+    // ⚠ NOT `would_go_live_under` (no policy): the DEFAULT account can DECLINE a
+    // process-exclusive resource (`crate::exclusive`'s `holder`), and a preflight must not
+    // authenticate for a venue whose default account the start does not run.
+    account_arming_under(registry, venue, &AccountLabel::Default, vars, tier, policy)
+        .0
+        .is_some_and(|t| t != vike_model::AccountTier::Paper)
+}
+
+/// [`would_go_live`] at a given account TIER — what [`crate::make_engine_for_account`] would
+/// reach for the DEFAULT account at that tier: the tier changes which keys and network it resolves.
+/// "Live" means **a venue client**: a real authenticated session at whichever TIER (the budget rule
+/// asks whether a session is established for the operator, not which endpoint it dials). `tier ==
+/// Paper` is `false` outright ([`venue_arming_under`] short-circuits).
+///
+/// ⚠ **DERIVED, not a second copy**: the coarse projection of [`venue_arming_under`] (the finer
+/// "which TIER, and what holds it back" `vike-backend venues` renders). ONE row set with thin
+/// wrappers is the point — every row mirrors its arm's own loader, and a second copy is the drift
+/// that prevents. [`would_go_live`] is the wrapper at the `live` tier, the "would these
+/// CREDENTIALS arm it" that `report_not_running` needs to say whether the account table held back
+/// something the keys would have armed.
+///
+/// ⚠ **The preflight is NOT a legitimate tier-less caller**
+/// ([`crate::startup::run_startup_preflight`] takes [`would_go_live_under_policy`], threaded
+/// from `crate::assemble_runtime`): its clock leg's ig
+/// row is a CREDENTIALED read (`crates/bridges/ig/src/adapter.rs`'s `VenueAdapterIg::server_time_ms`
+/// sends `X-IG-API-KEY`) and its credential leg a SIGNED `fetch_balance` per venue — against an
+/// account the operator left at `paper`.
+///
+/// ⚠ **A `Live` probe with demo-only keys answers `false`**: binance/bybit/okx/hyperliquid refuse
+/// to sign mainnet with demo keys (decision 0095), and every other arm that would fall back to its
+/// demo tier does not run under the no-downgrade rule (`crate::contract`'s `resolution_to_arming`:
+/// a `live` account never trades demo). A caller asking "credentials for SOME tier?" must probe
+/// `Demo` too — `crate::paper_fallback`'s `would_mount_under_some_tier`.
+///
+/// ⚠ **`pub` for `vike-tradehub`'s roster tests** (`crates/vike-gatewayhub/tests/trade_roster/mount_roster.rs`).
+/// The live sentinel's pre-assembly set is NOT computed here: `crate::armed_live_venues` walks
+/// `venue_account_arming`, the per-ACCOUNT form of the same projection.
+#[must_use]
+pub fn would_go_live_under(
+    registry: &'static [VenueAdapterRow],
+    venue: &str,
+    vars: &HashMap<String, String>,
+    flags: &vike_config::Flags,
+    credentials: AccountCredentials<'_>,
+    tier: vike_model::AccountTier,
+) -> bool {
+    venue_arming_under(registry, venue, vars, flags, credentials, tier)
+        .0
+        .is_some_and(|t| t != vike_model::AccountTier::Paper)
+}
+
+/// **THE per-venue arming projection: which tier `make_engine` would run `venue`'s DEFAULT account
+/// at, given `tier` and `credentials` (by FIELD, decision 0156 item 6), and what stops it when it
+/// would not** — PURELY from those credentials, the deployment map and this binary's registry (an
+/// uncompiled bridge is a `FeatureAbsent` row), with NO network I/O or side effects. `(None, why)`
+/// is NOT RUNNING.
+///
+/// A row that stops matching its arm's loader fails the probe tests; a NEW live arm without a row
+/// is still caught by [`crate::make_engine`]'s post-merge budget backstop. ⚠ An unknown venue (no
+/// ROSTER venue today) answers `(None, NoLiveArm)`: a `demo`/`live` account of it does not run.
+/// INTENT semantics, as [`would_go_live`]: the projection reports what the start will attempt.
+/// `tier == Paper` answers `(Some(Paper), PaperTier)` outright: the paper simulator.
+///
+/// ⚠ **It threads NO policy**, so the `account` table reads UNREAD: the tier is the CALLER's, and
+/// the one row reading more than the tier (dukascopy's) resolves the DEFAULT account without the
+/// table, where the start ([`crate::make_engine_for_account`]) reads `env.policy`'s. A caller that
+/// HOLDS a policy uses the exact [`would_go_live_under_policy`]. With no policy there are no flags
+/// either: the caller states them (`flags`), as it states the credentials.
+pub fn venue_arming_under(
+    registry: &'static [VenueAdapterRow],
+    venue: &str,
+    vars: &HashMap<String, String>,
+    flags: &vike_config::Flags,
+    credentials: AccountCredentials<'_>,
+    tier: vike_model::AccountTier,
+) -> (Option<vike_model::AccountTier>, vike_model::ArmingBlock) {
+    // No policy: the DEFAULT account holds any process-exclusive resource (`crate::exclusive`'s
+    // `holder`), so the override `account_arming_under` adds can never fire here.
+    account_arming_raw_with(
+        registry,
+        venue,
+        &AccountLabel::Default,
+        vars,
+        Some((credentials, flags)),
+        tier,
+        None,
+    )
+}
+
+/// [`venue_arming_under`] for one named ACCOUNT — the projection [`venue_account_arming`] builds its
+/// rows from, and the one [`crate::make_engine_accounts`] selects with.
+///
+/// ⚠ **A LABELLED account is refused outright on a venue declaring `addresses_accounts: false`**,
+/// or one the registry does not carry, before `resolve` is consulted ([`account_arming_raw`],
+/// `crate::contract`'s `contract_arming`). A bridge that CAN address one threads `label` into the
+/// loader its `start` calls, so projection and start read the same account's keys.
+///
+/// Two box-level answers sit above the bridge's: a venue the startup preflight hard-FAILED
+/// (`TradeLaneSnapshot::preflight_failed`) runs none of its `demo`/`live` accounts (`PreflightFailed`),
+/// and the process-exclusive override below.
+pub(crate) fn account_arming_under(
+    registry: &'static [VenueAdapterRow],
+    venue: &str,
+    label: &AccountLabel,
+    vars: &HashMap<String, String>,
+    tier: vike_model::AccountTier,
+    policy: Option<&TradeLaneSnapshot>,
+) -> (Option<vike_model::AccountTier>, vike_model::ArmingBlock) {
+    use vike_model::ArmingBlock;
+    let raw = account_arming_raw(registry, venue, label, vars, tier, policy);
+    // THE PREFLIGHT STOP (decision 0156 item 1): a hard preflight FAIL stops the venue's `demo` and
+    // `live` accounts with that reason — not the `NoCredentials` its withheld keys would otherwise
+    // read as. The label precondition still answers first, and a `paper` account still runs.
+    if raw.1 != ArmingBlock::NoAccountSupport
+        && tier != vike_model::AccountTier::Paper
+        && policy.is_some_and(|p| p.preflight_failed.contains(venue))
+    {
+        return (None, ArmingBlock::PreflightFailed);
+    }
+    // THE ONE-SIDECAR OVERRIDE, ABOVE every row, only where a venue declares a process-exclusive
+    // resource: a fact about which OTHER account gets it, not about this account's credentials.
+    // `crate::make_engine_for_account` consults the SAME function. When they disagreed, the
+    // projection said `Demo` for both accounts, the mount built paper for one, and a strategy
+    // naming it passed `crates/vike-tradehub-core/src/node/accounts.rs`'s `refuse_unarmed_mount_accounts`
+    // and ran on paper believing it was armed.
+    if raw.0.is_some_and(|t| t != vike_model::AccountTier::Paper)
+        && super::contract::is_process_exclusive(row_of(registry, venue))
+        && !super::exclusive::holds(registry, venue, label, vars, policy)
+    {
+        return (None, ArmingBlock::SidecarHeldElsewhere);
+    }
+    raw
+}
+
+/// [`account_arming_under`] WITHOUT the one-exclusive-resource override: a contract row through its
+/// bridge's `resolve`, every other row by the fixed answers below. Besides that wrapper, only
+/// `crate::exclusive`'s `holder` calls it: "would this account arm on its own merits", without
+/// asking the override again.
+///
+/// ⚠ `arm_addresses_accounts` (the hand-written list) is gone: each bridge declares
+/// `VenueAdapterDeclaration::addresses_accounts`, and an unknown venue addresses none.
+pub(crate) fn account_arming_raw(
+    registry: &'static [VenueAdapterRow],
+    venue: &str,
+    label: &AccountLabel,
+    vars: &HashMap<String, String>,
+    tier: vike_model::AccountTier,
+    policy: Option<&TradeLaneSnapshot>,
+) -> (Option<vike_model::AccountTier>, vike_model::ArmingBlock) {
+    account_arming_raw_with(registry, venue, label, vars, None, tier, policy)
+}
+
+/// [`account_arming_raw`] with the account's credentials and the flags SUPPLIED (`Some`) rather than
+/// read from `policy` (`None`) — the policy-less probes' door ([`venue_arming_under`]).
+fn account_arming_raw_with(
+    registry: &'static [VenueAdapterRow],
+    venue: &str,
+    label: &AccountLabel,
+    vars: &HashMap<String, String>,
+    probe: Option<(AccountCredentials<'_>, &vike_config::Flags)>,
+    tier: vike_model::AccountTier,
+    policy: Option<&TradeLaneSnapshot>,
+) -> (Option<vike_model::AccountTier>, vike_model::ArmingBlock) {
+    use vike_model::AccountTier;
+    use vike_model::ArmingBlock;
+    match row_of(registry, venue) {
+        Some(VenueAdapterRow::Adapter(row)) => {
+            super::contract::contract_arming(*row, label, vars, probe, tier, policy)
+        }
+        // A labelled account reaches the tier check too (as the feature-off rows always did).
+        Some(VenueAdapterRow::FeatureAbsent { .. }) => {
+            if tier == AccountTier::Paper {
+                PAPER_RUNS
+            } else {
+                (None, ArmingBlock::FeatureAbsent)
+            }
+        }
+        // Not in the registry: a labelled account first (no named account here), then the
+        // tier, then "no live arm".
+        None => {
+            if refuses_the_label(registry, venue, label) {
+                (None, ArmingBlock::NoAccountSupport)
+            } else if tier == AccountTier::Paper {
+                PAPER_RUNS
+            } else {
+                (None, ArmingBlock::NoLiveArm)
+            }
+        }
+    }
+}
+
+/// **The static facts of one venue**, read off its registry row, and the reconnect-trigger fact off its connection
+/// row (`vike_venues::venue_connection`'s `nudges_reconcile`, which `contract::contract_parts` hands the trigger by): a
+/// `FeatureAbsent` row or an id the registry does not carry answers [`VenueAdapterDeclarationView::absent`].
+fn facts_of(registry: &'static [VenueAdapterRow], venue: &str) -> VenueAdapterDeclarationView {
+    match row_of(registry, venue) {
+        Some(VenueAdapterRow::Adapter(row)) => {
+            let declaration = row.declaration();
+            VenueAdapterDeclarationView {
+                adapter_present: true,
+                addresses_accounts: declaration.addresses_accounts,
+                takes_reconcile_trigger: venue_wide_exec_for(venue).nudges_reconcile,
+                grid_source: declaration.grid_source,
+                process_exclusive: declaration.process_exclusive.map(|e| e.resource.to_string()),
+                clock_declaration_word: match declaration.clock {
+                    ClockDeclaration::Wired { .. } => vike_model::ClockDeclarationKind::Wired,
+                    ClockDeclaration::NotWired { .. } => vike_model::ClockDeclarationKind::NotWired,
+                },
+            }
+        }
+        Some(VenueAdapterRow::FeatureAbsent { .. }) | None => VenueAdapterDeclarationView::absent(),
+    }
+}
+
+/// **Every account row of every roster venue, with the venue BOOK the account trades**, in
+/// `vike_model::VENUES` order, a venue's accounts default-first — the order `venue_arming` always
+/// returned them in. Each row is [`account_arming_in`]'s verdict: the account's tier from the table,
+/// then the bridge's `resolve` at that tier, then the one-sidecar override; the book is the store's
+/// recorded id, else the offline derivation, `None` where neither names it.
+///
+/// ⚠ **`policy` must carry no `preflight_failed` venue**: the startup preflight's stop is the
+/// tradehub's overlay over the table, so a stop baked in here could not be told apart from the venue's
+/// own answer. `TradeLaneBridge` clears it.
+#[must_use]
+pub fn arming_rows(
+    registry: &'static [VenueAdapterRow],
+    vars: &HashMap<String, String>,
+    policy: &TradeLaneSnapshot,
+) -> Vec<(vike_config::ArmingAccount, Option<vike_model::BookId>)> {
+    let directory = crate::trade::adapters::snapshot::directory_of(Some(policy));
+    vike_model::VENUES
+        .iter()
+        .flat_map(|venue| account_arming_in(registry, venue, vars, Some(policy)))
+        .map(|arming| {
+            let book = arming.effective.and_then(|mode| {
+                super::book_identity::book_of_account(
+                    registry,
+                    arming.venue,
+                    &arming.label,
+                    mode,
+                    directory,
+                )
+            });
+            (arming, book)
+        })
+        .collect()
+}
+
+/// **The word an `ArmingBlock` crosses the wire as** (`ArmingRowWire::block_word`, `AdapterRefusal::block_word`):
+/// one function, so there is ONE place that names the spelling: `ArmingBlock::word()` (snake case, a key for a
+/// program that never changes with a rewording; "none" for a clear row). The tradehub's `VenueBackendGateway` reads
+/// the words back with `ArmingBlock::from_word`, and the session (`crate::trade::session`'s `block_runs`)
+/// reads the table's words the same way: never `ArmingBlock::as_str()`, the badge for a person, which is
+/// the empty string for a clear row.
+#[must_use]
+pub fn wire_word(block: vike_model::ArmingBlock) -> &'static str {
+    block.word()
+}
+
+/// **THE ARMING TABLE of this registry under `policy`** — the producer of what the tradehub fetches once
+/// per assembly (`TradeLane::arming_table`, the wire's `ArmingTableWire`): the static facts of every
+/// roster venue (and of any registry row the roster does not carry) and one row per ACCOUNT of each
+/// roster venue ([`arming_rows`]), with `ArmingBlock` as its word. No credential is in it.
+#[must_use]
+pub fn arming_table(
+    registry: &'static [VenueAdapterRow],
+    vars: &HashMap<String, String>,
+    policy: &TradeLaneSnapshot,
+) -> ArmingTableWire {
+    let mut facts: BTreeMap<String, VenueAdapterDeclarationView> = BTreeMap::new();
+    for venue in
+        vike_model::VENUES.iter().copied().chain(registry.iter().map(VenueAdapterRow::venue))
+    {
+        facts.entry(venue.to_string()).or_insert_with(|| facts_of(registry, venue));
+    }
+    let rows = arming_rows(registry, vars, policy)
+        .into_iter()
+        .map(|(arming, book)| ArmingRowWire {
+            venue: arming.venue.to_string(),
+            label: arming.label.text().map(str::to_string),
+            tier: arming.tier,
+            effective: arming.effective,
+            block_word: wire_word(arming.block).to_string(),
+            account_ids: arming.account_ids,
+            // The wire row carries the normalised TEXT (frozen in the wire fixtures).
+            book: book.map(|id| id.book().to_owned()),
+        })
+        .collect();
+    // `key_changed` and `start_inputs` are the lane's to fill: it knows what its running adapters started
+    // with, and it outlives this one read.
+    ArmingTableWire {
+        properties: facts,
+        rows,
+        key_changed: Vec::new(),
+        start_inputs: BTreeMap::new(),
+    }
+}

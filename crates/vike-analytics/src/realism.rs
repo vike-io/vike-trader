@@ -1,0 +1,368 @@
+//! The REALISM STAMP: the cost model a run actually ran under, recorded on the run rather than
+//! inferred from the profile afterwards.
+//!
+//! # The defect this exists to close
+//!
+//! A run's costs default (once `[engine] fee_rate` and `[engine] slippage`, which defaulted to `0.0`;
+//! the strategy's `commission` and `slippage` params since the owner's ruling of 2026-11-18, which
+//! default to what the strategy states, else none), so a profile that does not mention them could not
+//! be told from one that asked for free trading, and the two produced identical output: a report of
+//! eight scalars with nothing on it that says which market the numbers came from. Two runs are
+//! comparable only if they ran under the same cost model, and nothing in a run record said what the
+//! cost model WAS.
+//!
+//! # In words, then in keys
+//!
+//! [`RealismStampCosts`] is what the run was charged, one plain sentence per cost term (fees, slippage,
+//! funding), the line a person reads first: `0.1% of the fill's value (strategy.params)`, `0.05 per
+//! contract (the strategy's own)`, or `none`; a stamp an older run wrote says `venue fees: …` or `flat
+//! fee …`. The resolved keys below it are for a machine diff.
+//!
+//! Prior art says the same: MetaTrader 5 writes `Model` and `ExecutionMode` into its tester report,
+//! and NinjaTrader records the fill resolution. Neither leaves the question to the reader.
+//!
+//! # RESOLVED values, not the file's text
+//!
+//! The stamp records what the run resolved, which for the defaulted keys is the interesting half —
+//! a key absent from the file still reaches the engine as a number, and that number is what priced
+//! the fills. So the producer enumerates the resolved configuration and writes every value,
+//! including the ones nobody typed. `vike_backtest::run::report::realism_stamp` is the one
+//! producer, because only a holder of the (feature-gated) `ProfileBacktest` knows what resolved.
+//!
+//! # Why a MAP and not a mirror of `ProfileEngine`
+//!
+//! A typed twin of `ProfileEngine` would be a second declaration of the same 30-odd fields, and this
+//! workspace has watched every hand copy of a field roster rot — `ProfileEngine` grew sixteen fields
+//! inside one branch while a doc comment upstream still called its own eight-item list "the whole
+//! `[engine]` surface". A `BTreeMap<String, String>` keyed on the TOML path an operator would edit
+//! cannot fall behind a struct it does not name, sorts deterministically on the wire, and makes the
+//! question this stamp exists for — "did these two runs pay the same costs" — a set comparison
+//! ([`RealismStamp::divergence`]) instead of a field-by-field audit somebody has to remember to
+//! extend.
+//!
+//! It costs the type safety, and that is the accepted trade: a stamp is read, diffed and printed,
+//! never computed with.
+
+use std::collections::BTreeMap;
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
+
+/// The version of the stamp document. Bumped when the KEY SET changes meaning — a reader comparing
+/// two stamps across a bump is comparing two vocabularies, and the schema is what lets it say so
+/// rather than reporting every renamed key as a divergence.
+pub const REALISM_STAMP_SCHEMA: u32 = 1;
+
+/// The stamp key the run's LEDGER CURRENCY is recorded under: the TOML path of `[engine] account_currency`,
+/// like every other key, and written for every run (the resolved value, `USD` for a profile that
+/// states none) so that a stamp without it is one that predates the key.
+pub const ACCOUNT_CURRENCY_KEY: &str = "engine.account_currency";
+
+/// One key on which two runs' cost models disagree — the unit [`RealismStamp::divergence`] answers
+/// in, because "the stamps differ" is not actionable and "`engine.fee_rate` was 0 there and 0.0004
+/// here" is.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RealismDivergence {
+    /// The TOML path, exactly as an operator would edit it (`strategy.params.slippage`).
+    pub key: String,
+    /// The value the stamp being asked about carried, or `None` when it carried the key not at all
+    /// — a real and different answer from a value, because an absent key means the run predates
+    /// that knob rather than having set it to zero.
+    pub mine: Option<String>,
+    /// The value the other stamp carried, on the same terms.
+    pub theirs: Option<String>,
+}
+
+/// The cost model one run ran under.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RealismStamp {
+    /// [`REALISM_STAMP_SCHEMA`] at write time; `0` in a document written before the field existed.
+    #[serde(default)]
+    pub schema: u32,
+    /// `TOML path -> resolved value`, sorted. Every key the producer resolved, including the ones
+    /// the profile never mentioned — see the module doc.
+    #[serde(default)]
+    pub values: BTreeMap<String, String>,
+    /// `Some(reason)` when the run charged NOTHING for trading — no fees, no slippage, no impact
+    /// model — else `None`. A run that states no fee is charged its venue's table, so it is `None`.
+    ///
+    /// ⚠ **Its JSON key stays `frictionless`**: released JSON only GAINS fields, and report.json
+    /// and the run manifest carry it. No text surface prints it; they print [`Self::charged`].
+    /// A document written before 2026-11-09 may carry a reason here for a run that WAS charged its
+    /// venue table (the producer of the day read only the profile's flat keys).
+    #[serde(rename = "frictionless", default, skip_serializing_if = "Option::is_none")]
+    pub charged_nothing: Option<String>,
+    /// What the run was charged, in words: the line a person reads first. `None` in a document
+    /// written before 2026-11-09.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charged: Option<RealismStampCosts>,
+}
+
+/// What one run was CHARGED, one plain sentence per cost term, as the producer resolved it
+/// (`vike_backtest::run::report::realism_stamp`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RealismStampCosts {
+    /// The commission in words and whose: `0.1% of the fill's value (strategy.params)`, `0.05 per
+    /// contract (the strategy's own)`, or `none`; an older run's stamp says `venue fees: …`, `flat fee
+    /// …`, `fee table (<kind>): …` or `no fees`.
+    pub fees: String,
+    /// `none`, or the slippage and impact model a fill paid.
+    pub slippage: String,
+    /// `charged`, `no funding history (<symbols>)`, `off (engine.attach_funding = false)`, `off
+    /// (engine.attach_funding absent)` (absent is off since 2026-11-21), or `not applicable` (nothing
+    /// the run trades pays funding).
+    pub funding: String,
+}
+
+impl fmt::Display for RealismStampCosts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "fees: {}; slippage: {}; funding: {}", self.fees, self.slippage, self.funding)
+    }
+}
+
+impl RealismStamp {
+    /// Build a stamp from an already-resolved `(key, value)` sweep, what the run was charged in
+    /// words, and the charged-nothing reason when nothing was.
+    ///
+    /// The producer passes strings because the values are heterogeneous (floats, bools, counts,
+    /// optional names, a symbol map) and the stamp's job is to be READ and DIFFED, never computed
+    /// with — see the module doc on why this is not a typed mirror of `ProfileEngine`.
+    pub fn new(
+        values: impl IntoIterator<Item = (String, String)>,
+        charged: RealismStampCosts,
+        charged_nothing: Option<String>,
+    ) -> Self {
+        RealismStamp {
+            schema: REALISM_STAMP_SCHEMA,
+            values: values.into_iter().collect(),
+            charged_nothing,
+            charged: Some(charged),
+        }
+    }
+
+    /// The resolved value of one TOML path, or `None` when this stamp does not carry that key.
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.values.get(key).map(String::as_str)
+    }
+
+    /// The currency this run's money is in WHEN IT IS NOT THE DOLLAR (`JPY` for a USDJPY run that
+    /// stated `engine.account_currency = "JPY"`), else `None`: the dollar, and a stamp that predates the
+    /// key, both read as "nothing to label". A human table prints the label only off the dollar, so
+    /// every dollar report stays byte-identical.
+    pub fn off_dollar_ledger(&self) -> Option<&str> {
+        self.get(ACCOUNT_CURRENCY_KEY).filter(|currency| *currency != vike_model::DEFAULT_CURRENCY)
+    }
+
+    /// Every key on which the two stamps disagree, sorted, INCLUDING keys only one of them carries.
+    ///
+    /// ⚠ **A one-sided key is a divergence, not a skip**, and that is the load-bearing decision
+    /// here. The tempting shape is to compare the intersection, which reads as "these two runs
+    /// agree" whenever the newer run grew a knob the older one never had — precisely the case where
+    /// the answer matters, because the new knob is the thing that changed what the fills cost.
+    pub fn divergence(&self, other: &RealismStamp) -> Vec<RealismDivergence> {
+        let mut keys: Vec<&String> = self.values.keys().chain(other.values.keys()).collect();
+        keys.sort();
+        keys.dedup();
+        keys.into_iter()
+            .filter_map(|k| {
+                let mine = self.values.get(k);
+                let theirs = other.values.get(k);
+                if mine == theirs {
+                    return None;
+                }
+                Some(RealismDivergence {
+                    key: k.clone(),
+                    mine: mine.cloned(),
+                    theirs: theirs.cloned(),
+                })
+            })
+            .collect()
+    }
+
+    /// The one line a human table can afford: what the run was charged, in words
+    /// ([`RealismStampCosts`]). A stamp written before those words existed digests its flat keys.
+    ///
+    /// Keys absent from the stamp render as `-` rather than as `0`, because a stamp written before a
+    /// knob existed said nothing about it and printing a zero would be inventing an answer.
+    pub fn digest(&self) -> String {
+        if let Some(charged) = &self.charged {
+            return charged.to_string();
+        }
+        let fee = self.get("engine.fee_rate").unwrap_or("-");
+        let slip = self.get("engine.slippage").unwrap_or("-");
+        let schedule = self.get("engine.fee.kind").unwrap_or("-");
+        let impact = self.get("engine.impact.model").unwrap_or("-");
+        format!("fee_rate={fee} slippage={slip} fee.kind={schedule} impact.model={impact}")
+    }
+}
+
+impl fmt::Display for RealismStamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let width = self.values.keys().map(String::len).max().unwrap_or(0);
+        if let Some(c) = &self.charged {
+            writeln!(f, "fees:      {}", c.fees)?;
+            writeln!(f, "slippage:  {}", c.slippage)?;
+            writeln!(f, "funding:   {}", c.funding)?;
+        }
+        for (k, v) in &self.values {
+            writeln!(f, "  {k:width$}  {v}")?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stamp with no words, the shape of a document written before [`RealismStampCosts`] existed.
+    fn stamp(pairs: &[(&str, &str)], charged_nothing: Option<&str>) -> RealismStamp {
+        RealismStamp {
+            schema: REALISM_STAMP_SCHEMA,
+            values: pairs.iter().map(|(k, v)| ((*k).to_string(), (*v).to_string())).collect(),
+            charged_nothing: charged_nothing.map(str::to_string),
+            charged: None,
+        }
+    }
+
+    fn words(fees: &str) -> RealismStampCosts {
+        RealismStampCosts {
+            fees: fees.to_string(),
+            slippage: "none".to_string(),
+            funding: "not applicable".to_string(),
+        }
+    }
+
+    /// The whole reason a stamp is written: two runs whose fee differs are NOT comparable, and the
+    /// divergence names the key an operator would edit.
+    #[test]
+    fn a_differing_fee_is_reported_by_its_toml_path() {
+        let a = stamp(&[("engine.fee_rate", "0.0004"), ("engine.slippage", "0")], None);
+        let b = stamp(&[("engine.fee_rate", "0"), ("engine.slippage", "0")], Some("no fee"));
+
+        let d = a.divergence(&b);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].key, "engine.fee_rate");
+        assert_eq!(d[0].mine.as_deref(), Some("0.0004"));
+        assert_eq!(d[0].theirs.as_deref(), Some("0"));
+    }
+
+    /// ⚠ The decision this test exists to hold: a key only ONE side carries is a divergence. The
+    /// intersection-only spelling would report "no difference" for exactly the case where a new
+    /// knob changed what the fills cost.
+    #[test]
+    fn a_key_only_one_side_carries_is_a_divergence_not_a_skip() {
+        let old = stamp(&[("engine.fee_rate", "0")], None);
+        let new = stamp(&[("engine.fee_rate", "0"), ("engine.impact.model", "almgren")], None);
+
+        let d = old.divergence(&new);
+        assert_eq!(d.len(), 1, "the new knob must be reported: {d:?}");
+        assert_eq!(d[0].key, "engine.impact.model");
+        assert_eq!(d[0].mine, None, "an absent key is None, never a fabricated zero");
+        assert_eq!(d[0].theirs.as_deref(), Some("almgren"));
+    }
+
+    /// Identical cost models diverge on nothing — the answer that makes a diff worth running.
+    #[test]
+    fn identical_stamps_diverge_on_nothing() {
+        let a = stamp(&[("engine.fee_rate", "0.0004"), ("engine.slippage", "0.0001")], None);
+        assert!(a.divergence(&a).is_empty());
+    }
+
+    /// A stamp is a document on somebody's disk: it must read back out of its own bytes, and an
+    /// absent `frictionless` must read as `None` rather than failing the parse.
+    #[test]
+    fn a_serialized_stamp_reads_back_into_the_same_values() {
+        let written = stamp(&[("engine.fee_rate", "0.0004")], None);
+        let json = serde_json::to_string(&written).unwrap();
+        assert!(!json.contains("frictionless"), "a costed run writes no verdict key: {json}");
+
+        let back: RealismStamp = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, written);
+        assert_eq!(back.schema, REALISM_STAMP_SCHEMA);
+    }
+
+    /// The charged-nothing reason keeps its RELEASED key, `frictionless` (released JSON only gains
+    /// fields), and survives the round trip; no text rendering prints that word.
+    #[test]
+    fn the_charged_nothing_reason_keeps_its_released_key() {
+        let written = RealismStamp::new(
+            [("engine.fee_rate".to_string(), "0".to_string())],
+            words("no fees"),
+            Some("every fill was free: no fees, no slippage".to_string()),
+        );
+        let json = serde_json::to_string(&written).unwrap();
+        assert!(json.contains(r#""frictionless":"every fill was free"#), "{json}");
+        assert!(json.contains(r#""charged":{"fees":"no fees""#), "{json}");
+        let back: RealismStamp = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, written);
+        let old: RealismStamp =
+            serde_json::from_str(r#"{"schema":1,"values":{},"frictionless":"old reason"}"#)
+                .unwrap();
+        assert_eq!(old.charged_nothing.as_deref(), Some("old reason"));
+        assert_eq!(old.charged, None, "a document written before the words reads as None");
+        for text in [back.digest(), back.to_string(), old.digest(), old.to_string()] {
+            assert!(!text.to_lowercase().contains("frictionless"), "{text}");
+        }
+    }
+
+    /// The words ARE the digest and lead the full rendering: the line a person reads first.
+    #[test]
+    fn the_words_are_the_digest_and_head_the_full_stamp() {
+        let s = RealismStamp::new(
+            [("engine.fee_rate".to_string(), "0".to_string())],
+            words("venue fees: binance, taker 0.1%, maker 0.1%"),
+            None,
+        );
+        assert_eq!(
+            s.digest(),
+            "fees: venue fees: binance, taker 0.1%, maker 0.1%; slippage: none; funding: not \
+             applicable"
+        );
+        assert!(
+            s.to_string().starts_with(
+                "fees:      venue fees: binance, taker 0.1%, maker 0.1%\nslippage:  none\n\
+                 funding:   not applicable\n"
+            ),
+            "{s}"
+        );
+    }
+
+    /// An absent key digests as `-`, never as `0`: a stamp written before a knob existed said
+    /// nothing about it, and a zero would be an invented answer.
+    #[test]
+    fn an_absent_key_digests_as_a_dash_rather_than_a_zero() {
+        let d = stamp(&[("engine.fee_rate", "0.0004")], None).digest();
+        assert!(d.contains("fee_rate=0.0004"), "{d}");
+        assert!(d.contains("slippage=-"), "{d}");
+    }
+
+    /// The ledger label is read off the stamp only when it is not the dollar: a dollar run, a stamp
+    /// that predates the key and a stamp with another key set all have nothing to print.
+    #[test]
+    fn only_a_ledger_off_the_dollar_is_a_label() {
+        assert_eq!(stamp(&[(ACCOUNT_CURRENCY_KEY, "JPY")], None).off_dollar_ledger(), Some("JPY"));
+        assert_eq!(
+            stamp(&[(ACCOUNT_CURRENCY_KEY, vike_model::DEFAULT_CURRENCY)], None)
+                .off_dollar_ledger(),
+            None
+        );
+        assert_eq!(stamp(&[("engine.fee_rate", "0")], None).off_dollar_ledger(), None);
+        assert_eq!(RealismStamp::default().off_dollar_ledger(), None);
+        assert_eq!(
+            ACCOUNT_CURRENCY_KEY, "engine.account_currency",
+            "the TOML path an operator edits"
+        );
+    }
+
+    /// An EMPTY stamp is the state of a producer that wrote none, and it must render and diff
+    /// without panicking — the `max().unwrap_or(0)` width path.
+    #[test]
+    fn an_empty_stamp_renders_and_diffs_without_panicking() {
+        let empty = RealismStamp::default();
+        assert_eq!(empty.to_string(), "");
+        assert!(empty.divergence(&empty).is_empty());
+        let other = stamp(&[("engine.fee_rate", "0")], None);
+        assert_eq!(empty.divergence(&other).len(), 1);
+    }
+}

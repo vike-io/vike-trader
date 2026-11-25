@@ -1,0 +1,390 @@
+//! The core thread's drain loop (`CoreThread::run`), its per-message guard (`handle`) and the guard of the work it
+//! does between batches (`run_guarded`).
+
+use super::*;
+
+impl<C: ExecutionClient> CoreThread<C> {
+    pub(crate) fn run(mut self, mut rx: mpsc::Receiver<Ingest>) {
+        // Arm the boundary timer wheel (audit co6) BEFORE the loop, off the hot path. Gated on the
+        // watchdog being enabled so that when it is OFF (default) NO clock read happens here — the
+        // wheel stays empty, the boundary advance is skipped by a single `is_empty` check, and the
+        // fold path (and, critically, the per-message clock-read COUNT that replay/harness clocks
+        // depend on for deterministic `now_ms`) is byte-identical to a wheel-free runtime.
+        if self.config.submit_ack_timeout.is_some()
+            || self.config.deadman.is_some()
+            || self.config.link_deadman.is_some()
+            || self.config.price_only.is_some()
+            || self.config.gtd_sweep.is_some()
+            || self.config.portfolio_snapshot_interval.is_some()
+            || self.config.inflight_confirm.is_some()
+            || self.any_exposure_partner()
+        {
+            self.arm_boundary_timers(self.config.clock.now_ms());
+        }
+        let mut last_pub =
+            Instant::now().checked_sub(self.config.snapshot_interval).unwrap_or_else(Instant::now); // publish ASAP
+        'outer: loop {
+            // Never block with dirty state unpublished — this also covers the batch-max
+            // boundary case (a burst of exactly batch_max messages then silence would
+            // otherwise strand the final state until the next message).
+            let first = match rx.try_recv() {
+                Ok(msg) => msg,
+                Err(mpsc::error::TryRecvError::Empty) => {
+                    // leftover on_fill / on_order_event deliveries beyond the per-message round cap
+                    // must not strand on a quiet feed — drain (guarded, like handle()) before parking
+                    if !self.engine.applied_fills.is_empty()
+                        || !self.engine.order_events.is_empty()
+                        || self
+                            .extra_engines
+                            .iter()
+                            .any(|(_, e)| !e.applied_fills.is_empty() || !e.order_events.is_empty())
+                    {
+                        if let Err(payload) =
+                            catch_unwind(AssertUnwindSafe(|| self.dispatch_applied_fills()))
+                        {
+                            self.enter_safe_state(payload_text(&*payload).to_owned());
+                            self.drain_poisoned(); // audit C4 (safeguard)
+                        }
+                        self.drain_delivered();
+                    }
+                    // A fence the journal could not answer within its bound (`journal_send_fence`): HALT before
+                    // the publish, so the state it shows is the halt. One relaxed load, never per message.
+                    if self.journal_refused.load(Ordering::Relaxed) {
+                        self.run_guarded(Self::halt_for_unwritable_journal);
+                    }
+                    if self.dirty {
+                        self.publish_guarded();
+                        last_pub = Instant::now();
+                    }
+                    // A cadence `Snapshot` the journal's write thread encodes
+                    // (`vike_journal::Journal::append_snap_deferred`) is framed before the core parks, so a quiet core
+                    // leaves none unwritten. The core waits for the encode here only while NO message waits: the
+                    // first one to arrive is handled at once and the `Snapshot` left for its append to settle. One
+                    // bool read when none is pending, never per message.
+                    let arrived = self.settle_snapshot_while_idle(&mut rx);
+                    match arrived {
+                        Some(msg) => msg,
+                        None => match rx.blocking_recv() {
+                            Some(msg) => msg,
+                            None => break, // every sender dropped -> clean exit
+                        },
+                    }
+                }
+                Err(mpsc::error::TryRecvError::Disconnected) => break,
+            };
+            if self.handle(first).is_break() {
+                break 'outer;
+            }
+            // opportunistic bounded drain (keeps per-wakeup latency bounded)
+            for _ in 1..self.config.batch_max {
+                match rx.try_recv() {
+                    Ok(msg) => {
+                        if self.handle(msg).is_break() {
+                            break 'outer;
+                        }
+                    }
+                    Err(mpsc::error::TryRecvError::Empty) => break,
+                    Err(mpsc::error::TryRecvError::Disconnected) => break 'outer,
+                }
+            }
+            // THE BOUNDARY. Each block below runs under the panic policy on its own (`run_guarded`), behind the
+            // read that gates it, so a block with nothing to do costs what it cost before.
+            //
+            // EQUITY SAMPLER (portfolio-observer PR-3): arm/disarm the cold equity-sample timer at
+            // this SAME drain-loop boundary, before the wheel advances below — so an interval armed
+            // this pass (a position that just opened in the batch just folded) is visible to
+            // `drive_due_timers` immediately. `equity_sample` gates the whole block to a single
+            // `Option::is_some()` read when disabled (the default): nothing is armed, `self.timers`
+            // is never touched, and this boundary stays byte-identical to a sampler-free runtime.
+            if self.config.equity_sample.is_some() {
+                let now = self.config.clock.now_ms();
+                self.run_guarded(|core| core.maintain_equity_timer(now));
+            }
+            // PERIODIC STATE-SAVE (portfolio-observer PR-4 T3): arm/disarm the cold state-save
+            // timer at this SAME drain-loop boundary, mirroring the equity sampler immediately
+            // above — a mount that just got added this pass is visible to `drive_due_timers`
+            // immediately. `state_save` gates the whole block to a single `Option::is_some()`
+            // read when disabled (the default): nothing is armed, `self.timers` is never touched
+            // by this feature, and this boundary stays byte-identical to a save-timer-free
+            // runtime. (`state_dir` is checked inside `maintain_state_save_timer` itself, not
+            // here, so both gates stay independently readable at their own call sites.)
+            if self.config.state_save.is_some() {
+                let now = self.config.clock.now_ms();
+                self.run_guarded(|core| core.maintain_state_save_timer(now));
+            }
+            // READINESS GATE (portfolio-observer PR-4 T5): probe still-Pending mounts at this SAME
+            // drain-loop boundary — no timer-wheel entry needed (unlike the two blocks above, this
+            // has no cadence of its own: it just re-checks the board every boundary pass while
+            // anything is still Pending, and `maintain_mount_readiness` itself no-ops in O(1) the
+            // moment nothing is). `readiness_gate` gates the whole block to a single `bool` read
+            // when off (the default): no clock read, no scan, byte-identical to a gate-free runtime.
+            if self.config.readiness_gate {
+                let now = self.config.clock.now_ms();
+                self.run_guarded(|core| core.maintain_mount_readiness(now));
+            }
+            // WALL-CLOCK SCHEDULE (steal/core-live-scheduler): checked at this SAME drain-loop
+            // boundary, the readiness-gate pattern — NO timer-wheel entry. Driving off the CLOCK
+            // VALUE here (rather than a wheel deadline computed as `now + tick`) is load-bearing:
+            // an injected/deterministic clock (replay, tests) may not advance between boundary
+            // passes, and a wheel deadline computed from a frozen clock is unreachable until the
+            // clock moves — which starves the poll to at most one check per clock movement (and the
+            // establish-then-fire latch law consumes the first). The boundary waker (cadence fed by
+            // `schedule_poll`) guarantees an idle core reaches this check on cadence; a rule fires
+            // at the first boundary pass AT or AFTER its wall-clock instant. `any_mount_schedule`
+            // gates the whole block to a single bool read when off (the default): no clock read, no
+            // scan, byte-identical to a schedule-free runtime.
+            if self.any_mount_schedule {
+                let now = self.config.clock.now_ms();
+                self.run_guarded(|core| core.drive_schedule(now));
+            }
+            // DEADLINE TIMER WHEEL (audit co6): advance ONCE here, at the drain-loop boundary —
+            // after the whole batch folded, NEVER per message (the p99<10µs fold above is
+            // untouched). The `is_empty` gate makes this a single field read when no timer is armed
+            // (the default: watchdog off ⇒ empty wheel), so the wheel-free path stays byte-identical.
+            // When armed, this is where the stuck-order sweep (and, since PR-3, the equity
+            // sampler, and since PR-4, the periodic strategy-state save) fires — driven by the
+            // injected clock at the coalesced boundary, not by the `Ingest::Watchdog` message
+            // (which is now only a waker; see its dispatch arm). The OS waker thread guarantees
+            // the core wakes at least once per tick, so an idle core still reaches this boundary
+            // on cadence.
+            if !self.timers.is_empty() {
+                let now = self.config.clock.now_ms();
+                self.run_guarded(|core| core.drive_due_timers(now));
+            }
+            // CANCEL-THEN-NEW AMENDS (`apply/amend.rs`): the second half of a modify that a venue can
+            // only do by cancelling and placing again waits for the venue, so it is advanced HERE, once
+            // per drained batch, off the registry's view of the two orders. Never per message: the
+            // fold above is untouched, and with no amend in flight (the default) this is one
+            // `is_empty` read per pass, like the wheel's just above. A REPLAY core reads no clock here: its
+            // `JournalReplayQueueClock` would hand over the next record's stamp, and its boundaries are not the live
+            // core's (the journal places its replacements, `apply/amend.rs`).
+            if !self.amends.is_empty() {
+                let now = if self.config.replay_core {
+                    self.engine.now_ms
+                } else {
+                    self.config.clock.now_ms()
+                };
+                self.run_guarded(|core| core.drive_amends(now));
+            }
+            // SHARED CLOSES (decision 0271, `shared_close.rs`): a mount bar step held for the input bar closing at
+            // the same instant runs here once its grace has passed, said and journaled. Once per drained batch,
+            // never per message; one `is_empty` read while nothing is held (every core whose mounts read no
+            // input, and every replay core, which holds none and so reads no clock here).
+            if !self.shared_closes.is_empty() {
+                let now = if self.config.replay_core {
+                    self.engine.now_ms
+                } else {
+                    self.config.clock.now_ms()
+                };
+                self.release_due_shared_closes(now);
+            }
+            // A cancelled contingency leg that fills anyway is a DOUBLE FILL (`apply/contingency.rs`):
+            // judged here, off the registry, once per drained batch; one `is_empty` read while none waits.
+            if !self.contingency_races.is_empty() {
+                self.run_guarded(Self::note_contingency_races);
+            }
+            // The WORKING emulated orders (`emulated.rs`): their laws act here, once per drained batch,
+            // never per message; one `is_empty` read per pass while none is worked. A replay core runs
+            // no law: the journal's steps are its children.
+            if !self.emulated.working.is_empty() && !self.config.replay_core {
+                let now = self.config.clock.now_ms();
+                self.run_guarded(|core| core.drive_emulated(now));
+            }
+            // The journal fence's HALT (the idle branch above has the same check), once per drained batch. Guarded like
+            // every boundary block: its `Snapshot` (`write_snap`) expects a journal that is, here, failing.
+            if self.journal_refused.load(Ordering::Relaxed) {
+                self.run_guarded(Self::halt_for_unwritable_journal);
+            }
+            // interval-coalesced publish while busy (idle publish happens above)
+            if self.dirty && last_pub.elapsed() >= self.config.snapshot_interval {
+                self.publish_guarded();
+                last_pub = Instant::now();
+            }
+        }
+        // Symmetric teardown + final snapshot so the GUI sees terminal state. Guarded:
+        // a panicking client detach must still leave a published fault, not a dead cell.
+        if catch_unwind(AssertUnwindSafe(|| {
+            self.drain_market(); // fold any tick stranded behind Shutdown in the queue
+            self.dispatch_applied_fills(); // pending on_fill deliveries while the client is attached
+            // OPT-IN SHUTDOWN POLICY, and it must run HERE — this is the last instant at which the
+            // core still owns live engines AND the client is still attached, so it is the only
+            // point a cancel can still reach the venue. Everything after this guard is teardown:
+            // phase one below raises every client's stop flag and phase two `shutdown()`s them,
+            // and the same sweep fired into a client whose flag is already up would go nowhere.
+            // OFF by default ⇒ one bool read, and the teardown stays byte-identical to the
+            // version that had no such field.
+            if self.config.cancel_orders_on_shutdown {
+                self.cancel_resting_on_shutdown();
+            }
+            // TWO PHASES, and the split is the whole cost model — the exec-plane twin of
+            // `crates/vike-recorder/src/runtime.rs`'s `stop_all`, whose doc argues the same finding
+            // one plane over.
+            //
+            // `Engine::shutdown` detaches the venue client, and a venue's detach JOINS its
+            // user-data pump — a thread that learns it should stop on its next stop-flag poll
+            // (`crates/vike-bridge-core/src/websocket_session/user.rs`'s `USER_DATA_POLL` is 1s, and the recv loop
+            // in `vike_bridge_core::websocket_session::user::run_user` re-checks the flag only on that
+            // cadence). The one-loop version of this teardown — detach-and-join, one engine at a
+            // time — therefore cost ONE wind-down PER ENGINE, serially, on the shutdown path of
+            // every shipped binary: a twelve-venue mount paid about twelve of them while a
+            // service-managed stop was already counting against its unit's `TimeoutStopSec=`.
+            //
+            // PHASE 1 — raise every flag, join nothing. This must complete for EVERY engine before
+            // the first `shutdown()` below, or the parallelism it exists for is given back one
+            // venue at a time. `begin_shutdown` is a default no-op on any client that has not
+            // wired it, so this loop is free where it buys nothing.
+            self.engine.begin_shutdown();
+            for (_, e) in self.extra_engines.iter_mut() {
+                e.begin_shutdown();
+            }
+            // PHASE 2 — the exact detaches that shipped before, now joining threads that have all
+            // been winding down since phase one. Nothing else about this teardown moves: no engine
+            // state is touched by phase one, the order below is unchanged, and a single-engine
+            // mount behaves as it always did.
+            //
+            // ⚠ It does NOT race the venue events phase one stops sooner. The fold loop has already
+            // broken by the time we get here, and nothing in this teardown drains the venue ingest
+            // lane — `drain_market` above drains MARKET data and `pump_client` below polls
+            // IN-PROCESS clients only. A venue event arriving during the old code's serial join
+            // window was folded by nobody either.
+            self.engine.shutdown();
+            for (_, e) in self.extra_engines.iter_mut() {
+                e.shutdown();
+            }
+            self.pump_client();
+            self.dispatch_applied_fills(); // fills the final pump surfaced
+            self.drain_delivered();
+        }))
+        .is_err()
+        {
+            self.teardown_panicked();
+        }
+        // Final Snapshot on exit — Shutdown, senders-dropped, and disconnect all funnel here. This
+        // always-present tail Snapshot is what a clean restart restores from (replay is latest-Snapshot-
+        // wins). `engine.shutdown()` above only detaches the client (OMS state is unchanged), so
+        // this captures the fully-folded terminal state. No-op when journaling is off, so the
+        // is_some guard keeps the teardown byte-identical to today when disabled.
+        if self.journal.is_some() {
+            // The closed-trade archive's thread finishes first (joined, as the core's drop would), so the exit
+            // Snapshot carries only the rows a failed write lost (`closed_trades.rs`'s "A restart").
+            if let Some(archive) = self.closed_archive.as_mut() {
+                archive.close();
+            }
+            let now = self.config.clock.now_ms();
+            // The one `Snapshot` nothing replays after: it states a journal fence halt's priors (`write_exit_snap`).
+            self.write_exit_snap(now);
+        }
+        // Portfolio-observer PR-4 T2/T3: best-effort save of each live mount's durable-state
+        // sidecar on a clean shutdown — the SAME per-mount loop the periodic
+        // [`TimerKind::StateSave`] fire uses (T3), factored into `save_all_strategy_state` so the
+        // two call sites can't drift apart (DRY; see that method's doc for the full guard
+        // rationale — catch_unwind per mount, indexed so a panicked mount can't shift
+        // `mount_ids` alignment, write failures logged and swallowed). `None` `state_dir`
+        // (default) skips this entirely — byte-identical teardown to today.
+        if self.config.state_dir.is_some() {
+            self.save_all_strategy_state();
+        }
+        self.publish_guarded();
+    }
+
+    /// **The teardown panicked** (a client's detach, a last pump): the primary is `Halted` and the fault published, and
+    /// a journal fence halt's exit `Snapshot` states that halt too (`JournalFenceHalt`), so a clean restart keeps it.
+    /// Cold: once, at the stop.
+    #[cold]
+    pub(crate) fn teardown_panicked(&mut self) {
+        self.engine.trading_state = TradingState::Halted;
+        if let Some(fence) = self.journal_fence_halt.as_mut() {
+            fence.raise_engine(0, TradingState::Halted);
+        }
+        if self.fault.is_none() {
+            self.fault = Some("panic during teardown".to_string());
+        }
+        self.drain_poisoned(); // audit C4 (safeguard)
+    }
+
+    /// Dispatch one message under the panic policy. Hooks run inside the guard too — no
+    /// user-supplied code on this thread can unwind past run() unsurfaced. Also the door a held
+    /// order's release takes (`held_release.rs`), so it is journaled and folded like any command.
+    pub(super) fn handle(&mut self, msg: Ingest) -> std::ops::ControlFlow<()> {
+        if let Ingest::Command(Command::Shutdown) = msg {
+            return std::ops::ControlFlow::Break(()); // teardown runs in run()
+        }
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            if let Some(hook) = self.config.on_dequeued.as_mut() {
+                hook(&msg);
+            }
+            self.dispatch(msg);
+            // deliver any fills this message's fold accepted (venue lane, client pumps)
+            self.dispatch_applied_fills();
+        }));
+        match outcome {
+            Ok(()) => {}
+            Err(payload) => {
+                self.enter_safe_state(payload_text(&*payload).to_owned());
+                self.drain_poisoned(); // audit C4: don't lose an event the panic interrupted mid-fold
+            }
+        }
+        self.drain_delivered();
+        std::ops::ControlFlow::Continue(())
+    }
+
+    /// Run `work` under [`Self::handle`]'s panic policy: a panic enters the safe state (`enter_safe_state`, which
+    /// pulls the book once per core life) and the bus keeps nothing it was folding. Every block of [`Self::run`]'s
+    /// drain-loop boundary runs under it, each on its own so one that panics at every pass does not starve the
+    /// others, and so does each timer arm of `drive_due_timers`: unguarded, an unwind there ended the `th-core`
+    /// thread with nothing halted or cancelled and a snapshot still reading healthy. Cold: once per block that has
+    /// work, never per message.
+    pub(crate) fn run_guarded(&mut self, work: impl FnOnce(&mut Self)) {
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| work(self))) {
+            self.enter_safe_state(payload_text(&*payload).to_owned());
+            self.drain_poisoned();
+        }
+    }
+
+    /// The idle point's half of a cadence `Snapshot` the journal's write thread encodes (decision 0279's amendment
+    /// of 2026-11-19): frame it once it is encoded, waiting for the encode only while no message waits. Returns the
+    /// message that arrived first, if one did (the `Snapshot` is then left pending: that message's append settles
+    /// it). Past [`IDLE_SNAPSHOT_WAIT`] with the job still untaken it encodes it here and returns. A failure loses
+    /// that one `Snapshot` (the restore reads the one before it), said once, a fault transition.
+    fn settle_snapshot_while_idle(&mut self, rx: &mut mpsc::Receiver<Ingest>) -> Option<Ingest> {
+        let journal = self.journal.as_mut()?;
+        let mut spins: u32 = 0;
+        let mut waiting_since: Option<Instant> = None;
+        let mut waited_out = false;
+        while journal.snapshot_pending() {
+            let settled = if waited_out {
+                journal.settle_snapshot_unless_encoding()
+            } else {
+                journal.settle_pending_snapshot()
+            };
+            if let Err(e) = settled {
+                tracing::error!(target: "vike_core::core", error = %e, "journal: a cadence Snapshot was not written");
+                return None;
+            }
+            if !journal.snapshot_pending() {
+                break;
+            }
+            match rx.try_recv() {
+                Ok(msg) => return Some(msg),
+                Err(mpsc::error::TryRecvError::Disconnected) => return None,
+                Err(mpsc::error::TryRecvError::Empty) => {}
+            }
+            std::hint::spin_loop();
+            spins = spins.wrapping_add(1);
+            // The write thread may share this CPU: it must get it.
+            if spins.is_multiple_of(4096) {
+                std::thread::yield_now();
+                // Past the wait the core encodes it itself rather than park: a write thread retrying a failed
+                // hand-off (a full disk) never takes it up, and parking would leave it unframed on a quiet core and
+                // hand its encode to the next message; here it is the old cost, paid while idle, at its sequence.
+                waited_out =
+                    waiting_since.get_or_insert_with(Instant::now).elapsed() >= IDLE_SNAPSHOT_WAIT;
+            }
+        }
+        None
+    }
+}
+
+/// How long the idle core waits for the journal's write thread to take a cadence `Snapshot`'s encode up before it
+/// encodes it itself ([`CoreThread::settle_snapshot_while_idle`]): one write tick, the write thread's retry period.
+const IDLE_SNAPSHOT_WAIT: Duration = Duration::from_millis(1);

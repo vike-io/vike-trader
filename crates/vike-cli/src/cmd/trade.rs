@@ -1,0 +1,886 @@
+//! `vike-cli trade` — the trade PLANE's entry point, over a running vike-tradehub (headless
+//! two-layer plan, Layer 1): one-shot verbs live under a REQUIRED group ([`plane::GROUPS`] —
+//! `account` | `order` | `position` | `strategy` built; `watch` named in the roster and refused as
+//! designed-not-built), `status` / `halt` / `resume` are three NODE-WIDE, risk-REDUCING words that
+//! take no book and so take no group, and — with no leading verb at all — this opens a HUMAN
+//! interactive REPL, the terse, terminal-driven sibling of the `mcp` trade tools: inside it a person
+//! types short verbs (`submit`, `cancel`, `flatten`, `orders`, `positions`, `status`, …) and this
+//! dispatches them to the node's authenticated OBSERVE (read) and CONTROL (write) servers via the
+//! LIGHT wire crate (`vike_tradehub_client::{TradehubCoreHandle, TradehubControlHandle}`). Part of the
+//! "vike-cli as the one agent surface" program
+//! (`docs/superpowers/specs/2026-07-26-vike-cli-agent-surface-program.md`).
+//!
+//! ⚠ **This module doc opened by calling the whole surface "a HUMAN interactive REPL" until the
+//! 2026-09-21 trade-CLI-plane design landed**
+//! (`docs/superpowers/specs/2026-09-21-trade-cli-surface-design.md`). That was complete the day it
+//! was written; the one-shot GROUP verbs are the newer half, and the REPL is now what a BARE
+//! invocation opens rather than the whole of what this file is.
+//!
+//! # `status` / `halt` / `resume` — the same three words on both sides of the prompt
+//!
+//! `vike-cli trade` with a leading VERB runs that one operation and exits; with none, it opens the
+//! REPL. `status` is the READ ([`crate::cmd::trade::status`] owns it, and its module doc carries the
+//! two wire reads it merges); `halt` and `resume` are the two WRITES, each named for what it does.
+//! Ruling 16 of `docs/superpowers/specs/2026-09-09-datahub-market-data-wire-design.md` is why they
+//! are the SAME words in both places: one word for one operation, so nothing has to be re-learned
+//! at the prompt.
+//!
+//! ⚠ **This replaces `state`, and the replacement is a safety change rather than a rename.**
+//! `parse_line` used to hold `"state" => match rest.first() { None => ShowState, Some(s) =>
+//! SetState(parse_state(s)?) }`: `state` PRINTED the mode and `state halted` HALTED A LIVE DAEMON,
+//! with one token between them. That is a destructive action wearing a read verb's argument — the
+//! shape a tab-completion, a pasted line, or an operator typing `state` and then a word to "filter"
+//! turns into a stopped node. Ruling 17 removes `state` entirely (no alias, no deprecation shim —
+//! this workspace's no-shims rule) and gives each write its own word. The exposure was never on the
+//! wire (`Scope::Read` cannot send `SetState`); it was at the CONTROL prompt, where the operator
+//! holds the key that CAN halt.
+//!
+//! ⚠ **`Reducing` has no REPL verb, deliberately, and the ruling's own test for that is met.** A
+//! halt does not trap you: `crates/vike-execution/src/risk.rs`'s `check_inner` admits a POSITION-COVERED
+//! reduce under `Halted`, so `close-all`/`flatten` and the re-price of a resting exit all still
+//! work — which is the "`Reducing` is reached through `halt`'s behaviour on open positions" the
+//! ruling names. `Reducing` itself stays reachable where an automation needs it: the `mcp` surface's
+//! `set_trading_state` tool and the node's own Telegram `/state reducing`.
+//!
+//! # The two halves (each signed with this box's device key)
+//!
+//! - READ → a [`TradehubCoreHandle`] subscribed to the node's pushed [`CoreSnapshotWire`] stream,
+//!   at `Scope::Read`.
+//! - WRITE → a [`TradehubControlHandle`] the write verbs push [`CommandWire`]s over, at
+//!   `Scope::Write`. Refused (the device's role is `observe`, or the node's control is off) ⇒
+//!   OBSERVE-ONLY: the write verbs are refused naming the node's own reason ([`NoControl`]).
+//! - No device key on this box ⇒ a clean startup error (there is nothing to do) that NAMES the
+//!   settings database it looked in, and how this box gets a key.
+//!
+//! The key is read ONCE by the dispatcher and arrives as a [`HubKeyring`]: this box's `device_key` row
+//! (decision 0288 item 8; no shared key and no variable). The node's access list decides which role that
+//! key holds, so ONE key serves both halves. [`vike_client::hubkeys`]' module doc is the argument.
+//!
+//! # Every order carries an order client id THIS side minted
+//!
+//! A node REFUSES a remote `Submit` with an empty `order_client_id` (`vike_tradehub::server::control`'s
+//! `lower_command`: a remote peer whose id the runtime minted has no stable handle to cancel or
+//! dedup by). [`parse_submit`] used to leave it empty "for the runtime to mint" — an in-process
+//! assumption the wire has rejected since that rule landed, so **the REPL could never place an
+//! order at all**. It is now filled from the session's [`verbs::OrderClientIdMinter`] ([`verbs::fill_order_client_id`],
+//! a v2 id that starts with `C`, in the shape and account code of the block the node's frame says the order reaches)
+//! BEFORE the preview prints, so the id shown is the id sent and the id the operator types back at `cancel`.
+//! `submit … --order-client-id <id>` pins one explicitly. `trade order decode <id>` reads any id back in words.
+//!
+//! # The write guardrail (the notional cap refuses; the node is the enforcing gate)
+//!
+//! Every WRITE verb PREVIEWS first: it prints the resolved [`CommandWire`] plus a client-side
+//! guardrail check over this machine's `policy` notional ceiling (`max_notional_per_order` —
+//! it was `VIKE_MAX_ORDER_NOTIONAL` until settings-unification Phase 5) and the local
+//! `preferences.max_order_qty` typo-catcher, then asks `confirm? [y/N]`
+//! (skipped with `--yes`). Only on `y` is the command sent, and we then wait briefly for the node's
+//! verdict on THAT command — [`TradehubControlHandle::await_outcome`] on the ticket the send returned
+//! — and report accepted / refused / unknown. The node's
+//! server-side `ControlLimits` (notional + rate) and the core `RiskGate` are the ENFORCING backstop.
+//! ONE gate reads the guardrail: an order it measures OVER the notional ceiling is not sent, on
+//! either surface and on the MCP's (`vike_client::order_gate::judge`, the cap the desktop refuses at:
+//! the owner's rulings of 2026-11-17 and 2026-11-24). The quantity line and an order this box cannot
+//! price stay printed lines.
+//!
+//! ⚠ This used to poll `TradehubControlHandle::last_error`, which LATCHES: after one refusal every
+//! later write in the session printed that same refusal, including commands the node accepted and
+//! ran. An operator who fat-fingered an order, got a correct refusal, then typed `close-all` was
+//! told the panic button was rejected when it had executed. Report a command's outcome from ITS
+//! ticket; never from a shared side-channel.
+//!
+//! # `--reason` (node proto v4)
+//!
+//! Any line may end with `--reason <text to end of line>`: an operator RATIONALE recorded in the
+//! node's audit trail beside the command, so an incident review reads *why*, not just *what*. It is
+//! split off the line BEFORE the verb grammar sees it ([`split_reason`]), shown in the preview, and
+//! sent beside the [`CommandWire`] — it never becomes part of the order. The text runs to end of
+//! line (no quoting needed; one optional layer of surrounding quotes is stripped), and the node
+//! sanitizes it before recording (control characters stripped, capped at 512 chars).
+//!
+//! # The strategy-LIFECYCLE half (`mount` / `unmount` / `set-setting`)
+//!
+//! Three verbs change what the node IS rather than what its books hold. They have a GRAMMAR of
+//! their own — [`parse_lifecycle`] rather than [`parse_line`], because two of them take a
+//! rest-of-line value whitespace tokenization would mangle — and they resolve to the SAME
+//! [`vike_client::verbs`] vocabulary every order verb does. [`parse_repl_line`] is the one entry the
+//! REPL loop calls and routes on the leading token, so a line still has exactly one grammar, and
+//! both grammars now produce a [`Verb`]. They ride the SAME preview + `confirm? [y/N]` gate every
+//! other write does.
+//!
+//! ⚠ This section used to say `Verb` was the ONE **order-write** vocabulary and that "none of these
+//! three is an order", so each of them was parsed straight to a [`CommandWire`] here — while, in
+//! parallel and under file ownership, the `mcp` server was building the same three from its own
+//! JSON arguments in its own builder. Two construction sites for one wire command is exactly the
+//! drift `verbs` exists to prevent, and both authors had written the lift down as the right move
+//! the day the other surface grew them. It did; they are [`Verb`] variants now, and `verbs`' module
+//! doc carries the argument for widening that type from order-write to node-write.
+//!
+//! - `mount` adds a strategy to the RUNNING core with no restart. Its source is the `--strategy`
+//!   file, its path under the **NODE's** `strategies/` folder, and a mount naming none is a parse
+//!   error, because a client that let the node discover that spends a round trip to say what the
+//!   grammar already knew. The retired `--name` and `--rhai` are no flags any more, and the renamed
+//!   `--file` is refused naming `--strategy`.
+//! - `unmount` removes one mount BY ID. The node's core cancels that mount's attributed live orders
+//!   and saves its durable state; **positions are NOT flattened** (`flatten` is the operator verb
+//!   for that), and the help screen says so — an operator who reads "unmount" as "get me out" and
+//!   is wrong about it is left holding an unattended position.
+//! - `set-setting <full.dotted.key> <value>` writes ONE row of the node's settings database, named
+//!   by its key (`docs/decisions/0086`) and validated by the node's own loader before it commits.
+//!   It takes the same two positionals `vike-cli config set` takes; the `<file>` token it used to
+//!   take first is retired and refused by name ([`parse_set_setting`]).
+//!
+//! ⚠ **`set-setting` asks ONE question — the `confirm? [y/N]` every write asks, which `--yes`
+//! skips.** It used to ask a SECOND: for a policy write, retype the key, even under `--yes`, so a
+//! policy write was the one REPL line a script could not complete. `docs/decisions/0086` point 7
+//! deleted that ceremony for every key, on every surface (*"confirmation over confirmation … a
+//! nightmare"*). What guards a live limit instead is what catches a mistake: the node's loader
+//! bounds the value, the preview prints `old → new` read off the node BEFORE the y/N
+//! ([`verbs::SettingChange`], shared with the `mcp` server's preview), and the node's journal
+//! records who changed it. The wire's `confirm` field stays for an older client, and the shared
+//! construction site ([`Verb::to_wire_command`]) always sends `None`.
+//!
+//! ⚠ `set-setting` also leaves the shared fire-and-forget send path, and that is the point:
+//! `TradehubControlHandle`'s worker maps an accepted settings write to an empty-order-client-id `Accepted` and
+//! DROPS the reply's `restart_required`, which is the one fact a settings write's caller actually
+//! needs — did the node apply this now, or is it what the NEXT boot loads? So it goes through the
+//! synchronous [`vike_tradehub_client::set_setting`] helper, which opens its own short-lived
+//! control connection and returns that flag. See [`run_set_setting`].
+//!
+//! ⚠ **`UpdateParams` is deliberately NOT spelled here.** A one-field patch (`params gamma=0.0008`)
+//! needs the mount's current params to patch against (`MountViewWire::typed_params` is that structured
+//! read now, and `MountViewWire::mount_id` names the one mount to address), and no such
+//! read-modify-write verb is built. Spelling it as "send a whole params object" would let an
+//! operator who meant to change one knob silently reset the other sixteen to a strategy's
+//! defaults. It is a separate design track, not an oversight.
+//!
+//! # What is / is not tested
+//!
+//! The PURE parts are unit-tested: [`parse_line`] / [`parse_lifecycle`] (every verb round-trips,
+//! malformed input is rejected, `is_write` is correct) and the [`Verb::to_wire_command`] mapping.
+//! The REPL loop, `rustyline`, and the live connection are thin glue over those pure parts, so they
+//! are not unit-tested here — the SHIPPED binary is driven over a pipe against a real node instead,
+//! by `crates/vike-cli/tests/shipped_cli/trade_hub_e2e.rs`, which is where the one-question settings write is
+//! pinned (`a_policy_set_setting_goes_out_after_one_confirm`).
+
+// History, kept so a citation by symbol still lands: `USAGE` was the plane's hand-kept usage text;
+// `--help` is rendered from `Cli` now (decision 0155).
+
+use std::process::ExitCode;
+use std::time::Duration;
+
+#[cfg(test)]
+use serde_json::json;
+use vike_hub_protocol::call::HubCallError;
+use vike_model::TradingState;
+use vike_model::orders::client_id::OrderClientIdSource;
+#[cfg(doc)]
+use vike_tradehub_client::wire::CommandWire;
+use vike_tradehub_client::wire::CoreSnapshotWire;
+#[cfg(test)]
+use vike_tradehub_client::wire::{CommandWire, OrderRequestWire};
+use vike_tradehub_client::{TradehubControlHandle, TradehubCoreHandle};
+
+use crate::cmd::args;
+use crate::exit::Exit;
+use vike_client::first_frame::{is_node_frame, is_pre_fold, wait_for_first_frame};
+use vike_client::hubkeys::{self, HubKeyring};
+use vike_client::verbs;
+#[cfg(doc)]
+use vike_client::verbs::Verb;
+#[cfg(test)]
+use vike_client::verbs::Verb;
+
+use self::describe::{accepted_tail, describe_command, opt_number, side_word};
+use self::repl::grammar_orders::side_arg;
+use self::repl::{history_file, repl};
+use self::write::{confirm_stdin, run_set_mode_once};
+
+#[cfg(test)]
+use self::describe::{equity_text, orders_table, stamp, trunc_mid};
+#[cfg(test)]
+use self::repl::grammar::{PARAMS_FLAG, parse_line, parse_repl_line, split_reason, split_tail};
+#[cfg(test)]
+use self::write::{is_yes, mode_verb, parse_mode_args};
+
+#[cfg(doc)]
+use self::repl::grammar::{
+    parse_lifecycle, parse_line, parse_repl_line, parse_set_setting, split_reason,
+};
+#[cfg(doc)]
+use self::repl::grammar_orders::parse_submit;
+#[cfg(doc)]
+use self::write::run_set_setting;
+
+/// A TEST's read of one group-less `trade` verb's argv tail through the plane's one parser, then
+/// that verb's own rule: `$word` goes back in front of `$argv`, the `Sub::$variant` command's own
+/// `into_args` makes the arguments (with `$arg`s after the command: a verb that dials a node takes this box's
+/// `config.node_addr`, `None` in a test), and a post-parse refusal is lifted as `$bin: <msg>`. The twin of
+/// `crate::cmd::config`'s `parse_config_verb!` (the plane's `Sub` sits in an `Option` here); defined
+/// above the `mod` lines so every verb module sees it.
+#[cfg(test)]
+macro_rules! parse_trade_verb {
+    ($argv:expr, $word:literal, $variant:ident, $bin:expr $(, $arg:expr)*) => {
+        match $crate::cmd::trade::parse(std::iter::once($word.to_string()).chain($argv))?.sub {
+            Some($crate::cmd::trade::Sub::$variant(cmd)) => {
+                cmd.into_args($($arg),*).map_err(|msg| $crate::cmd::args::Stop::message($bin, msg))
+            }
+            other => panic!("`trade {}` did not read as that verb: {:?}", $word, other),
+        }
+    };
+}
+
+mod account;
+mod oneshot;
+// The read-only node question `vike-cli trade status` answers.
+mod order;
+mod plane;
+mod position;
+mod recon;
+mod render;
+// `pub(crate)`: `report account:<venue>/<LABEL>` reads a book with the same grammar.
+pub(crate) mod selector;
+pub mod status;
+mod strategy;
+mod venue;
+
+mod describe;
+mod health;
+mod links;
+mod repl;
+mod write;
+
+/// The program name this plane is read under; a refusal prints as `vike-cli trade: …`.
+const BIN: &str = "vike-cli trade";
+
+/// `trade --help`'s prose: the plane's own roster, in the shape `crate::cmd::data::usage`'s `long_about`
+/// uses (the `usage:` line and the options table are `clap`'s; the REPL's verb reference follows
+/// it as `after_help`, from [`repl::help::verb_reference`]). The GROUPS block names what [`plane::GROUPS`]
+/// lists — `watch` included, which is not a subcommand but is answered by name.
+///
+/// ⚠ The trailing note is not decoration. `--json` reached every other non-interactive surface, and
+/// a gap with no explanation reads as an oversight somebody will "fix": a machine-readable REPL is
+/// what `vike-mcp` already is — a whole stdio protocol with a tool schema, session state and a
+/// mandatory preview — and a `--json` here would be a second, weaker one to keep in step with it.
+/// The line exists so that the absence is a decision a reader can see rather than infer. ⚠ It is
+/// KEPT VERBATIM from before this file grew a group layer: the REPL still has no `--json` and
+/// `vike-mcp` is still the machine surface, and re-wording it here would be the same claim
+/// stated twice with two chances to drift.
+const LONG_ABOUT: &str = "\
+With no group and no verb (`vike-cli trade --node <host:port> [--yes]`) this opens the interactive
+REPL; with a verb it runs that one operation and exits.
+
+`status`, `halt` and `resume` take NO group, and that is not a hole in the roster below: a verb
+that takes no ACCOUNT takes no group, and all three are node-wide and risk-REDUCING — `halt`
+under pressure is one word, not a group plus a word. `resume`'s per-venue twin is `venue resume
+<venue> [--force]`: it releases the link dead-man's halt of that one venue early, which `resume`
+cannot do without clearing every other venue's halt too.
+`health` is another group-less word and a pure READ: it judges the whole node in one screen
+(`trade health --help`). `links [ACCOUNT]` is a third: how long each venue session lived and how it
+ended (`trade links --help`).
+
+GROUPS — every other verb lives in one, and the group is REQUIRED: there is no bare
+`vike-cli trade <verb>`, and each pre-group REPL spelling is refused by name with its one-shot
+replacement rather than silently accepted:
+  order        the working set, and the intent to change it — `trade order --help`
+  position     what is held — `trade position --help`
+  strategy     what trades by itself — `trade strategy --help`
+  reconcile    reconcile divergences the node HOLDS for an operator: list, confirm — `trade reconcile --help`
+  venue        what an account's VENUE says: its balance, open orders, positions; and `venue resume`,
+               which releases ONE venue's link dead-man halt — `trade venue --help`
+  account      ONE account's engine: halt, reduce, resume, remove a symbol — `trade account --help`
+  watch        the live stream (designed, not built)
+
+no --json on the REPL: it is interactive, for a human. The MACHINE surface over the same node
+is `vike-mcp`, which speaks stdio JSON-RPC and exposes the same verbs as tools.";
+
+// The `trade` plane's command line, as the one `clap` parser reads it: nothing or the REPL's own
+// flags (`--node`, `--yes`) open the interactive REPL, and a leading word is one of the three
+// node-wide one-shots, a REQUIRED group (`account | order | position | strategy | reconcile | venue`), or a word
+// answered by name ([`Sub::Other`]).
+#[derive(clap::Parser, Debug)]
+#[command(
+    about = "Read a vike-tradehub, change what it is doing, or open the interactive REPL",
+    long_about = LONG_ABOUT,
+    after_help = repl::help::verb_reference()
+)]
+struct Cli {
+    #[command(subcommand)]
+    sub: Option<Sub>,
+    // The REPL's own flags. Putting one before a verb is refused after the parse
+    // ([`run`]): each one-shot verb declares its own `--node`.
+    #[arg(
+        long,
+        value_name = "HOST:PORT",
+        overrides_with = "node",
+        help = "the node's address, for the REPL [default: config.node_addr]"
+    )]
+    node: Option<String>,
+    #[arg(
+        short = 'y',
+        long,
+        overrides_with = "yes",
+        help = "REPL: skip the per-write confirm? [y/N] prompt"
+    )]
+    yes: bool,
+}
+
+// The plane's words. A built group is required to carry a verb (its own `clap` enum), and
+// `status`/`halt`/`resume` are the one exemption from the group layer — node-wide, risk-REDUCING
+// words that take no book and so take no group (`plane`'s own module doc argues why).
+#[derive(clap::Subcommand, Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one parsed command line per process; boxing buys nothing"
+)]
+enum Sub {
+    #[command(
+        about = "ask the node what it is doing: the trading mode and what is mounted",
+        long_about = status::LONG_ABOUT
+    )]
+    Status(status::StatusCommand),
+    #[command(
+        about = "judge the node in one screen: door, accounts, halts, held rows, orders, positions",
+        long_about = health::LONG_ABOUT
+    )]
+    Health(health::HealthCommand),
+    #[command(
+        about = "every venue's sessions: how long they lived, how they ended, how long until the next",
+        long_about = links::LONG_ABOUT
+    )]
+    Links(links::LinksCommand),
+    #[command(
+        about = "set the node's trading mode to Halted",
+        long_about = write::mode_prose("halt")
+    )]
+    Halt(write::ModeCommand),
+    #[command(
+        about = "set the node's trading mode back to Active",
+        long_about = write::mode_prose("resume")
+    )]
+    Resume(write::ModeCommand),
+    #[command(about = "ONE account's engine: halt, reduce, resume, remove a symbol")]
+    Account {
+        #[command(subcommand)]
+        verb: account::AccountVerb,
+    },
+    #[command(about = "the working set, and the intent to change it")]
+    Order {
+        #[command(subcommand)]
+        verb: order::OrderVerb,
+    },
+    #[command(about = "what is held")]
+    Position {
+        #[command(subcommand)]
+        verb: position::PositionVerb,
+    },
+    #[command(about = "what trades by itself")]
+    Strategy {
+        #[command(subcommand)]
+        verb: strategy::StrategyVerb,
+    },
+    #[command(about = "reconcile divergences the node is holding for an operator")]
+    Reconcile {
+        #[command(subcommand)]
+        verb: recon::ReconcileVerb,
+    },
+    #[command(
+        about = "ask an account's VENUE for its balance, open orders or positions, through the node; \
+                 release ONE venue's link dead-man halt"
+    )]
+    Venue {
+        #[command(subcommand)]
+        verb: venue::VenueVerb,
+    },
+    // ⚠ Any other word is answered BY NAME and never as a bare "unknown": a group that is
+    // designed and not built (`watch`), a pre-group REPL spelling that has a one-shot
+    // replacement (`submit`, `positions`, …), the removed `state`, or a typo — `refusal_for`
+    // below, over `plane::refusal`.
+    #[command(external_subcommand)]
+    Other(Vec<String>),
+}
+
+impl Sub {
+    /// The word the operator typed for this verb — what `unknown argument: <word>` names when a
+    /// REPL flag was put before it.
+    fn word(&self) -> &str {
+        match self {
+            Sub::Status(_) => "status",
+            Sub::Health(_) => "health",
+            Sub::Links(_) => "links",
+            Sub::Halt(_) => "halt",
+            Sub::Resume(_) => "resume",
+            Sub::Account { .. } => "account",
+            Sub::Order { .. } => "order",
+            Sub::Position { .. } => "position",
+            Sub::Strategy { .. } => "strategy",
+            Sub::Reconcile { .. } => "reconcile",
+            Sub::Venue { .. } => "venue",
+            Sub::Other(words) => words.first().map_or("", String::as_str),
+        }
+    }
+}
+
+/// This plane as a `clap` command, for the published reference (`crate::surface`).
+pub(crate) fn command() -> clap::Command {
+    args::command::<Cli>(BIN)
+}
+
+/// Read a `trade` argv tail — everything after the verb word, group and verb included.
+fn parse(argv: impl IntoIterator<Item = String>) -> Result<Cli, args::Stop> {
+    args::parse::<Cli, _, _>(BIN, argv)
+}
+
+/// The long help of the command at `path` (`[]` is the plane itself, `["order", "submit"]` a verb),
+/// as `--help` prints it — for a test asserting the help says what the parser reads, instead of a
+/// hand-kept usage text that could say otherwise.
+#[cfg(test)]
+fn help_of(path: &[&str]) -> String {
+    let mut root = args::command::<Cli>(BIN);
+    root.build();
+    let mut cmd = &mut root;
+    for word in path {
+        cmd = cmd
+            .find_subcommand_mut(word)
+            .unwrap_or_else(|| panic!("the `trade` command has no `{word}` in {path:?}"));
+    }
+    cmd.render_long_help().to_string()
+}
+
+/// The prompt shown by the REPL.
+const PROMPT: &str = "vike> ";
+
+// ⚠ There is no `ACK_WAIT` constant any more: how long to wait for the node's verdict on the command
+// just sent is the `config.node_ack_wait_ms` row (`Resolved::node_ack_wait`), threaded down as the
+// `ack_wait` parameter to every `await_outcome` call below. It is a DEADLINE, not a sleep —
+// `await_outcome` returns the instant that command's reply lands (sub-millisecond on localhost) — so
+// a generous bound costs nothing in the common case and buys a definite answer over a slow link; it
+// replaced an unconditional 150ms sleep, which was both slower on every write and too short for a
+// tunnelled node. `vike_client::first_frame`'s `FIRST_FRAME_WAIT` is a DIFFERENT wait (a display
+// read's, for a frame the node pushes) and stays a constant.
+
+/// Entry point the dispatcher routes to. `argv` is everything AFTER the `trade` subcommand;
+/// `policy_max_notional` is this machine's `max_notional_per_order` policy ceiling, already
+/// resolved by [`crate::run`] (settings unification, Phase 5 — it replaced the removed
+/// `VIKE_MAX_ORDER_NOTIONAL`) and used only by the preview guardrail, which refuses an order over it.
+///
+/// `ack_wait` is `config.node_ack_wait_ms`, resolved by the same boot walk ([`crate::run`]): how
+/// long a write waits for the node's verdict on its command before reporting the outcome as NOT yet
+/// known. It never cancels or re-sends anything — see `Resolved::node_ack_wait`.
+///
+/// `settings_dir` is `<project>/settings`, likewise resolved ONCE by [`crate::run`] from its single
+/// `std::env::vars()` sweep. [`history_file`] hangs the REPL history off its `state/`
+/// sub-directory. It arrives as a PARAMETER because this file is a library file: a read here would
+/// be a `Layer::Library` row on the settings registry's STEP-2 work-list for a value the dispatcher
+/// was already positioned to resolve. `None` (no project above the working directory) means history
+/// is simply not persisted.
+///
+/// `keys` is the resolved [`HubKeyring`] — this box's device key. Same reasoning: the dispatcher
+/// owns the read, this file takes the answer.
+///
+/// `datahub_addr` and `datahub_keys` are for `trade health`, the one verb that also asks the datahub.
+pub fn run(
+    argv: impl Iterator<Item = String>,
+    policy_max_notional: Option<f64>,
+    ack_wait: Duration,
+    settings_dir: Option<std::path::PathBuf>,
+    keys: &HubKeyring,
+    datahub_addr: Option<&str>,
+    datahub_keys: &dyn Fn() -> Option<vike_hub_protocol::auth::HubKeys>,
+) -> ExitCode {
+    let cli = match parse(argv) {
+        Ok(cli) => cli,
+        Err(stop) => return args::finish(&stop),
+    };
+    // NO VERB: this opens the REPL. A bare invocation and a flags-only one (`--node …`, `-y`) both
+    // land here, exactly as they did before the group layer existed.
+    let Some(sub) = cli.sub else {
+        return run_repl(cli.node, cli.yes, policy_max_notional, ack_wait, settings_dir, keys);
+    };
+    // The REPL's flags before a verb used to be read by the REPL's own flag grammar, which took
+    // flags only: the verb word after them was "an unknown argument". Each one-shot verb declares
+    // its own `--node`/`--yes`, after its word, and the two spellings are not mixed.
+    if cli.node.is_some() || cli.yes {
+        return args::refuse(BIN, format!("unknown argument: {}", sub.word()));
+    }
+    // ONE-SHOT: a leading non-flag token is a VERB (`status` / `halt` / `resume`) — ruling 17 —
+    // or a REQUIRED group (`account | order | position | strategy | reconcile | venue`), each with its verb read by its own enum.
+    // `policy_max_notional` is threaded through for the groups' WRITE verbs — the same ceiling
+    // `Session.capabilities` resolves for the REPL's own preview guardrail.
+    match sub {
+        Sub::Status(cmd) => status::run(cmd, keys),
+        Sub::Health(cmd) => {
+            health::run(cmd, keys, datahub_addr, datahub_keys, settings_dir.as_deref())
+        }
+        Sub::Links(cmd) => links::run(cmd, datahub_addr, datahub_keys),
+        Sub::Halt(cmd) => run_set_mode_once(cmd, keys, TradingState::Halted, ack_wait),
+        Sub::Resume(cmd) => run_set_mode_once(cmd, keys, TradingState::Active, ack_wait),
+        Sub::Account { verb } => account::run(verb, keys, policy_max_notional, ack_wait),
+        Sub::Order { verb } => {
+            order::run(verb, keys, policy_max_notional, ack_wait, settings_dir.as_deref())
+        }
+        Sub::Position { verb } => position::run(verb, keys, policy_max_notional, ack_wait),
+        Sub::Strategy { verb } => strategy::run(verb, keys, policy_max_notional, ack_wait),
+        Sub::Reconcile { verb } => recon::run(verb, keys, policy_max_notional, ack_wait),
+        Sub::Venue { verb } => venue::run(verb, keys, policy_max_notional, ack_wait),
+        Sub::Other(words) => {
+            args::refuse(BIN, plane::refusal(words.first().map_or("", String::as_str)))
+        }
+    }
+}
+
+/// `--node`, else this box's `config.node_addr` row (`HubKeyring::node_addr`), else the one refusal naming
+/// `vike-cli backend connect`, rendered: `vike_client::resolved::node_dial_address`, `vike-mcp`'s ladder too. Every verb
+/// of this plane that must dial a node asks it after its own rules, so a bad book or qty is still reported first;
+/// `decode`, whose node is optional, does not.
+pub(crate) fn node_or_refusal(
+    flag: Option<String>,
+    configured: Option<&str>,
+) -> Result<String, String> {
+    vike_client::resolved::node_dial_address(flag.as_deref(), configured)
+        .map_err(|refusal| refusal.rendered())
+}
+
+/// The interactive REPL: connect whichever half of the node resolved a key, then run the prompt
+/// loop. `node`/`yes` are the REPL's own flags; the node is judged here ([`node_or_refusal`]) so that
+/// `--help` never has to supply one.
+fn run_repl(
+    node: Option<String>,
+    yes: bool,
+    policy_max_notional: Option<f64>,
+    ack_wait: Duration,
+    settings_dir: Option<std::path::PathBuf>,
+    keys: &HubKeyring,
+) -> ExitCode {
+    let node = match node_or_refusal(node, keys.node_addr()) {
+        Ok(node) => node,
+        Err(why) => return args::refuse(BIN, why),
+    };
+
+    // Both halves sign with this box's device key; with none, a clean error that names the settings
+    // database it looked in and how this box gets one.
+    if !keys.has_any() {
+        eprintln!("{}", keys.absent_message("trade", &node));
+        return ExitCode::FAILURE;
+    }
+
+    let observe = match keys.observe() {
+        Some((key, origin)) => match TradehubCoreHandle::connect_with_read_timeout(
+            node.as_str(),
+            key,
+            keys.patience().observe_stall,
+        ) {
+            Ok(h) => {
+                println!("connected: OBSERVE (read) to {node} [key from the {}]", origin.label());
+                Some(h)
+            }
+            Err(e) => {
+                eprintln!("vike-cli trade: cannot open observe connection to {node}: {e}");
+                None
+            }
+        },
+        None => {
+            println!("reads disabled: no {}", hubkeys::DEVICE_KEY_WORDS);
+            None
+        }
+    };
+    // The control half is a THREE-way outcome, not two, and the third is the one a clean install
+    // tripped over — see [`NoControl`]. `control_denied` carries the connect-time reason forward so
+    // that every later refusal can name it; without it, "the node refused the control SCOPE" and
+    // "you have no key" printed the same sentence, and only one of them was true.
+    let mut control_denied: Option<NoControl> = None;
+    let control = match keys.control() {
+        Some((key, origin)) => match TradehubControlHandle::connect_with_reply_timeout(
+            node.as_str(),
+            key,
+            keys.patience().control_reply,
+        ) {
+            Ok(h) => {
+                println!("connected: CONTROL (write) to {node} [key from the {}]", origin.label());
+                Some(h)
+            }
+            Err(e) => {
+                eprintln!("vike-cli trade: cannot open control connection to {node}: {e}");
+                control_denied = Some(NoControl::from_connect_error(&e));
+                None
+            }
+        },
+        None => {
+            println!("writes disabled (OBSERVE-ONLY): no {}", hubkeys::DEVICE_KEY_WORDS);
+            control_denied = Some(NoControl::NoKey);
+            None
+        }
+    };
+    if observe.is_none() && control.is_none() {
+        // The CONNECT rung: a key resolved (the `has_any` gate above passed) and NEITHER half could
+        // open a socket, so the node is unreachable rather than the command line wrong. Each half's
+        // own reason is already on stderr above; this is the line that says the session cannot start.
+        eprintln!("vike-cli trade: no usable connection to {node} — exiting");
+        return Exit::Connect.into();
+    }
+
+    let mut session = Session {
+        observe,
+        control,
+        control_denied,
+        node,
+        keys,
+        yes,
+        capabilities: verbs::guardrail_capabilities(policy_max_notional),
+        ack_wait,
+        history: history_file(settings_dir.as_deref()),
+        order_client_ids: verbs::order_client_id_minter(OrderClientIdSource::Cli),
+    };
+    match repl(&mut session) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("vike-cli trade: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// **Why this session has no control connection.** Recorded at connect time because that is the only
+/// moment the answer exists, and read at WRITE time, which is the only moment anybody asks.
+///
+/// The defect this exists to fix: `run_write` used to branch on `session.control.is_none()` alone
+/// and print one no-key sentence. With `tradehub_control` off at the node and a perfectly good key,
+/// that sentence is FALSE — the key authenticated and was refused for its SCOPE ("control disabled
+/// on this node", the tradehub's admission refusal). The true reason was printed once, at connect,
+/// then dropped; every write afterwards sent the operator hunting for a key that was never the problem.
+///
+/// The four cases are genuinely different actions — give this box a device key / turn the node's
+/// flag on or raise the device's role / upgrade one side / fix the network — so they are four
+/// variants rather than one string with a comment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NoControl {
+    /// This box holds no device key. THIS is the case the old message described, and the only one
+    /// it was ever right about.
+    NoKey,
+    /// The key authenticated and the node REFUSED the control scope: its `flags.tradehub_control` is
+    /// off, or this device's role on its access list does not admit control. Carries the node's own
+    /// words.
+    Refused(String),
+    /// The node ANSWERED the connect, but not in a way this build can use: an older node (no
+    /// `person-auth` for a device key), a protocol-version skew, a peer that is not a tradehub. Its
+    /// cure is an upgrade of one side, never the node's flag or the device's role.
+    Incompatible(String),
+    /// The connection did not get far enough to be refused — wrong address, node down, TLS/socket
+    /// error. Nothing about the key or the node's policy is known.
+    Unreachable(String),
+}
+
+impl NoControl {
+    /// Classify a failed `TradehubControlHandle::connect` by its variant, never its text (the node
+    /// is free to reword its reason): `AccessDenied` is the node refusing the key or the scope; any
+    /// other answer is a node this build cannot speak to; only a connect that got no answer is
+    /// unreachable.
+    fn from_connect_error(e: &HubCallError) -> Self {
+        let msg = e.to_string();
+        match e {
+            HubCallError::AccessDenied(_) => NoControl::Refused(msg),
+            HubCallError::NotOffered { .. }
+            | HubCallError::Protocol(_)
+            | HubCallError::Refused { .. } => NoControl::Incompatible(msg),
+            HubCallError::NotSent(_)
+            | HubCallError::OutcomeUnknown(_)
+            | HubCallError::NotNow { .. } => NoControl::Unreachable(msg),
+        }
+    }
+
+    /// The rung a one-shot write exits on without a control connection: a node that ANSWERED (a
+    /// refused scope, an older node, a version skew) is a configuration fact about a reachable box,
+    /// [`Exit::Failed`], as is a box with no key; only a connect that got no answer is the
+    /// [`Exit::Connect`] a wrapper retries.
+    fn exit(&self) -> Exit {
+        match self {
+            NoControl::NoKey | NoControl::Refused(_) | NoControl::Incompatible(_) => Exit::Failed,
+            NoControl::Unreachable(_) => Exit::Connect,
+        }
+    }
+
+    /// The line printed instead of sending a write. Always ends in "nothing was sent", because that
+    /// is the one fact every case shares and the one the operator most needs.
+    fn refusal_line(&self) -> String {
+        match self {
+            NoControl::NoKey => format!(
+                "writes disabled (OBSERVE-ONLY): no {} in this box's settings database — nothing \
+                 was sent",
+                hubkeys::DEVICE_KEY_WORDS
+            ),
+            NoControl::Refused(why) => format!(
+                "writes disabled: the node REFUSED the control scope at connect time ({why}). \
+                 Either the node is not accepting control connections at all — turn \
+                 `flags.tradehub_control` on in ITS settings (`vike-cli config set \
+                 flags.tradehub_control true` there) and restart it — or the role of this box's \
+                 {} on that node's access list does not admit control (`vike-cli access ls` \
+                 there) — \
+                 nothing was sent",
+                hubkeys::DEVICE_KEY_WORDS
+            ),
+            NoControl::Incompatible(why) => format!(
+                "writes disabled: the node answered the control connect, but this build cannot use \
+                 it ({why}) — upgrade the node or this box, whichever is older — nothing was sent"
+            ),
+            NoControl::Unreachable(why) => format!(
+                "writes disabled: the control connection could not be opened ({why}) — nothing was \
+                 sent"
+            ),
+        }
+    }
+}
+
+/// The live REPL session: the two optional node connections, the confirm-skip flag, the
+/// preview caps (resolved once at startup — see [`verbs::guardrail_capabilities`]), and where the
+/// line history is persisted.
+///
+/// It borrows the [`HubKeyring`] rather than copying a key out of it: a settings write signs twice
+/// more — at `Read` for the `old → new` read ([`read_setting_change`]) and at `Write` for
+/// [`run_set_setting`], each over a short-lived connection of its own — and a
+/// session-lifetime `String` copy of a live node credential is a second place for one to exist for
+/// no gain: the keyring is already alive for the whole call and already redacts itself in `Debug`.
+struct Session<'a> {
+    observe: Option<TradehubCoreHandle>,
+    control: Option<TradehubControlHandle>,
+    /// Why [`Self::control`] is `None`, captured at connect time. `None` here means the control
+    /// connection is UP. See [`NoControl`].
+    control_denied: Option<NoControl>,
+    /// `host:port` — the address both halves connected to, kept because the settings write reaches
+    /// the node through its own connection rather than through [`Self::control`].
+    node: String,
+    /// This box's device key, resolved once by the dispatcher. See the struct doc for why it is a
+    /// borrow.
+    keys: &'a HubKeyring,
+    yes: bool,
+    capabilities: verbs::GuardrailCapabilities,
+    /// How long a write waits for the node's verdict on its command — `config.node_ack_wait_ms`,
+    /// resolved once by the dispatcher (the `ack_wait` parameter of [`run`]).
+    ack_wait: Duration,
+    /// `<project>/settings/state/trade_history`, or `None` when no project sits above the working
+    /// directory (history is then simply not persisted). See [`history_file`].
+    history: Option<std::path::PathBuf>,
+    /// This session's order-client-id mint (source `C`). SESSION-scoped, not per-order: the session
+    /// base separates this REPL from every other process (and from its own previous run), the counter
+    /// separates each order from the last. See [`verbs::order_client_id_minter`].
+    order_client_ids: verbs::OrderClientIdMinter,
+}
+
+/// The line a DISPLAY read prints ahead of a frame that carries nothing built ([`is_pre_fold`]), or
+/// `None` for a built one. The REPL prints it on stdout above the render ([`with_snapshot`]); the
+/// one-shot `ls` verbs print it on STDERR, so a `--json` stdout stays one bare document.
+///
+/// TWO wordings, because they are two different facts and an operator acts on them differently:
+/// with an identity the node is up and has published its pre-fold placeholder (it has folded
+/// nothing — an idle paper node stays here until its first order); without one, nothing
+/// recognisable as the node's arrived in time, and what is in hand is this client's own
+/// placeholder.
+pub(crate) fn pre_fold_line(snap: &CoreSnapshotWire) -> Option<&'static str> {
+    if !is_pre_fold(snap) {
+        return None;
+    }
+    Some(if is_node_frame(snap) {
+        "[pre-fold] the node is up and has published only its pre-fold placeholder (seq 0, \
+         stamped with its identity): it has built nothing yet, so every balance, equity figure \
+         and list below is a placeholder, not a reading — an empty list does NOT mean there is \
+         nothing. Read again once the node has folded."
+    } else {
+        "[pre-fold] no frame from the node arrived on this connection in time (seq 0, no \
+         identity), so what follows is this client's OWN empty placeholder, not the node's \
+         state — an empty list does NOT mean there is nothing. (A node too old to stamp an \
+         identity looks the same until its first fold.) Read again."
+    })
+}
+
+/// Connect the OBSERVE half to `node` with `key` and wait for a frame the node pushed — see
+/// [`wait_for_first_frame`]. The one-shot twin of this session's own connect-then-defer-the-wait
+/// sequence in [`run`], for a group verb that holds no session to defer the wait to. Returns the
+/// connected handle (drop it to close the connection) alongside the snapshot in hand once the wait
+/// ended. `observe_stall` is the box's resolved silence limit for the stream
+/// ([`HubKeyring::patience`]'s `observe_stall`).
+pub(crate) fn connect_observe(
+    node: &str,
+    key: vike_hub_protocol::access::Signer<'_>,
+    observe_stall: std::time::Duration,
+) -> Result<(TradehubCoreHandle, std::sync::Arc<CoreSnapshotWire>), HubCallError> {
+    let handle = TradehubCoreHandle::connect_with_read_timeout(node, key, observe_stall)?;
+    let snap = wait_for_first_frame(&handle);
+    Ok((handle, snap))
+}
+
+/// The OBSERVE read a one-shot `ls`-shaped verb (`order ls`, `position ls`, `reconcile ls`, `order
+/// stops`) opens with: this box's device key at `Read`, [`connect_observe`], and the [`pre_fold_line`] on
+/// STDERR so a `--json` stdout stays one bare document. `Err` carries the exit, its sentence already
+/// printed on stderr: no device key is `FAILURE`, a node that answered and refused (a refused key, an
+/// older node, a version skew) is [`Exit::Failed`] and a socket that never opened is
+/// [`Exit::Connect`]. The connection closes before this returns; the snapshot in hand is the read.
+pub(crate) fn observe_read(
+    command: &str,
+    node: &str,
+    keys: &HubKeyring,
+) -> Result<std::sync::Arc<CoreSnapshotWire>, ExitCode> {
+    let Some((key, _origin)) = keys.observe() else {
+        eprintln!("{}", keys.observe_absent_message(command, node));
+        return Err(ExitCode::FAILURE);
+    };
+    let snap = match connect_observe(node, key, keys.patience().observe_stall) {
+        Ok((_handle, snap)) => snap,
+        Err(e @ HubCallError::AccessDenied(_)) => {
+            for line in hubkeys::observe_permission_denied_lines(command, node, &e) {
+                eprintln!("{line}");
+            }
+            return Err(Exit::Failed.into());
+        }
+        Err(e) => {
+            eprintln!("vike-cli {command}: cannot open observe connection to {node}: {e}");
+            return Err(crate::exit::CliError::hub_call(&e, String::new()).exit.into());
+        }
+    };
+    if let Some(line) = pre_fold_line(&snap) {
+        eprintln!("{line}");
+    }
+    Ok(snap)
+}
+
+/// The parsed one-shot mode command line.
+#[derive(Debug, PartialEq, Eq)]
+struct ModeArgs {
+    /// `--node`: the node's control address. `None` falls to `config.node_addr` at the call site
+    /// ([`node_or_refusal`]) rather than here, so `--help` short-circuits before it is ever missed.
+    node: Option<String>,
+    /// `--yes`/`-y`: skip the confirm prompt. OFF unless asked for.
+    yes: bool,
+    /// `--reason`: the operator rationale sent beside the command for the node's audit trail.
+    reason: Option<String>,
+}
+
+// ⚠ `fn typed_key_confirm(rl, key)` stood here — the SECOND prompt a policy `set-setting` asked
+// after the y/N ("retype the key to confirm"), which `--yes` could not answer, so a policy write
+// was the one REPL line a script could not complete. DELETED with the ceremony it served
+// (`docs/decisions/0086` point 7: *"confirmation over confirmation … a nightmare"*); the node had
+// already stopped reading the wire field it filled. Before it, `fn is_policy_file(file: &str)`
+// decided which lines were asked, from the FILE NAME an operator typed, until that decision moved
+// onto the key's section word. Both names stay in this comment because records and specs written
+// while they shipped cite them — the repair to a citation of deleted code is a tombstone, never a
+// deleted citation.
+
+/// What an operator who typed the REMOVED `state` verb is told — at the REPL prompt
+/// ([`parse_line`]) and at the one-shot command line ([`run`]) alike, one sentence so the two
+/// cannot drift. It names the READ first and the two WRITES after it: the commonest reason to type
+/// the old word was to look, and the reader is mid-incident.
+const STATE_MIGRATION_HINT: &str = "`state` was REMOVED (it both read and wrote the trading mode, \
+                                    one token apart). Use `status` to READ the mode, `halt` to stop \
+                                    trading, `resume` to start it again.";
+
+/// Width for a variable-width column: wide enough for the header and every cell, bounded by `cap`
+/// when one is given. `None` means NEVER truncate — the shape the order client id column needs, because that
+/// column is an input the operator retypes, not a label.
+fn width_of<'a>(header: &str, cells: impl Iterator<Item = &'a str>, cap: Option<usize>) -> usize {
+    let widest = cells.map(|c| c.chars().count()).max().unwrap_or(0).max(header.chars().count());
+    match cap {
+        Some(c) => widest.min(c),
+        None => widest,
+    }
+}
+
+#[path = "trade/tests.rs"]
+#[cfg(test)]
+mod trade_tests;

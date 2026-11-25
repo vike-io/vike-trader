@@ -1,0 +1,96 @@
+[package]
+name = "vike-ml-neural-training"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike research — trains small neural networks (an MLP, an LSTM, a TCN, an autoencoder and DeepLOB over order-book windows, and a conditional normalising flow that generates return paths) on `burn`'s pure-Rust CPU backend, seeded so one seed gives one network, and exports a trained network as ONNX. Its binary `vike-ml-neural-training` is the trainer a study host DRIVES outside the jail, as it drives LightGBM. RESEARCH ONLY: no strategy file and no binary that trades links it (decision 0292). Takes plain `f32` rows and returns plain `f32` outputs."
+# The integration tests are ONE test binary, `tests/integration.rs` (every `tests/<name>.rs` a `mod` of it), declared
+# below: one binary links instead of one per file. Discovery is off so each file keeps the path its citations name; a
+# new root file builds only as a `mod` there or a `[[test]]` row (`crates/vike-ops/tests/hygiene/test_registry_gate.rs`'s `every_root_test_file_is_built_where_discovery_is_off`).
+autotests = false
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain-stacked`, one
+# hop over the domain band: it names `vike-ml-onnx-prediction` (20), whose ONNX runner its binary's `predict` verb
+# uses, `vike-ml-training` (20) for the data file its `train` verb reads, `vike-ml-prediction` (15) for the kind
+# of answer a model declares, and `vike-utility` (3) for the shared command-line rules (decision 0155). (It sat at
+# 20 until W25: the ONNX runner moved to 20 when it took B1's `Predictor`.)
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 25
+
+[dependencies]
+# The training stack, each pin argued in the root Cargo.toml: `burn` (networks, autodiff, Adam on the
+# single-threaded `flex` CPU backend), `burn-std` (the `RuntimeConfig` trait only), `burn-onnx` (`export`).
+burn = { workspace = true }
+burn-std = { workspace = true }
+burn-onnx = { workspace = true }
+# The epoch shuffle: a named, portable ChaCha8 stream seeded from the run's seed, and `rand`'s
+# `SliceRandom::shuffle` over it, so the batch order is a property of the seed (both already linked).
+rand = { workspace = true }
+rand_chacha = { workspace = true }
+# The network spec file (`src/trainer.rs`'s `NetworkSpec`): TOML through a serde derive, both already linked.
+serde = { workspace = true }
+toml = { workspace = true }
+# The binary's `predict` verb runs the exported ONNX with the ONE ONNX runner of the workspace (W6), the same
+# code a strategy file predicts with, rather than a second copy over tract, and declares the KIND of answer the
+# provenance names (`trainer::prediction_kind`, B1's `PredictionKind`) to its `OnnxModel::predictor`.
+vike-ml-onnx-prediction = { path = "../vike-ml-onnx-prediction" }
+vike-ml-prediction = { path = "../vike-ml-prediction" }
+# The `train` verb's data file, read by the module that also writes it (`vike_ml_training::train::matrix`), so
+# the host and this process cannot disagree on the layout (decision 0292's amendment of 2026-11-18). The
+# host's driver of this binary (`NeuralLearner`) is in the same crate, which `tests/trainer_process.rs` runs
+# end to end against the binary this crate builds; `tests/deeplob.rs` scores with its one log loss
+# (`vike_ml_training::calibration::log_loss_of`).
+vike-ml-training = { path = "../vike-ml-training" }
+# The provenance of a warm-started fit names the SHA-256 of the weights it started from
+# (`trainer::train_from_spec`): the workspace's one hash, already linked (through vike-ml-training too).
+sha2 = { workspace = true }
+# `compress::quantize_int8` rewrites an exported graph: tract's own generated ONNX protobuf types
+# (`tract_onnx::pb`) and the `prost` that encodes them, both already linked through the ONNX runner above, so
+# no second protobuf stack (W25).
+tract-onnx = { workspace = true }
+prost = { workspace = true }
+# The binary's argv: `clap` derive through the shared rules (decision 0155).
+clap = { workspace = true }
+vike-utility = { path = "../vike-utility", features = ["cli"] }
+# The binary's `--version` line, `<name> <version> (git <sha> <state>, built ...)`, which the release's
+# identity check (`scripts/assert_release_identity.sh`) reads from every binary it ships.
+vike-buildinfo = { path = "../vike-buildinfo" }
+
+[dev-dependencies]
+# TEST-ONLY: the sigmoid and the tanh the tests apply to `predict`'s raw scores (decision 0032: `libm`, not
+# `f32::exp`).
+libm = { workspace = true }
+# TEST-ONLY: the reference sigmoid of `tests/onnx_export.rs`, the workspace's one
+# `special_functions::logistic` (decision 0294, layer 2, `libm` only).
+vike-math = { path = "../vike-math" }
+# TEST-ONLY: the workspace's one Sharpe ratio and one percentile (`vike_analytics::signal_backtest`,
+# `vike_analytics::metrics`), and, for `tests/sharpe_study.rs`, what the committed study `sharpe_lstm` links
+# (the study contract and its two halves, a store double and bars, the rolling deviation), so W24's
+# consumer runs against the real trainer binary. `tests/deeplob.rs` trains DeepLOB on the synthetic
+# Cont-Stoikov-Talreja book (`vike_analytics::synthetic`) through the book export and its windows
+# (`vike_analytics::book_export`), the route a study's rows take. `tests/flow.rs` takes the market a flow
+# learns and the yardstick it is held to, both pure: `vike_analytics::synthetic`'s regime-switching source and
+# Brownian reference, the next-step rows a flow trains on, `learned_bars` that samples its exported sampler, and
+# `stylized_facts` that compares them. Dev edges may point upward; none reaches the binary.
+vike-analytics = { path = "../vike-analytics" }
+vike-user-research = { path = "../vike-user-research" }
+vike-data = { path = "../vike-data", features = ["test-support"] }
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+vike-indicators = { path = "../vike-indicators" }
+# TEST-ONLY: `tests/options_networks.rs` lays its paths with the hedging environment's own
+# `vike_simulator::hedging_training_rows` (the features a policy later observes) over `vike_marketdata::Bar`s,
+# judges the trained hedge against the Black–Scholes delta of `vike_options`, the platform's one, and runs
+# the book's two options study FILES (compiled in by `#[path]`, as `vike-user-research`'s pipeline does)
+# with a REAL network: what they `use` is the study surface, and `HistoryStoreMemory` their store.
+vike-simulator = { path = "../vike-simulator" }
+vike-options = { path = "../vike-options" }
+vike-model = { path = "../vike-model" }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

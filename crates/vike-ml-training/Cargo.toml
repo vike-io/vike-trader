@@ -1,0 +1,116 @@
+[package]
+name = "vike-ml-training"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+# Test discovery is OFF so the suites keep their `tests/<suite>.rs` paths (CI's LightGBM job and the citations name
+# them) as modules of ONE binary, `tests/integration.rs`. A new `tests/*.rs` runs only once it is a `mod` there or a
+# `[[test]]` row below.
+autotests = false
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the TRAINING half of the model crates. `train` DRIVES the upstream LightGBM CLI binary as a child process (config in, model text out — no FFI, no linked library); `linear`, `gaussian_process`, `ensemble` and `conformal` fit in PURE RUST (ordinary least squares, Ridge, LASSO, Elastic Net, logistic regression, a Gaussian-process regressor, bagging, stacking, split conformal calibration), each writing its model's one versioned text; `double_ml` estimates a treatment effect, its standard error and a confidence interval with any of them as cross-fitted nuisance models; `search` is the parameter grid and the TPE sampler; `seam` is the learner trait, its test double and `fit_cache`, the content-addressed cross-run cache over it. Prediction — the parsers, the walkers and the prediction trait a fitted model answers through — is `vike-ml-prediction`; `vike-math`'s `linear_algebra` is the one dense linear algebra the pure-Rust fits stand on. Beside them, three crates already linked into every binary in this workspace: the SHA-256 the fit cache needs (its hex is vike-utility's), `libm` for the Gaussian-process likelihood and the log loss, and `indexmap` for the sampler's proposal map. ONE cargo feature, `test-support`, which a shipped build never compiles. Nothing in its API names a strategy or a study."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain` — one hop over the
+# vocabulary: a single-purpose pure core. Its vike-* edges are `vike-ml-prediction` (15), `vike-utility` (3) and
+# `vike-math` (2), so 20 is its arithmetic floor.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+# ⚠ THREE `vike-*` DEPENDENCIES, `vike-ml-prediction`, `vike-math` and the helper floor `vike-utility`, none of
+# which names a domain crate: a consumer of this crate links a LightGBM driver, a tree walker, a sampler, the pure-Rust
+# learners and the linear algebra they stand on, and nothing else — not the domain vocabulary, not the
+# venue roster, not a store. Weigh any addition against
+# `docs/decisions/0071-the-leaf-libraries-publish-the-product-does-not.md`'s admission test: the
+# closure IS the commitment.
+#   vike-ml-prediction — the model a fit reads back (`parse_model_text`), the prediction trait the
+#   learner seam hands models back through (`Predictor`), the importance reader and the one error
+#   type both crates return.
+vike-ml-prediction = { path = "../vike-ml-prediction" }
+#   vike-math — the formula floor (decision 0294): `linear_algebra`, the workspace's ONE dense linear
+#   algebra, the least squares behind ordinary least squares and Ridge (`src/linear.rs`) and the
+#   Cholesky behind the Gaussian process (`src/gaussian_process.rs`); a second copy here is what the edge
+#   prevents. Also `distributions::normal_quantile`, the one normal quantile, behind
+#   `src/double_ml.rs`'s interval; and the TPE sampler's draws (`random`'s `SplitMix64`, `box_muller` and
+#   `draw_from_cumulative`, `distributions::normal_density`) and the permutation importance's
+#   `random::shuffle`. Layer 2, pure, `libm` its only dependency, and already in the study
+#   template's closure through `vike-analytics`, so it adds no package to the lockfile.
+vike-math = { path = "../vike-math" }
+#   vike-utility — `hex::hex_lower`, the fit cache's entry file names (`<key hex>.score`): the workspace's one
+#   lowercase hex, std only, already this crate's dev edge and in the study surface, so no new package.
+vike-utility = { path = "../vike-utility" }
+#
+# The non-vike dependencies add no package to the lockfile or the `cargo deny --all-features`
+# surface: sha2 (vike-bridge-core's signer) and libm (vike-math's `up_probability`, vike-options'
+# greeks) are already linked into every binary, indexmap is already a workspace dependency of
+# vike-model and others, and the root Cargo.toml pins one of each.
+#   sha2 — the fit cache's key transcript and every digest a learner's `fit_identity` builds.
+sha2 = { workspace = true }
+#   libm — THREE transcendental call sites (the TPE sampler's three are `vike-math`'s now, still
+#   pinned by `crates/vike-ml-training/tests/libm_platform_probe.rs`'s `tpe_rows`): the two `libm::log` of
+#   `crates/vike-ml-training/src/gaussian_process.rs`'s `fit_gaussian_process` (the log marginal
+#   likelihood), and the workspace's one log loss, the `libm::log` of
+#   `crates/vike-ml-training/src/calibration.rs`'s `log_loss_of` (the calibration score and
+#   `crates/vike-ml-training/src/feature_importance.rs`'s `score_of` both call it), all
+#   held by that probe's source scan only (a hash row is recorded on Linux AND Windows,
+#   and no Windows test run is allowed today). An `f64` METHOD call reaches the PLATFORM's libm
+#   — MSVC's CRT on the Windows dev box, glibc on the CI box and CI — and the two disagree in the last
+#   bit; the `libm` CRATE is the same source everywhere, which makes a probability a property of the
+#   model rather than of the box. These sites are this crate's whole share of
+#   `docs/decisions/0032-transcendentals-come-from-the-libm-crate-not-the-platform.md`.
+libm = { workspace = true }
+#   indexmap — the TPE sampler's proposal map (`src/search/tpe.rs`). The ORDER is load-bearing, which is
+#   why it is not a `HashMap`: the map follows the parameter space's axis order, and a map whose
+#   order varied per run would fork the sampler's proposal sequence (the tpe module doc).
+indexmap = { workspace = true }
+#   base64 — `NeuralLearner`'s captured model text: the STANDARD base64 of the network trainer's
+#   `model.onnx`, the one text spelling of a run's network (`vike_runs::read_model_text`). Already in
+#   the lockfile (vike-runs, the ONNX runner), so no new package.
+base64 = { workspace = true }
+
+[features]
+# The shared learner DOUBLE (`src/seam/test_support.rs`: ScriptedLearner/ScriptedModel) for downstream
+# crates' tests — the only way code that fits models is testable on a box with no LightGBM binary.
+# EMPTY array and no `dep:` entry: the double is std-only, so turning the feature on costs no crate.
+# Gated `#[cfg(any(test, feature = "test-support"))]`, so a shipped build compiles NONE of it.
+#
+# It needs no scripts/ci_feature_suite.sh arm, no justfile recipe and no
+# `xtask/src/ci/tables/feature_suites.rs` trigger set: a dev-dependency edge activates a feature for
+# everything built alongside it (resolver-2 unification — xtask/tests/feature_lane_coverage.rs's
+# rule 3), so the self-referential dev-dep below puts it on the DEFAULT roster lane, which RUNS the
+# tests, and `just ci` on the Windows box is untouched.
+test-support = []
+
+[dev-dependencies]
+# TEST-ONLY: its tests need `vike_paths::scratch::ScratchDir`, the std-only, self-deleting scratch
+# guard (an integration test links the crate under test plus its DEV-deps only, never the lib's
+# normal deps). A dev edge is invisible to a consumer and to `cargo package`'s tarball, and
+# vike-paths declares no dependency of its own — which is why this is `ScratchDir` and not
+# `tempfile`. (The guard lived in vike-model, reached through the edge below, until the split.)
+vike-paths = { path = "../vike-paths" }
+# TEST-ONLY, and this crate's only `vike-model` edge: the corpus hasher (`vike_model::test_support::corpus`)
+# `tests/libm_platform_probe.rs` runs.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# `vike_utility::libm_walk`, the shared source parser `tests/libm_platform_probe.rs` reads `src/` with
+# (decision 0074), behind vike-utility's `test-support`. A DEV edge with the feature, never a normal one.
+vike-utility = { path = "../vike-utility", features = ["test-support"] }
+# TEST-ONLY: `src/feature_importance_tests.rs` scores on the purged folds of
+# `vike_analytics::validation::purged_kfold_label_spans`, the splitter the module doc tells a caller
+# to use, so the two shapes are proven to fit. A NORMAL edge stays refused: the folds are a
+# parameter, and this crate keeps its one `vike-*` dependency.
+vike-analytics = { path = "../vike-analytics" }
+# Self-referential dev-dep, the `vike-bridge-core` idiom: it turns `test-support` on for THIS
+# crate's own `tests/` targets (an integration test compiles the lib WITHOUT `cfg(test)`, so the
+# double is visible to it only through the feature), and it is what puts the feature on a CI lane —
+# see the comment above. Never affects a normal build; `crates/vike-ops/tests/architecture/layer_gate.rs`
+# discounts a self-edge in both directions.
+vike-ml-training = { path = ".", features = ["test-support"] }
+
+# The LightGBM job runs its three suites as modules of this binary (`scripts/ci_lightgbm_suite.sh`'s `run_suite`).
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+[lints]
+workspace = true

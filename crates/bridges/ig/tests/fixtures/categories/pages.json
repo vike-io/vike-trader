@@ -1,0 +1,802 @@
+{
+ "_provenance": "CAPTURED 2026-11-16 on the IG demo gateway by the read-only ig_categories_probe smokes of branch w6/ig-probe (not merged): the GET /categories body verbatim, and for each category page 0 (pageSize 1000) its metadata verbatim and the first three of its rows verbatim (the probe printed three; the page held more: INDICES 168, FX 201, CRYPTOCURRENCY 10, EQUITIES 948, COMMODITIES 198, BONDS_RATES 77, ETF 115, OPTIONS 155, KNOCKOUTS 284). EQUITIES pages 1 to 7 were never asked: each is HAND-WRITTEN (its _hand_written key says so), one row in the captured row shape. No account id, token or credential is in any body.",
+ "categories": {
+  "categories": [
+   {
+    "code": "INDICES",
+    "nonTradeable": false
+   },
+   {
+    "code": "FX",
+    "nonTradeable": false
+   },
+   {
+    "code": "CRYPTOCURRENCY",
+    "nonTradeable": false
+   },
+   {
+    "code": "EQUITIES",
+    "nonTradeable": false
+   },
+   {
+    "code": "COMMODITIES",
+    "nonTradeable": false
+   },
+   {
+    "code": "BONDS_RATES",
+    "nonTradeable": false
+   },
+   {
+    "code": "ETF",
+    "nonTradeable": false
+   },
+   {
+    "code": "OPTIONS",
+    "nonTradeable": false
+   },
+   {
+    "code": "KNOCKOUTS",
+    "nonTradeable": false
+   }
+  ]
+ },
+ "pages": {
+  "INDICES": [
+   {
+    "instruments": [
+     {
+      "bid": 9037.5,
+      "delayTime": 0,
+      "epic": "IX.D.ASX.IFMOZ.IP",
+      "expiry": "-",
+      "high": 9057.0,
+      "instrumentName": "Australia 200 Cash (A$5)",
+      "instrumentType": "INDICES",
+      "lotSize": 5.0,
+      "low": 9033.3,
+      "marketStatus": "TRADEABLE",
+      "netChange": -12.1,
+      "offer": 9040.5,
+      "otcTradeable": true,
+      "percentageChange": -0.13,
+      "popularity": 15251794808840,
+      "scalingFactor": 1,
+      "underlyingName": "Australia 200",
+      "updateTime": "06:33:01"
+     },
+     {
+      "bid": 10909.4,
+      "delayTime": 0,
+      "epic": "IX.D.FTSE.IFM.IP",
+      "expiry": "-",
+      "high": 10939.6,
+      "instrumentName": "FTSE 100 Cash (£2)",
+      "instrumentType": "INDICES",
+      "lotSize": 2.0,
+      "low": 10876.6,
+      "marketStatus": "TRADEABLE",
+      "netChange": 3.9,
+      "offer": 10912.4,
+      "otcTradeable": true,
+      "percentageChange": 0.04,
+      "popularity": 17101794809091,
+      "scalingFactor": 1,
+      "underlyingName": "FTSE 100",
+      "updateTime": "06:33:01"
+     },
+     {
+      "bid": 52229.9,
+      "delayTime": 0,
+      "epic": "IX.D.DOW.IFD.IP",
+      "expiry": "-",
+      "high": 52488.2,
+      "instrumentName": "Wall Street Cash ($10)",
+      "instrumentType": "INDICES",
+      "lotSize": 10.0,
+      "low": 52112.3,
+      "marketStatus": "TRADEABLE",
+      "netChange": -118.7,
+      "offer": 52234.7,
+      "otcTradeable": true,
+      "percentageChange": -0.23,
+      "popularity": 4807001794810285,
+      "scalingFactor": 1,
+      "underlyingName": "Wall Street",
+      "updateTime": "06:33:01"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 0,
+     "pageSize": 1000,
+     "totalPages": 1,
+     "totalResults": 376
+    }
+   }
+  ],
+  "FX": [
+   {
+    "instruments": [
+     {
+      "bid": 3.54549,
+      "delayTime": 0,
+      "epic": "CS.D.EURILS.MINI.IP",
+      "expiry": "-",
+      "high": 3.55663,
+      "instrumentName": "EUR/ILS Mini",
+      "instrumentType": "CURRENCIES",
+      "lotSize": 1.0,
+      "low": 3.52822,
+      "marketStatus": "TRADEABLE",
+      "netChange": 0.0113,
+      "offer": 3.54949,
+      "otcTradeable": true,
+      "percentageChange": 0.32,
+      "popularity": 11794192188,
+      "scalingFactor": 10000,
+      "underlyingName": "EUR/ILS",
+      "updateTime": "06:32:46"
+     },
+     {
+      "bid": 1.10134,
+      "delayTime": 0,
+      "epic": "CS.D.EURUSD.MINI.IP",
+      "expiry": "-",
+      "high": 1.10392,
+      "instrumentName": "EUR/USD Mini",
+      "instrumentType": "CURRENCIES",
+      "lotSize": 1.0,
+      "low": 1.10117,
+      "marketStatus": "TRADEABLE",
+      "netChange": -0.0007,
+      "offer": 1.10143,
+      "otcTradeable": true,
+      "percentageChange": -0.06,
+      "popularity": 215301794809204,
+      "scalingFactor": 10000,
+      "underlyingName": "EUR/USD",
+      "updateTime": "06:33:06"
+     },
+     {
+      "bid": 1.10135,
+      "delayTime": 0,
+      "epic": "CS.D.EURUSD.CFD.IP",
+      "expiry": "-",
+      "high": 1.10392,
+      "instrumentName": "EUR/USD",
+      "instrumentType": "CURRENCIES",
+      "lotSize": 10.0,
+      "low": 1.10117,
+      "marketStatus": "TRADEABLE",
+      "netChange": -0.00069,
+      "offer": 1.10144,
+      "otcTradeable": true,
+      "percentageChange": -0.06,
+      "popularity": 215301794809204,
+      "scalingFactor": 10000,
+      "underlyingName": "EUR/USD",
+      "updateTime": "06:33:06"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 0,
+     "pageSize": 1000,
+     "totalPages": 1,
+     "totalResults": 226
+    }
+   }
+  ],
+  "CRYPTOCURRENCY": [
+   {
+    "instruments": [
+     {
+      "epic": "CS.D.BITCOIN.CFM.IP",
+      "instrumentName": "Bitcoin ($0.1) ",
+      "underlyingName": "Bitcoin"
+     },
+     {
+      "epic": "CS.D.BITCOIN.CFD.IP",
+      "instrumentName": "Bitcoin ($1)",
+      "underlyingName": "Bitcoin"
+     },
+     {
+      "epic": "CS.D.BSVUSD.CFD.IP",
+      "instrumentName": "Bitcoin SV ($1)",
+      "underlyingName": "Bitcoin SV"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 0,
+     "pageSize": 1000,
+     "totalPages": 1,
+     "totalResults": 10
+    }
+   }
+  ],
+  "EQUITIES": [
+   {
+    "instruments": [
+     {
+      "bid": 0.102,
+      "delayTime": 0,
+      "epic": "EF.D.BANZIM.CASH.IP",
+      "expiry": "-",
+      "instrumentName": "EPH Invest SpA",
+      "instrumentType": "SHARES",
+      "lotSize": 0.01,
+      "marketStatus": "CLOSED",
+      "netChange": 0.0,
+      "offer": 0.102,
+      "otcTradeable": true,
+      "percentageChange": 0.0,
+      "popularity": 0,
+      "scalingFactor": 100,
+      "underlyingName": "EPH Invest SpA",
+      "updateTime": "22:40:44"
+     },
+     {
+      "bid": 4.72,
+      "delayTime": 0,
+      "epic": "EF.D.IOTIM.CASH.IP",
+      "expiry": "-",
+      "instrumentName": "SECO SpA",
+      "instrumentType": "SHARES",
+      "lotSize": 0.01,
+      "marketStatus": "EDITS_ONLY",
+      "netChange": 0.0,
+      "offer": 4.72,
+      "otcTradeable": true,
+      "percentageChange": 0.0,
+      "popularity": 0,
+      "scalingFactor": 100,
+      "underlyingName": "SECO SpA",
+      "updateTime": "04:00:00"
+     },
+     {
+      "bid": 1.1,
+      "delayTime": 0,
+      "epic": "EF.D.FCTAAWIMI.CASH.IP",
+      "expiry": "-",
+      "high": 1.087,
+      "instrumentName": "Fincantieri SpA (Warrants)",
+      "instrumentType": "SHARES",
+      "lotSize": 0.01,
+      "low": 1.0424,
+      "marketStatus": "CLOSED",
+      "netChange": 0.0158,
+      "offer": 1.1,
+      "otcTradeable": true,
+      "percentageChange": 1.49,
+      "popularity": 0,
+      "scalingFactor": 100,
+      "underlyingName": "Fincantieri SpA (Warrants)",
+      "updateTime": "22:40:45"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 0,
+     "pageSize": 1000,
+     "totalPages": 8,
+     "totalResults": 7716
+    }
+   },
+   {
+    "_hand_written": "page 1 of EQUITIES was never asked; one row in the captured row shape",
+    "instruments": [
+     {
+      "bid": 0.102,
+      "delayTime": 0,
+      "epic": "EF.D.HANDWRITTEN1.CASH.IP",
+      "expiry": "-",
+      "instrumentName": "Hand-written page 1 row",
+      "instrumentType": "SHARES",
+      "lotSize": 0.01,
+      "marketStatus": "CLOSED",
+      "netChange": 0.0,
+      "offer": 0.102,
+      "otcTradeable": true,
+      "percentageChange": 0.0,
+      "popularity": 0,
+      "scalingFactor": 100,
+      "underlyingName": "EPH Invest SpA",
+      "updateTime": "22:40:44"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 1,
+     "pageSize": 1000,
+     "totalPages": 8,
+     "totalResults": 7716
+    }
+   },
+   {
+    "_hand_written": "page 2 of EQUITIES was never asked; one row in the captured row shape",
+    "instruments": [
+     {
+      "bid": 0.102,
+      "delayTime": 0,
+      "epic": "EF.D.HANDWRITTEN2.CASH.IP",
+      "expiry": "-",
+      "instrumentName": "Hand-written page 2 row",
+      "instrumentType": "SHARES",
+      "lotSize": 0.01,
+      "marketStatus": "CLOSED",
+      "netChange": 0.0,
+      "offer": 0.102,
+      "otcTradeable": true,
+      "percentageChange": 0.0,
+      "popularity": 0,
+      "scalingFactor": 100,
+      "underlyingName": "EPH Invest SpA",
+      "updateTime": "22:40:44"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 2,
+     "pageSize": 1000,
+     "totalPages": 8,
+     "totalResults": 7716
+    }
+   },
+   {
+    "_hand_written": "page 3 of EQUITIES was never asked; one row in the captured row shape",
+    "instruments": [
+     {
+      "bid": 0.102,
+      "delayTime": 0,
+      "epic": "EF.D.HANDWRITTEN3.CASH.IP",
+      "expiry": "-",
+      "instrumentName": "Hand-written page 3 row",
+      "instrumentType": "SHARES",
+      "lotSize": 0.01,
+      "marketStatus": "CLOSED",
+      "netChange": 0.0,
+      "offer": 0.102,
+      "otcTradeable": true,
+      "percentageChange": 0.0,
+      "popularity": 0,
+      "scalingFactor": 100,
+      "underlyingName": "EPH Invest SpA",
+      "updateTime": "22:40:44"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 3,
+     "pageSize": 1000,
+     "totalPages": 8,
+     "totalResults": 7716
+    }
+   },
+   {
+    "_hand_written": "page 4 of EQUITIES was never asked; one row in the captured row shape",
+    "instruments": [
+     {
+      "bid": 0.102,
+      "delayTime": 0,
+      "epic": "EF.D.HANDWRITTEN4.CASH.IP",
+      "expiry": "-",
+      "instrumentName": "Hand-written page 4 row",
+      "instrumentType": "SHARES",
+      "lotSize": 0.01,
+      "marketStatus": "CLOSED",
+      "netChange": 0.0,
+      "offer": 0.102,
+      "otcTradeable": true,
+      "percentageChange": 0.0,
+      "popularity": 0,
+      "scalingFactor": 100,
+      "underlyingName": "EPH Invest SpA",
+      "updateTime": "22:40:44"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 4,
+     "pageSize": 1000,
+     "totalPages": 8,
+     "totalResults": 7716
+    }
+   },
+   {
+    "_hand_written": "page 5 of EQUITIES was never asked; one row in the captured row shape",
+    "instruments": [
+     {
+      "bid": 0.102,
+      "delayTime": 0,
+      "epic": "EF.D.HANDWRITTEN5.CASH.IP",
+      "expiry": "-",
+      "instrumentName": "Hand-written page 5 row",
+      "instrumentType": "SHARES",
+      "lotSize": 0.01,
+      "marketStatus": "CLOSED",
+      "netChange": 0.0,
+      "offer": 0.102,
+      "otcTradeable": true,
+      "percentageChange": 0.0,
+      "popularity": 0,
+      "scalingFactor": 100,
+      "underlyingName": "EPH Invest SpA",
+      "updateTime": "22:40:44"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 5,
+     "pageSize": 1000,
+     "totalPages": 8,
+     "totalResults": 7716
+    }
+   },
+   {
+    "_hand_written": "page 6 of EQUITIES was never asked; one row in the captured row shape",
+    "instruments": [
+     {
+      "bid": 0.102,
+      "delayTime": 0,
+      "epic": "EF.D.HANDWRITTEN6.CASH.IP",
+      "expiry": "-",
+      "instrumentName": "Hand-written page 6 row",
+      "instrumentType": "SHARES",
+      "lotSize": 0.01,
+      "marketStatus": "CLOSED",
+      "netChange": 0.0,
+      "offer": 0.102,
+      "otcTradeable": true,
+      "percentageChange": 0.0,
+      "popularity": 0,
+      "scalingFactor": 100,
+      "underlyingName": "EPH Invest SpA",
+      "updateTime": "22:40:44"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 6,
+     "pageSize": 1000,
+     "totalPages": 8,
+     "totalResults": 7716
+    }
+   },
+   {
+    "_hand_written": "page 7 of EQUITIES was never asked; one row in the captured row shape",
+    "instruments": [
+     {
+      "bid": 0.102,
+      "delayTime": 0,
+      "epic": "EF.D.HANDWRITTEN7.CASH.IP",
+      "expiry": "-",
+      "instrumentName": "Hand-written page 7 row",
+      "instrumentType": "SHARES",
+      "lotSize": 0.01,
+      "marketStatus": "CLOSED",
+      "netChange": 0.0,
+      "offer": 0.102,
+      "otcTradeable": true,
+      "percentageChange": 0.0,
+      "popularity": 0,
+      "scalingFactor": 100,
+      "underlyingName": "EPH Invest SpA",
+      "updateTime": "22:40:44"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 7,
+     "pageSize": 1000,
+     "totalPages": 8,
+     "totalResults": 7716
+    }
+   }
+  ],
+  "COMMODITIES": [
+   {
+    "instruments": [
+     {
+      "bid": 47.352,
+      "delayTime": 0,
+      "epic": "CS.D.CFDSILVER.CFDSI.IP",
+      "expiry": "-",
+      "high": 49.087,
+      "instrumentName": "Spot Silver (5000oz)",
+      "instrumentType": "CURRENCIES",
+      "lotSize": 50.0,
+      "low": 47.123,
+      "marketStatus": "TRADEABLE",
+      "netChange": -1.469,
+      "offer": 47.392,
+      "otcTradeable": true,
+      "percentageChange": -3.01,
+      "popularity": 231031794606544,
+      "scalingFactor": 100,
+      "underlyingName": "Spot Silver",
+      "updateTime": "06:33:22"
+     },
+     {
+      "bid": 4734.5,
+      "delayTime": 0,
+      "epic": "CS.D.IN_SILVER.MFI.IP",
+      "expiry": "-",
+      "high": 4907.5,
+      "instrumentName": "Spot Silver (5000oz)",
+      "instrumentType": "CURRENCIES",
+      "lotSize": 50.0,
+      "low": 4713.6,
+      "marketStatus": "TRADEABLE",
+      "netChange": -145.5,
+      "offer": 4735.5,
+      "otcTradeable": true,
+      "percentageChange": -2.98,
+      "popularity": 231031794606544,
+      "scalingFactor": 1,
+      "underlyingName": "Spot Silver",
+      "updateTime": "06:33:22"
+     },
+     {
+      "bid": 3848.04,
+      "delayTime": 0,
+      "epic": "CS.D.IN_GOLD.MFI.IP",
+      "expiry": "-",
+      "high": 3901.46,
+      "instrumentName": "Spot Gold",
+      "instrumentType": "CURRENCIES",
+      "lotSize": 100.0,
+      "low": 3832.4,
+      "marketStatus": "TRADEABLE",
+      "netChange": -37.18,
+      "offer": 3848.24,
+      "otcTradeable": true,
+      "percentageChange": -0.96,
+      "popularity": 44173631794607908,
+      "scalingFactor": 1,
+      "underlyingName": "Spot Gold",
+      "updateTime": "06:33:22"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 0,
+     "pageSize": 1000,
+     "totalPages": 1,
+     "totalResults": 425
+    }
+   }
+  ],
+  "BONDS_RATES": [
+   {
+    "instruments": [
+     {
+      "bid": 10389.2,
+      "delayTime": 0,
+      "epic": "IR.D.05YEAR100.FWM2.IP",
+      "expiry": "   DEC-26",
+      "expiryTimestamp": 1795564800000,
+      "high": 10393.6,
+      "instrumentName": "5-Year T-Note Decimalised ($2)",
+      "instrumentType": "RATES",
+      "lotSize": 2.0,
+      "low": 10377.5,
+      "marketStatus": "TRADEABLE",
+      "netChange": 6.2,
+      "offer": 10391.2,
+      "otcTradeable": true,
+      "percentageChange": 0.06,
+      "popularity": 31794583884,
+      "scalingFactor": 1,
+      "underlyingName": "US 5-Year T-Note",
+      "updateTime": "06:33:05"
+     },
+     {
+      "bid": 10540.2,
+      "delayTime": 0,
+      "epic": "IR.D.BOND100.FWM2.IP",
+      "expiry": "   DEC-26",
+      "expiryTimestamp": 1795564800000,
+      "high": 10553.6,
+      "instrumentName": "Treasury Bond Decimalised ($2)",
+      "instrumentType": "RATES",
+      "lotSize": 2.0,
+      "low": 10518.3,
+      "marketStatus": "TRADEABLE",
+      "netChange": 15.6,
+      "offer": 10544.2,
+      "otcTradeable": true,
+      "percentageChange": 0.15,
+      "popularity": 21794805032,
+      "scalingFactor": 1,
+      "underlyingName": "US Treasury Bond",
+      "updateTime": "06:33:12"
+     },
+     {
+      "bid": 10655.8,
+      "delayTime": 0,
+      "epic": "IR.D.ULTRA100.FWS2.IP",
+      "expiry": "   DEC-26",
+      "expiryTimestamp": 1795564800000,
+      "high": 10672.3,
+      "instrumentName": "Ultra Treasury Bond Decimalised ($10)",
+      "instrumentType": "RATES",
+      "lotSize": 10.0,
+      "low": 10630.8,
+      "marketStatus": "TRADEABLE",
+      "netChange": 15.6,
+      "offer": 10659.8,
+      "otcTradeable": true,
+      "percentageChange": 0.15,
+      "popularity": 71794581445,
+      "scalingFactor": 1,
+      "underlyingName": "US Ultra Treasury Bond",
+      "updateTime": "06:33:08"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 0,
+     "pageSize": 1000,
+     "totalPages": 1,
+     "totalResults": 239
+    }
+   }
+  ],
+  "ETF": [
+   {
+    "instruments": [
+     {
+      "bid": 12059.0,
+      "delayTime": 0,
+      "epic": "AR.D.SYGEUSJ.CASH.IP",
+      "expiry": "-",
+      "instrumentName": "Sygnia ITRIX EURO STOXX50",
+      "instrumentType": "SHARES",
+      "lotSize": 0.01,
+      "marketStatus": "CLOSED",
+      "netChange": 0.0,
+      "offer": 12059.0,
+      "otcTradeable": true,
+      "percentageChange": 0.0,
+      "popularity": 0,
+      "scalingFactor": 1,
+      "underlyingName": "Sygnia ITRIX EURO STOXX50",
+      "updateTime": "04:00:00"
+     },
+     {
+      "bid": 4245.0,
+      "delayTime": 0,
+      "epic": "AR.D.STXCHNSJ.CASH.IP",
+      "expiry": "-",
+      "instrumentName": "Satrix MSCI China Feeder Portfolio",
+      "instrumentType": "SHARES",
+      "lotSize": 0.01,
+      "marketStatus": "CLOSED",
+      "netChange": 0.0,
+      "offer": 4245.0,
+      "otcTradeable": true,
+      "percentageChange": 0.0,
+      "popularity": 0,
+      "scalingFactor": 1,
+      "underlyingName": "Satrix MSCI China Feeder Portfolio",
+      "updateTime": "04:00:01"
+     },
+     {
+      "bid": 3577.0,
+      "delayTime": 0,
+      "epic": "AR.D.STXGBDSJ.CASH.IP",
+      "expiry": "-",
+      "instrumentName": "Satrix Global Aggregate Bond Feeder Portfolio",
+      "instrumentType": "SHARES",
+      "lotSize": 0.01,
+      "marketStatus": "CLOSED",
+      "netChange": 0.0,
+      "offer": 3577.0,
+      "otcTradeable": true,
+      "percentageChange": 0.0,
+      "popularity": 0,
+      "scalingFactor": 1,
+      "underlyingName": "Satrix Global Aggregate Bond Feeder Portfolio",
+      "updateTime": "04:00:01"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 0,
+     "pageSize": 1000,
+     "totalPages": 1,
+     "totalResults": 118
+    }
+   }
+  ],
+  "OPTIONS": [
+   {
+    "instruments": [
+     {
+      "epic": "IX.D.NASDAQ.IFD.IP",
+      "expiry": "Daily",
+      "expiryTimestamp": 1794862800000,
+      "instrumentName": "US Tech 100",
+      "marketType": "index",
+      "maturityType": "DAILY",
+      "popularity": 48660241794810285,
+      "referenceEpic": "IX.D.NASDAQ.IFD.IP",
+      "underlyingName": "US Tech 100"
+     },
+     {
+      "epic": "IX.D.NASDAQ.IFD.IP",
+      "expiry": "Weekly",
+      "expiryTimestamp": 1794862800000,
+      "instrumentName": "US Tech 100",
+      "marketType": "index",
+      "maturityType": "WEEKLY",
+      "popularity": 48660241794810285,
+      "referenceEpic": "IX.D.NASDAQ.IFD.IP",
+      "underlyingName": "US Tech 100"
+     },
+     {
+      "epic": "IX.D.NASDAQ.IFD.IP",
+      "expiry": "Weekly",
+      "expiryTimestamp": 1795035600000,
+      "instrumentName": "US Tech 100",
+      "marketType": "index",
+      "maturityType": "WEEKLY",
+      "popularity": 48660241794810285,
+      "referenceEpic": "IX.D.NASDAQ.IFD.IP",
+      "underlyingName": "US Tech 100"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 0,
+     "pageSize": 1000,
+     "totalPages": 1,
+     "totalResults": 155
+    }
+   }
+  ],
+  "KNOCKOUTS": [
+   {
+    "instruments": [
+     {
+      "bid": 2015.18,
+      "delayTime": 0,
+      "epic": "IX.D.OBX.CFDBEAR.IP",
+      "high": 2015.18,
+      "instrumentName": "Norway 25 Bear KO",
+      "low": 2014.48,
+      "marketStatus": "EDITS_ONLY",
+      "netChange": 0.0,
+      "offer": 2014.48,
+      "percentageChange": 0.0,
+      "scalingFactor": 1,
+      "underlyingName": "Norway 25 KO",
+      "updateTime": "15:20:00"
+     },
+     {
+      "bid": 6383.1,
+      "delayTime": 0,
+      "epic": "IX.D.STXE.CFDBULL.IP",
+      "high": 6430.1,
+      "instrumentName": "EU Stocks 50 Bull KO",
+      "low": 6379.1,
+      "marketStatus": "TRADEABLE",
+      "netChange": -2.59,
+      "offer": 6385.1,
+      "percentageChange": -0.04,
+      "scalingFactor": 1,
+      "underlyingName": "EU Stocks 50 KO",
+      "updateTime": "06:33:43"
+     },
+     {
+      "bid": 103861.0,
+      "delayTime": 0,
+      "epic": "IX.D.SAF.CFDBULL.IP",
+      "high": 105065.0,
+      "instrumentName": "South Africa 40 Bull KO",
+      "low": 103822.0,
+      "marketStatus": "TRADEABLE",
+      "netChange": -590.0,
+      "offer": 103911.0,
+      "percentageChange": -0.56,
+      "scalingFactor": 1,
+      "underlyingName": "South Africa 40 KO",
+      "updateTime": "06:33:43"
+     }
+    ],
+    "metadata": {
+     "pageNumber": 0,
+     "pageSize": 1000,
+     "totalPages": 1,
+     "totalResults": 284
+    }
+   }
+  ]
+ }
+}

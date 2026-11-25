@@ -1,0 +1,142 @@
+{
+  "_provenance": "A RECORDED kept list (the datahub's <project>/instruments/binance.json shape): the four TRADING COIN-M rows `parse_dapi` reads off crates/bridges/binance/tests/fixtures/exchange_info/dapi_demo_classes_2026-10-30.json (the demo dapi list captured 2026-10-30; refreshed_ms is its serverTime), printed by the bridge's own parser on a lane 2026-11-14. Held equal to that parse, row for row, by crates/bridges/binance/src/catalog_class_tests.rs's the_name_rule_agrees_with_every_row.",
+  "venue": "binance",
+  "refreshed_ms": 1793389510866,
+  "truncated": false,
+  "last_error": null,
+  "last_try_ms": 1793389510866,
+  "instruments": [
+    {
+      "venue": "binance",
+      "raw_symbol": "BTCUSD_PERP.P",
+      "base": "BTC",
+      "quote": "USD",
+      "description": "",
+      "contract": {
+        "perp": {
+          "margining": "inverse",
+          "settle": "BTC",
+          "value_currency": null,
+          "funding_interval_ms": null,
+          "settling_ms": null
+        }
+      },
+      "wire": {
+        "asset_id": null,
+        "coin": null,
+        "group": null
+      },
+      "properties": {
+        "tick_size": 0.1,
+        "step_size": 1.0,
+        "min_qty": 1.0,
+        "max_qty": 30000.0,
+        "min_notional": 0.0,
+        "contract_size": 100.0,
+        "taker_hold_ms": 0,
+        "asset_class": "CryptoPerp"
+      },
+      "contract_type": "PERPETUAL"
+    },
+    {
+      "venue": "binance",
+      "raw_symbol": "ETHUSD_PERP.P",
+      "base": "ETH",
+      "quote": "USD",
+      "description": "",
+      "contract": {
+        "perp": {
+          "margining": "inverse",
+          "settle": "ETH",
+          "value_currency": null,
+          "funding_interval_ms": null,
+          "settling_ms": null
+        }
+      },
+      "wire": {
+        "asset_id": null,
+        "coin": null,
+        "group": null
+      },
+      "properties": {
+        "tick_size": 0.01,
+        "step_size": 1.0,
+        "min_qty": 1.0,
+        "max_qty": 100000.0,
+        "min_notional": 0.0,
+        "contract_size": 10.0,
+        "taker_hold_ms": 0,
+        "asset_class": "CryptoPerp"
+      },
+      "contract_type": "PERPETUAL"
+    },
+    {
+      "venue": "binance",
+      "raw_symbol": "BTCUSD_261225.P",
+      "base": "BTC",
+      "quote": "USD",
+      "description": "",
+      "contract": {
+        "future": {
+          "margining": "inverse",
+          "settle": "BTC",
+          "value_currency": null,
+          "expiry_ms": 1798185600000,
+          "tenor": "quarter",
+          "delivery": "unknown",
+          "family": "crypto"
+        }
+      },
+      "wire": {
+        "asset_id": null,
+        "coin": null,
+        "group": null
+      },
+      "properties": {
+        "tick_size": 0.1,
+        "step_size": 1.0,
+        "min_qty": 1.0,
+        "max_qty": 20000.0,
+        "min_notional": 0.0,
+        "contract_size": 100.0,
+        "taker_hold_ms": 0,
+        "asset_class": "CryptoFuture"
+      },
+      "contract_type": "CURRENT_QUARTER"
+    },
+    {
+      "venue": "binance",
+      "raw_symbol": "BTCUSD_270326.P",
+      "base": "BTC",
+      "quote": "USD",
+      "description": "",
+      "contract": {
+        "future": {
+          "margining": "inverse",
+          "settle": "BTC",
+          "value_currency": null,
+          "expiry_ms": 1806048000000,
+          "tenor": "quarter",
+          "delivery": "unknown",
+          "family": "crypto"
+        }
+      },
+      "wire": {
+        "asset_id": null,
+        "coin": null,
+        "group": null
+      },
+      "properties": {
+        "tick_size": 0.1,
+        "step_size": 1.0,
+        "min_qty": 1.0,
+        "max_qty": 20000.0,
+        "min_notional": 0.0,
+        "contract_size": 100.0,
+        "taker_hold_ms": 0,
+        "asset_class": "CryptoFuture"
+      },
+      "contract_type": "NEXT_QUARTER"
+    }
+  ]
+}

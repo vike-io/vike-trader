@@ -1,0 +1,21 @@
+{
+  "argv": [],
+  "case": "boot.exported_hub_key",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings",
+    "VIKE_TRADEHUB_CONTROL_KEY": "DUMMY-NEVER-ECHOED"
+  },
+  "exit": 1,
+  "stderr": {
+    "<lines>": [
+      "<program>: VIKE_TRADEHUB_CONTROL_KEY is set, but VIKE_TRADEHUB_CONTROL_KEY is NO LONGER READ — removed in the owner's ruling of 2026-10-31 (every key lives only in the settings database; decision 0111, verdict 5, amended), because no hub reads a shared hub key since decision 0288: these variables are retired and read by nothing, so one that still looked set would present nothing while its operator believes it presents that key. A person signs with its OWN device key: on a PC `vike-cli backend connect <host> --server-project <dir>` makes and registers one, on the server `vike-cli backend mint-missing` makes the server's own, and `vike-cli access ls` there shows who may do what. The value is never echoed here, and the process refuses to start instead of ignoring the variable.",
+      "Credentials are read from the settings database (<project>/settings/db/vike.db); nothing reads this variable.",
+      "",
+      "then unset VIKE_TRADEHUB_CONTROL_KEY.",
+      "",
+      ""
+    ]
+  },
+  "stdout": "",
+  "what": "an exported hub key refuses the start, and the value is not echoed"
+}

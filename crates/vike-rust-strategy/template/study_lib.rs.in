@@ -1,0 +1,98 @@
+// @generated — rendered by `crates/vike-strategy-builder/src/render.rs`'s `build_study_file` from this
+// file (`template/study_lib.rs.in`). Edit the TEMPLATE, never a rendered copy: a rendered copy lives in a
+// scratch directory under `std::env::temp_dir()` and is never committed.
+//
+// This file wraps a research STUDY file (owner's rule, 2026-11-15: a study is a FILE, built, loaded and
+// sandboxed exactly like a strategy file). The study's folder is written VERBATIM to `src/study/`, and its
+// entry file `<name>.rs` is this crate's module `study`: loaded by `#[path]`, it owns its folder, so a plain
+// `mod matrix;` inside it resolves to its sibling `matrix.rs`, as it always has. Its entry is the contract
+// `crates/vike-user-research/src/contract.rs` states:
+//
+//     pub fn run(ctx: &vike_user_research::StudyContext, params: &toml::Value)
+//         -> Result<vike_user_research::StudyOutcome, vike_user_research::StudyError>
+//
+// and the coercion to `vike_user_research::StudyFn` below compile-checks that signature, naming the study.
+//
+// The exports cross BYTES only (`vike_rust_strategy::study`); what the bytes mean is
+// `vike_user_research::file`'s, the one home of both halves. The handshake and the log slot are a strategy
+// file's own exports, so one loader checks both kinds (`vike_rust_strategy::loader::load_study`). Every
+// export catches a panic: none may unwind across the C ABI.
+//
+// ⚠ No crate-root `use` in this file, for the strategy template's reason: the study is a module of its
+// own, and every name here is a fully-qualified path.
+
+// ---- the study file, VERBATIM: `src/study/{{ENTRY_FILE}}` and its siblings ---------------------
+#[path = "study/{{ENTRY_FILE}}"]
+mod study;
+
+// ---- handshake: the strategy file's own, so `verify_handshake` and the builder's cache serve both kinds ----
+
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_abi_version() -> u32 {
+    ::std::panic::catch_unwind(|| ::vike_rust_strategy::abi::ABI_VERSION).unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_fingerprint() -> *const ::std::os::raw::c_char {
+    ::std::panic::catch_unwind(::vike_rust_strategy::fingerprint::fingerprint_c_str)
+        .unwrap_or(::std::ptr::null())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_layout() -> u64 {
+    ::std::panic::catch_unwind(::vike_rust_strategy::abi::layout).unwrap_or(0)
+}
+
+/// The study's COMPATIBILITY RECORD, the strategy template's own (`ABI_VERSION` 15,
+/// `vike_rust_strategy::identity`): read from the file by the loader before it opens it.
+#[used]
+#[unsafe(link_section = ".vike_identity")]
+static VIKE_IDENTITY: [u8; ::vike_rust_strategy::identity::RECORD_LEN] =
+    ::vike_rust_strategy::identity::RECORD;
+
+/// The record's address: an export that reaches the static, so the linker keeps its section.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_identity() -> *const u8 {
+    VIKE_IDENTITY.as_ptr()
+}
+
+/// The study's own `tracing` events (and the `vike-ml-training` / `vike-analytics` ones inside it) go to the host's
+/// log slot: this file links its OWN `tracing`, whose dispatcher is a process-global of that copy.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_set_log(log: ::vike_rust_strategy::abi::LogFn, max_level: u32) {
+    let _ = ::std::panic::catch_unwind(|| {
+        ::vike_rust_strategy::guest::forward_tracing(log, max_level);
+    });
+}
+
+// ---- the study ---------------------------------------------------------------------------------
+
+/// Run the study once: `input` is the start message, `host` answers every request the study makes (from
+/// any of its threads), and its finished answer is written to `output`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_study_run(
+    host: ::vike_rust_strategy::study::StudyHostAbi,
+    input: ::vike_rust_strategy::study::BytesAbi,
+    output: ::vike_rust_strategy::study::SinkAbi,
+) {
+    ::vike_rust_strategy::study::run_export(host, input, output, |link, input| {
+        let entry: ::vike_user_research::StudyFn = study::run;
+        ::vike_user_research::file::guest::run(
+            entry,
+            &input,
+            ::std::sync::Arc::new(move |request: &[u8]| link.call(request)),
+        )
+    });
+}
+
+/// Answer one request the host makes of an object the study handed out (the store it passed to its one
+/// backtest).
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_study_serve(
+    request: ::vike_rust_strategy::study::BytesAbi,
+    output: ::vike_rust_strategy::study::SinkAbi,
+) {
+    ::vike_rust_strategy::study::serve_export(request, output, |request| {
+        ::vike_user_research::file::guest::serve(&request)
+    });
+}

@@ -1,0 +1,72 @@
+[package]
+name = "vike-execution"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core - the live-exec fold: OrderRecord FSM, per-venue Account, RiskGate, EventBus, the ExecutionClient seam, reconciliation core, the producer-side ingest lanes and the published read model (CoreSnapshot)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+vike-model = { path = "../vike-model" }
+# The compensated sum (`vike_math::summation::compensated_sum`, decision 0294): layer 2, `libm` only, already in
+# this crate's closure through vike-model.
+vike-math = { path = "../vike-math" }
+# The per-venue tables (`capabilities_for`, `fee_schedule_for`, the credential-field table ...) that left `vike-model` (decision 0162).
+vike-venues = { path = "../vike-venues" }
+# The pure helpers (decision 0141, layer 3) this crate calls: `fnv`.
+vike-utility = { path = "../vike-utility" }
+# The market-data vocabulary (`Bar`, the tick types, `L2Book`, `L2BookUpdate`, `OptionKind`, ...):
+# spelled `vike_marketdata::X` everywhere -- vike-model names but does not re-export it (0067).
+vike-marketdata = { path = "../vike-marketdata" }
+serde = { workspace = true }
+serde_json = { workspace = true }   # recon divergence payloads + snapshot serde
+indexmap = { workspace = true }
+tokio = { workspace = true, optional = true }        # ingest mpsc (core does blocking_recv off-runtime); `runtime` only
+tracing = { workspace = true }      # coarse per-order spans + fault-transition events (NOT in the hot fold)
+core_affinity = { workspace = true, optional = true } # opt-in config.pin_cores thread pinning (affinity module; OFF by default); `runtime` only
+
+[features]
+# `runtime` (default ON) is everything that needs `tokio` or `core_affinity`: the lane SENDERS of
+# `src/lanes.rs` (`MarketSender`, `BarSender`, `TickSender`, `EventSender`, the conflation state behind
+# `MarketSender`, `event_channel`, `market_data_channel`) and the `affinity` module. The journaled
+# payloads (`Ingest`, `Command`, `OrderIntent`, `EngineSnapshot`, `state_hash`, ...) and the fold are
+# unconditional, so a crate that only READS them takes this one with `default-features = false` and links
+# no async runtime: `vike-journal`, which `vike-cli` links for the `report` journal body while the
+# `light-consumers` lane (`scripts/ci_feature_suite.sh`) refuses `tokio`/`core_affinity` in its tree.
+default = ["runtime"]
+runtime = ["dep:tokio", "dep:core_affinity"]
+# The workspace's "one owned double behind a `test-support` feature" convention (root CLAUDE.md):
+# `testing::{RecordingClient, TestExecutionClient}` and `recon::ReconcileClientFake` are gated
+# `#[cfg(any(test, feature = "test-support"))]`, so a default (production) build never compiles
+# them. ⚠ Until 2026-10-03 they were UNGATED `pub` items — a fake venue that fills every order at
+# the requested price, compiled into every binary linking this crate, the order-signing daemon
+# included, behind nothing but a "NEVER trade against these" doc line. Consumers enable it as a
+# DEV-dependency feature, never on a normal edge. It implies `runtime` and pulls in nothing else: the
+# ingest-lane waits (`testing::{recv_event, await_event}`) read a tokio receiver.
+test-support = ["runtime"]
+
+[dev-dependencies]
+# Self-referential dev-dep, the `vike-model`/`vike-bridge-core` idiom: it turns `test-support` on for
+# THIS crate's own `tests/` targets (an integration test compiles the lib WITHOUT `cfg(test)`, so the
+# doubles are visible to it only through the feature). Never affects a normal build;
+# `crates/vike-ops/tests/architecture/layer_gate.rs` discounts a self-edge in both directions.
+vike-execution = { path = ".", features = ["test-support"] }
+# `emulated`'s unit tests drive vike-model's shared `OrderBrokerMock` (the `OrderBroker` test double) and
+# vike-marketdata's tick builders, both behind `test-support`. DEV edges only, on crates the normal
+# edges above already name, so no lockfile line.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+# Property suite over the OrderRecord FSM (tests/integration/order_state_machine_property_tests.rs): randomized lifecycle
+# folds beside the r5 fixture pins. Workspace-pinned; the root manifest carries the rationale
+# (dev-dependency only — never reaches the shipped binary's SBOM).
+proptest = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is
+# the sole crate that does NOT inherit this.
+[lints]
+workspace = true

@@ -1,0 +1,119 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 30.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "PERCENTAGE",
+   "value": 75.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "POINTS",
+   "value": 7.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 0.2
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 2.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 5.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": "USDJPY",
+  "contractSize": "10000",
+  "controlledRiskAllowed": true,
+  "country": null,
+  "currencies": [
+   {
+    "baseExchangeRate": 157.55165,
+    "code": "JPY",
+    "exchangeRate": 0.007,
+    "isDefault": false,
+    "symbol": "\u00a5"
+   }
+  ],
+  "epic": "CS.D.USDJPY.MINI.IP",
+  "expiry": "-",
+  "expiryDetails": null,
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "POINTS",
+   "value": 1.8
+  },
+  "lotSize": 100.0,
+  "marginDepositBands": [
+   {
+    "currency": "JPY",
+    "margin": 0.5,
+    "max": 634.24,
+    "min": 0
+   },
+   {
+    "currency": "JPY",
+    "margin": 1,
+    "max": 3171.2,
+    "min": 634.24
+   },
+   {
+    "currency": "JPY",
+    "margin": 3,
+    "max": 5073.92,
+    "min": 3171.2
+   },
+   {
+    "currency": "JPY",
+    "margin": 15,
+    "max": null,
+    "min": 5073.92
+   }
+  ],
+  "marginFactor": 0.5,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "USDJPY",
+  "name": "USD/JPY Mini",
+  "newsCode": "JPY=",
+  "onePipMeans": "0.01 JPY/USD",
+  "openingHours": null,
+  "rolloverDetails": null,
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 50.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MIN KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": true,
+  "type": "CURRENCIES",
+  "unit": "CONTRACTS",
+  "valueOfOnePip": "100.00"
+ },
+ "snapshot": {
+  "bid": 157.545,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 3,
+  "delayTime": 0,
+  "high": 157.903,
+  "low": 156.958,
+  "marketStatus": "TRADEABLE",
+  "netChange": -0.169,
+  "offer": 157.555,
+  "percentageChange": -0.11,
+  "scalingFactor": 100,
+  "updateTime": "19:44:31"
+ }
+}

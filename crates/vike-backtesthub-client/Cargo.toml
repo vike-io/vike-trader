@@ -1,0 +1,75 @@
+[package]
+name = "vike-backtesthub-client"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+# The suites under `tests/` are ONE test binary, `integration` (declared below): `tests/integration.rs` makes each
+# `tests/<suite>.rs` a module, so one executable links instead of one per file. Discovery is off so a suite file
+# stays at its path, the path its citations name, without also becoming a binary of its own.
+autotests = false
+description = "vike trading core — the LIGHT client half of the backtesthub: the run verbs' wire protocol (proto), the blocking BacktesthubClient, the Studio DTOs (wire_studio) and the named run (named_run). DataFusion-free and engine-free: no store, no simulator, no harness."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier
+# `domain-stacked`: the rank of its siblings `vike-datahub-client` and `vike-gatewayhub-client`, over
+# the same `vike-hub-protocol`, so no hub client can name another (decision 0252's verdict 4). Every
+# consumer sits above it; the lowest is `vike-backtest` (30), which builds this crate's wire results.
+# `crates/vike-ops/tests/architecture/named_run_closure_gate.rs` holds it by NAME too: it reaches
+# neither the simulator nor the harness, and no user-code host and no live core reaches it.
+[package.metadata.vike]
+layer = 25
+
+[features]
+# `crate::test_support`: the negotiation suites' one fake peer. Turned on only by the self
+# dev-dependency and by a consumer's dev edge; no shipped edge may enable it
+# (`crates/vike-ops/tests/architecture/test_surface_gate.rs`).
+test-support = []
+
+[dependencies]
+# The SHARED hub-protocol substrate: the frame codec, the keyed handshake, the connection, which verb
+# belongs to which hub, the named run's symbol and venue rules. It names no vike-* crate.
+vike-hub-protocol = { path = "../vike-hub-protocol" }
+# A run result's closed trades ARE `vike_model::Trade`s, the sweep values `vike_model::params::ParamValue`s.
+vike-model = { path = "../vike-model" }
+# The formula floor (decision 0294): the returns histogram bins by `vike_math::statistics::equal_width_bin`.
+vike-math = { path = "../vike-math" }
+# `named_run_bars` prices a window through `vike_marketdata::interval::interval_ms`. Layer 5, serde only.
+vike-marketdata = { path = "../vike-marketdata" }
+serde = { workspace = true } # derive on the Request/Response wire enums
+# `wire_record`'s other half: `vike_analytics::TradingRecord`, the run the DTO renders. Layer 15, and its only
+# `vike-*` edges are `vike-model` and `vike-marketdata`, both already above; it is the shared RESULT type, no
+# simulator and no harness. The conversion lived in `vike-backtest` until 2026-11-10 and came down beside the
+# DTO so the desktop can decode a Studio answer without linking the harness (docs/decisions/0078's amendment).
+vike-analytics = { path = "../vike-analytics" }
+# `study::WireStudyReport::manifest`: the manifest a saved study run answers, kept as the JSON the server
+# wrote (this crate names no `vike-runs`; the desktop reads it as `vike_runs::RunManifest`). The pins and the
+# frame round trips read and write JSON with it too. Already in this crate's lockfile entry.
+serde_json = { workspace = true }
+# `study::WireRunArtifact`: a saved run's file crosses as STANDARD base64 (it may be binary, a network's
+# `model.onnx`), encoded and decoded HERE (`WireRunArtifact::of` / `data`), one spelling on both sides.
+# Already in both consumers' closures through `vike-runs`, which reads the same spelling back.
+base64 = { workspace = true }
+# `msgpack_body::table`: a record list read as its msgpack tree and written back with columns, the backtesthub's
+# msgpack body (negotiated by `vike_hub_protocol::features::FEATURE_WIRE_MSGPACK`). A workspace pin already in the tree, and in this crate's
+# closure through `vike-hub-protocol`.
+rmp-serde = { workspace = true }
+# `refusal_enum!` for `client::DialRefusal`, the one dial sentence `vike-cli` and `vike-mcp` share (decision 0301).
+# Layer 3, already in this crate's closure through `vike-hub-protocol`.
+vike-utility = { path = "../vike-utility" }
+
+[dev-dependencies]
+# Self-referential dev-dep (the `vike-datahub-client` idiom): turns `test-support` on for THIS crate's
+# own `tests/` targets, so `src/test_support.rs` compiles once.
+vike-backtesthub-client = { path = ".", features = ["test-support"] }
+# `vike_hub_protocol::test_support::contains`, the subset compare `tests/wire_tag_fixtures.rs` shares with
+# the other protocol tag suites. A dev-only feature on the substrate already linked above.
+vike-hub-protocol = { path = "../vike-hub-protocol", features = ["test-support"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. vike-fxcm (the FFI shim) is the sole
+# crate that does NOT inherit this.
+[lints]
+workspace = true

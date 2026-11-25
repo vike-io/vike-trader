@@ -1,0 +1,892 @@
+//! Rolling-window primitives that cost O(1) a bar, for the indicator steppers.
+//!
+//! A windowed indicator used to re-fold its whole window on every bar (20 dependent adds for a
+//! 20-bar mean, 200 for a 200-bar one). These keep the window's running statistics and update them
+//! with the one value that enters and the one that leaves, which is what makes a stepper cost a few
+//! nanoseconds whatever the period.
+//!
+//! # Numerics
+//!
+//! A running sum is a plain sum with a plain subtraction, so its rounding error would grow with the
+//! length of the series. Two things keep that bounded, and both are cheap:
+//!
+//! * **Rebuild.** Every `n` pushes the sums are recomputed from the window itself, oldest to
+//!   newest, so no error survives more than one window. That costs `n` adds once per `n` bars, which
+//!   is one add a bar.
+//! * **Shift.** Variance and the higher moments are accumulated on `x - shift`, where `shift` is
+//!   the window's oldest value at the last rebuild, never on `x`. A running `E[x^2] - E[x]^2` of
+//!   raw prices loses every digit once the level is large against the spread (a price near a
+//!   million with moves of a hundredth has a variance a million times smaller than `x^2`); on shifted
+//!   values the two terms are the size of the spread.
+//!
+//! Measured against the exact value (prices on a 2^-30 grid, so sums are exact in `i128`), the
+//! shifted, rebuilt standard deviation is within 3e-14 relative at its worst on a level-100 series, on
+//! a level-1,000,000 series with steps of 0.01 and on a nearly flat one, at 5 ns a bar; the plain
+//! running sums other libraries use cost 4 ns and are wrong by 100% to 950% on the last two.
+//!
+//! A NaN in the window makes the result `NaN`, which the cores below notice on the result and answer
+//! with a rebuild, so the statistic is exact again the bar after the last one leaves. (The general
+//! `Ring` / `Roll*` primitives that used to open this file had no user and are gone; the cores below
+//! are what the steppers run.)
+
+/// The batch result of a stepper: a clone reset to its initial state, folded over `bars`. A batch
+/// computed this way costs what a stream does (a few ns a bar) and equals the stream bit for bit by
+/// construction, because it IS the stream.
+pub(crate) fn batch_scalar<S: crate::Indicator + Clone>(
+    this: &S,
+    bars: &[vike_marketdata::Bar],
+    mut step: impl FnMut(&mut S, &vike_marketdata::Bar) -> f64,
+) -> Vec<Vec<f64>> {
+    let mut s = this.clone();
+    s.reset();
+    // Filled first, then written by index (see [`batch_array`]).
+    let mut out = vec![f64::NAN; bars.len()];
+    for (o, b) in out.iter_mut().zip(bars) {
+        *o = step(&mut s, b);
+    }
+    vec![out]
+}
+
+/// [`batch_scalar`] for a stepper with `N` output lines.
+pub(crate) fn batch_array<S: crate::Indicator + Clone, const N: usize>(
+    this: &S,
+    bars: &[vike_marketdata::Bar],
+    mut step: impl FnMut(&mut S, &vike_marketdata::Bar) -> [f64; N],
+) -> Vec<Vec<f64>> {
+    let mut s = this.clone();
+    s.reset();
+    // Filled first, then written by index: the page faults of fresh buffers land in the fill, not
+    // inside the recurrence (measured on a 50,000-value EMA: 180 us written by `push`, 77 us this way).
+    let mut cols: Vec<Vec<f64>> = (0..N).map(|_| vec![f64::NAN; bars.len()]).collect();
+    for (i, b) in bars.iter().enumerate() {
+        let v = step(&mut s, b);
+        for (col, x) in cols.iter_mut().zip(v) {
+            col[i] = x;
+        }
+    }
+    cols
+}
+
+// ------------------------------------------------------------------------------------------------
+// The two hottest indicators get a core of their own: no NaN counters, no `Option`, no `chain`.
+// ------------------------------------------------------------------------------------------------
+
+/// How many updates a running sum is trusted for before it is rebuilt from the window.
+const SMA_REBUILD: usize = 512;
+
+/// A running sum keeps the rounding error of every term that went through it (about `eps` times the
+/// largest sum it has been), until the next rebuild. So when the sum has fallen to under this fraction
+/// of the largest it has been since its last rebuild (a bad tick, gone), it is rebuilt on the spot: the
+/// carried error would otherwise be a visible share of the answer. It keeps the error under about 1e-11
+/// of the sum. (A bad tick usually makes TWO big terms in a derived series, the bar and the next one,
+/// so the test is against the peak of the sum and not against the one term that is leaving.)
+pub(crate) const PEAK_SHARE: f64 = 1.0e-5;
+
+/// The same for a value that is the only big term a bad tick makes (a typical price, a median price):
+/// the rebuild runs when the value that has just left is more than this many times the answer.
+pub(crate) const LEAVE: f64 = 1.0e5;
+
+/// The largest ring a core allocates. The registry caps every window at 1,000, so this is never reached
+/// through a checked constructor; it only stops a degenerate raw `with_params` (an infinity reads as
+/// `usize::MAX`) from asking the allocator for the address space.
+pub(crate) const RING_CAP: usize = 1 << 16;
+
+/// A simple moving average in a few instructions a value: a ring, a running sum, one multiply.
+///
+/// The ring starts as `n` zeros, so the carried sum (`sum += x - old`) is right from the first
+/// value and the hot path has no fill branch. The first `n - 1` outputs are `NaN` because the
+/// multiplier `inverse` is `NaN` until the first lap of the ring ends (`sum * NaN`), which costs no
+/// branch per value: the switch to `1 / n` sits in the lap-end branch that runs once per `n`
+/// values anyway.
+///
+/// The sum is rebuilt from the ring every `ceil(SMA_REBUILD / n)` laps, so rounding error cannot
+/// grow past that many steps. A `NaN` result (a `NaN` entered, or an infinity LEFT: `inf - inf`) is
+/// rebuilt on the spot, which makes the mean `NaN` while a `NaN` is in the window and exact again
+/// the update after it left; an infinity IN the window is a legitimate infinite mean.
+#[derive(Clone)]
+pub(crate) struct SmaCore {
+    inverse: f64,
+    inverse_n: f64,
+    buffer: Vec<f64>,
+    head: usize,
+    laps: usize,
+    laps_per: usize,
+    sum: f64,
+}
+
+impl SmaCore {
+    /// Laps of the ring between two rebuilds of the sum.
+    #[inline]
+    fn laps_per(n: usize) -> usize {
+        SMA_REBUILD.div_ceil(n.max(1)).max(1)
+    }
+
+    #[inline]
+    pub(crate) fn new(n: usize) -> Self {
+        SmaCore {
+            inverse: f64::NAN,
+            // A window of 0 never leaves warm-up: every output is NaN.
+            inverse_n: if n == 0 { f64::NAN } else { 1.0 / n as f64 },
+            buffer: vec![0.0; n.clamp(1, RING_CAP)],
+            head: 0,
+            laps: 0,
+            laps_per: Self::laps_per(n),
+            sum: 0.0,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.buffer.fill(0.0);
+        self.head = 0;
+        self.laps = 0;
+        self.sum = 0.0;
+        self.inverse = f64::NAN;
+    }
+
+    /// Push `x`; the mean of the last `n` values, `NaN` until `n` have been pushed.
+    #[inline(always)]
+    pub(crate) fn push(&mut self, x: f64) -> f64 {
+        let old = std::mem::replace(&mut self.buffer[self.head], x);
+        self.head += 1;
+        self.sum += x - old;
+        if self.head == self.buffer.len() {
+            self.head = 0;
+            self.laps += 1;
+            if self.laps >= self.laps_per {
+                // The head is 0, so the ring is already oldest-to-newest.
+                self.sum = self.buffer.iter().fold(0.0, |a, &v| a + v);
+                self.laps = 0;
+            }
+            self.inverse = self.inverse_n;
+        }
+        let mut out = self.sum * self.inverse;
+        if out.is_nan() {
+            // Warming up (or a window of 0), a NaN in the window, or a stale carried sum. The rebuild
+            // is a free function over a shared slice, NOT a `&mut self` method: a call that could
+            // write the struct keeps `sum`, `head` and `inverse` in memory across every iteration of a
+            // caller's loop (measured: 1.25 ns a value became 2.8 ns).
+            if self.inverse.is_nan() {
+                return f64::NAN;
+            }
+            self.sum = vike_math::summation::ring_sum_oldest_first(&self.buffer, self.head);
+            out = self.sum * self.inverse;
+            if out.is_nan() {
+                out = f64::NAN;
+            }
+        }
+        out
+    }
+
+    /// The mean of the window as of the last [`SmaCore::push`] from a FRESH left fold, oldest to
+    /// newest, divided by `n`, instead of the running sum times `1 / n`: the last bits are then the
+    /// window's own, whatever came before it. `NaN` until `n` values are in and while a `NaN` is
+    /// inside. O(n).
+    #[inline]
+    pub(crate) fn fresh_mean(&self) -> f64 {
+        if self.inverse.is_nan() {
+            return f64::NAN;
+        }
+        vike_math::summation::ring_sum_oldest_first(&self.buffer, self.head)
+            / self.buffer.len() as f64
+    }
+}
+
+/// [`SmaCore`] with the peak test of [`PEAK_SHARE`]: the mean of a series that is small beside its own spikes
+/// (a difference such as `close - open`, an ease-of-movement term), whose running sum a bad tick has
+/// left a visible rounding error in. One more compare a value than [`SmaCore`], which the plain
+/// price averages (`sma` and the rest) do not need and do not pay.
+///
+/// The ring starts as `n` zeros, so the carried sum (`sum += x - old`) is right from the first
+/// value and the hot path has no fill branch. The first `n - 1` outputs are `NaN` because the
+/// multiplier `inverse` is `NaN` until the first lap of the ring ends (`sum * NaN`), which costs no
+/// branch per value: the switch to `1 / n` sits in the lap-end branch that runs once per `n`
+/// values anyway.
+///
+/// The sum is rebuilt from the ring every `ceil(SMA_REBUILD / n)` laps, so rounding error cannot
+/// grow past that many steps. A `NaN` result (a `NaN` entered, or an infinity LEFT: `inf - inf`) is
+/// rebuilt on the spot, which makes the mean `NaN` while a `NaN` is in the window and exact again
+/// the update after it left; an infinity IN the window is a legitimate infinite mean.
+#[derive(Clone)]
+pub(crate) struct PeakSmaCore {
+    inverse: f64,
+    inverse_n: f64,
+    buffer: Vec<f64>,
+    head: usize,
+    laps: usize,
+    laps_per: usize,
+    sum: f64,
+    /// The largest `|sum|` since the last rebuild.
+    peak: f64,
+}
+
+impl PeakSmaCore {
+    /// Laps of the ring between two rebuilds of the sum.
+    #[inline]
+    fn laps_per(n: usize) -> usize {
+        SmaCore::laps_per(n)
+    }
+
+    #[inline]
+    pub(crate) fn new(n: usize) -> Self {
+        PeakSmaCore {
+            inverse: f64::NAN,
+            // A window of 0 never leaves warm-up: every output is NaN.
+            inverse_n: if n == 0 { f64::NAN } else { 1.0 / n as f64 },
+            buffer: vec![0.0; n.clamp(1, RING_CAP)],
+            head: 0,
+            laps: 0,
+            laps_per: Self::laps_per(n),
+            sum: 0.0,
+            peak: 0.0,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.buffer.fill(0.0);
+        self.head = 0;
+        self.laps = 0;
+        self.sum = 0.0;
+        self.peak = 0.0;
+        self.inverse = f64::NAN;
+    }
+
+    /// Push `x`; the mean of the last `n` values, `NaN` until `n` have been pushed.
+    #[inline(always)]
+    pub(crate) fn push(&mut self, x: f64) -> f64 {
+        let old = std::mem::replace(&mut self.buffer[self.head], x);
+        self.head += 1;
+        self.sum += x - old;
+        let a = self.sum.abs();
+        self.peak = if a > self.peak { a } else { self.peak };
+        if self.head == self.buffer.len() {
+            self.head = 0;
+            self.laps += 1;
+            if self.laps >= self.laps_per {
+                // The head is 0, so the ring is already oldest-to-newest.
+                self.sum = self.buffer.iter().fold(0.0, |a, &v| a + v);
+                self.peak = self.sum.abs();
+                self.laps = 0;
+            }
+            self.inverse = self.inverse_n;
+        }
+        let mut out = self.sum * self.inverse;
+        // Joined with `|`, so that the two tests are one branch.
+        if out.is_nan() | (self.sum.abs() < self.peak * PEAK_SHARE) {
+            // Warming up (or a window of 0), a NaN in the window, a stale carried sum, or a term that
+            // has just left and dwarfs the sum (a bad tick). The rebuild
+            // is a free function over a shared slice, NOT a `&mut self` method: a call that could
+            // write the struct keeps `sum`, `head` and `inverse` in memory across every iteration of a
+            // caller's loop (measured: 1.25 ns a value became 2.8 ns).
+            if self.inverse.is_nan() {
+                return f64::NAN;
+            }
+            self.sum = vike_math::summation::ring_sum_oldest_first(&self.buffer, self.head);
+            self.peak = self.sum.abs();
+            out = self.sum * self.inverse;
+            if out.is_nan() {
+                out = f64::NAN;
+            }
+        }
+        out
+    }
+}
+
+// The ring summed oldest to newest is `vike_math::summation::ring_sum_oldest_first` (decision 0294).
+
+/// Wilder's RSI in a few instructions a value (see [`SmaCore`] for the shape).
+#[derive(Clone)]
+pub(crate) struct RsiCore {
+    n: usize,
+    inverse: f64,
+    keep: f64,
+    previous: f64,
+    seen: usize,
+    ag: f64,
+    al: f64,
+    /// `crate::indicators::Rsi::with_rs_form`'s law.
+    rs_form: bool,
+    /// `crate::indicators::Rsi::with_saturation`'s law.
+    saturate: bool,
+    /// `crate::indicators::Rsi::with_zero_saturation`'s law.
+    saturate_zero: bool,
+    /// `crate::indicators::Rsi::with_zero_seed`'s law.
+    pub(crate) zero_seed: bool,
+}
+
+impl RsiCore {
+    pub(crate) fn new(n: usize) -> Self {
+        RsiCore {
+            n,
+            inverse: 1.0 / n as f64,
+            keep: (n as f64 - 1.0) / n as f64,
+            previous: f64::NAN,
+            seen: 0,
+            ag: 0.0,
+            al: 0.0,
+            rs_form: false,
+            saturate: false,
+            saturate_zero: false,
+            zero_seed: false,
+        }
+    }
+
+    pub(crate) fn set_rs_form(&mut self, rs_form: bool) {
+        self.rs_form = rs_form;
+    }
+
+    pub(crate) fn set_saturation(&mut self, saturate: bool) {
+        self.saturate = saturate;
+    }
+
+    pub(crate) fn set_zero_saturation(&mut self, saturate_zero: bool) {
+        self.saturate_zero = saturate_zero;
+    }
+
+    /// No option is set: the registry row's law, which the whole-series loop `rsi_run` repeats.
+    pub(crate) fn is_plain(&self) -> bool {
+        !self.rs_form && !self.saturate && !self.saturate_zero && !self.zero_seed
+    }
+
+    /// Under `zero_seed`, past the seed at once: the means stay at 0 and every move steps from them.
+    #[inline]
+    fn skip_seed(&mut self) {
+        if self.zero_seed {
+            self.seen = self.n + 1;
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.previous = f64::NAN;
+        self.seen = 0;
+        self.ag = 0.0;
+        self.al = 0.0;
+    }
+
+    /// `100 * ag / (ag + al)`, or 100 when there were no losses.
+    #[inline]
+    pub(crate) fn rsi(ag: f64, al: f64) -> f64 {
+        if al == 0.0 { 100.0 } else { 100.0 * ag / (ag + al) }
+    }
+
+    /// Push a close; the RSI once `n + 1` closes are in (`n` moves), else `NaN`.
+    #[inline(always)]
+    pub(crate) fn push(&mut self, c: f64) -> f64 {
+        if self.n == 0 {
+            return f64::NAN;
+        }
+        if self.rs_form {
+            return self.push_rs(c);
+        }
+        let i = self.seen;
+        self.seen = i + 1;
+        let d = c - self.previous;
+        self.previous = c;
+        if i == 0 {
+            self.skip_seed();
+            return f64::NAN;
+        }
+        // `max` returns the other operand for a NaN, so a NaN move counts as no move.
+        let g = d.max(0.0);
+        let l = (-d).max(0.0);
+        if i < self.n {
+            self.ag += g;
+            self.al += l;
+            f64::NAN
+        } else if i == self.n {
+            self.ag = (self.ag + g) * self.inverse;
+            self.al = (self.al + l) * self.inverse;
+            self.value()
+        } else {
+            self.ag = self.ag * self.keep + g * self.inverse;
+            self.al = self.al * self.keep + l * self.inverse;
+            self.value()
+        }
+    }
+
+    /// `push` in the RS form: a `NaN` skipped (it moves nothing, the next move is from the last
+    /// number), the seed's sum divided by `n`, each step `inverse * move + (1 - inverse) * mean`.
+    #[inline]
+    fn push_rs(&mut self, c: f64) -> f64 {
+        if c.is_nan() {
+            return f64::NAN;
+        }
+        let (g, l) = ((c - self.previous).max(0.0), (self.previous - c).max(0.0));
+        let i = self.seen;
+        self.seen = i + 1;
+        self.previous = c;
+        if i == 0 {
+            self.skip_seed();
+            return f64::NAN;
+        }
+        if i < self.n {
+            self.ag += g;
+            self.al += l;
+            return f64::NAN;
+        }
+        if i == self.n {
+            self.ag = (self.ag + g) / self.n as f64;
+            self.al = (self.al + l) / self.n as f64;
+        } else {
+            self.ag = self.inverse * g + (1.0 - self.inverse) * self.ag;
+            self.al = self.inverse * l + (1.0 - self.inverse) * self.al;
+        }
+        self.value()
+    }
+
+    /// The RSI of the means as the options read it: saturated first, the losses' side first, then
+    /// the form's quotient (`100 - 100 / (1 + ag / al)` in the RS form, `NaN` where both are 0).
+    #[inline(always)]
+    fn value(&self) -> f64 {
+        if self.saturate {
+            if self.al <= 1e-10 {
+                return 100.0;
+            }
+            if self.ag <= 1e-10 {
+                return 0.0;
+            }
+        }
+        if self.saturate_zero {
+            if self.al == 0.0 {
+                return 100.0;
+            }
+            if self.ag == 0.0 {
+                return 0.0;
+            }
+        }
+        if self.rs_form {
+            100.0 - 100.0 / (1.0 + self.ag / self.al)
+        } else {
+            Self::rsi(self.ag, self.al)
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Whole-series loops. The input IS the window, so there is no ring, and the running state lives in
+// locals (registers) instead of struct fields. They run the exact operations `SmaCore::push` and
+// `RsiCore::push` run, in the same order, so a stream and a batch agree bit for bit.
+// ------------------------------------------------------------------------------------------------
+
+/// `out` = the simple moving average of `get(0..len)` over `n` values, `NaN` for the first `n - 1`.
+///
+/// The operations and their order are `SmaCore::push`'s, so the two agree bit for bit.
+#[inline]
+pub(crate) fn sma_run(len: usize, n: usize, get: impl Fn(usize) -> f64, out: &mut Vec<f64>) {
+    out.clear();
+    // Filled first, then written by index (see `series`).
+    out.resize(len, f64::NAN);
+    if n == 0 || len < n {
+        return;
+    }
+    let inverse = 1.0 / n as f64;
+    let laps_per = SmaCore::laps_per(n);
+    let rebuilt = |end: usize| (end + 1 - n..=end).fold(0.0, |a, k| a + get(k));
+    let mut sum = 0.0;
+    for i in 0..n {
+        sum += get(i);
+    }
+    // The first lap ends at the first mean. A rebuild there equals the fold just made.
+    let mut laps = 1usize;
+    if laps >= laps_per {
+        laps = 0;
+    }
+    let mut o = sum * inverse;
+    if o.is_nan() {
+        sum = rebuilt(n - 1);
+        o = sum * inverse;
+        if o.is_nan() {
+            o = f64::NAN;
+        }
+    }
+    out[n - 1] = o;
+    let mut i = n;
+    while i < len {
+        let end = (i + n).min(len);
+        // A full lap ends with the ring's head wrapping: the stream counts the lap and may rebuild
+        // BEFORE it multiplies and emits that element, so the last element of a lap is done apart.
+        let body_end = if end - i == n { end - 1 } else { end };
+        #[expect(clippy::needless_range_loop, reason = "j also indexes the input through `get`")]
+        for j in i..body_end {
+            sum += get(j) - get(j - n);
+            let mut o = sum * inverse;
+            if o.is_nan() {
+                sum = rebuilt(j);
+                o = sum * inverse;
+                if o.is_nan() {
+                    o = f64::NAN;
+                }
+            }
+            out[j] = o;
+        }
+        if body_end < end {
+            let j = body_end;
+            sum += get(j) - get(j - n);
+            laps += 1;
+            if laps >= laps_per {
+                sum = rebuilt(j);
+                laps = 0;
+            }
+            let mut o = sum * inverse;
+            if o.is_nan() {
+                sum = rebuilt(j);
+                o = sum * inverse;
+                if o.is_nan() {
+                    o = f64::NAN;
+                }
+            }
+            out[j] = o;
+        }
+        i = end;
+    }
+}
+
+/// `out` = Wilder's RSI of `get(0..len)` over `n` moves, `NaN` for the first `n` values.
+#[inline]
+pub(crate) fn rsi_run(len: usize, n: usize, get: impl Fn(usize) -> f64, out: &mut Vec<f64>) {
+    out.clear();
+    out.resize(len, f64::NAN);
+    if n == 0 || len <= n {
+        return;
+    }
+    let inverse = 1.0 / n as f64;
+    let keep = (n as f64 - 1.0) / n as f64;
+    let mut previous = get(0);
+    let (mut ag, mut al) = (0.0_f64, 0.0_f64);
+    for i in 1..n {
+        let c = get(i);
+        let d = c - previous;
+        previous = c;
+        ag += d.max(0.0);
+        al += (-d).max(0.0);
+    }
+    let c = get(n);
+    let d = c - previous;
+    previous = c;
+    ag = (ag + d.max(0.0)) * inverse;
+    al = (al + (-d).max(0.0)) * inverse;
+    out[n] = RsiCore::rsi(ag, al);
+    #[expect(clippy::needless_range_loop, reason = "i also indexes the input through `get`")]
+    for i in n + 1..len {
+        let c = get(i);
+        let d = c - previous;
+        previous = c;
+        ag = ag * keep + d.max(0.0) * inverse;
+        al = al * keep + (-d).max(0.0) * inverse;
+        out[i] = RsiCore::rsi(ag, al);
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+// Cores for EMA, MACD, Bollinger and ATR: small `#[inline]` structs of plain numbers whose `push`
+// calls nothing that takes `&mut self`, so a caller's loop (a stream, a batch fold, a slice call)
+// keeps the state in registers.
+// ------------------------------------------------------------------------------------------------
+
+/// An exponential moving average seeded with the mean of the first `n` values, then
+/// `alpha * x + (1 - alpha) * previous`; `NaN` until `n` values are in.
+#[derive(Clone)]
+pub(crate) struct EmaCore {
+    n: usize,
+    alpha: f64,
+    keep: f64,
+    inverse: f64,
+    count: usize,
+    seed: f64,
+    previous: f64,
+}
+
+impl EmaCore {
+    #[inline]
+    pub(crate) fn new(n: usize) -> Self {
+        let alpha = vike_math::smoothing::exponential_moving_average_alpha(n);
+        EmaCore {
+            n,
+            alpha,
+            keep: 1.0 - alpha,
+            inverse: 1.0 / n as f64,
+            count: 0,
+            seed: 0.0,
+            previous: f64::NAN,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.count = 0;
+        self.seed = 0.0;
+        self.previous = f64::NAN;
+    }
+
+    #[inline(always)]
+    pub(crate) fn push(&mut self, x: f64) -> f64 {
+        self.count += 1;
+        if self.count < self.n {
+            self.seed += x;
+            f64::NAN
+        } else if self.count == self.n {
+            self.seed += x;
+            self.previous = self.seed * self.inverse;
+            self.previous
+        } else {
+            self.previous = self.alpha * x + self.keep * self.previous;
+            self.previous
+        }
+    }
+
+    /// [`EmaCore::push`] seeded with the FIRST value instead of the mean of the first `n`: that value
+    /// is the first output, and the same recurrence runs from the second value on.
+    #[inline(always)]
+    pub(crate) fn push_from_first(&mut self, x: f64) -> f64 {
+        self.previous =
+            if self.count == 0 { x } else { self.alpha * x + self.keep * self.previous };
+        self.count = 1;
+        self.previous
+    }
+
+    /// [`EmaCore::push`] started from 0: the average before the first value is 0, so the first
+    /// output is `alpha * x + keep * 0`, and the same recurrence runs on.
+    #[inline(always)]
+    pub(crate) fn push_from_zero(&mut self, x: f64) -> f64 {
+        let previous = if self.count == 0 { 0.0 } else { self.previous };
+        self.previous = self.alpha * x + self.keep * previous;
+        self.count = 1;
+        self.previous
+    }
+}
+
+/// MACD: a fast and a slow EMA of the close, their difference, and an EMA of that difference
+/// (started with the first `signal` live differences). `[macd, signal, histogram]`, `NaN` while a
+/// line is not defined yet.
+#[derive(Clone)]
+pub(crate) struct MacdCore {
+    fast: EmaCore,
+    slow: EmaCore,
+    sig: EmaCore,
+    /// Pushes still to go before all three averages are seeded; 0 is the branch-free steady state.
+    warm: usize,
+}
+
+impl MacdCore {
+    #[inline]
+    pub(crate) fn new(fast: usize, slow: usize, signal: usize) -> Self {
+        MacdCore {
+            fast: EmaCore::new(fast),
+            slow: EmaCore::new(slow),
+            sig: EmaCore::new(signal),
+            // The line is defined once both averages are seeded (push `max(fast, slow)`), and the
+            // signal seeds with the `signal`-th live value.
+            warm: fast.max(slow).saturating_add(signal).saturating_sub(1),
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.fast.clear();
+        self.slow.clear();
+        self.sig.clear();
+        self.warm = self.fast.n.max(self.slow.n).saturating_add(self.sig.n).saturating_sub(1);
+    }
+
+    #[inline(always)]
+    pub(crate) fn push(&mut self, c: f64) -> [f64; 3] {
+        if self.warm == 0 {
+            // Steady state: three recurrences and nothing else, in the exact expressions
+            // [`EmaCore::push`] uses past its seed, so the stream and the batch agree bit for bit.
+            let f = self.fast.alpha * c + self.fast.keep * self.fast.previous;
+            let s = self.slow.alpha * c + self.slow.keep * self.slow.previous;
+            self.fast.previous = f;
+            self.slow.previous = s;
+            let m = f - s;
+            let g = self.sig.alpha * m + self.sig.keep * self.sig.previous;
+            self.sig.previous = g;
+            return [m, g, m - g];
+        }
+        self.warm -= 1;
+        let m = self.fast.push(c) - self.slow.push(c);
+        if m.is_nan() {
+            return [f64::NAN; 3];
+        }
+        let s = self.sig.push(m);
+        [m, s, m - s]
+    }
+}
+
+/// Bollinger Bands: a `n`-value mean and `mult` population standard deviations either side, from
+/// running sums of the window shifted by its oldest value at the last rebuild (so a price near a
+/// million with moves of a hundredth keeps its digits), rebuilt every `ceil(512 / n)` laps.
+///
+/// Warm-up is the `NaN` multiplier of [`SmaCore`]; a `NaN` mean, or a variance that came out
+/// negative, takes the cold rebuild path. So does a variance under a hundred thousandth of the mean
+/// square of the value that has just LEFT the window: the sums keep the rounding error of every term that
+/// went through them (about `eps` times its square), so a bad tick of a thousand times the price level
+/// would otherwise keep its error in the deviation until the scheduled rebuild (measured: 1e-2 relative
+/// at worst); one compare against a term the update already formed catches it.
+#[derive(Clone)]
+pub(crate) struct BollingerCore {
+    inverse: f64,
+    inverse_n: f64,
+    mult: f64,
+    buffer: Vec<f64>,
+    head: usize,
+    laps: usize,
+    laps_per: usize,
+    shift: f64,
+    s1: f64,
+    s2: f64,
+    /// `inverse * 1e-5` once the first lap of the ring has ended, `NaN` before: the share of the leaving
+    /// term's square under which the variance is not trusted.
+    kp: f64,
+}
+
+impl BollingerCore {
+    #[inline]
+    pub(crate) fn new(n: usize, mult: f64) -> Self {
+        BollingerCore {
+            inverse: f64::NAN,
+            inverse_n: if n == 0 { f64::NAN } else { 1.0 / n as f64 },
+            mult,
+            buffer: vec![0.0; n.clamp(1, RING_CAP)],
+            head: 0,
+            laps: 0,
+            laps_per: SmaCore::laps_per(n),
+            shift: 0.0,
+            s1: 0.0,
+            s2: 0.0,
+            kp: f64::NAN,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.buffer.fill(0.0);
+        self.head = 0;
+        self.laps = 0;
+        self.shift = 0.0;
+        self.s1 = 0.0;
+        self.s2 = 0.0;
+        self.inverse = f64::NAN;
+        self.kp = f64::NAN;
+    }
+
+    #[inline(always)]
+    pub(crate) fn push(&mut self, x: f64) -> [f64; 3] {
+        let old = std::mem::replace(&mut self.buffer[self.head], x);
+        self.head += 1;
+        let (d, o) = (x - self.shift, old - self.shift);
+        let (d2, o2) = (d * d, o * o);
+        self.s1 += d - o;
+        self.s2 += d2 - o2;
+        if self.head == self.buffer.len() {
+            self.head = 0;
+            self.laps += 1;
+            // The first lap always rebuilds: until then the sums ran with a shift of 0 on raw prices.
+            if self.laps >= self.laps_per || self.inverse.is_nan() {
+                let (shift, s1, s2) = shifted_sums(&self.buffer, 0);
+                self.shift = shift;
+                self.s1 = s1;
+                self.s2 = s2;
+                self.laps = 0;
+            }
+            self.inverse = self.inverse_n;
+            self.kp = self.inverse_n * 1.0e-5;
+        }
+        let m = self.s1 * self.inverse;
+        let var = self.s2 * self.inverse - m * m;
+        // A comparison with a `NaN` is false, so a `NaN` variance (warming up, or a `NaN` in the window)
+        // falls through to the cold path with the negative ones (cancellation) and the ones under a
+        // hundred thousandth of the mean square of the term that has just left (a bad tick).
+        if var >= o2 * self.kp {
+            let mean = self.shift + m;
+            let sd = var.sqrt();
+            return [mean + self.mult * sd, mean, mean - self.mult * sd];
+        }
+        // Cold, and written inline over a shared slice: a `&mut self` method call here would keep the
+        // sums in memory across every iteration of a caller's loop.
+        if self.inverse.is_nan() {
+            return [f64::NAN; 3];
+        }
+        let (shift, s1, s2) = shifted_sums(&self.buffer, self.head);
+        self.shift = shift;
+        self.s1 = s1;
+        self.s2 = s2;
+        let m = s1 * self.inverse;
+        let var = (s2 * self.inverse - m * m).max(0.0);
+        if var.is_nan() {
+            return [f64::NAN; 3];
+        }
+        let mean = shift + m;
+        let sd = var.sqrt();
+        [mean + self.mult * sd, mean, mean - self.mult * sd]
+    }
+}
+
+/// The window (oldest value at `head`) as `(shift, sum(x - shift), sum((x - shift)^2))`, `shift`
+/// being the oldest value when it is finite.
+#[cold]
+#[inline(never)]
+fn shifted_sums(buffer: &[f64], head: usize) -> (f64, f64, f64) {
+    let shift = if buffer[head].is_finite() { buffer[head] } else { 0.0 };
+    let (mut s1, mut s2) = (0.0_f64, 0.0_f64);
+    for &v in buffer[head..].iter().chain(&buffer[..head]) {
+        let d = v - shift;
+        s1 += d;
+        s2 += d * d;
+    }
+    (shift, s1, s2)
+}
+
+/// Average true range: the true range through Wilder's smoothing, seeded with the mean of the
+/// first `n` ranges; the first bar's range is `high - low`. `NaN` until `n` bars are in.
+#[derive(Clone)]
+pub(crate) struct AtrCore {
+    n: usize,
+    inverse: f64,
+    keep: f64,
+    count: usize,
+    previous_close: f64,
+    seed: f64,
+    previous: f64,
+}
+
+impl AtrCore {
+    #[inline]
+    pub(crate) fn new(n: usize) -> Self {
+        AtrCore {
+            n,
+            inverse: 1.0 / n as f64,
+            keep: (n as f64 - 1.0) / n as f64,
+            count: 0,
+            previous_close: f64::NAN,
+            seed: 0.0,
+            previous: f64::NAN,
+        }
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.count = 0;
+        self.previous_close = f64::NAN;
+        self.seed = 0.0;
+        self.previous = f64::NAN;
+    }
+
+    #[inline(always)]
+    pub(crate) fn push(&mut self, high: f64, low: f64, close: f64) -> f64 {
+        let tr = if self.count == 0 {
+            high - low
+        } else {
+            (high - low)
+                .max((high - self.previous_close).abs())
+                .max((low - self.previous_close).abs())
+        };
+        self.previous_close = close;
+        self.count += 1;
+        if self.count < self.n {
+            self.seed += tr;
+            f64::NAN
+        } else if self.count == self.n {
+            self.seed += tr;
+            self.previous = self.seed * self.inverse;
+            self.previous
+        } else {
+            self.previous = self.previous * self.keep + tr * self.inverse;
+            self.previous
+        }
+    }
+}

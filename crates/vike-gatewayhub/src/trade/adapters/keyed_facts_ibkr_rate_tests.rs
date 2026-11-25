@@ -1,0 +1,642 @@
+//! The assembly of a converting IBKR facts answer over SCRIPTED reads: the orientation goldens end to end
+//! (EURUSD, USDJPY, EURGBP), the two ages (a kept grid, a fresh rate), and every refusal in words.
+//!
+//! DOCS-SHAPED, not measured: the scripted rows are what IBKR's pages describe (a forex pair is quoted
+//! `BASE.QUOTE`, its price is quote units per base unit:
+//! <https://interactivebrokers.github.io/tws-api/basic_contracts.html>; the account summary states the base
+//! currency in a row's currency attribute: <https://interactivebrokers.github.io/tws-api/account_summary.html>).
+//! No quote was captured from a gateway; the numbers are illustrative.
+
+use std::cell::Cell;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use vike_gatewayhub_client::proto::{SymbolPropertiesRefusal, SymbolPropertiesRefusalCode};
+use vike_model::{AccountPerQuote, QuoteRate, SymbolProperties};
+
+use vike_ibkr::instrument::any_symbol::socket::{IbkrPropertiesClass, RateAnswer};
+use vike_ibkr::instrument::any_symbol::{IbkrPropertiesError, IbkrPropertiesStock};
+use vike_ibkr::refusals::IbkrSymbolRefusal;
+use vike_ibkr::symbol_properties::{SymbolPropertiesKeyedSpecIbkr, read_base_currency};
+
+use super::super::symbol_facts::{Carried, WireAnswer, coded, verdict};
+use super::*;
+use crate::trade::adapters::testutil::ibkr_stock;
+
+/// The bridge's refusal of a EUR.USD quote that is delayed data: a failure of the rate.
+fn delayed_eur_usd() -> IbkrSymbolRefusal {
+    IbkrSymbolRefusal::QuoteNotRealTime { pair: "EUR.USD".into(), delay: "delayed".into() }
+}
+
+/// The bridge's "not now" of a USD.JPY quote read the paper account streams none of (`[10089]`).
+fn no_usd_jpy_stream() -> IbkrSymbolRefusal {
+    IbkrSymbolRefusal::PairReadFailed {
+        base: "USD".into(),
+        counter: "JPY".into(),
+        why: "the quote stream ended with [10089]".into(),
+    }
+}
+
+/// The bridge's refusal of a root that settles by delivery.
+fn settles_by_delivery() -> IbkrSymbolRefusal {
+    IbkrSymbolRefusal::RootNotCashSettled {
+        name: "CL.NYMEX.USD.FUT.20261120".into(),
+        root: "CL".into(),
+        roots: "ES, MES".into(),
+    }
+}
+
+/// The bridge's converting stock answer (`vike_ibkr::symbol_properties::quoted_facts`) over the kept grid of `facts`, as
+/// `TradeLaneBridge` asks it: the kept lookup's refusal passed back as it was coded, the bridge's worded.
+fn quoted_facts(
+    facts: &SymbolPropertiesCacheKeyed<SymbolPropertiesKeyedSpecIbkr>,
+    name: &str,
+    stock: impl FnOnce() -> Result<IbkrPropertiesStock, IbkrPropertiesError>,
+    rate_for: impl FnOnce(&str) -> Result<RateAnswer, IbkrPropertiesError>,
+    base: impl FnOnce() -> Option<String>,
+) -> Result<SymbolPropertiesWire, SymbolPropertiesRefusal> {
+    vike_ibkr::symbol_properties::quoted_facts(
+        name,
+        || facts.facts(name, stock).map(WireAnswer).map_err(Carried::Coded),
+        || facts.note(name),
+        rate_for,
+        base,
+    )
+    .map(|WireAnswer(wire)| wire)
+    .map_err(|e| e.worded("ibkr"))
+}
+
+/// The bridge's converting forex-or-future answer (`vike_ibkr::symbol_properties::quoted_class_facts`) over the kept
+/// grid of `facts`, as `TradeLaneBridge` asks it.
+fn quoted_class_facts(
+    facts: &SymbolPropertiesCacheKeyed<SymbolPropertiesKeyedSpecIbkr>,
+    name: &str,
+    currency: &str,
+    class: impl FnOnce() -> Result<IbkrPropertiesClass, IbkrPropertiesError>,
+    rate_for: impl FnOnce(&str) -> Result<RateAnswer, IbkrPropertiesError>,
+    base: impl FnOnce() -> Option<String>,
+) -> Result<SymbolPropertiesWire, SymbolPropertiesRefusal> {
+    vike_ibkr::symbol_properties::quoted_class_facts(
+        currency,
+        || facts.facts_other(name, class).map(WireAnswer).map_err(Carried::Coded),
+        rate_for,
+        base,
+    )
+    .map(|WireAnswer(wire)| wire)
+    .map_err(|e| e.worded("ibkr"))
+}
+
+const NOW: i64 = 1_700_000_000_123;
+
+fn stock_with_magnifier(name: &str, price_magnifier: i32) -> IbkrPropertiesStock {
+    IbkrPropertiesStock { price_magnifier, ..ibkr_stock(name) }
+}
+
+/// **A FOREIGN stock whose contract price magnifier is not 1 is refused on the converting path, in words**, whether
+/// the gateway reported a pence-style 100 or left the field unset (0); the same stock at 1 is granted. The grid
+/// kept from the first ask carries its record into the second: a refusal does not depend on whether the contract
+/// was looked up on this ask.
+#[test]
+fn a_foreign_stock_with_a_price_magnifier_is_refused_on_the_converting_path() {
+    for magnifier in [0, 100, 2] {
+        let facts = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+        for ask in 0..2 {
+            let why = quoted_facts(
+                &facts,
+                "SAP.SMART.EUR",
+                || Ok(stock_with_magnifier("SAP.SMART.EUR", magnifier)),
+                |_| Ok(rate("EUR", 1.10, "EUR.USD")),
+                || None,
+            )
+            .expect_err("refused");
+            assert!(
+                why.reason.starts_with("ibkr: ")
+                    && why.reason.contains(&format!("price magnifier of {magnifier}"))
+                    && why.reason.contains("100 times too high"),
+                "{magnifier} ask {ask}: {why}"
+            );
+            assert_eq!(
+                why.code,
+                SymbolPropertiesRefusalCode::Verdict,
+                "a verdict, not a moment: {why}"
+            );
+        }
+    }
+    let facts = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+    let got = quoted_facts(
+        &facts,
+        "SAP.SMART.EUR",
+        || Ok(stock_with_magnifier("SAP.SMART.EUR", 1)),
+        |_| Ok(rate("EUR", 1.10, "EUR.USD")),
+        || None,
+    )
+    .expect("a magnifier of 1 is granted");
+    assert_eq!(got.quote_rate, Some(1.10));
+}
+
+/// **A stock in the account's BASE currency is never refused for its magnifier**, 0 (unset) or 100 alike: it is
+/// the account's own money, nothing converts, and it is admitted as before (finding of the docs review: a gateway
+/// that reports 0 for every ordinary stock must not refuse them on a converting account either).
+#[test]
+fn a_stock_in_the_base_currency_is_admitted_whatever_its_price_magnifier() {
+    for magnifier in [0, 1, 100] {
+        let facts = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+        let got = quoted_facts(
+            &facts,
+            "AAPL.SMART.USD",
+            || Ok(stock_with_magnifier("AAPL.SMART.USD", magnifier)),
+            |_| Ok(own_currency()),
+            || None,
+        )
+        .unwrap_or_else(|why| panic!("{magnifier}: {why}"));
+        assert_eq!((got.quote_currency, got.quote_rate, got.account_currency), (None, None, None));
+        assert_eq!(got.properties.tick_size, 0.01);
+    }
+}
+
+fn rate(currency: &str, account_per_quote: f64, pair: &str) -> RateAnswer {
+    RateAnswer {
+        base: "USD".into(),
+        rate: Some((
+            QuoteRate {
+                quote_currency: currency.into(),
+                account_per_quote: AccountPerQuote::new(account_per_quote).expect("a rate"),
+                as_of_ms: NOW,
+            },
+            pair.into(),
+        )),
+    }
+}
+
+fn own_currency() -> RateAnswer {
+    RateAnswer { base: "USD".into(), rate: None }
+}
+
+/// **A EUR stock on a USD account carries its currency and the rate as it stands**: a euro is MORE than a
+/// dollar, so 10,000 euros are 11,000 dollars.
+#[test]
+fn a_euro_stock_carries_more_than_a_dollar_per_euro() {
+    let facts = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+    let got = quoted_facts(
+        &facts,
+        "SAP.SMART.EUR",
+        || Ok(ibkr_stock("SAP.SMART.EUR")),
+        |currency| {
+            assert_eq!(currency, "EUR", "the rate is asked for the NAME's currency");
+            Ok(rate("EUR", 1.10, "EUR.USD"))
+        },
+        || None,
+    )
+    .expect("granted");
+    assert_eq!(got.quote_currency.as_deref(), Some("EUR"));
+    assert_eq!(got.quote_rate, Some(1.10));
+    assert_eq!(got.rate_as_of_ms, Some(NOW));
+    assert_eq!(got.account_currency.as_deref(), Some("USD"), "the rate says which ledger it is in");
+    assert!((got.quote_rate.unwrap() * 10_000.0 - 11_000.0).abs() < 1e-9);
+    assert_eq!(got.properties.tick_size, 0.01);
+    assert_eq!(got.contract_value, None, "a share: linear, 1.0");
+}
+
+/// **A JPY stock carries `1/150.10`, never `150.10`**: 10,000 yen are 66.62 dollars. The design's USDJPY golden.
+#[test]
+fn a_yen_stock_carries_a_fraction_of_a_dollar_per_yen_not_yen_per_dollar() {
+    let facts = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+    let got = quoted_facts(
+        &facts,
+        "7203.SMART.JPY",
+        || Ok(ibkr_stock("7203.SMART.JPY")),
+        |_| Ok(rate("JPY", 1.0 / 150.10, "USD.JPY")),
+        || None,
+    )
+    .expect("granted");
+    let per_yen = got.quote_rate.expect("a rate");
+    assert!(per_yen < 0.01 && per_yen > 0.006, "{per_yen} is yen-per-dollar, the flipped rate");
+    assert!((per_yen * 10_000.0 - 66.622).abs() < 1e-3);
+    assert!((per_yen * 100_000.0 * 150.10 - 100_000.0).abs() < 1e-6, "100,000 dollars of yen");
+}
+
+/// A stock quoted in the account's own base currency carries NO currency and NO rate: nothing converts, and the
+/// node reads that as the ledger's own money.
+#[test]
+fn a_stock_in_the_base_currency_carries_no_conversion() {
+    let facts = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+    let got = quoted_facts(
+        &facts,
+        "AAPL.SMART.USD",
+        || Ok(ibkr_stock("AAPL.SMART.USD")),
+        |_| Ok(own_currency()),
+        || None,
+    )
+    .expect("granted");
+    assert_eq!((got.quote_currency, got.quote_rate, got.rate_as_of_ms), (None, None, None));
+    assert_eq!(got.account_currency, None, "no rate, no ledger currency to state");
+}
+
+/// **The two ages**: the grid is kept (one fetch for two asks), the rate is read on EVERY ask and the second
+/// answer carries the second reading.
+#[test]
+fn the_grid_is_kept_and_the_rate_is_read_fresh_on_every_ask() {
+    let facts = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+    let fetches = AtomicUsize::new(0);
+    let reads = Cell::new(0.0_f64);
+    for want in [1.10, 1.12] {
+        reads.set(want);
+        let got = quoted_facts(
+            &facts,
+            "SAP.SMART.EUR",
+            || {
+                fetches.fetch_add(1, Ordering::SeqCst);
+                Ok(ibkr_stock("SAP.SMART.EUR"))
+            },
+            |_| Ok(rate("EUR", reads.get(), "EUR.USD")),
+            || None,
+        )
+        .expect("granted");
+        assert_eq!(got.quote_rate, Some(want));
+    }
+    assert_eq!(fetches.load(Ordering::SeqCst), 1, "the grid is looked up once");
+}
+
+/// The converting answers are kept apart from the plain ones: a refusal the plain path remembered for a name
+/// (a stock of another currency) is not served to the converting path.
+#[test]
+fn the_converting_keep_is_not_the_plain_ones() {
+    let plain = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+    let converting = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+    let refused = plain.facts("SAP.SMART.EUR", || {
+        Err(IbkrPropertiesError::Refused(IbkrSymbolRefusal::StockOfAnotherCurrency {
+            name: "SAP.SMART.EUR".into(),
+            currency: "EUR".into(),
+            account_currency: "USD".into(),
+        }))
+    });
+    assert!(refused.is_err());
+    let got = quoted_facts(
+        &converting,
+        "SAP.SMART.EUR",
+        || Ok(ibkr_stock("SAP.SMART.EUR")),
+        |_| Ok(rate("EUR", 1.10, "EUR.USD")),
+        || None,
+    );
+    assert!(got.is_ok());
+}
+
+/// A name that is no stock name is refused in the plain path's words BEFORE the budget is spent, anything is
+/// fetched or any rate is read; a forex pair is refused as a CASH position.
+#[test]
+fn a_bad_name_asks_nothing() {
+    let facts = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+    for bad in ["SAP", "SAP.NASDAQ.EUR", "EUR.IDEALPRO.USD", "SAP.SMART.EU"] {
+        let why = quoted_facts(
+            &facts,
+            bad,
+            || panic!("{bad}: nothing is fetched"),
+            |_| panic!("{bad}: no rate is read"),
+            || None,
+        )
+        .expect_err(bad);
+        assert!(why.reason.contains("not an IBKR stock name"), "{bad}: {why}");
+        assert_eq!(why.code, SymbolPropertiesRefusalCode::Verdict, "{bad}: {why}");
+    }
+    let why = quoted_facts(&facts, "EUR.IDEALPRO.USD", || panic!(), |_| panic!(), || None)
+        .expect_err("forex");
+    assert!(why.reason.contains("CASH position"), "{why}");
+}
+
+/// **A minor-unit stock is refused BEFORE its grid is fetched** (finding 6 of the second IBKR currency review): the
+/// grid is a dial of the data lane's hourly budget, and for a London, Tel Aviv or Johannesburg name it was spent
+/// every ten minutes on an answer the rate then refused. Nothing is fetched and no rate is read; the words are
+/// the rate read's own (so the node reads one sentence whichever refused it) and are a verdict, not a failure.
+#[test]
+fn a_minor_unit_stock_is_refused_before_its_grid_is_fetched() {
+    let facts = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+    for name in ["VOD.SMART.GBP", "TEVA.SMART.ILS", "NPN.SMART.ZAR"] {
+        let why = quoted_facts(
+            &facts,
+            name,
+            || panic!("{name}: the grid is not fetched"),
+            |_| panic!("{name}: no rate is read"),
+            || None,
+        )
+        .expect_err(name);
+        assert!(
+            why.reason.starts_with("ibkr: ") && why.reason.contains("100 times too high"),
+            "{name}: {why}"
+        );
+        assert_eq!(why.code, SymbolPropertiesRefusalCode::Verdict, "{name}: {why}");
+    }
+}
+
+/// A grid that could not be had reads no rate; a refused stock is the plain refusal, and the kept lookup's "not now"
+/// passes back through the bridge under its own code (it was coded where the lookup built it, never read back).
+#[test]
+fn no_grid_no_rate_read() {
+    let facts = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+    let ambiguous = IbkrSymbolRefusal::NoContractForTicker {
+        name: "SAP.SMART.EUR".into(),
+        ticker: "SAP".into(),
+    };
+    let why = quoted_facts(
+        &facts,
+        "SAP.SMART.EUR",
+        || Err(IbkrPropertiesError::Refused(ambiguous.clone())),
+        |_| panic!("no rate is read for a stock that is not admitted"),
+        || None,
+    )
+    .expect_err("refused");
+    assert_eq!(why, verdict(ambiguous.carried()));
+    let why = quoted_facts(
+        &facts,
+        "SAP2.SMART.EUR",
+        || {
+            Err(IbkrPropertiesError::Unavailable(IbkrSymbolRefusal::DidNotAnswer {
+                what: "the symbol search for SAP2".into(),
+                why: "no link".into(),
+            }))
+        },
+        |_| panic!("no rate is read"),
+        || None,
+    )
+    .expect_err("unavailable");
+    assert_eq!(why.code, SymbolPropertiesRefusalCode::ListUnavailable, "{why}");
+    assert!(why.reason.contains("no link"), "{why}");
+}
+
+/// **A rate the gateway could not give is a failure of the RATE** (transient: the node does not remember it as
+/// a verdict on the symbol), naming the currency and the reason; a rate refused by name (no forex pair, a
+/// minor-unit currency) is the definitive sentence, unchanged.
+#[test]
+fn a_rate_that_cannot_be_had_is_worded_as_the_rates_failure() {
+    let facts = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+    let no_pair = IbkrSymbolRefusal::NoForexPair {
+        quote: "EUR".into(),
+        account: "USD".into(),
+        base: "EUR".into(),
+        counter: "USD".into(),
+    };
+    let why = quoted_facts(
+        &facts,
+        "SAP.SMART.EUR",
+        || Ok(ibkr_stock("SAP.SMART.EUR")),
+        |_| Err(IbkrPropertiesError::Unavailable(delayed_eur_usd())),
+        || None,
+    )
+    .expect_err("no rate");
+    assert!(
+        why.reason.contains(PROPERTIES_RATE_UNAVAILABLE) && why.reason.contains("no rate for EUR"),
+        "{why}"
+    );
+    assert!(why.reason.contains("delayed data"), "{why}");
+    assert_eq!(why.code, SymbolPropertiesRefusalCode::RateUnavailable, "{why}");
+
+    let why = quoted_facts(
+        &facts,
+        "SAP.SMART.EUR",
+        || Ok(ibkr_stock("SAP.SMART.EUR")),
+        |_| Err(IbkrPropertiesError::Refused(no_pair.clone())),
+        || None,
+    )
+    .expect_err("refused");
+    assert_eq!(why, verdict(no_pair.carried()));
+}
+
+/// **The rate's failure names the account's currency when the source knows it** ("no rate for JPY in EUR", the
+/// words of the other converting venues, Q-D4), for a stock and for a pair; a source that never stated it (the
+/// failed read came before the base was read) keeps the currency alone. The base is asked only on the failure.
+#[test]
+fn a_rate_that_cannot_be_had_names_the_account_currency_when_known() {
+    let delayed = || Err(IbkrPropertiesError::Unavailable(delayed_eur_usd()));
+    let stock = |base: Option<&str>| {
+        let base = base.map(str::to_string);
+        quoted_facts(
+            &SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default(),
+            "SAP.SMART.EUR",
+            || Ok(ibkr_stock("SAP.SMART.EUR")),
+            |_| delayed(),
+            || base,
+        )
+        .expect_err("no rate")
+    };
+    let known = stock(Some("USD"));
+    assert_eq!(
+        known,
+        coded(
+            SymbolPropertiesRefusalCode::RateUnavailable,
+            vike_utility::errors::CarriedRefusal::new(
+                Some("ibkr.symbol.rate.none_in_base".into()),
+                format!(
+                    "ibkr: {PROPERTIES_RATE_UNAVAILABLE}: no rate for EUR in USD (the EUR.USD quote is delayed data, not real-time, so it is not a rate)"
+                )
+            )
+        )
+    );
+    assert_eq!(
+        stock(None).reason,
+        format!(
+            "ibkr: {PROPERTIES_RATE_UNAVAILABLE}: no rate for EUR (the EUR.USD quote is delayed data, not real-time, so it is not a rate)"
+        )
+    );
+
+    let pair = quoted_class_facts(
+        &SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default(),
+        "USD.JPY.IDEALPRO",
+        "JPY",
+        || Ok(pair_facts("JPY")),
+        |_| Err(IbkrPropertiesError::Unavailable(no_usd_jpy_stream())),
+        || Some("EUR".to_string()),
+    )
+    .expect_err("no rate");
+    assert!(
+        pair.reason.contains("no rate for JPY in EUR (") && pair.reason.contains("10089"),
+        "{pair}"
+    );
+
+    let granted = quoted_facts(
+        &SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default(),
+        "SAP.SMART.EUR",
+        || Ok(ibkr_stock("SAP.SMART.EUR")),
+        |_| Ok(rate("EUR", 1.10, "EUR.USD")),
+        || panic!("the base is asked only when the rate failed"),
+    );
+    assert!(granted.is_ok());
+}
+
+/// The base currency is asked until the venue states it, a refusal is final, and a venue that never answers
+/// leaves the account unanchored when the bound is spent.
+#[test]
+fn the_base_currency_is_asked_until_stated_and_given_up_on_when_the_bound_is_spent() {
+    let roomy = Duration::from_secs(5);
+    let mut asked = 0;
+    let got = read_base_currency(
+        |_| {
+            asked += 1;
+            if asked < 3 {
+                Err(IbkrPropertiesError::Unavailable(IbkrSymbolRefusal::SummaryCut))
+            } else {
+                Ok("EUR".into())
+            }
+        },
+        roomy,
+        Duration::ZERO,
+    );
+    assert_eq!((got.as_deref(), asked), (Some("EUR"), 3));
+
+    let mut asked = 0;
+    let got = read_base_currency(
+        |_| {
+            asked += 1;
+            Err(IbkrPropertiesError::Refused(IbkrSymbolRefusal::SummaryManyCurrencies {
+                count: 2,
+                currencies: "USD, EUR".into(),
+                tag: "NetLiquidation".into(),
+            }))
+        },
+        roomy,
+        Duration::ZERO,
+    );
+    assert_eq!((got, asked), (None, 1), "a refusal is final");
+}
+
+/// **The start's read is bounded as a whole** (the start holds the adapter lock and the node waits for its
+/// reply): asks are spaced by the pause, each is handed only the time that is left, no pause is slept that
+/// leaves no room for another ask, and the total stays inside the bound however slow the gateway is. The real
+/// bound is the start's `CURRENCY_READ_WAIT` (`bridge_trade.rs`, 8 s); before it the read could take 187 s (five asks
+/// of 35 s and the pauses).
+#[test]
+fn the_start_s_base_currency_read_never_outlives_its_bound() {
+    let total = Duration::from_millis(300);
+    let pause = Duration::from_millis(100);
+
+    // A refused dial answers at once: asks fit at 0, 100 and 200 ms, and the pause that would leave nothing
+    // is not slept.
+    let mut asked = 0;
+    let began = Instant::now();
+    let got = read_base_currency(
+        |_| {
+            asked += 1;
+            Err(IbkrPropertiesError::Unavailable(IbkrSymbolRefusal::SummaryCut))
+        },
+        total,
+        pause,
+    );
+    assert_eq!(got, None);
+    assert!((2..=3).contains(&asked), "{asked} asks inside the bound");
+    assert!(began.elapsed() < total, "no sleep past the last ask: {:?}", began.elapsed());
+
+    // A gateway that takes the whole of what it is given: one ask, and it was given the bound, not 35 s.
+    let mut given = Vec::new();
+    let began = Instant::now();
+    let got = read_base_currency(
+        |left| {
+            given.push(left);
+            std::thread::sleep(left);
+            Err(IbkrPropertiesError::Unavailable(IbkrSymbolRefusal::SummaryDidNotEnd {
+                millis: 300,
+            }))
+        },
+        total,
+        pause,
+    );
+    assert_eq!(got, None);
+    assert_eq!(given.len(), 1, "{given:?}");
+    assert!(given[0] <= total, "the ask was handed at most the bound: {given:?}");
+    assert!(began.elapsed() < total + Duration::from_millis(400), "{:?}", began.elapsed());
+}
+
+fn pair_facts(quote: &str) -> IbkrPropertiesClass {
+    IbkrPropertiesClass::Forex(
+        vike_ibkr::instrument::any_symbol::forex_future::IbkrPropertiesForex {
+            symbol: format!("USD.{quote}.IDEALPRO"),
+            conid: 15_016_059,
+            base: "USD".into(),
+            quote: quote.into(),
+            properties: SymbolProperties {
+                tick_size: 0.005,
+                step_size: 1.0,
+                min_qty: 25_000.0,
+                ..SymbolProperties::default()
+            },
+        },
+    )
+}
+
+/// **A pair quoted in the account's own money carries no conversion; one quoted in another carries the rate as it
+/// stands** (`USD.JPY` on a USD account is `1/157.58` dollars per yen, never 157.58), read for the PAIR'S QUOTE
+/// currency, and a minor-unit money is refused before the grid is fetched.
+#[test]
+fn a_pair_is_converted_by_its_quote_currency() {
+    let facts = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+    let own = quoted_class_facts(
+        &facts,
+        "EUR.USD.IDEALPRO",
+        "USD",
+        || Ok(pair_facts("USD")),
+        |currency| {
+            assert_eq!(currency, "USD");
+            Ok(own_currency())
+        },
+        || None,
+    )
+    .expect("granted");
+    assert_eq!((own.quote_currency, own.quote_rate, own.account_currency), (None, None, None));
+
+    let jpy = quoted_class_facts(
+        &facts,
+        "USD.JPY.IDEALPRO",
+        "JPY",
+        || Ok(pair_facts("JPY")),
+        |currency| {
+            assert_eq!(currency, "JPY", "the rate is asked for the quote currency");
+            Ok(rate("JPY", 1.0 / 157.582, "USD.JPY"))
+        },
+        || None,
+    )
+    .expect("granted");
+    assert_eq!(jpy.quote_currency.as_deref(), Some("JPY"));
+    let per_yen = jpy.quote_rate.expect("a rate");
+    assert!(per_yen < 0.01 && per_yen > 0.006, "{per_yen} is yen-per-dollar, the flipped rate");
+    assert_eq!(jpy.account_currency.as_deref(), Some("USD"));
+    assert_eq!(jpy.properties.min_qty, 25_000.0);
+
+    let fetched = Cell::new(false);
+    let why = quoted_class_facts(
+        &SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default(),
+        "USD.ZAR.IDEALPRO",
+        "ZAR",
+        || {
+            fetched.set(true);
+            Ok(pair_facts("ZAR"))
+        },
+        |_| Ok(own_currency()),
+        || None,
+    )
+    .expect_err("a minor-unit money");
+    assert!(why.reason.starts_with("ibkr: ") && !fetched.get(), "{why}");
+}
+
+/// A rate the gateway cannot give (the paper account streams no forex quote through the API: `[10089]`) is a failure
+/// of the RATE, worded as the node's "not now"; a refusal of the pair itself is a verdict.
+#[test]
+fn a_pair_whose_rate_cannot_be_read_is_not_now_and_a_refused_pair_is_a_verdict() {
+    let facts = SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default();
+    let why = quoted_class_facts(
+        &facts,
+        "USD.JPY.IDEALPRO",
+        "JPY",
+        || Ok(pair_facts("JPY")),
+        |_| Err(IbkrPropertiesError::Unavailable(no_usd_jpy_stream())),
+        || None,
+    )
+    .expect_err("no rate");
+    assert_eq!(why.code, SymbolPropertiesRefusalCode::RateUnavailable, "{why}");
+    assert!(why.reason.contains("no rate for JPY") && why.reason.contains("10089"), "{why}");
+    let refused = quoted_class_facts(
+        &SymbolPropertiesCacheKeyed::<SymbolPropertiesKeyedSpecIbkr>::default(),
+        "CL.NYMEX.USD.FUT.20261120",
+        "USD",
+        || Err(IbkrPropertiesError::Refused(settles_by_delivery())),
+        |_| Ok(own_currency()),
+        || None,
+    )
+    .expect_err("refused");
+    assert_eq!(refused, verdict(settles_by_delivery().carried()));
+}

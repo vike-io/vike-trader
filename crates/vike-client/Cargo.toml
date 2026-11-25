@@ -1,0 +1,80 @@
+[package]
+name = "vike-client"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — what the two command-line programs share over the hub clients: the node-write verb vocabulary, the hub keyrings and the fold of a booted process into what a verb reads. No program of its own: each program keeps its own boot call and its own argv. Light, DataFusion-free, transport-free and runtime-free, like the programs it serves."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `engine` — one hop
+# over the domain-stacked band: a crate composed over the hub clients at 25. The two programs on top of
+# it sit at 35 (the owner's ruling of 2026-11-06), so equal rank refuses an edge between them.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 30
+
+[features]
+# **The Rhai host's indicators** (`src/indicators.rs`, the built-in rows both programs list, and
+# `resolved::install_user_indicators`, the user's own loaded at startup): the Rhai engine, `vike-indicators`
+# and `vike-tactics` under it. OFF by default: `vike-cli` and `vike-mcp` turn it on, so `vike-telegram` (the
+# production control channel), `vike-tradehub` and the desktop link no script engine through this crate.
+indicators = ["dep:vike-rhai", "dep:vike-indicators"]
+
+[dependencies]
+# The node's wire types the verb vocabulary builds. The LIGHT wire crate: std + hmac/sha2 + the framing.
+vike-tradehub-client = { path = "../vike-tradehub-client" }
+# What the datahub says of the gatewayhub, the one way to ask with the tradehub down (`src/health.rs`).
+# Already in `vike-cli`'s graph. ⚠ Never `vike-gatewayhub-client`: decision 0253.
+vike-datahub-client = { path = "../vike-datahub-client" }
+# The hub-protocol substrate a keyring's scope is named in. It names no vike-* crate.
+vike-hub-protocol = { path = "../vike-hub-protocol" }
+# `OrderType`, `OrderClientIdGenerator`, `is_valid_crypto_order_client_id`. Already in `vike-cli`'s graph.
+vike-model = { path = "../vike-model" }
+# The formula floor (decision 0294): `links.rs`'s session-life medians are `vike_math::statistics::median`.
+vike-math = { path = "../vike-math" }
+# `number_text::format_number`, the one text form of an engine number. No feature, and already in this crate's graph
+# through `vike-model`.
+vike-utility = { path = "../vike-utility" }
+# `split_perp`: which engine the door addresses a default account's order to (`src/addressed.rs`).
+# Already in `vike-cli`'s and `vike-mcp`'s graphs.
+vike-catalog = { path = "../vike-catalog" }
+serde_json = { workspace = true }   # a mount's `params`, the MCP preview's payloads, the indicator rows
+toml = { workspace = true }         # `profile.rs`'s reach into a profile's `[strategy.params]`
+# The indicator rows: the host-bound names joined onto their registry metadata. Pure Rust, both already
+# in `vike-cli`'s graph. INDICATORS-ONLY (`indicators`).
+vike-rhai = { path = "../vike-rhai", optional = true }
+vike-indicators = { path = "../vike-indicators", optional = true }
+# The fold of a booted process: `Booted` and the settings it carries, the store handle the device-key
+# read goes through, and the sibling directory of the one the boot resolved. The boot CALL
+# stays in each program (`crates/vike-boot/tests/one_owner.rs`). Every one is already in `vike-cli`'s graph.
+vike-boot = { path = "../vike-boot" }
+vike-config = { path = "../vike-config" }
+# The record of a settings row's write (`src/settings_row.rs`), the one rule `vike-cli` and the desktop's
+# Server group journal a connect's dial rows by. Layer 12, already in every graph through `vike-secrets`.
+vike-change-journal = { path = "../vike-change-journal" }
+vike-secrets = { path = "../vike-secrets" }
+vike-venues = { path = "../vike-venues" }
+vike-paths = { path = "../vike-paths" }
+# The LIVE ACCOUNT REPORT (`src/account_report.rs`), the one fold `vike-cli report account:` and the MCP tool
+# `report` answer from: the fold and its document (`vike-analytics`, layer 15, pure, no engine and no store), the
+# store trait its fills and bars are read through (`vike-data`, default features: the trait only, already here
+# through `vike-datahub-client`) and the bar type (`vike-marketdata`, layer 5, serde only). Every one is already
+# in `vike-cli`'s and `vike-mcp`'s graphs, so neither program gains a package.
+vike-analytics = { path = "../vike-analytics" }
+vike-data = { path = "../vike-data" }
+vike-marketdata = { path = "../vike-marketdata" }
+# A guest's invitation carries its one-time ssh key as standard base64 (`attach::invitation`, decision
+# 0288): the workspace's one base64 crate, already in the lockfile, so no new package.
+base64 = { workspace = true }
+
+[dev-dependencies]
+# `attach`'s tests: scratch directories, and `plant_settings_rows` for a store to hold a device key.
+tempfile = { workspace = true }
+vike-secrets = { path = "../vike-secrets", features = ["test-support"] }
+# The account report's tests: the in-memory store and the bar builders.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

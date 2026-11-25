@@ -1,0 +1,2 @@
+{"ExecutionSeries":{"series":[],"venues":{}}}
+{"ExecutionSeries":{"series":[[{"kind":"exec_fill","venue":"binance","symbol":"BTCUSDT","interval":null,"group":null,"source":null},{"first_timestamp":1794124800500,"last_timestamp":1794729500000,"rows":12,"bytes":4096,"parts":2,"dates":2}],[{"kind":"exec_order","venue":"binance","symbol":"BTCUSDT","interval":null,"group":null,"source":null},{"first_timestamp":1794124800400,"last_timestamp":1794729500000,"rows":30,"bytes":8192,"parts":2,"dates":2}]],"venues":{"binance":["BTCUSDT","ETHUSDT"],"okx":["BTC-USDT"]}}}

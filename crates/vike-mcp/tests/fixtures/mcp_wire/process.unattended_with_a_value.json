@@ -1,0 +1,22 @@
+{
+  "argv": [
+    "--unattended=false"
+  ],
+  "case": "process.unattended_with_a_value",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 2,
+  "stderr": {
+    "<lines>": [
+      "<program>: unexpected value 'false' for '--unattended' found; no more were expected",
+      "",
+      "Usage: <program> --unattended",
+      "",
+      "For more information, try '--help'.",
+      ""
+    ]
+  },
+  "stdout": "",
+  "what": "one command line, stdin closed: stdout, stderr, exit"
+}

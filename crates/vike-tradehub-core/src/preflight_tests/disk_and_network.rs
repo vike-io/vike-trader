@@ -1,0 +1,192 @@
+//! (c) The disk-headroom leg and (d) the network leg, read through the probe's [`NetReading`].
+
+use super::*;
+
+// ---- (c) disk headroom ----------------------------------------------------------------------
+
+#[test]
+fn ample_free_space_passes() {
+    let config = PreflightConfig::default();
+    let r = check_disk_headroom("journal", Path::new("/j"), &config, &healthy());
+    assert_eq!(r.status, PreflightCheckStatus::Pass, "at the warn floor exactly, still ample");
+    assert_eq!(r.venue, None, "disk is a GLOBAL check, not a per-venue one");
+    assert_eq!(r.name, CHECK_DISK);
+    assert!(r.message.contains("journal"), "{}", r.message);
+}
+
+/// The sizes in the message are `vike_utility::bytes::iec_bytes`'s IEC text (`KiB`/`MiB`/`GiB`/`TiB`),
+/// the units the OS tools an operator cross-checks print. The formatter's own goldens are
+/// `crates/vike-utility/src/bytes_tests.rs`'s; this pins that the check still speaks it.
+#[test]
+fn the_disk_message_prints_iec_units() {
+    let config = PreflightConfig::default();
+    let free: u64 = 2 * 1024 * 1024 * 1024;
+    let probes = PreflightFnProbes::new().with_free_space_bytes(move |_: &Path| Ok(free));
+    let r = check_disk_headroom("journal", Path::new("/j"), &config, &probes);
+    assert!(r.message.ends_with("2.0 GiB free (warn 5.0 GiB, fail 1.0 GiB)"), "{}", r.message);
+}
+
+#[test]
+fn free_space_below_the_warn_floor_warns() {
+    let config = PreflightConfig::default();
+    assert_eq!(disk_status(DEFAULT_DISK_WARN_BYTES - 1, &config), PreflightCheckStatus::Warn);
+}
+
+#[test]
+fn free_space_below_the_fail_floor_fails() {
+    let config = PreflightConfig::default();
+    assert_eq!(disk_status(DEFAULT_DISK_FAIL_BYTES - 1, &config), PreflightCheckStatus::Fail);
+    assert_eq!(disk_status(0, &config), PreflightCheckStatus::Fail);
+}
+
+#[test]
+fn disk_floors_are_configurable() {
+    let config = PreflightConfig {
+        disk_warn_bytes: 2_000,
+        disk_fail_bytes: 1_000,
+        ..PreflightConfig::default()
+    };
+    assert_eq!(disk_status(5_000, &config), PreflightCheckStatus::Pass);
+    assert_eq!(disk_status(1_500, &config), PreflightCheckStatus::Warn);
+    assert_eq!(disk_status(500, &config), PreflightCheckStatus::Fail);
+}
+
+/// Each row sets ITS floor in MiB and leaves the other at the compiled default, and the largest
+/// figure the loader accepts (and `u32::MAX`, which it never does) converts without overflow.
+#[test]
+fn the_disk_rows_set_each_floor_alone_and_never_overflow() {
+    const MIB: u64 = 1024 * 1024;
+    let compiled = PreflightDiskThresholds::default();
+    let warn_only = PreflightDiskThresholds::from_rows(Some(8_192), None);
+    assert_eq!((warn_only.warn_bytes, warn_only.fail_bytes), (8_192 * MIB, compiled.fail_bytes));
+    let fail_only = PreflightDiskThresholds::from_rows(None, Some(512));
+    assert_eq!((fail_only.warn_bytes, fail_only.fail_bytes), (compiled.warn_bytes, 512 * MIB));
+
+    let max = vike_config::config::MAX_PREFLIGHT_DISK_MIB;
+    assert_eq!(
+        PreflightDiskThresholds::from_rows(Some(max), None).warn_bytes,
+        u64::from(max) * MIB
+    );
+    assert_eq!(
+        PreflightDiskThresholds::from_rows(Some(u32::MAX), None).warn_bytes,
+        u64::from(u32::MAX) * MIB
+    );
+}
+
+/// **The floors drive the leg**: a pair built from the rows, handed to the check through
+/// `PreflightConfig`, moves the PASS/WARN/FAIL lines exactly where the rows say.
+#[test]
+fn row_floors_move_the_disk_verdict() {
+    const MIB: u64 = 1024 * 1024;
+    let floors = PreflightDiskThresholds::from_rows(Some(200), Some(100));
+    let config = PreflightConfig {
+        disk_warn_bytes: floors.warn_bytes,
+        disk_fail_bytes: floors.fail_bytes,
+        ..PreflightConfig::default()
+    };
+    assert_eq!(disk_status(200 * MIB, &config), PreflightCheckStatus::Pass);
+    assert_eq!(disk_status(200 * MIB - 1, &config), PreflightCheckStatus::Warn);
+    assert_eq!(disk_status(100 * MIB, &config), PreflightCheckStatus::Warn);
+    assert_eq!(disk_status(100 * MIB - 1, &config), PreflightCheckStatus::Fail);
+    // …where the compiled floors would have called the same figure ample or doomed.
+    let compiled = PreflightConfig::default();
+    assert_eq!(disk_status(DEFAULT_DISK_WARN_BYTES, &compiled), PreflightCheckStatus::Pass);
+    assert_eq!(disk_status(150 * MIB, &compiled), PreflightCheckStatus::Fail);
+}
+
+/// An unqueryable directory warns — a preflight must not ground the app on its own inability
+/// to measure.
+#[test]
+fn unqueryable_free_space_warns() {
+    let config = PreflightConfig::default();
+    let probes = PreflightFnProbes::new().with_free_space_bytes(disk_unqueryable);
+    let r = check_disk_headroom("journal", Path::new("/nope"), &config, &probes);
+    assert_eq!(r.status, PreflightCheckStatus::Warn);
+    assert!(r.message.contains("no such directory"));
+}
+
+/// Every configured dir is checked, and the configured path reaches the probe.
+#[test]
+fn every_configured_dir_is_checked() {
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    let probes = healthy().with_free_space_bytes(move |p: &Path| {
+        sink.lock().unwrap().push(p.display().to_string());
+        Ok(DEFAULT_DISK_WARN_BYTES)
+    });
+    let dirs = vec![
+        ("journal".to_string(), PathBuf::from("/data/journal")),
+        ("hist".to_string(), PathBuf::from("/market_data/hist")),
+    ];
+    let config = PreflightConfig { dirs, ..PreflightConfig::default() };
+    let report = run_preflight(&config, &probes, None);
+    assert_eq!(seen.lock().unwrap().len(), 2);
+    let disk_checks = report.checks.iter().filter(|c| c.name == CHECK_DISK).count();
+    assert_eq!(disk_checks, 2, "one disk check per configured dir");
+}
+
+// ---- (d) network: the EXISTING NetProbe, read through its handle ----------------------------
+
+#[test]
+fn no_net_probe_wired_warns() {
+    let r = check_network(None, true);
+    assert_eq!(r.status, PreflightCheckStatus::Warn);
+    assert_eq!(r.venue, None);
+    assert_eq!(r.name, CHECK_NETWORK);
+}
+
+/// A run with NO venue to check is a paper run: no order will be placed, so connectivity is NOT
+/// APPLICABLE. It used to WARN on every credential-free start (developer-addressed text, the
+/// fires-forever-on-a-healthy-box shape the clock table was built to remove).
+#[test]
+fn a_run_with_no_venue_to_check_does_not_warn_about_a_missing_net_probe() {
+    let report = run_preflight(&PreflightConfig::default(), &healthy(), None);
+    let net: Vec<&PreflightCheckReport> =
+        report.checks.iter().filter(|c| c.name == CHECK_NETWORK).collect();
+    assert_eq!(net.len(), 1, "the row is still PRESENT, never vanished");
+    assert_eq!(net[0].status, PreflightCheckStatus::NotApplicable, "{}", net[0].message);
+    assert!(report.go());
+}
+
+/// …but a checked venue means a live mount is in play, so unknown liveness still WARNs.
+#[test]
+fn a_missing_net_probe_still_warns_when_a_venue_is_being_checked() {
+    let config =
+        PreflightConfig { clock_venues: vec!["binance".to_string()], ..Default::default() };
+    let report = run_preflight(&config, &healthy(), None);
+    let net = report.checks.iter().find(|c| c.name == CHECK_NETWORK).expect("a network row");
+    assert_eq!(net.status, PreflightCheckStatus::Warn, "{}", net.message);
+}
+
+/// An unprobed handle's optimistic `internet_up() == true` is NOT a measurement: warn, not pass.
+/// (That the venue half reads such a handle as `Unknown` is
+/// `crates/vike-gatewayhub/src/trade/adapters/startup_tests/bounds_and_clock.rs`'s `an_unprobed_net_probe_reads_unknown`.)
+#[test]
+fn an_unprobed_net_reading_warns_rather_than_passes() {
+    let r = check_network(Some(&NetReading::Unknown), true);
+    assert_eq!(r.status, PreflightCheckStatus::Warn);
+    assert_eq!(r.message, "NetProbe has not completed a round yet");
+}
+
+#[test]
+fn a_measured_up_net_probe_passes() {
+    let r = check_network(Some(&net_reading(true)), true);
+    assert_eq!(r.status, PreflightCheckStatus::Pass);
+    assert_eq!(r.message, "internet up after 1 probe round(s)");
+    assert!(r.remediation.is_empty());
+}
+
+/// An up reading that carries no round count (an older gatewayhub's) still passes, and prints no number.
+#[test]
+fn an_up_reading_without_a_round_count_passes_and_names_no_count() {
+    let r = check_network(Some(&NetReading::Alive { rounds: None }), true);
+    assert_eq!(r.status, PreflightCheckStatus::Pass);
+    assert_eq!(r.message, "internet up (the gatewayhub did not say after how many probe rounds)");
+}
+
+#[test]
+fn a_measured_down_net_probe_fails_globally() {
+    let r = check_network(Some(&net_reading(false)), true);
+    assert_eq!(r.status, PreflightCheckStatus::Fail);
+    assert_eq!(r.venue, None, "network is global, so it flips the go bit");
+}

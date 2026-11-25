@@ -1,0 +1,162 @@
+//! `daemon` — vike-tradehub's plain integration suites (mounts, observe roundtrips, lifecycle,
+//! policy ceiling, wiring pins): ONE test binary (it began as eleven members; the `#[path]` rows below are the count).
+//!
+//! Grouped per the rule in `crates/vike-backtest/CLAUDE.md`'s "Test-binary consolidation" section:
+//! each former `tests/<name>.rs` is now `tests/daemon/<name>.rs`, included below as a plain
+//! module. Test names and bodies are unchanged — only the binary they link into
+//! (`--test policy_ceiling_e2e` is now `--test daemon`; `-- <name>` filtering is untouched).
+//!
+//! NOT here, on purpose — every exclusion below is an eligibility verdict, not an oversight:
+//! `sigterm_stop.rs` is crate-level `#![cfg(unix)]` — a member may only carry a crate-level gate
+//! every member shares, so it stays out of this binary (`sigterm_stop.rs` is a member of the
+//! `daemon_spawn` helper group since 2026-10-31, `tests/daemon_spawn.rs` says why). `control_roundtrip.rs` is a THIRD kind of
+//! exclusion the survey's `env::set_var`/`set_current_dir` grep cannot see: its own
+//! `audit_capture` module installs the process-wide `tracing` default subscriber
+//! (`tracing::subscriber::set_global_default`) and its doc comment says outright that this
+//! requires winning "the one-global-subscriber race to another test's initializer" — a bet that
+//! is only safe when every OTHER test in the same process stays out of that race. Half the files
+//! grouped here call `vike_log::test_init()`, which installs its own (different) global default
+//! subscriber the same way; under a plain `cargo test -p vike-tradehub --test daemon` (all
+//! members as THREADS in one process — the exact mode this file exists to support) whichever
+//! subscriber installs first wins process-wide, so `control_roundtrip.rs`'s two audit-content
+//! assertions (`a_command_rationale_reaches_the_audit_record_sanitized`,
+//! `remote_control_handle_carries_a_reason_and_the_bare_call_carries_none`) failed 3/3 reruns once
+//! grouped alongside them — reproducible, not a load flake (`nextest`, which runs every test in
+//! its own process, never saw it: the race can only manifest when two files' tests share a
+//! process). `control_roundtrip.rs` therefore stays its OWN standalone binary, uncontested —
+//! and `settings_write_audit.rs` (REQ-7's old→new audit assertions) is that same verdict a
+//! second time: it installs its own capture subscriber, so it stays standalone too. Every
+//! member actually below is plain — no crate-level `#![cfg]`, no `#[ignore]` (but the live
+//! `deribit_combo_smoke`, which the rule admits since 2026-10-31: it runs only when asked), no proptest
+//! sidecar, and no process-global mutation of ANY kind (env, cwd, or the tracing default
+//! subscriber) — because nextest runs each test in its own process, but the feature lanes and a
+//! plain `cargo test -p vike-tradehub` run one binary's tests as THREADS in one process.
+//!
+//! ⚠ **The enumeration above claimed to be exhaustive and was not** — a claim of that shape is
+//! only worth what its last edit was worth, and `ls crates/vike-tradehub/tests/*.rs` is the check.
+//! Two more standalone binaries exist. `venue_feed_splice_smoke.rs` is an ordinary eligibility
+//! verdict: its live half is `#[ignore]`d, which the rule excludes outright (it is a member of the
+//! `daemon_spawn` helper group since 2026-10-31).
+//! `settings_write_journal.rs` was NOT a verdict and stayed unclassified — it installs no
+//! subscriber, carries no crate-level gate and no `#[ignore]` — until 2026-10-31, when it became a
+//! member (below).
+//!
+//! The tests that drive the REAL bridges' arming, preflight probes and adapter start left with the
+//! venue half: `mount_roster` and the rest of that family are `crates/vike-gatewayhub/tests/trade_roster/main.rs`'s
+//! members (decision 0164). This crate has no venue features left to gate a test on.
+//!
+//! **Joined 2026-10-31** (owner: fewer test binaries, so fewer links), each plain by the rule above
+//! once its feature gate was deleted: the six roster-driven tests still here (`account_fanout`,
+//! `assemble_runtime_paper`, `live_lock_armed_set`, `risk_profile_wiring`,
+//! `unaddressable_account_warning`, `venue_adapter_journal`, which reach this root's `local_backend`
+//! as `crate::local_backend`), `capability_projection_gate`, `settings_write_journal` and
+//! `starting_door` (whose `include_str!` of `src/tradehub_cli.rs` gained one `..`). Then
+//! `feed_straddle_warning`, once its GLOBAL collector became `vike_log::capture::captured` around each
+//! plan build (the warning is said on the test's own thread): with it here, this binary is
+//! `local_backend.rs`'s one user, so that helper left the lib for `daemon/local_backend.rs`.
+//!
+//! `daemon/audit_reaches_disk.rs` was briefly standalone too and is a member now: its subject is
+//! the FILE-LAYER directive of a CHILD PROCESS, which no in-process subscriber can reach — see
+//! that file's own doc for why the reason it was written with does not hold.
+//!
+//! `daemon/support.rs` and `daemon/local_backend.rs` are no members: they hold the helpers the
+//! members share (one copy each, where they used to carry their own), and hold no test.
+
+// `#[path]` because this file is a test-target CRATE ROOT: a bare `mod alerts_mount;` would
+// resolve against `tests/` (the root's own directory), not `tests/daemon/`.
+
+// The in-process backend the roster tests drive the fold through (wave 2, W9a). This binary is its one
+// user, so it lives here rather than in the lib: an edit to it rebuilds `daemon` alone. Members use
+// different parts, hence the one `allow`.
+#[allow(dead_code, clippy::allow_attributes)]
+#[path = "daemon/local_backend.rs"]
+mod local_backend;
+
+// The strategy FILES the members mount (no strategy is compiled into the daemon): the lib's own
+// unit-test copy, one file for both. Members use different files, hence the one `allow`.
+#[allow(dead_code, clippy::allow_attributes)]
+#[path = "../src/test_strategy_files.rs"]
+mod strategy_files;
+
+#[path = "daemon/access_register.rs"]
+mod access_register;
+#[path = "daemon/account_badge_wiring_pin.rs"]
+mod account_badge_wiring_pin;
+#[path = "daemon/account_fanout.rs"]
+mod account_fanout;
+#[path = "daemon/alerts_mount.rs"]
+mod alerts_mount;
+#[path = "daemon/any_strategy_mount.rs"]
+mod any_strategy_mount;
+#[path = "daemon/assemble_runtime_paper.rs"]
+mod assemble_runtime_paper;
+#[path = "daemon/audit_reaches_disk.rs"]
+mod audit_reaches_disk;
+#[path = "daemon/capability_projection_gate.rs"]
+mod capability_projection_gate;
+#[path = "daemon/cex_feed_wiring_pin.rs"]
+mod cex_feed_wiring_pin;
+#[path = "daemon/deribit_combo_smoke.rs"]
+mod deribit_combo_smoke;
+#[path = "daemon/directory.rs"]
+mod directory;
+#[path = "daemon/execution_stream.rs"]
+mod execution_stream;
+#[path = "daemon/execution_stream_crash.rs"]
+mod execution_stream_crash;
+#[path = "daemon/execution_stream_datahub_down.rs"]
+mod execution_stream_datahub_down;
+#[path = "daemon/execution_stream_real_sink.rs"]
+mod execution_stream_real_sink;
+#[path = "daemon/feed_network_table.rs"]
+mod feed_network_table;
+#[path = "daemon/feed_straddle_warning.rs"]
+mod feed_straddle_warning;
+#[path = "daemon/headless_lifecycle.rs"]
+mod headless_lifecycle;
+#[path = "daemon/help_and_log_dir.rs"]
+mod help_and_log_dir;
+#[path = "daemon/live_gate_paper.rs"]
+mod live_gate_paper;
+#[path = "daemon/live_lock_armed_set.rs"]
+mod live_lock_armed_set;
+#[path = "daemon/live_params_overlay.rs"]
+mod live_params_overlay;
+#[path = "daemon/mount_resurrect.rs"]
+mod mount_resurrect;
+#[path = "daemon/mount_tick_lane_pin.rs"]
+mod mount_tick_lane_pin;
+#[path = "daemon/multi_mount_profile.rs"]
+mod multi_mount_profile;
+#[path = "daemon/observe_roundtrip.rs"]
+mod observe_roundtrip;
+#[path = "daemon/policy_ceiling_e2e.rs"]
+mod policy_ceiling_e2e;
+#[path = "daemon/profile_rows.rs"]
+mod profile_rows;
+#[path = "daemon/rhai_mount.rs"]
+mod rhai_mount;
+#[path = "daemon/risk_profile_wiring.rs"]
+mod risk_profile_wiring;
+#[path = "daemon/run_profile_risk_wiring.rs"]
+mod run_profile_risk_wiring;
+#[path = "daemon/settings_hot_reload.rs"]
+mod settings_hot_reload;
+#[path = "daemon/settings_show.rs"]
+mod settings_show;
+#[path = "daemon/settings_write.rs"]
+mod settings_write;
+#[path = "daemon/settings_write_journal.rs"]
+mod settings_write_journal;
+#[path = "daemon/starting_door.rs"]
+mod starting_door;
+#[path = "daemon/support.rs"]
+mod support;
+#[path = "daemon/unaddressable_account_warning.rs"]
+mod unaddressable_account_warning;
+#[path = "daemon/venue_adapter_journal.rs"]
+mod venue_adapter_journal;
+#[path = "daemon/venue_read.rs"]
+mod venue_read;
+#[path = "daemon/venue_routing.rs"]
+mod venue_routing;

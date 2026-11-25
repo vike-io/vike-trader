@@ -1,0 +1,127 @@
+//! The bar, tick and calendar builders this crate's test binaries share, compiled ONCE here instead of
+//! once per binary that `#[path]`-included a `tests/common/` copy (today the `integration` binary,
+//! `controller_harness` and `r7_gate`), plus the unified benchmark schedule ([`target_at`]) and the
+//! four simulator test fixtures ([`fixtures`]). Behind
+//! `test-support`, which only dev edges turn on (this crate's own self dev-dependency, and vike-backtest's
+//! for its `engines` bench), so a default build compiles none of it; the `vike_marketdata::test_support` model.
+//!
+//! These are NOT `vike_marketdata::test_support`'s `quote`/`trade`: those pin both sizes to `1.0`
+//! and an empty symbol, these take the symbol and the sizes, and wrap the tick in this crate's
+//! [`crate::TickEvent`]. A member reaches one as `vike_simulator::test_support::quote`.
+
+use vike_marketdata::{Bar, TickQuote, TickTrade};
+use vike_utility::calendar::days_from_civil;
+
+use crate::TickEvent;
+
+// The four simulator test fixtures (`impl Strategy<OrderBrokerSimulator>`): no profile can name one.
+pub mod fixtures;
+
+/// One OHLC bar at `ts` (ms) with an explicit `volume`; no funding, no quote, no symbol stamp.
+pub fn bar(ts: i64, open: f64, high: f64, low: f64, close: f64, volume: f64) -> Bar {
+    Bar {
+        timestamp: ts,
+        open,
+        high,
+        low,
+        close,
+        volume,
+        funding: None,
+        bid: None,
+        ask: None,
+        symbol: None,
+    }
+}
+
+/// `n` flat one-minute [`bar`]s at `px` — the first at minute 1 (60 000 ms) — each trading `volume`.
+pub fn flat_minute_bars(n: usize, px: f64, volume: f64) -> Vec<Bar> {
+    (0..n).map(|i| bar(60_000 * (i as i64 + 1), px, px, px, px, volume)).collect()
+}
+
+/// Epoch-ms for a UTC instant, via the workspace's one civil-calendar math (`vike_utility::calendar`).
+pub fn ms(y: i64, mo: u32, d: u32, h: i64) -> i64 {
+    days_from_civil(y, mo, d) * vike_model::MS_PER_DAY + h * vike_model::MS_PER_HOUR
+}
+
+/// One L1 quote for `symbol` at `ts` (ms), with no local receive time (`local_timestamp: 0`).
+pub fn quote(symbol: &str, ts: i64, bid: f64, ask: f64, bid_size: f64, ask_size: f64) -> TickEvent {
+    TickEvent::Quote(TickQuote {
+        timestamp: ts,
+        local_timestamp: 0,
+        bid,
+        ask,
+        bid_size,
+        ask_size,
+        symbol: symbol.into(),
+    })
+}
+
+/// One trade print for `symbol` at `ts` (ms): a taker BUY (`is_buyer_maker: false`), no local
+/// receive time (`local_timestamp: 0`).
+pub fn trade(symbol: &str, ts: i64, price: f64, size: f64) -> TickEvent {
+    TickEvent::Trade(TickTrade {
+        timestamp: ts,
+        local_timestamp: 0,
+        price,
+        size,
+        is_buyer_maker: false,
+        symbol: symbol.into(),
+    })
+}
+
+/// A deterministic bar walk (an LCG: no clock, no `rand`, and `+ - * /` only, so the same series on
+/// every platform): `n` one-minute bars from `ts` 60 000, each stamped with `symbol`. `r7_gate` and
+/// `controller_harness` replay it through both runtimes.
+pub fn gen_bars(n: usize, symbol: Option<&str>) -> Vec<Bar> {
+    let mut state: u64 = 0x9E3779B97F4A7C15;
+    let mut px = 100.0f64;
+    let mut bars = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut r = || {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (state >> 32) as f64 / (1u64 << 32) as f64 * 2.0 - 1.0 // [-1, 1)
+        };
+        let drift = r() * 0.8;
+        let open = px;
+        let close = (px + drift).max(1.0);
+        let high = open.max(close) + r().abs() * 0.3;
+        let low = (open.min(close) - r().abs() * 0.3).max(0.5);
+        bars.push(Bar {
+            timestamp: 60_000 * (i as i64 + 1),
+            open,
+            high,
+            low,
+            close,
+            volume: 10.0 + r().abs() * 5.0,
+            funding: None,
+            bid: None,
+            ask: None,
+            symbol: symbol.map(Into::into),
+        });
+        px = close;
+    }
+    bars
+}
+
+/// The UNIFIED benchmark strategy's schedule — long/flat at [`W_PERCENT`] of equity, entering every
+/// [`W_ON`] bars and closing [`W_OFF`] bars later — which `crates/vike-backtest/benches/engines.rs`
+/// times and `crates/vike-simulator/tests/parity/engine_kernel_parity.rs` holds both kernels equal over (each
+/// carried a copy until 2026-10-31).
+pub const W_ON: usize = 20;
+/// Bars after an entry that the position closes (see [`W_ON`]).
+pub const W_OFF: usize = 10;
+/// The equity fraction an entry targets (see [`W_ON`]).
+pub const W_PERCENT: f64 = 0.5;
+
+/// The target weight at bar `i` under the [`W_ON`] schedule: [`W_PERCENT`] on an entry bar, `0.0` on its
+/// exit bar, `None` (hold) otherwise.
+#[inline]
+pub fn target_at(i: usize) -> Option<f64> {
+    if i.is_multiple_of(W_ON) {
+        Some(W_PERCENT)
+    } else if i % W_ON == W_OFF {
+        Some(0.0)
+    } else {
+        None
+    }
+}

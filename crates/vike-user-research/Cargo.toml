@@ -1,0 +1,177 @@
+[package]
+name = "vike-user-research"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The user-STUDY contract (StudyContext, StudyOutcome, StudyError, the learner and backtest seams) and the two halves a research study FILE runs across: <project>/user_data/research/studies/rust/<name>/<name>.rs is built by the runtime builder, loaded by the one loader and run in the jailed strategy-sandbox process, exactly like a strategy file, with no rebuild of vike. A study file compiles against this crate's PUBLIC API only, so an internals refactor can never break a user study and a study can never freeze framework internals."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier
+# `domain-stacked`: the contract user-authored study FILES compile against (the study file template,
+# `crates/vike-rust-strategy/template/study_Cargo.toml.in`, links this crate and its dependencies).
+#
+# ⚠ This rank is a PERMISSION rather than a position: whatever this crate declares as a normal
+# dependency is exactly what a user's study may `use`, and the layer gate refuses an edge at this
+# rank or above. 25, and the window is narrow at BOTH ends:
+#   * strictly ABOVE 20, where vike-data, the highest crate re-exported to a study, sits
+#     (vike-indicators, vike-ml-prediction and vike-analytics sit at 15, vike-ml-training at 20);
+#   * strictly BELOW the run's minter,
+#     `crates/vike-study-runner/src/study_run.rs`'s `run_study_with` at 45 (35 until it left
+#     `vike-studio-core` on 2026-11-19; the deleted compiled-strategy
+#     host sat at 25 under vike-backtest (30) and vike-tradehub (65) the same way).
+# 25 removes no present capability (the edges already stopped at vike-data); it is a ratchet
+# against widening: `vike-core` here is a red gate, not a reviewer's catch. `vike-bridge-core` and
+# `vike-paper` sit at 25 themselves, where equal rank still refuses them, and the fence that holds
+# all three is `crates/vike-ops/tests/architecture/named_run_closure_gate.rs`, BY NAME anywhere in
+# this crate's transitive normal closure
+# (docs/decisions/0089-the-user-code-fence-is-held-by-name-not-by-rank.md).
+# docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 25
+
+# `cargo shear` cannot see these used: they are the study SURFACE (`crates/vike-rust-strategy/template/study_Cargo.toml.in`
+# mirrors this manifest), named by study FILES that the builder and `tests/pipeline.rs` compile, not by this crate's code.
+[package.metadata.cargo-shear]
+ignored = ["indexmap", "rand_chacha", "vike-analytics", "vike-indicators", "vike-math", "vike-options", "vike-portfolio"]
+ignored-paths = ["tests/fixture_user_data/**"]
+
+[lints]
+workspace = true
+
+[dependencies]
+# ⚠ THIS TABLE IS THE USER-STUDY API SURFACE. A study file resolves `use vike_ml_training::…` against the
+# study file template (`crates/vike-rust-strategy/template/study_Cargo.toml.in`), which names these
+# crates (but `serde`/`rmp-serde`, this crate's own wire), this crate and the byte boundary
+# `vike-rust-strategy`, so adding a crate here AND there (with a root-Cargo.toml rationale) is how
+# a user study gains a dependency; the framework crates never change for it. Every entry is argued; what is deliberately
+# ABSENT is argued in `src/lib.rs`'s "The dependency set" section. ONE template crate is not here and cannot be:
+# `vike-simulator` (a study runs the RL environment's episodes; decision 0291), which this crate, at its layer and
+# under the user-code fence, never names.
+#
+# The shared domain vocabulary: `Bar`, `TickQuote`, `TickTrade`, the scalar helpers.
+vike-model = { path = "../vike-model" }
+# The project's filesystem layout (`vike_paths::state_path`, `store_path`, `scratch`): std-only, layer 7.
+vike-paths = { path = "../vike-paths" }
+# The market-data vocabulary (`Bar`, the tick types, `L2Book`, `L2BookUpdate`, `OptionKind`, ...):
+# spelled `vike_marketdata::X` everywhere -- vike-model names but does not re-export it (0067).
+vike-marketdata = { path = "../vike-marketdata" }
+# `feature::ColumnFeature`, the STUDY↔STRATEGY seam (write the batch kernel, get the per-bar stream
+# by construction, so a live strategy cannot compute a different number than the model trained on),
+# over `vike-math`'s rolling kernels (`vike_math::rolling`, above all `per_group`, which never walks across
+# an instrument boundary in a stacked panel). Feature-free.
+vike-indicators = { path = "../vike-indicators" }
+# The PURE-RUST prediction half (`Predictor`, `infer`/`parse_model_text`, `importance_from_model_text`,
+# `FitImportance`). Feature-free; names no vike crate.
+vike-ml-prediction = { path = "../vike-ml-prediction" }
+# The learner seam (`Learner`/`TrainData`/`GridPoint`/`Capture`). Feature-free; names only
+# vike-ml-prediction, and NOTHING here needs a LightGBM binary at BUILD time.
+vike-ml-training = { path = "../vike-ml-training" }
+# What a study exists to produce: `signal`/`signal_backtest`, `stats` (block bootstrap, Newey-West,
+# two-sided p) and `validation` (the purged walk-forward fold splitters). Feature-free.
+vike-analytics = { path = "../vike-analytics" }
+# Retrieval over the stored texts (the book's W17): the ONE chunking rule the stored embeddings were
+# cut by (so a study pairs a vector with its words), BM25 + cosine rankings fused by reciprocal rank
+# fusion, point-in-time on the received time, and context assembly with citations. Pure (no network,
+# process or file: it runs in the jail as it runs anywhere), layer 15, names only vike-model and libm,
+# both already here.
+vike-rag = { path = "../vike-rag" }
+# The hist store, the TRAIT ONLY (`HistoryStore`, `TimestampRange`, `HistoryStoreError`, the row types); the engine
+# is the separate crate `vike-store`, deliberately NOT depended on. That makes ADR 0029
+# structural: a study can NAME the store seam but never CONSTRUCT one, so the only store it touches
+# is the one its caller handed it.
+vike-data = { path = "../vike-data" }
+# The trade-tape microstructure (decision 0089's 2026-11-16 addendum, book W23/W30): the tick,
+# volume and dollar bars, López de Prado's imbalance and runs bars, all routed by
+# `vike_marketdata::aggressor`; a study builds VPIN and BVC-VPIN on its `VolumeBarBuilder`. Pure: it
+# names only `vike-marketdata`, `libm` and the `tracing` facade (no file, socket or process).
+# Consumer: the `microstructure` fixture study.
+vike-orderflow = { path = "../vike-orderflow" }
+# The formula floor (decision 0294): every formula a study computes with: `distributions::normal_cdf`, the
+# one standard-normal CDF (BVC's `Φ(ΔP / σ)`, book W23/W30), the one dense linear algebra (`linear_algebra`:
+# the `Matrix` every covariance argument of `vike-portfolio` takes, Cholesky, the symmetric
+# eigen-decomposition, covariance and correlation matrices, book W31), the stationarity tests and the rolling
+# kernels. Layer 2, `libm` only, no `vike-*` dependency, reads no file, clock or environment; on the strategy
+# file surface too. No study names a non-math helper, so `vike-utility` is not on this surface (decision 0284's
+# addendum of 2026-11-17).
+vike-math = { path = "../vike-math" }
+# Portfolio construction and bet sizing (book W31): mean-variance, risk parity, Hierarchical Risk Parity,
+# denoising, Nested Clustered Optimisation, Kelly, the bet size of a probability, eigenportfolios, the
+# position sizers. Pure maths on `vike-math` and `vike-model` (both already here); the same crate a
+# strategy file names, so a study and a strategy weigh alike
+# (`docs/decisions/0089-the-user-code-fence-is-held-by-name-not-by-rank.md`'s addendum of 2026-11-16).
+vike-portfolio = { path = "../vike-portfolio" }
+# The option maths (`implied_vol`, `black_scholes_greeks`, `atm_iv`, `Basket`), so a study reading a stored
+# chain (`StudyContext::chain_as_of`) prices, inverts and greeks a leg with the ONE Black-Scholes the
+# platform has, never a second copy (`crates/vike-user-research/tests/fixture_user_data/research/studies/rust/covered_call/`).
+# Layer 15; pure (libm, chrono, and vike-marketdata/vike-model/vike-math, all already in this closure).
+vike-options = { path = "../vike-options" }
+# Arbitrage and relative value (book chapters 37 and 38): the Engle-Granger and Johansen cointegration tests, the
+# pair screen and PCA-residual spreads, a spread's signals (through the one z-score and half-life of `vike-indicators`)
+# with the feature rows of a model of its reversion, the spot-perpetual basis and funding carry, and the
+# prediction-market outcome-set lock. Pure maths over `vike-math`, `vike-marketdata`, `vike-model`,
+# `vike-indicators` and `vike-portfolio`, all five already named here; layer 20, below this crate's 25. The same crate
+# a strategy file names, so a study and a live pairs or funding-carry strategy compute alike
+# (`docs/decisions/0089-the-user-code-fence-is-held-by-name-not-by-rank.md`'s addendum of 2026-11-17).
+vike-arbitrage = { path = "../vike-arbitrage" }
+# The fill cost a study calibrates: the market-impact model and its fit (`vike_fills::market_impact`:
+# `calibrate_impact`, `window_stats_before`, `unit_impact_terms`; owner 2026-11-18), read exactly as the engine
+# charges it. Pure, layer 20 (it names `vike-model`, `vike-marketdata` and `vike-math`, all already here). A
+# normal edge since 2026-11-19 (decision 0291's amendment): it was template-only while the desktop linked this
+# crate and `THIN_CLIENT_FENCE` kept `vike-fills` out of the desktop, and the desktop links neither since studies
+# run only on the server.
+vike-fills = { path = "../vike-fills" }
+# The `params: &toml::Value` recipe every entry function reads (the strategy tier's convention).
+toml = { workspace = true }
+# The study FILE's messages (`src/file.rs`): both halves of a study run, the study's and its host's,
+# speak one spelling, MSGPACK, because a JSON number cannot carry a `NaN` metric or a non-finite price.
+# Both are already in a study's closure (`vike-data` and `vike-marketdata` derive serde); the study
+# file template does not name them, so a study file does not `use` them.
+serde = { workspace = true }
+rmp-serde = { workspace = true }
+#
+# ---------------------------------------------------------------------------------------------
+# The three below arrived TOGETHER for the cohort study (now in gitignored
+# `user_data/research/studies/rust/cohort/`), meeting the condition `src/lib.rs` once set for rayon:
+# arrive "when a real study measures that it needs it".
+# ⚠ Two are CORRECTNESS and one is SPEED: never defend a performance dependency with a determinism
+# argument.
+#
+# CORRECTNESS. An insertion-ordered map wherever order decides f64 sum order (the root Cargo.toml's
+# pin); std ships none, so without it every bit-reproducible study hand-rolls one. Consumer: the
+# cohort study's `run.rs` (`RunResult::per_token`).
+indexmap = { workspace = true }
+# CORRECTNESS. `--search tpe` promises "same seed, same winner", which needs a PORTABLE stream:
+# ChaCha8 is byte-stable across the measured versions (the study's `search.rs` records
+# 0.9.0/0.10.0), while `rand`'s default generator may change. Without it the sampled search cannot
+# be ported.
+rand_chacha = { workspace = true }
+# SPEED, and only that: a grid is 243 independent fits per fold, hours serially. It changes NOTHING
+# a study computes (scores are collected and argmin'd deterministically; rayon and serial agree bit
+# for bit). ⚠ Two costs: (1) TIER-ASYMMETRIC — the Rhai tier cannot express it (accepted in
+# `src/lib.rs`); (2) it is rayon's GLOBAL pool, unlike `vike-backtest`'s sweep and
+# `vike-backfill`'s archive, so a study wanting isolation builds its own `ThreadPool`.
+rayon = { workspace = true }
+
+[dev-dependencies]
+# The shared doubles that prove the FULL pipeline with no LightGBM binary and no DataFusion (every
+# CI runner, every Windows box). One feature each, so neither reaches a normal build; both ride the
+# DEFAULT roster lane through this edge (resolver-2), so no `scripts/ci_feature_suite.sh` arm.
+vike-data = { path = "../vike-data", features = ["test-support"] } # HistoryStoreMemory
+vike-ml-training = { path = "../vike-ml-training", features = ["test-support"] } # ScriptedLearner
+# The STUDY↔STRATEGY parity harness (`assert_feature_parity`): a library module so the external
+# study repo can reach it; the fixture study's own `ColumnFeature` is pushed through it here.
+vike-indicators = { path = "../vike-indicators", features = ["test-support"] }
+# `vike_marketdata::test_support`: the shared bar/tick builders. A DEV edge only; the normal edge
+# above already exists, so no lockfile entry.
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+# The `rl_episode` fixture study names `vike_simulator::RlEnvironment`, as the study file template lets
+# a study do (decision 0291). A DEV edge only, for compiling that fixture here: this crate's NORMAL
+# closure stays off the simulator (`USER_STRATEGY_SIMULATOR_FENCE`).
+vike-simulator = { path = "../vike-simulator" }
+# The `exp` of the `funding_carry` and `pairs_reversion` fixture markets' log prices (their `#[cfg(test)]`
+# `fixture_store.rs`; decision 0032). A DEV edge: no study's jailed build compiles a fixture store.
+libm = { workspace = true }
+# `vike_catalog::kept_contract_value`, the valuation the `forward_report` fixture hands its context as a host does
+# (`StudyContext::with_contract_valuation`). A DEV edge: the study surface above links no catalog (decision 0089).
+vike-catalog = { path = "../vike-catalog" }

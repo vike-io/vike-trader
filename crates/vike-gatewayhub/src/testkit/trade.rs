@@ -1,0 +1,1189 @@
+//! The scripted TRADE lane: a `TradeLane` whose venue adapters are doubles a test drives.
+//!
+//! [`TradeLaneScript`] serves the venues it was built with. Every `start_adapter` hands back a
+//! [`ScriptedAdapter`]'s exec client, which DOES nothing on its own: it records each call the session
+//! makes of it ([`ExecutionCall`], in arrival order), runs an optional submit hook (the venue's acks and
+//! fills a test plays through the `EventSender` the lane was given) and answers its reconcile fetches
+//! from a script. The test keeps the [`ScriptedAdapter`] handle and plays any event from any thread
+//! ([`ScriptedAdapter::emit`]), fires the reconcile trigger ([`ScriptedAdapter::fire_trigger`]) and reads
+//! back what the daemon asked of the venue.
+//!
+//! # What it keeps true to the real thing
+//!
+//! * `venues()` is fixed at construction: a venue that is down is a refused start, never a missing
+//!   advertisement (the lane contract in `crate::trade::lane`).
+//! * The default tier of an account is `demo` and a default start is `Live` at the lease's tier with a
+//!   reconcile client; every other answer is scripted per `(venue, account)`.
+//! * Every lane call is recorded ([`TradeCall`]) before it is answered, a start included, so "the lane
+//!   was never asked" is an empty slice.
+//! * `begin_detach` and `detach` are recorded and idempotent, as the `ExecutionClient` contract says.
+//!
+//! The kit reads no store, environment or credential and links no bridge.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use vike_execution::recon::ReconcileClient;
+use vike_execution::{EventSender, ExecutionClient, TradeLinkUpdate};
+use vike_gatewayhub_client::proto::{
+    AdapterStart, ArmingTableWire, PreflightAnswer, PreflightLegWire, PreflightStep,
+    SymbolPropertiesRefusal, SymbolPropertiesRefusalCode, SymbolPropertiesWire,
+};
+use vike_model::ArmingBlock;
+use vike_model::OrderCancelIntent;
+use vike_model::events::Event;
+use vike_model::{
+    AccountTier, FeeSchedule, FillReport, MarginMode, OrderRequest, OrderStatusReport,
+    PositionStatusReport, SymbolProperties,
+};
+use vike_utility::mutex::lock;
+
+use crate::trade::lane::{
+    AdapterRefusal, StartedAdapter, TradeLane, TradeLaneTarget, VenueLinkReport,
+    VenueLinkWatchSource,
+};
+
+/// One call the lane saw, in the order it arrived.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TradeCall {
+    /// `account_tier(venue, account)`.
+    AccountTier {
+        /// The venue.
+        venue: String,
+        /// The account label's text.
+        account: Option<String>,
+    },
+    /// `arming_table()`.
+    ArmingTable,
+    /// `preflight(venues, step)`.
+    Preflight {
+        /// The venues asked.
+        venues: Vec<String>,
+        /// The question.
+        step: PreflightStep,
+    },
+    /// `start_adapter` (recorded before it is answered).
+    Start {
+        /// The target.
+        target: TradeLaneTarget,
+        /// The start request.
+        start: AdapterStart,
+        /// Whether the lane was handed a reconcile trigger.
+        trigger: bool,
+    },
+    /// `record_identity`.
+    RecordIdentity {
+        /// The target.
+        target: TradeLaneTarget,
+        /// The tier the start bound.
+        bound_tier: AccountTier,
+        /// Whether a reconcile client was passed.
+        had_reconcile: bool,
+    },
+    /// `symbol_facts`.
+    SymbolFacts {
+        /// The target.
+        target: TradeLaneTarget,
+        /// The symbol asked.
+        symbol: String,
+    },
+    /// `symbol_facts_quoted` (asked by a node that converts a quote currency).
+    SymbolFactsQuoted {
+        /// The target.
+        target: TradeLaneTarget,
+        /// The symbol asked.
+        symbol: String,
+    },
+    /// `symbol_leverage` (asked with a committed admission).
+    SymbolLeverage {
+        /// The target.
+        target: TradeLaneTarget,
+        /// The running adapter's own start.
+        start: AdapterStart,
+        /// The symbol asked.
+        symbol: String,
+    },
+    /// `venue_read` (an operator's read of the account).
+    VenueRead {
+        /// The target.
+        target: TradeLaneTarget,
+        /// Which read.
+        kind: vike_model::VenueReadKind,
+    },
+}
+
+/// One call the session made of a scripted exec client, in the order it arrived.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExecutionCall {
+    /// `submit`.
+    Submit(OrderRequest),
+    /// `submit_batch`.
+    SubmitBatch(Vec<OrderRequest>),
+    /// `cancel_with_intent` (`cancel` is recorded as this with `Unspecified`).
+    Cancel {
+        /// The order client id.
+        order_client_id: String,
+        /// Why.
+        intent: OrderCancelIntent,
+    },
+    /// `cancel_batch_with_intent`.
+    CancelBatch {
+        /// The order client ids.
+        order_client_ids: Vec<String>,
+        /// Why.
+        intent: OrderCancelIntent,
+    },
+    /// `modify`.
+    Modify {
+        /// The whole resting order.
+        order: OrderRequest,
+        /// The requested quantity.
+        new_qty: Option<f64>,
+        /// The requested price.
+        new_price: Option<f64>,
+    },
+    /// `confirm`.
+    Confirm(String),
+    /// `adopt_restored`.
+    AdoptRestored(Vec<vike_execution::RestoredOrder>),
+    /// `begin_detach`.
+    BeginDetach,
+    /// `detach`.
+    Detach,
+}
+
+/// What a scripted start answers.
+#[derive(Debug, Clone)]
+pub struct ScriptedStart {
+    outcome: Result<LiveScript, AdapterRefusal>,
+    delay: Duration,
+}
+
+#[derive(Debug, Clone)]
+struct LiveScript {
+    bound_tier: Option<AccountTier>,
+    grid: Option<SymbolProperties>,
+    contract_value: Option<vike_model::ContractValue>,
+    margin_mode: Option<MarginMode>,
+    leg_grids: Vec<(String, SymbolProperties)>,
+    reconcile: bool,
+}
+
+impl ScriptedStart {
+    /// A start that comes up at the lease's tier with a reconcile client.
+    pub fn live() -> Self {
+        Self {
+            outcome: Ok(LiveScript {
+                bound_tier: None,
+                grid: None,
+                contract_value: None,
+                margin_mode: None,
+                leg_grids: Vec::new(),
+                reconcile: true,
+            }),
+            delay: Duration::ZERO,
+        }
+    }
+
+    /// A start the bridge refuses: the account is NOT RUNNING with `block` as the word and `text` as the
+    /// bridge's own words.
+    pub fn refuse(block: ArmingBlock, text: &str) -> Self {
+        Self {
+            outcome: Err(AdapterRefusal {
+                block_word: block.word().to_string(),
+                refusal_text: text.to_string(),
+            }),
+            delay: Duration::ZERO,
+        }
+    }
+
+    fn live_mut(&mut self) -> &mut LiveScript {
+        match &mut self.outcome {
+            Ok(live) => live,
+            Err(_) => panic!("a refusal has no live facts to set"),
+        }
+    }
+
+    /// Bind this tier whatever the lease asked (the tier interlock's test).
+    #[must_use]
+    pub fn bound_tier(mut self, tier: AccountTier) -> Self {
+        self.live_mut().bound_tier = Some(tier);
+        self
+    }
+
+    /// The engine symbol's grid.
+    #[must_use]
+    pub fn grid(mut self, grid: SymbolProperties) -> Self {
+        self.live_mut().grid = Some(grid);
+        self
+    }
+
+    /// The engine symbol's contract value (kind plus per-unit factor).
+    #[must_use]
+    pub fn contract_value(mut self, value: vike_model::ContractValue) -> Self {
+        self.live_mut().contract_value = Some(value);
+        self
+    }
+
+    /// The ruling margin mode.
+    #[must_use]
+    pub fn margin_mode(mut self, mode: MarginMode) -> Self {
+        self.live_mut().margin_mode = Some(mode);
+        self
+    }
+
+    /// The declared legs' grids.
+    #[must_use]
+    pub fn leg_grids(mut self, grids: Vec<(String, SymbolProperties)>) -> Self {
+        self.live_mut().leg_grids = grids;
+        self
+    }
+
+    /// Build no reconcile client (a venue without one).
+    #[must_use]
+    pub fn no_reconcile(mut self) -> Self {
+        self.live_mut().reconcile = false;
+        self
+    }
+
+    /// Take this long to answer (a venue login).
+    #[must_use]
+    pub fn after(mut self, delay: Duration) -> Self {
+        self.delay = delay;
+        self
+    }
+}
+
+type SubmitHook = Arc<dyn Fn(&OrderRequest, &EventSender) + Send + Sync>;
+
+/// The reconcile answers a scripted adapter gives. Each is what the venue returns; `Err` is a failed
+/// fetch.
+#[derive(Clone)]
+struct ReconcileScript {
+    orders: Result<Vec<OrderStatusReport>, String>,
+    fills: Result<Vec<FillReport>, String>,
+    positions: Result<Vec<PositionStatusReport>, String>,
+    balance: Result<Option<f64>, String>,
+    fee_rates: Result<Option<FeeSchedule>, String>,
+    identity: Result<Option<String>, String>,
+    delay: Duration,
+    /// Whether the client keeps a list it can name (`ReconcileClient::admitted_symbols`): the real clients of
+    /// bybit, binance, aster and every venue that reads what it is told do; `false` is a client with none.
+    names_admitted: bool,
+}
+
+impl Default for ReconcileScript {
+    fn default() -> Self {
+        Self {
+            orders: Ok(Vec::new()),
+            fills: Ok(Vec::new()),
+            positions: Ok(Vec::new()),
+            balance: Ok(None),
+            fee_rates: Ok(None),
+            identity: Ok(None),
+            delay: Duration::ZERO,
+            names_admitted: false,
+        }
+    }
+}
+
+struct AdapterState {
+    calls: Vec<ExecutionCall>,
+    detached: bool,
+    wire_ids: HashMap<String, String>,
+    submit_hook: Option<SubmitHook>,
+    reconcile: ReconcileScript,
+    /// The symbols the daemon told the reconcile client the engine admitted (`ReconcileClient::admit_symbol`).
+    admitted: Vec<String>,
+    /// The admitted symbols the client held at each `fetch_order_status_reports`, in order.
+    admitted_at_fetch: Vec<Vec<String>>,
+    /// How many times the reconcile client was told a lease ended (`ReconcileClient::lease_ended`).
+    leases_ended: usize,
+    /// That count at each `fetch_order_status_reports`, in order.
+    leases_ended_at_fetch: Vec<usize>,
+    events: Option<EventSender>,
+    trigger: Option<Sender<()>>,
+}
+
+/// A handle on one started adapter: what the daemon asked of it, and the doors a test plays the venue
+/// through. Cloning shares the adapter.
+#[derive(Clone)]
+pub struct ScriptedAdapter {
+    state: Arc<Mutex<AdapterState>>,
+}
+
+impl ScriptedAdapter {
+    fn new(events: EventSender, trigger: Option<Sender<()>>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(AdapterState {
+                calls: Vec::new(),
+                detached: false,
+                wire_ids: HashMap::new(),
+                submit_hook: None,
+                reconcile: ReconcileScript::default(),
+                admitted: Vec::new(),
+                admitted_at_fetch: Vec::new(),
+                leases_ended: 0,
+                leases_ended_at_fetch: Vec::new(),
+                events: Some(events),
+                trigger,
+            })),
+        }
+    }
+
+    /// The symbols the daemon told the reconcile client the engine admitted, in arrival order.
+    pub fn admitted_symbols(&self) -> Vec<String> {
+        lock(&self.state).admitted.clone()
+    }
+
+    /// The admitted symbols the reconcile client held at each order fetch, in fetch order: what a pass
+    /// saw, which `admitted_symbols` (polled whenever) cannot say.
+    pub fn admitted_at_order_fetches(&self) -> Vec<Vec<String>> {
+        lock(&self.state).admitted_at_fetch.clone()
+    }
+
+    /// How many times the reconcile client had been told a lease ended at each order fetch, in fetch order: what
+    /// says the call came BEFORE a read.
+    pub fn leases_ended_at_order_fetches(&self) -> Vec<usize> {
+        lock(&self.state).leases_ended_at_fetch.clone()
+    }
+
+    /// Every call the daemon made of the exec client, in arrival order.
+    pub fn calls(&self) -> Vec<ExecutionCall> {
+        lock(&self.state).calls.clone()
+    }
+
+    /// The orders submitted so far (singles and batches, in arrival order).
+    pub fn submitted(&self) -> Vec<OrderRequest> {
+        let mut out = Vec::new();
+        for call in lock(&self.state).calls.iter() {
+            match call {
+                ExecutionCall::Submit(o) => out.push(o.clone()),
+                ExecutionCall::SubmitBatch(os) => out.extend(os.iter().cloned()),
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Whether `detach` has run.
+    pub fn is_detached(&self) -> bool {
+        lock(&self.state).detached
+    }
+
+    /// Play a venue event through the lane the daemon gave the adapter (blocking, lossless, exactly as a
+    /// bridge pump does). `false` = the daemon's side is gone.
+    pub fn emit(&self, event: Event) -> bool {
+        let events = lock(&self.state).events.clone();
+        match events {
+            Some(events) => events.blocking_send(event).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Play a link transition through the lane the daemon gave the adapter, as a bridge that discloses
+    /// its venue link does (`EventSender::execution_link`, stamped with the lane's own route key). `false` =
+    /// the daemon's side is gone.
+    pub fn emit_execution_link(&self, up: bool) -> bool {
+        let Some(events) = lock(&self.state).events.clone() else { return false };
+        let route_key = events.route_key.map_or_else(|| "ibkr".to_string(), |k| k.to_string());
+        let update: TradeLinkUpdate = serde_json::from_value(serde_json::json!({
+            "route_key": route_key,
+            "venue": "ibkr",
+            "up": up,
+            "at_timestamp_ms": 0,
+        }))
+        .expect("an TradeLinkUpdate is these four fields");
+        events.execution_link(update).is_ok()
+    }
+
+    /// Fire the reconcile trigger (a bridge asking for a reconcile pass). `false` = the venue takes none,
+    /// or the daemon dropped it.
+    pub fn fire_trigger(&self) -> bool {
+        match &lock(&self.state).trigger {
+            Some(tx) => tx.send(()).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Run `hook` on every submit, inside the exec client's `submit` (the venue's ack or fill, played
+    /// through the `EventSender` the lane was given).
+    pub fn on_submit(&self, hook: impl Fn(&OrderRequest, &EventSender) + Send + Sync + 'static) {
+        lock(&self.state).submit_hook = Some(Arc::new(hook));
+    }
+
+    /// Answer `wire_id_for(order client id)` with `wire` (hyperliquid's `cloid`).
+    pub fn set_wire_id(&self, order_client_id: &str, wire: &str) {
+        lock(&self.state).wire_ids.insert(order_client_id.to_string(), wire.to_string());
+    }
+
+    /// Script `fetch_order_status_reports`.
+    pub fn set_orders(&self, answer: Result<Vec<OrderStatusReport>, String>) {
+        lock(&self.state).reconcile.orders = answer;
+    }
+
+    /// Script `fetch_fill_reports`.
+    pub fn set_fills(&self, answer: Result<Vec<FillReport>, String>) {
+        lock(&self.state).reconcile.fills = answer;
+    }
+
+    /// Script `fetch_position_status_reports`.
+    pub fn set_positions(&self, answer: Result<Vec<PositionStatusReport>, String>) {
+        lock(&self.state).reconcile.positions = answer;
+    }
+
+    /// Script `fetch_balance`.
+    pub fn set_balance(&self, answer: Result<Option<f64>, String>) {
+        lock(&self.state).reconcile.balance = answer;
+    }
+
+    /// Script `fetch_fee_rates`.
+    pub fn set_fee_rates(&self, answer: Result<Option<FeeSchedule>, String>) {
+        lock(&self.state).reconcile.fee_rates = answer;
+    }
+
+    /// Script `fetch_account_identity`.
+    pub fn set_identity(&self, answer: Result<Option<String>, String>) {
+        lock(&self.state).reconcile.identity = answer;
+    }
+
+    /// Make every reconcile fetch take this long (a slow venue).
+    pub fn set_reconcile_delay(&self, delay: Duration) {
+        lock(&self.state).reconcile.delay = delay;
+    }
+
+    /// Make the reconcile client keep a list it can NAME (`ReconcileClient::admitted_symbols` answers the symbols
+    /// it was told), like the real clients that read what they are told; off, it answers `None`, a client
+    /// with no list. The daemon names the list in page 0 of every list-kind reply.
+    pub fn name_admitted_symbols(&self, yes: bool) {
+        lock(&self.state).reconcile.names_admitted = yes;
+    }
+
+    /// Forget every symbol the reconcile client was told, as a client built anew inside the same daemon session
+    /// does (an adapter restarted by a changed start): the node's mirror of what it told is NOT cleared.
+    pub fn forget_admitted_symbols(&self) {
+        lock(&self.state).admitted.clear();
+    }
+
+    fn record(&self, call: ExecutionCall) {
+        lock(&self.state).calls.push(call);
+    }
+}
+
+impl std::fmt::Debug for ScriptedAdapter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScriptedAdapter").finish_non_exhaustive()
+    }
+}
+
+/// The exec client the lane hands back: records, never touches a venue.
+struct ScriptedExecution {
+    adapter: ScriptedAdapter,
+}
+
+impl ExecutionClient for ScriptedExecution {
+    fn submit(&mut self, request: &OrderRequest) {
+        self.adapter.record(ExecutionCall::Submit(request.clone()));
+        let (hook, events) = {
+            let s = lock(&self.adapter.state);
+            (s.submit_hook.clone(), s.events.clone())
+        };
+        if let (Some(hook), Some(events)) = (hook, events) {
+            hook(request, &events);
+        }
+    }
+    fn cancel(&mut self, order_client_id: &str) {
+        self.cancel_with_intent(order_client_id, OrderCancelIntent::Unspecified);
+    }
+    fn cancel_with_intent(&mut self, order_client_id: &str, intent: OrderCancelIntent) {
+        self.adapter
+            .record(ExecutionCall::Cancel { order_client_id: order_client_id.to_string(), intent });
+    }
+    fn modify(&mut self, order: &OrderRequest, new_qty: Option<f64>, new_price: Option<f64>) {
+        self.adapter.record(ExecutionCall::Modify { order: order.clone(), new_qty, new_price });
+    }
+    fn submit_batch(&mut self, requests: &[OrderRequest]) {
+        self.adapter.record(ExecutionCall::SubmitBatch(requests.to_vec()));
+    }
+    fn cancel_batch_with_intent(&mut self, order_client_ids: &[String], intent: OrderCancelIntent) {
+        self.adapter.record(ExecutionCall::CancelBatch {
+            order_client_ids: order_client_ids.to_vec(),
+            intent,
+        });
+    }
+    fn confirm(&mut self, order_client_id: &str) {
+        self.adapter.record(ExecutionCall::Confirm(order_client_id.to_string()));
+    }
+    fn begin_detach(&mut self) {
+        self.adapter.record(ExecutionCall::BeginDetach);
+    }
+    fn detach(&mut self) {
+        let mut s = lock(&self.adapter.state);
+        s.calls.push(ExecutionCall::Detach);
+        s.detached = true;
+        // A detached adapter drops its lane, as a real bridge's pumps do.
+        s.events = None;
+        s.trigger = None;
+    }
+    fn wire_id_for(&self, order_client_id: &str) -> Option<String> {
+        lock(&self.adapter.state).wire_ids.get(order_client_id).cloned()
+    }
+    fn adopt_restored(&mut self, orders: &[vike_execution::RestoredOrder]) {
+        self.adapter.record(ExecutionCall::AdoptRestored(orders.to_vec()));
+    }
+}
+
+/// The reconcile client the lane hands back: answers from the script.
+struct ScriptedReconcile {
+    adapter: ScriptedAdapter,
+}
+
+impl ScriptedReconcile {
+    fn script(&self) -> ReconcileScript {
+        let script = lock(&self.adapter.state).reconcile.clone();
+        if !script.delay.is_zero() {
+            std::thread::sleep(script.delay);
+        }
+        script
+    }
+}
+
+impl ReconcileClient for ScriptedReconcile {
+    fn fetch_order_status_reports(&self, _since: i64) -> Result<Vec<OrderStatusReport>, String> {
+        {
+            let mut state = lock(&self.adapter.state);
+            let held = state.admitted.clone();
+            state.admitted_at_fetch.push(held);
+            let ended = state.leases_ended;
+            state.leases_ended_at_fetch.push(ended);
+        }
+        self.script().orders
+    }
+    fn fetch_fill_reports(&self, _since: i64) -> Result<Vec<FillReport>, String> {
+        self.script().fills
+    }
+    fn fetch_position_status_reports(&self) -> Result<Vec<PositionStatusReport>, String> {
+        self.script().positions
+    }
+    fn fetch_balance(&self) -> Result<Option<f64>, vike_execution::recon::ReconcileFetchError> {
+        self.script().balance.map_err(vike_execution::recon::ReconcileFetchError::unclassified)
+    }
+    fn fetch_fee_rates(&self) -> Result<Option<FeeSchedule>, String> {
+        self.script().fee_rates
+    }
+    fn fetch_account_identity(&self) -> Result<Option<String>, String> {
+        self.script().identity
+    }
+    fn admit_symbol(&self, symbol: &str) {
+        lock(&self.adapter.state).admitted.push(symbol.to_string());
+    }
+    fn forget_symbol(&self, symbol: &str) {
+        lock(&self.adapter.state).admitted.retain(|held| held != symbol);
+    }
+    fn lease_ended(&self) {
+        lock(&self.adapter.state).leases_ended += 1;
+    }
+
+    fn admitted_symbols(&self) -> Option<Vec<String>> {
+        let state = lock(&self.adapter.state);
+        state.reconcile.names_admitted.then(|| state.admitted.clone())
+    }
+}
+
+use crate::trade::session::AccountSessionKey;
+
+/// The scripted lane's answer for a symbol no test scripted: a verdict naming it.
+fn unscripted(symbol: &str) -> SymbolPropertiesRefusal {
+    SymbolPropertiesRefusal {
+        code: SymbolPropertiesRefusalCode::Verdict,
+        reason: format!("scripted: no facts for {symbol}"),
+        refusal_id: None,
+    }
+}
+
+/// What answers a preflight question: the venues asked and the step, as the real lane gets them.
+type PreflightResponder = Arc<dyn Fn(&[String], PreflightStep) -> PreflightAnswer + Send + Sync>;
+
+struct State {
+    tiers: HashMap<AccountSessionKey, Result<AccountTier, ArmingBlock>>,
+    /// `account` row id -> the account it names now (`with_row`, `rename_row`).
+    rows: HashMap<i64, AccountSessionKey>,
+    /// The accounts that sign with a row's keys without being it (`with_heir`: a derived lane twin).
+    heirs: Vec<(i64, AccountSessionKey)>,
+    arming: ArmingTableWire,
+    legs: Vec<PreflightLegWire>,
+    preflight: Option<PreflightResponder>,
+    starts: HashMap<AccountSessionKey, ScriptedStart>,
+    resolvers: HashSet<String>,
+    degraded: HashMap<String, String>,
+    leverage_capabilities: HashMap<String, Result<f64, String>>,
+    /// `(venue, symbol)` -> what the venue confirms of the account's figure for a symbol admitted on demand.
+    symbol_leverages: HashMap<(String, String), Result<f64, String>>,
+    identity: Result<(), String>,
+    facts: HashMap<String, Result<SymbolPropertiesWire, SymbolPropertiesRefusal>>,
+    /// What `symbol_facts_quoted` answers (a symbol with none scripted answers what `facts` does).
+    quoted_facts: HashMap<String, Result<SymbolPropertiesWire, SymbolPropertiesRefusal>>,
+    /// Venue -> the currency its account states (`account_currency`).
+    account_currencies: HashMap<String, String>,
+    /// Venues whose currency read is paid out of a budget (`currency_read_is_budgeted`).
+    budgeted_currency_reads: HashSet<String>,
+    /// Venues that hold a time-only release themselves (`native_time_release`).
+    native_time_releases: HashSet<String>,
+    /// How many times `account_currency` was asked (a counter, not a `TradeCall`: it is not an ordered call).
+    account_currency_asks: usize,
+    calls: Vec<TradeCall>,
+    adapters: Vec<(AccountSessionKey, ScriptedAdapter)>,
+    watches: HashMap<String, Arc<dyn VenueLinkWatchSource>>,
+    /// Venue -> the report `venue_link` hands every start of it.
+    venue_links: HashMap<String, VenueLinkReport>,
+    /// `(venue, kind)` -> what `venue_read` answers (an unscripted pair answers the trait default's `not offered`).
+    venue_reads: HashMap<
+        (String, vike_model::VenueReadKind),
+        Result<vike_model::VenueRead, vike_utility::errors::CarriedRefusal>,
+    >,
+    /// How long `venue_read` blocks before it answers (a slow venue; default none).
+    venue_read_delay: Duration,
+}
+
+struct Inner {
+    venues: Vec<String>,
+    state: Mutex<State>,
+}
+
+/// A scripted `TradeLane`. See the module doc. Cloning shares the script and the record.
+#[derive(Clone)]
+pub struct TradeLaneScript {
+    inner: Arc<Inner>,
+}
+
+impl TradeLaneScript {
+    /// A lane serving `venues`.
+    pub fn new(venues: &[&str]) -> Self {
+        Self {
+            inner: Arc::new(Inner {
+                venues: venues.iter().map(|v| (*v).to_string()).collect(),
+                state: Mutex::new(State {
+                    tiers: HashMap::new(),
+                    rows: HashMap::new(),
+                    heirs: Vec::new(),
+                    arming: ArmingTableWire::default(),
+                    legs: Vec::new(),
+                    preflight: None,
+                    starts: HashMap::new(),
+                    resolvers: HashSet::new(),
+                    degraded: HashMap::new(),
+                    leverage_capabilities: HashMap::new(),
+                    symbol_leverages: HashMap::new(),
+                    identity: Ok(()),
+                    facts: HashMap::new(),
+                    quoted_facts: HashMap::new(),
+                    account_currencies: HashMap::new(),
+                    budgeted_currency_reads: HashSet::new(),
+                    native_time_releases: HashSet::new(),
+                    account_currency_asks: 0,
+                    calls: Vec::new(),
+                    adapters: Vec::new(),
+                    watches: HashMap::new(),
+                    venue_links: HashMap::new(),
+                    venue_reads: HashMap::new(),
+                    venue_read_delay: Duration::ZERO,
+                }),
+            }),
+        }
+    }
+
+    /// What `account_tier` answers for this account (default: `Ok(demo)`).
+    #[must_use]
+    pub fn with_tier(
+        self,
+        venue: &str,
+        account: Option<&str>,
+        tier: Result<AccountTier, ArmingBlock>,
+    ) -> Self {
+        lock(&self.inner.state)
+            .tiers
+            .insert((venue.to_string(), account.map(str::to_string)), tier);
+        self
+    }
+
+    /// Change what `account_tier` answers for this account from now on (the store broke, or was fixed,
+    /// while the daemon ran).
+    pub fn set_tier(
+        &self,
+        venue: &str,
+        account: Option<&str>,
+        tier: Result<AccountTier, ArmingBlock>,
+    ) {
+        lock(&self.inner.state)
+            .tiers
+            .insert((venue.to_string(), account.map(str::to_string)), tier);
+    }
+
+    /// Account row `id` names this account (`row_of`, `row_tier`; a lane with no row scripted knows none).
+    #[must_use]
+    pub fn with_row(self, id: i64, venue: &str, account: Option<&str>) -> Self {
+        lock(&self.inner.state).rows.insert(id, (venue.to_string(), account.map(str::to_string)));
+        self
+    }
+
+    /// `account` of `venue` signs with row `id`'s keys without being the row (`signs_with_row`): a derived lane twin.
+    #[must_use]
+    pub fn with_heir(self, id: i64, venue: &str, account: Option<&str>) -> Self {
+        lock(&self.inner.state).heirs.push((id, (venue.to_string(), account.map(str::to_string))));
+        self
+    }
+
+    /// The operator RENAMES row `id` to `account`: the row (and its tier) answers under the new label from now
+    /// on, and the label it gave up names no row (`account_tier` answers `NoAccountRow` for it).
+    pub fn rename_row(&self, id: i64, account: Option<&str>) {
+        let mut s = lock(&self.inner.state);
+        let Some(old) = s.rows.get(&id).cloned() else { return };
+        let new = (old.0.clone(), account.map(str::to_string));
+        let tier = s.tiers.remove(&old).unwrap_or(Ok(AccountTier::Demo));
+        s.tiers.insert(new.clone(), tier);
+        s.tiers.insert(old, Err(ArmingBlock::NoAccountRow));
+        s.rows.insert(id, new);
+    }
+
+    /// What `arming_table` answers.
+    #[must_use]
+    pub fn with_arming(self, table: ArmingTableWire) -> Self {
+        lock(&self.inner.state).arming = table;
+        self
+    }
+
+    /// What `preflight` answers (whatever venues are asked).
+    #[must_use]
+    pub fn with_legs(self, legs: Vec<PreflightLegWire>) -> Self {
+        lock(&self.inner.state).legs = legs;
+        self
+    }
+
+    /// What `preflight` answers, per question: `answer(venues, step)` runs on the server's connection
+    /// thread for every `PreflightQuery`. The scripted lane's way to play a clock that moves between reads,
+    /// as the real one's does. Beats [`TradeLaneScript::with_legs`].
+    #[must_use]
+    pub fn with_preflight(
+        self,
+        answer: impl Fn(&[String], PreflightStep) -> PreflightAnswer + Send + Sync + 'static,
+    ) -> Self {
+        lock(&self.inner.state).preflight = Some(Arc::new(answer));
+        self
+    }
+
+    /// What `start_adapter` answers for this account (default: a `Live` start).
+    #[must_use]
+    pub fn with_start(self, venue: &str, account: Option<&str>, start: ScriptedStart) -> Self {
+        lock(&self.inner.state)
+            .starts
+            .insert((venue.to_string(), account.map(str::to_string)), start);
+        self
+    }
+
+    /// Say `venue`'s price feed is mid-gap (or, with `None`, healthy again): `Recon` requests for it are
+    /// answered `ReconcileNotReady{reason}` while it is.
+    pub fn set_degraded(&self, venue: &str, reason: Option<&str>) {
+        let mut s = lock(&self.inner.state);
+        match reason {
+            Some(r) => s.degraded.insert(venue.to_string(), r.to_string()),
+            None => s.degraded.remove(venue),
+        };
+    }
+
+    /// What the venue confirms of an account's stated leverage on `venue` (decision 0181): the answer
+    /// `TradeLane::leverage_cap` gives at every start. A venue with none scripted answers `None`.
+    #[must_use]
+    pub fn with_leverage_cap(self, venue: &str, answer: Result<f64, String>) -> Self {
+        lock(&self.inner.state).leverage_capabilities.insert(venue.to_string(), answer);
+        self
+    }
+
+    /// What the venue confirms of an account's figure for `symbol` admitted on demand on `venue`: the
+    /// answer `TradeLane::symbol_leverage` gives. A symbol with none scripted answers `None` (nothing asked).
+    #[must_use]
+    pub fn with_symbol_leverage(
+        self,
+        venue: &str,
+        symbol: &str,
+        answer: Result<f64, String>,
+    ) -> Self {
+        lock(&self.inner.state)
+            .symbol_leverages
+            .insert((venue.to_string(), symbol.to_string()), answer);
+        self
+    }
+
+    /// Say `venue` can look an order up by order client id.
+    #[must_use]
+    pub fn with_resolver(self, venue: &str) -> Self {
+        lock(&self.inner.state).resolvers.insert(venue.to_string());
+        self
+    }
+
+    /// Make `record_identity` fail with this warning.
+    #[must_use]
+    pub fn with_identity_failure(self, why: &str) -> Self {
+        lock(&self.inner.state).identity = Err(why.to_string());
+        self
+    }
+
+    /// What `symbol_facts` answers for `symbol` (default for an unscripted symbol: an `Err` naming it, a verdict). A
+    /// scripted refusal is sent with the code it carries.
+    #[must_use]
+    pub fn with_symbol_facts(
+        self,
+        symbol: &str,
+        facts: Result<SymbolPropertiesWire, SymbolPropertiesRefusal>,
+    ) -> Self {
+        lock(&self.inner.state).facts.insert(symbol.to_string(), facts);
+        self
+    }
+
+    /// What `venue_read` answers for `venue`'s `kind` (an unscripted pair answers what the trait default does:
+    /// `not offered by <venue>`): a refusal with its id, or free text (`.into()`).
+    #[must_use]
+    pub fn with_venue_read(
+        self,
+        venue: &str,
+        kind: vike_model::VenueReadKind,
+        answer: Result<vike_model::VenueRead, vike_utility::errors::CarriedRefusal>,
+    ) -> Self {
+        lock(&self.inner.state).venue_reads.insert((venue.to_string(), kind), answer);
+        self
+    }
+
+    /// Every `venue_read` blocks this long before it answers (a venue that is slow to say).
+    #[must_use]
+    pub fn with_venue_read_delay(self, delay: Duration) -> Self {
+        lock(&self.inner.state).venue_read_delay = delay;
+        self
+    }
+
+    /// What `symbol_facts_quoted` answers for `symbol` (a node that converts a quote currency asked): a
+    /// symbol with none scripted is answered as `symbol_facts` answers it.
+    #[must_use]
+    pub fn with_quoted_symbol_facts(
+        self,
+        symbol: &str,
+        facts: Result<SymbolPropertiesWire, SymbolPropertiesRefusal>,
+    ) -> Self {
+        lock(&self.inner.state).quoted_facts.insert(symbol.to_string(), facts);
+        self
+    }
+
+    /// The currency `venue`'s account states (`account_currency`; default: none stated).
+    #[must_use]
+    pub fn with_account_currency(self, venue: &str, currency: &str) -> Self {
+        lock(&self.inner.state).account_currencies.insert(venue.to_string(), currency.to_string());
+        self
+    }
+
+    /// `venue`'s currency read is paid out of a budget, like ibkr's and ig's (the scripted lane still states
+    /// its currency to whatever start asks, but the session re-asks it only for a start that asks to read).
+    #[must_use]
+    pub fn with_budgeted_currency_read(self, venue: &str) -> Self {
+        lock(&self.inner.state).budgeted_currency_reads.insert(venue.to_string());
+        self
+    }
+
+    /// `venue` holds a time-only release itself, like ibkr's `goodAfterTime` (`native_time_release`; default: no
+    /// venue does).
+    #[must_use]
+    pub fn with_native_time_release(self, venue: &str) -> Self {
+        lock(&self.inner.state).native_time_releases.insert(venue.to_string());
+        self
+    }
+
+    /// How many times the session asked `account_currency` (a start and a retry each count).
+    #[must_use]
+    pub fn account_currency_asks(&self) -> usize {
+        lock(&self.inner.state).account_currency_asks
+    }
+
+    /// Supervise this venue's link through `watch` (every start of `venue` returns it from `link_watch`).
+    #[must_use]
+    pub fn with_link_watch(self, venue: &str, watch: Arc<dyn VenueLinkWatchSource>) -> Self {
+        lock(&self.inner.state).watches.insert(venue.to_string(), watch);
+        self
+    }
+
+    /// Report this venue's path through `report` (every start of `venue` returns it from `venue_link`): the status
+    /// verb then states what it reads, and nothing else changes.
+    #[must_use]
+    pub fn with_venue_link(self, venue: &str, report: VenueLinkReport) -> Self {
+        lock(&self.inner.state).venue_links.insert(venue.to_string(), report);
+        self
+    }
+
+    /// Every lane call so far, in arrival order.
+    pub fn calls(&self) -> Vec<TradeCall> {
+        lock(&self.inner.state).calls.clone()
+    }
+
+    /// How many adapters were started.
+    pub fn starts(&self) -> usize {
+        lock(&self.inner.state).adapters.len()
+    }
+
+    /// The most recently started adapter of this account, if any.
+    pub fn adapter(&self, venue: &str, account: Option<&str>) -> Option<ScriptedAdapter> {
+        let key = (venue.to_string(), account.map(str::to_string));
+        lock(&self.inner.state)
+            .adapters
+            .iter()
+            .rev()
+            .find(|(k, _)| *k == key)
+            .map(|(_, a)| a.clone())
+    }
+}
+
+impl std::fmt::Debug for TradeLaneScript {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TradeLaneScript")
+            .field("venues", &self.inner.venues)
+            .finish_non_exhaustive()
+    }
+}
+
+impl TradeLane for TradeLaneScript {
+    fn venues(&self) -> Vec<String> {
+        self.inner.venues.clone()
+    }
+
+    fn account_tier(&self, venue: &str, account: Option<&str>) -> Result<AccountTier, ArmingBlock> {
+        let mut s = lock(&self.inner.state);
+        s.calls.push(TradeCall::AccountTier {
+            venue: venue.to_string(),
+            account: account.map(str::to_string),
+        });
+        s.tiers
+            .get(&(venue.to_string(), account.map(str::to_string)))
+            .cloned()
+            .unwrap_or(Ok(AccountTier::Demo))
+    }
+
+    fn row_of(&self, venue: &str, account: Option<&str>, _tier: AccountTier) -> Option<i64> {
+        let s = lock(&self.inner.state);
+        let key = (venue.to_string(), account.map(str::to_string));
+        s.rows.iter().find(|(_, named)| **named == key).map(|(id, _)| *id)
+    }
+
+    fn row_label(&self, venue: &str, row: i64) -> Option<Option<String>> {
+        let s = lock(&self.inner.state);
+        s.rows.get(&row).filter(|(v, _)| v == venue).map(|(_, label)| label.clone())
+    }
+
+    fn signs_with_row(&self, venue: &str, account: Option<&str>, row: i64) -> bool {
+        let key = (venue.to_string(), account.map(str::to_string));
+        let s = lock(&self.inner.state);
+        s.rows.get(&row) == Some(&key)
+            || s.heirs.iter().any(|(id, heir)| *id == row && *heir == key)
+    }
+
+    fn arming_table(&self) -> ArmingTableWire {
+        let mut s = lock(&self.inner.state);
+        s.calls.push(TradeCall::ArmingTable);
+        s.arming.clone()
+    }
+
+    fn preflight(&self, venues: &[String], step: PreflightStep) -> PreflightAnswer {
+        let responder = {
+            let mut s = lock(&self.inner.state);
+            s.calls.push(TradeCall::Preflight { venues: venues.to_vec(), step });
+            if s.preflight.is_none() {
+                return PreflightAnswer { legs: s.legs.clone(), plan: None };
+            }
+            s.preflight.clone()
+        };
+        // The responder runs OUTSIDE the state lock: it may take time and may call back into the lane.
+        responder.map_or_else(PreflightAnswer::default, |answer| answer(venues, step))
+    }
+
+    fn start_adapter(
+        &self,
+        target: &TradeLaneTarget,
+        start: &AdapterStart,
+        events: EventSender,
+        trigger: Option<Sender<()>>,
+    ) -> Result<StartedAdapter, AdapterRefusal> {
+        let key = (target.venue.clone(), target.account.clone());
+        let script = {
+            let mut s = lock(&self.inner.state);
+            s.calls.push(TradeCall::Start {
+                target: target.clone(),
+                start: start.clone(),
+                trigger: trigger.is_some(),
+            });
+            s.starts.get(&key).cloned().unwrap_or_else(ScriptedStart::live)
+        };
+        if !script.delay.is_zero() {
+            std::thread::sleep(script.delay);
+        }
+        let live = script.outcome?;
+        let adapter = ScriptedAdapter::new(events, trigger);
+        lock(&self.inner.state).adapters.push((key, adapter.clone()));
+        let recon: Option<Box<dyn ReconcileClient>> =
+            live.reconcile.then(|| Box::new(ScriptedReconcile { adapter: adapter.clone() }) as _);
+        Ok(StartedAdapter {
+            bound_tier: live.bound_tier.unwrap_or(target.tier),
+            grid: live.grid,
+            contract_value: live.contract_value,
+            margin_mode: live.margin_mode,
+            leg_grids: live.leg_grids,
+            client: Box::new(ScriptedExecution { adapter }),
+            reconcile: recon,
+        })
+    }
+
+    fn record_identity(
+        &self,
+        target: &TradeLaneTarget,
+        bound_tier: AccountTier,
+        recon: Option<&dyn ReconcileClient>,
+    ) -> Result<(), String> {
+        let mut s = lock(&self.inner.state);
+        s.calls.push(TradeCall::RecordIdentity {
+            target: target.clone(),
+            bound_tier,
+            had_reconcile: recon.is_some(),
+        });
+        s.identity.clone()
+    }
+
+    fn resolves_by_order_client_id(&self, venue: &str) -> bool {
+        lock(&self.inner.state).resolvers.contains(venue)
+    }
+
+    fn symbol_facts(
+        &self,
+        target: &TradeLaneTarget,
+        symbol: &str,
+    ) -> Result<SymbolPropertiesWire, SymbolPropertiesRefusal> {
+        let mut s = lock(&self.inner.state);
+        s.calls.push(TradeCall::SymbolFacts { target: target.clone(), symbol: symbol.to_string() });
+        s.facts.get(symbol).cloned().unwrap_or_else(|| Err(unscripted(symbol)))
+    }
+
+    fn symbol_facts_quoted(
+        &self,
+        target: &TradeLaneTarget,
+        symbol: &str,
+    ) -> Result<SymbolPropertiesWire, SymbolPropertiesRefusal> {
+        let mut s = lock(&self.inner.state);
+        s.calls.push(TradeCall::SymbolFactsQuoted {
+            target: target.clone(),
+            symbol: symbol.to_string(),
+        });
+        s.quoted_facts
+            .get(symbol)
+            .or_else(|| s.facts.get(symbol))
+            .cloned()
+            .unwrap_or_else(|| Err(unscripted(symbol)))
+    }
+
+    fn account_currency(&self, target: &TradeLaneTarget, _start: &AdapterStart) -> Option<String> {
+        let mut s = lock(&self.inner.state);
+        s.account_currency_asks += 1;
+        s.account_currencies.get(&target.venue).cloned()
+    }
+
+    fn currency_read_is_budgeted(&self, target: &TradeLaneTarget) -> bool {
+        lock(&self.inner.state).budgeted_currency_reads.contains(&target.venue)
+    }
+
+    fn native_time_release(&self, target: &TradeLaneTarget, _start: &AdapterStart) -> bool {
+        lock(&self.inner.state).native_time_releases.contains(&target.venue)
+    }
+
+    fn link_watch(
+        &self,
+        target: &TradeLaneTarget,
+        _start: &AdapterStart,
+    ) -> Option<Arc<dyn VenueLinkWatchSource>> {
+        lock(&self.inner.state).watches.get(&target.venue).cloned()
+    }
+
+    fn venue_link(
+        &self,
+        target: &TradeLaneTarget,
+        _start: &AdapterStart,
+    ) -> Option<VenueLinkReport> {
+        lock(&self.inner.state).venue_links.get(&target.venue).cloned()
+    }
+
+    fn reconcile_degraded(&self, venue: &str) -> Option<String> {
+        lock(&self.inner.state).degraded.get(venue).cloned()
+    }
+
+    fn leverage_cap(
+        &self,
+        target: &TradeLaneTarget,
+        _start: &AdapterStart,
+    ) -> Option<Result<f64, String>> {
+        lock(&self.inner.state).leverage_capabilities.get(&target.venue).cloned()
+    }
+
+    fn symbol_leverage(
+        &self,
+        target: &TradeLaneTarget,
+        start: &AdapterStart,
+        symbol: &str,
+    ) -> Option<Result<f64, String>> {
+        let mut s = lock(&self.inner.state);
+        s.calls.push(TradeCall::SymbolLeverage {
+            target: target.clone(),
+            start: start.clone(),
+            symbol: symbol.to_string(),
+        });
+        s.symbol_leverages.get(&(target.venue.clone(), symbol.to_string())).cloned()
+    }
+
+    fn venue_read(
+        &self,
+        target: &TradeLaneTarget,
+        kind: vike_model::VenueReadKind,
+    ) -> Result<vike_model::VenueRead, vike_utility::errors::CarriedRefusal> {
+        let (answer, delay) = {
+            let mut s = lock(&self.inner.state);
+            s.calls.push(TradeCall::VenueRead { target: target.clone(), kind });
+            (s.venue_reads.get(&(target.venue.clone(), kind)).cloned(), s.venue_read_delay)
+        };
+        // Slept with the script's lock RELEASED, so a slow read blocks no other call of the lane.
+        std::thread::sleep(delay);
+        answer.unwrap_or_else(|| Err(vike_model::not_offered_words(&target.venue, kind).into()))
+    }
+}
+
+/// A hub for a suite with no socket, which plays every lease's connection itself (`Lease::handle`,
+/// `Lease::next`): dropped, it ends the leases still attached (`AccountSessions::end_attached_leases`, what
+/// `server::trade`'s guard does when a reader leaves) before the hub stops, so the stop waits for no goodbye.
+/// A lease such a suite left attached cost each test the stop's whole 3 s bound.
+pub struct SocketlessHub(pub Arc<crate::trade::session::AccountSessions>);
+
+impl std::ops::Deref for SocketlessHub {
+    type Target = Arc<crate::trade::session::AccountSessions>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for SocketlessHub {
+    fn drop(&mut self) {
+        self.0.end_attached_leases();
+    }
+}
+
+/// The bridge's bare reconcile poke, named with the account it is for: what the tradehub's lease does across the
+/// wire (`ReconcileNow` names no account; the lease that reads it adds its own), for a rig that runs the node's fold
+/// over the in-process bridge lane. The forwarder ends when the bridge drops its sender or the manager is gone.
+pub fn named_pokes(named: Sender<String>, route_key: String) -> Sender<()> {
+    let (bare, pokes) = std::sync::mpsc::channel::<()>();
+    std::thread::Builder::new()
+        .name("gw-kit-pokes".into())
+        .spawn(move || while pokes.recv().is_ok() && named.send(route_key.clone()).is_ok() {})
+        .expect("spawn the poke forwarder");
+    bare
+}

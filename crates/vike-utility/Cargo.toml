@@ -1,0 +1,61 @@
+[package]
+name = "vike-utility"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+# NOT published. It was admitted to crates.io by decision 0071's addendum of 2026-11-16 and never
+# published (a dry run only); decision 0294 moved every formula to `vike-math`, which took its place as
+# the third published crate, and this crate returned to `publish = false` and to `deny.toml`'s private
+# exemption.
+publish = false
+license.workspace = true
+description = "vike trading core — the pure non-math HELPERS two or more crates used to copy, one home near the bottom of the graph (decision 0141, amended by 0294): the shared command-line layer over clap (`cli`, behind the off-by-default `cli` feature, decision 0155), the atomic whole-file replace and its two reads (`atomic_file`), a state file that cannot be read set aside beside itself (`unreadable_file::set_aside`), the one IEC byte-count display string (`bytes`), FNV-1a 64 (`fnv`), lowercase hex (`hex`), HTML escaping (`html`), the poisoned-mutex lock (`mutex::lock`), the one text form of an engine number (`number_text::format_number`), RFC 3986 percent-encoding (`percent`), the bounded oldest-first set of recent ids (`recent_set`), the last-of-each-run cut of an ordered list (`runs::keep_last_of_each_run`), the ask-again-after-a-pause ladder (`retry::retry_on_pauses`), one call on an abandoned helper thread with a deadline (`thread::bounded`) and a join bounded by a time limit (`thread::join_within`), a panic payload as text (`panic::payload_text`), the three readings of a URL string the network layers share (`url::url_authority`/`is_loopback_url`/`websocket_url_from_http`), the UTC civil calendar's two primitives and its two time-text reads (`calendar::civil_from_days`/`days_from_civil`, `parse_rfc3339_ms`/`parse_epoch_seconds_ms`), the one whole-period token bucket (`token_bucket::TokenBucket`), the one spelling of a closed word vocabulary (`word_enum!`) and the failure and refusal vocabulary (`errors`: `FailureOutcome`, `refusal_enum!`, `render_refusal`, `CarriedRefusal`); behind the off-by-default `serde` feature, the field names a derived `Deserialize` reads (`serde_fields::declared_fields`/`field_groups`); behind the off-by-default `test-support` feature, the shared libm-probe source parser (`libm_walk`, decision 0074). Every formula lives in vike-math (decision 0294). Named at the module, never re-exported at the root. No vike-* dependency and no unconditional dependency at all; clap is optional and enters only with the `cli` feature, serde only with the `serde` feature."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `util` — the
+# floor of pure non-math helpers below the market-data vocabulary (5), so every crate above can name them.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+# There is none: the one rank below is the formula floor (`vike-math`, 2), and nothing here needs it.
+[package.metadata.vike]
+layer = 3
+
+[dependencies]
+# The `cli` feature's one dependency (decision 0155): the command-line reader every program uses.
+# OPTIONAL and the feature is OFF by default, so a crate that names `vike-utility` for `hex` or `fnv`
+# does not compile `clap`; only a binary (or a `*_cli` module) that turns `cli` on does. The
+# workspace pin carries the reason and the exact feature set.
+clap = { workspace = true, optional = true }
+# The `serde` feature's one dependency: `serde_fields`, the field names a derived `Deserialize` reads,
+# asked of the derive. OPTIONAL and off by default, like `clap`: a crate that names `vike-utility` for
+# `hex` compiles no `serde` through it.
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+# `vike_utility::cli`: the shared rules every `clap`-read command line obeys (one error path and exit
+# code, a positional never echoed, the shared value parsers, the flag walk the reference is built
+# from, the docs-example parser). Off by default; named only by programs.
+cli = ["dep:clap"]
+# `vike_utility::libm_walk`, the shared source-text parser of every `libm_platform_probe` and of the
+# vike-ops source gates (decision 0074), gated `#[cfg(any(test, feature = "test-support"))]`. Empty: it
+# adds no dependency. A consumer turns it on through a DEV edge only; a normal edge enabling it would
+# ship the parser, and `crates/vike-ops/tests/architecture/test_surface_gate.rs` refuses one.
+test-support = []
+# `vike_utility::serde_fields` (`declared_fields`, `field_groups`): the names a derived `Deserialize`
+# reads, for vike-model's `ProfileRisk::keys`, vike-mcp's argument order and vike-backtest's
+# `profile.json`. Off by default; it adds `serde` and nothing else.
+serde = ["dep:serde"]
+
+[dev-dependencies]
+# dev-only: `atomic_file_tests.rs` and `unreadable_file_tests.rs` write real files under a scratch directory.
+tempfile = { workspace = true }
+# Self-referential dev-dep (the `vike-model`/`vike-ml-training` idiom): it turns `test-support` on for
+# THIS crate's own `tests/` targets (an integration test compiles the lib WITHOUT `cfg(test)`, so
+# `libm_walk` is visible to `tests/libm_platform_probe.rs` and `tests/libm_walk_selftest.rs` only
+# through the feature). It replaced a dev edge onto vike-model (10), which names this crate normally
+# and so closed a cycle for these test targets (decision 0074's amendment of 2026-11-22).
+# `crates/vike-ops/tests/architecture/layer_gate.rs` discounts a self-edge.
+vike-utility = { path = ".", features = ["test-support", "serde"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

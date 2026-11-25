@@ -1,0 +1,45 @@
+[package]
+name = "vike-ml-onnx-prediction"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike — runs a trained NEURAL NETWORK in pure Rust: an ONNX model, loaded from its bytes (or the base64 text a strategy file is handed) and optimised for one input shape, predicts with `tract`. No process spawn, no file read or write, no network, so a strategy FILE links it through the strategy template and predicts inside the jail. It answers `vike-ml-prediction`'s `Predictor` trait, the one prediction trait of every model kind; gradient-boosted trees are that crate's, training a network is research's."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain` — one hop over the
+# vocabulary: a single-purpose pure core. Its one vike-* edge is `vike-ml-prediction` (15), so 20 is its arithmetic
+# floor, as for `vike-ml-training` beside it (docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+# ⚠ A crate of its OWN, not a module of `vike-ml-prediction`, and the reason is the fence, not taste:
+# `vike-ml-prediction` is in the normal closure of the multicall binary that carries the gateway daemon
+# (through `vike-studio-core` and `vike-user-research`), so `tract` there would link a whole inference
+# runtime into the process that signs orders. Here only the strategy template names it, and
+# `crates/vike-ops/tests/architecture/named_run_closure_gate/gate.rs`'s
+# `no_binary_that_trades_links_the_onnx_runtime` holds that (decision 0089's addendum of 2026-11-16, W6).
+#
+#   tract-onnx — the pure-Rust ONNX runtime, pinned and argued in the root Cargo.toml.
+#   base64     — a strategy file is handed its model as TEXT (`vike_runs::read_model_text` encodes a run's
+#                `model.onnx` with the STANDARD engine); `OnnxModel::from_model_text` decodes it with the
+#                same engine. Already in the lockfile (the venue signers, `ureq`, `parquet`): no new package.
+tract-onnx = { workspace = true }
+base64 = { workspace = true }
+#   vike-ml-prediction — the `Predictor` trait and `PredictionKind` (`OnnxPredictor` answers them). Pure, no
+#                vike-* crate behind it, already in the strategy template: the edge points DOWN, and the
+#                runtime never reaches `vike-ml-prediction`'s consumers through it.
+vike-ml-prediction = { path = "../vike-ml-prediction" }
+
+[dev-dependencies]
+# TEST-ONLY: `prost::Message` encodes the fixtures' `tract_onnx::pb::ModelProto`s and decodes their weights
+# back for the reference forward pass (the same prost tract-onnx links); `libm` is that reference's
+# tanh (decision 0032), and `vike-math` its sigmoid, the workspace's one `special_functions::logistic`
+# (layer 2, libm only, already in this crate's closure through `vike-ml-prediction`).
+prost = { workspace = true }
+libm = { workspace = true }
+vike-math = { path = "../vike-math" }
+
+[lints]
+workspace = true

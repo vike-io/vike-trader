@@ -1,0 +1,397 @@
+{
+  "argv": [
+    "--profile",
+    "read-only",
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "prompts.read-only",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "prompts/list",
+        "params": {}
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "prompts": [
+            {
+              "arguments": [
+                {
+                  "description": "the strategy idea in one sentence, if you have one",
+                  "name": "idea",
+                  "required": false
+                }
+              ],
+              "description": "Author, validate and backtest a Rhai strategy end to end, using only the offline tools and the remote datahub — no node, no orders.",
+              "name": "backtest_a_strategy"
+            },
+            {
+              "arguments": [
+                {
+                  "description": "the venue id, e.g. binance / bybit / okx / hyperliquid",
+                  "name": "venue",
+                  "required": false
+                }
+              ],
+              "description": "Understand what actually arms a venue for live trading, and what this agent surface can and cannot do about it.",
+              "name": "enable_a_venue"
+            },
+            {
+              "arguments": [
+                {
+                  "description": "the order client id of the order in question, if known",
+                  "name": "order_client_id",
+                  "required": false
+                }
+              ],
+              "description": "Diagnose an order that is not behaving — read the node's state first, then act through the two-call preview gate.",
+              "name": "triage_a_stuck_order"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "prompts/get",
+        "params": {
+          "arguments": {
+            "idea": "buy the dip"
+          },
+          "name": "backtest_a_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "description": "Author, validate and backtest a Rhai strategy end to end, using only the offline tools and the remote datahub — no node, no orders.",
+          "messages": [
+            {
+              "content": {
+                "text": {
+                  "<lines>": [
+                    "⚠ THIS SESSION SERVES NO ORDER-WRITE TOOL. The server is running under the `read-only` tool profile, so every write tool named below is absent from `tools/list` and is refused if called: nothing you do here can place, modify or cancel an order. Only the OPERATOR can change that, by restarting the server with `--profile full` in the MCP client's launch command — so where a step below says to act, READ and REPORT instead, and say plainly what a human would have to run.",
+                    "",
+                    "Backtest buy the dip, in this order. Every tool here is offline or read-only; none of it can place an order.",
+                    "",
+                    "1. `list_indicators` with no arguments for the compact roster of what a Rhai strategy can actually CALL, then again with `name` or `category` for the ones you want in full. ⚠ This is NOT the whole indicator registry: a script calling a name the host does not bind compiles fine and then fails on EVERY bar, so the strategy looks mounted and never trades. If a name you want is missing, ask `list_indicators` for it by `name` — the answer says why it is held back.",
+                    "2. `list_templates` for starter strategies. Each is parameterised with `param(name, default)` so it drops straight into a sweep.",
+                    "3. Write the strategy, then `validate_strategy`. A compile error comes back as `ok: false` with the message, not as a tool error — read it and fix the script.",
+                    "4. `discover_params` to see the knobs the script declares, so the profile's `[strategy.params]` and any `[paramscan]` grid name keys that exist.",
+                    "5. `list_series` for what data the datahub actually holds — `{kind, venue, symbol, interval, first_ts, last_ts, rows}` — and pick a `[data]` range inside the coverage it reports. `list_strategies` for the strategy files the daemon holds, if you would rather name one as `[strategy] file` than write a script.",
+                    "6. `run_backtest` with the profile TOML, its `[strategy] file` naming a strategy file the daemon holds. There is no inline script: the one you wrote runs once a person puts it in the daemon's strategies/ folder. The report is also readable afterwards as the `vike://backtest/last` resource, for the rest of this session only.",
+                    "7. If the result looks good, do NOT stop there. `run_sweep` shows whether it survives its own parameter grid, and `run_walk_forward` shows whether it survives out of sample. A single in-sample backtest is the weakest evidence this server can produce.",
+                    "8. Read `run_walk_forward`'s two forms as two different claims. With `n_splits` alone it trades YOUR parameters in every window — evidence that those settings held up, and nothing about a procedure. With `search = \"paramscan\"` in `[walkforward]` each window re-fits on its own training half and trades only its winner, which is the claim people usually mean by \"walk-forward\". Run BOTH and report the pair: the no-search control is the only thing that says whether the fitting bought anything, and on our own data it has come back saying it bought nothing.",
+                    "",
+                    "Report the numbers you got, including the bad ones."
+                  ]
+                },
+                "type": "text"
+              },
+              "role": "user"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "prompts/get",
+        "params": {
+          "name": "backtest_a_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "description": "Author, validate and backtest a Rhai strategy end to end, using only the offline tools and the remote datahub — no node, no orders.",
+          "messages": [
+            {
+              "content": {
+                "text": {
+                  "<lines>": [
+                    "⚠ THIS SESSION SERVES NO ORDER-WRITE TOOL. The server is running under the `read-only` tool profile, so every write tool named below is absent from `tools/list` and is refused if called: nothing you do here can place, modify or cancel an order. Only the OPERATOR can change that, by restarting the server with `--profile full` in the MCP client's launch command — so where a step below says to act, READ and REPORT instead, and say plainly what a human would have to run.",
+                    "",
+                    "Backtest the strategy idea you were given, in this order. Every tool here is offline or read-only; none of it can place an order.",
+                    "",
+                    "1. `list_indicators` with no arguments for the compact roster of what a Rhai strategy can actually CALL, then again with `name` or `category` for the ones you want in full. ⚠ This is NOT the whole indicator registry: a script calling a name the host does not bind compiles fine and then fails on EVERY bar, so the strategy looks mounted and never trades. If a name you want is missing, ask `list_indicators` for it by `name` — the answer says why it is held back.",
+                    "2. `list_templates` for starter strategies. Each is parameterised with `param(name, default)` so it drops straight into a sweep.",
+                    "3. Write the strategy, then `validate_strategy`. A compile error comes back as `ok: false` with the message, not as a tool error — read it and fix the script.",
+                    "4. `discover_params` to see the knobs the script declares, so the profile's `[strategy.params]` and any `[paramscan]` grid name keys that exist.",
+                    "5. `list_series` for what data the datahub actually holds — `{kind, venue, symbol, interval, first_ts, last_ts, rows}` — and pick a `[data]` range inside the coverage it reports. `list_strategies` for the strategy files the daemon holds, if you would rather name one as `[strategy] file` than write a script.",
+                    "6. `run_backtest` with the profile TOML, its `[strategy] file` naming a strategy file the daemon holds. There is no inline script: the one you wrote runs once a person puts it in the daemon's strategies/ folder. The report is also readable afterwards as the `vike://backtest/last` resource, for the rest of this session only.",
+                    "7. If the result looks good, do NOT stop there. `run_sweep` shows whether it survives its own parameter grid, and `run_walk_forward` shows whether it survives out of sample. A single in-sample backtest is the weakest evidence this server can produce.",
+                    "8. Read `run_walk_forward`'s two forms as two different claims. With `n_splits` alone it trades YOUR parameters in every window — evidence that those settings held up, and nothing about a procedure. With `search = \"paramscan\"` in `[walkforward]` each window re-fits on its own training half and trades only its winner, which is the claim people usually mean by \"walk-forward\". Run BOTH and report the pair: the no-search control is the only thing that says whether the fitting bought anything, and on our own data it has come back saying it bought nothing.",
+                    "",
+                    "Report the numbers you got, including the bad ones."
+                  ]
+                },
+                "type": "text"
+              },
+              "role": "user"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "prompts/get",
+        "params": {
+          "arguments": {
+            "venue": "binance"
+          },
+          "name": "enable_a_venue"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "description": "Understand what actually arms a venue for live trading, and what this agent surface can and cannot do about it.",
+          "messages": [
+            {
+              "content": {
+                "text": {
+                  "<lines>": [
+                    "⚠ THIS SESSION SERVES NO ORDER-WRITE TOOL. The server is running under the `read-only` tool profile, so every write tool named below is absent from `tools/list` and is refused if called: nothing you do here can place, modify or cancel an order. Only the OPERATOR can change that, by restarting the server with `--profile full` in the MCP client's launch command — so where a step below says to act, READ and REPORT instead, and say plainly what a human would have to run.",
+                    "",
+                    "You have been asked about arming binance for live trading. Read this before doing anything.",
+                    "",
+                    "⚠ THIS AGENT SURFACE CANNOT ARM A VENUE, and that is deliberate. Arming is a settings-database write and a credential decision a human makes; there is no tool here that does it, and there should not be.",
+                    "",
+                    "What actually decides, in the order the mount consults it:",
+                    "",
+                    "1. The ACCOUNT ROW: binance's row in the settings database's account table, with its `tier` (`paper` | `demo` | `live`) and its `active` flag. An ACTIVE row runs at exactly its own tier: `paper` is the paper simulator, `demo` and `live` are the venue. No row or an inactive row is NOT RUNNING: that account's orders are refused with the reason, and nothing trades on paper in its place. `vike-cli account ls` lists the rows with their ids, and a human changes them with `vike-cli account add --venue binance --tier <tier> --no-label`, `vike-cli account set-tier --id N --tier <tier>`, `vike-cli account activate --id N` and `vike-cli account deactivate --id N`. The running tradehub follows the row by itself within about a second, with no restart and no other account touched. ⚠ Deactivating, or changing the tier, cancels that account's resting orders and leaves its position open at the venue with nothing watching it: close it first. ⚠ For binance, bybit, okx and hyperliquid tier `live` means MAINNET, so an active `live` row with that venue's LIVE keys in the store is real money: a deliberate choice, never a default. Two ACTIVE rows of one venue and label at `demo` AND `live` trade neither: that account is NOT RUNNING until one is deactivated.",
+                    "2. The credentials of that account. Absent credentials ARE the live gate: the account is NOT RUNNING, and its orders are refused. A credential belongs to its ACCOUNT ROW and saving one never creates a row or chooses a tier: the human writes each field against the row with `vike-cli secrets set --id N <FIELD>` (the value on stdin). `vike-cli secrets path` prints which store this project resolves to and `vike-cli secrets ls` prints the account rows and the key NAMES in it (never the values).",
+                    "",
+                    "So the human's job is: leave exactly ONE active row of that venue at the tier they mean (and deactivate or re-tier the others) and put that account's key set in the store. Each of those writes is what starts the account. A restart is for the one that says so: an account listed NOT RUNNING with `restart required to start`, or a `live` account while `flags.tradehub_live` is off, which is read at start. Yours is to tell them which of the two is missing.",
+                    "",
+                    "What you CAN do here, once someone else has armed it:",
+                    "- `health_node` to read which accounts run, at which tier, and why one is NOT RUNNING.",
+                    "- `node_snapshot` (or the `vike://node/snapshot` resource) to read what the node is actually doing.",
+                    "- `set_trading_state` to move every account on the node between `active` / `reducing` / `halted`. ⚠ That is the KILL SWITCH, not an arming control — it is a write tool and goes through the gate below like any other.",
+                    "",
+                    ""
+                  ]
+                },
+                "type": "text"
+              },
+              "role": "user"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "prompts/get",
+        "params": {
+          "name": "enable_a_venue"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "description": "Understand what actually arms a venue for live trading, and what this agent surface can and cannot do about it.",
+          "messages": [
+            {
+              "content": {
+                "text": {
+                  "<lines>": [
+                    "⚠ THIS SESSION SERVES NO ORDER-WRITE TOOL. The server is running under the `read-only` tool profile, so every write tool named below is absent from `tools/list` and is refused if called: nothing you do here can place, modify or cancel an order. Only the OPERATOR can change that, by restarting the server with `--profile full` in the MCP client's launch command — so where a step below says to act, READ and REPORT instead, and say plainly what a human would have to run.",
+                    "",
+                    "You have been asked about arming <venue> for live trading. Read this before doing anything.",
+                    "",
+                    "⚠ THIS AGENT SURFACE CANNOT ARM A VENUE, and that is deliberate. Arming is a settings-database write and a credential decision a human makes; there is no tool here that does it, and there should not be.",
+                    "",
+                    "What actually decides, in the order the mount consults it:",
+                    "",
+                    "1. The ACCOUNT ROW: <venue>'s row in the settings database's account table, with its `tier` (`paper` | `demo` | `live`) and its `active` flag. An ACTIVE row runs at exactly its own tier: `paper` is the paper simulator, `demo` and `live` are the venue. No row or an inactive row is NOT RUNNING: that account's orders are refused with the reason, and nothing trades on paper in its place. `vike-cli account ls` lists the rows with their ids, and a human changes them with `vike-cli account add --venue <venue> --tier <tier> --no-label`, `vike-cli account set-tier --id N --tier <tier>`, `vike-cli account activate --id N` and `vike-cli account deactivate --id N`. The running tradehub follows the row by itself within about a second, with no restart and no other account touched. ⚠ Deactivating, or changing the tier, cancels that account's resting orders and leaves its position open at the venue with nothing watching it: close it first. ⚠ For binance, bybit, okx and hyperliquid tier `live` means MAINNET, so an active `live` row with that venue's LIVE keys in the store is real money: a deliberate choice, never a default. Two ACTIVE rows of one venue and label at `demo` AND `live` trade neither: that account is NOT RUNNING until one is deactivated.",
+                    "2. The credentials of that account. Absent credentials ARE the live gate: the account is NOT RUNNING, and its orders are refused. A credential belongs to its ACCOUNT ROW and saving one never creates a row or chooses a tier: the human writes each field against the row with `vike-cli secrets set --id N <FIELD>` (the value on stdin). `vike-cli secrets path` prints which store this project resolves to and `vike-cli secrets ls` prints the account rows and the key NAMES in it (never the values).",
+                    "",
+                    "So the human's job is: leave exactly ONE active row of that venue at the tier they mean (and deactivate or re-tier the others) and put that account's key set in the store. Each of those writes is what starts the account. A restart is for the one that says so: an account listed NOT RUNNING with `restart required to start`, or a `live` account while `flags.tradehub_live` is off, which is read at start. Yours is to tell them which of the two is missing.",
+                    "",
+                    "What you CAN do here, once someone else has armed it:",
+                    "- `health_node` to read which accounts run, at which tier, and why one is NOT RUNNING.",
+                    "- `node_snapshot` (or the `vike://node/snapshot` resource) to read what the node is actually doing.",
+                    "- `set_trading_state` to move every account on the node between `active` / `reducing` / `halted`. ⚠ That is the KILL SWITCH, not an arming control — it is a write tool and goes through the gate below like any other.",
+                    "",
+                    ""
+                  ]
+                },
+                "type": "text"
+              },
+              "role": "user"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "method": "prompts/get",
+        "params": {
+          "arguments": {
+            "order_client_id": "c-42"
+          },
+          "name": "triage_a_stuck_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {
+          "description": "Diagnose an order that is not behaving — read the node's state first, then act through the two-call preview gate.",
+          "messages": [
+            {
+              "content": {
+                "text": {
+                  "<lines>": [
+                    "⚠ THIS SESSION SERVES NO ORDER-WRITE TOOL. The server is running under the `read-only` tool profile, so every write tool named below is absent from `tools/list` and is refused if called: nothing you do here can place, modify or cancel an order. Only the OPERATOR can change that, by restarting the server with `--profile full` in the MCP client's launch command — so where a step below says to act, READ and REPORT instead, and say plainly what a human would have to run.",
+                    "",
+                    "Triage the order with order_client_id \"c-42\". READ FIRST — every step below that changes anything is a write tool behind the two-call gate.",
+                    "",
+                    "1. `node_snapshot` (or read the `vike://node/snapshot` resource). Find the order in the live order list and look at its state, its filled quantity and the recent events. Report what you SEE before proposing anything.",
+                    "2. Decide which of these it actually is, because they need opposite responses:",
+                    "   - RESTING and simply not filling — the price is away from the market. `modify_order` its price or `cancel_order` it. Nothing is wrong.",
+                    "   - GONE from the node but believed live at the venue, or present at the venue and not on the node — that is a reconciliation divergence, not a stuck order. Do NOT paper over it by submitting a replacement: you would double the position. Report it.",
+                    "   - Its outcome came back UNKNOWN (the node did not answer in time, or the control connection dropped). ⚠ The command MAY HAVE EXECUTED. Read `node_snapshot` again BEFORE retrying anything — a retry here is how one order becomes two. A dropped connection is reopened by your next call; nothing needs restarting, and `node_snapshot` errors rather than answering from a stale frame while it is down. ⚠ A link that dies silently (a sleeping laptop, an ssh tunnel without ServerAliveInterval) is noticed only once the node's heartbeat has been missing for about 45 s, and never on a node too old to send one: until then `node_snapshot` answers its last frame as live. If the picture never changes while the node should be trading, say so and have the operator check the tunnel rather than trusting it.",
+                    "3. Only then act, one command at a time, re-reading `node_snapshot` between them. Put your reasoning in each write tool's `reason` argument; it lands in the node's audit trail.",
+                    "",
+                    "⚠ `close_all` cancels every live order and flattens every position. It is the panic button, not a triage step. Do not reach for it because one order is confusing. Naming a `venue`, it needs the `account` too wherever the node has more than one account of that venue; only with no venue does it reach the whole node.",
+                    "",
+                    ""
+                  ]
+                },
+                "type": "text"
+              },
+              "role": "user"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "prompts/get",
+        "params": {
+          "name": "triage_a_stuck_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "description": "Diagnose an order that is not behaving — read the node's state first, then act through the two-call preview gate.",
+          "messages": [
+            {
+              "content": {
+                "text": {
+                  "<lines>": [
+                    "⚠ THIS SESSION SERVES NO ORDER-WRITE TOOL. The server is running under the `read-only` tool profile, so every write tool named below is absent from `tools/list` and is refused if called: nothing you do here can place, modify or cancel an order. Only the OPERATOR can change that, by restarting the server with `--profile full` in the MCP client's launch command — so where a step below says to act, READ and REPORT instead, and say plainly what a human would have to run.",
+                    "",
+                    "Triage an order that is not behaving. READ FIRST — every step below that changes anything is a write tool behind the two-call gate.",
+                    "",
+                    "1. `node_snapshot` (or read the `vike://node/snapshot` resource). Find the order in the live order list and look at its state, its filled quantity and the recent events. Report what you SEE before proposing anything.",
+                    "2. Decide which of these it actually is, because they need opposite responses:",
+                    "   - RESTING and simply not filling — the price is away from the market. `modify_order` its price or `cancel_order` it. Nothing is wrong.",
+                    "   - GONE from the node but believed live at the venue, or present at the venue and not on the node — that is a reconciliation divergence, not a stuck order. Do NOT paper over it by submitting a replacement: you would double the position. Report it.",
+                    "   - Its outcome came back UNKNOWN (the node did not answer in time, or the control connection dropped). ⚠ The command MAY HAVE EXECUTED. Read `node_snapshot` again BEFORE retrying anything — a retry here is how one order becomes two. A dropped connection is reopened by your next call; nothing needs restarting, and `node_snapshot` errors rather than answering from a stale frame while it is down. ⚠ A link that dies silently (a sleeping laptop, an ssh tunnel without ServerAliveInterval) is noticed only once the node's heartbeat has been missing for about 45 s, and never on a node too old to send one: until then `node_snapshot` answers its last frame as live. If the picture never changes while the node should be trading, say so and have the operator check the tunnel rather than trusting it.",
+                    "3. Only then act, one command at a time, re-reading `node_snapshot` between them. Put your reasoning in each write tool's `reason` argument; it lands in the node's audit trail.",
+                    "",
+                    "⚠ `close_all` cancels every live order and flattens every position. It is the panic button, not a triage step. Do not reach for it because one order is confusing. Naming a `venue`, it needs the `account` too wherever the node has more than one account of that venue; only with no venue does it reach the whole node.",
+                    "",
+                    ""
+                  ]
+                },
+                "type": "text"
+              },
+              "role": "user"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "method": "prompts/get",
+        "params": {
+          "name": "no_such_prompt"
+        }
+      }
+    },
+    {
+      "recv": {
+        "error": {
+          "code": -32602,
+          "message": "unknown prompt: \"no_such_prompt\" — call prompts/list for what this server serves"
+        },
+        "id": 8,
+        "jsonrpc": "2.0"
+      }
+    },
+    {
+      "send": {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "method": "prompts/get",
+        "params": {}
+      }
+    },
+    {
+      "recv": {
+        "error": {
+          "code": -32602,
+          "message": "unknown prompt: \"\" — call prompts/list for what this server serves"
+        },
+        "id": 9,
+        "jsonrpc": "2.0"
+      }
+    }
+  ],
+  "what": "`prompts/list` and `prompts/get`, full text"
+}

@@ -1,0 +1,66 @@
+[package]
+name = "vike-docs"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The docs-data exporter: renders the CI-gated per-venue capability tables, the indicator registries, the shipped strategy files' headers and the remaining CI-gated rosters into the venues/stats/indicators/templates/rosters JSON release assets the documentation site consumes. A renderer over compile-time tables and the strategy folder its caller names — no network, no settings, no environment reads; the `docs_data` bin is its file-writing shell."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain-stacked` — a
+# crate composed of layer-20 pieces.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+#
+# 25 is the ARITHMETIC FLOOR (decision 0085: the rank follows what the crate declares): the layer-20
+# pieces (`vike-strategy`/`vike-data`/`vike-execution`/`vike-catalog`) are the ceiling, with
+# `vike-indicators` at 15, `vike-venues` at 12, `vike-model` at 10 and `vike-utility` at 3 under them.
+# It read 25 while the latency budget was a copy pinned by a text-parsing gate, then 35 from 2026-10-13
+# while it read that budget from `vike-core` (30); since 2026-11-22 the budget is declared in
+# `vike-execution` (`crates/vike-execution/src/latency_budget.rs`), the one home both readers link, so
+# the `vike-core` edge is gone and the rank is back at its floor with no copy. Nothing depends on this
+# crate — its one consumer is `.github/workflows/release.yml`, which RUNS the `docs_data` bin — so
+# there is no ceiling above it to fit under.
+[package.metadata.vike]
+layer = 25
+
+[dependencies]
+# The domain vocabulary every record is rendered from: `VENUES`, `AssetClass`, `FeeSchedule`, the
+# `Event` table's authority.
+vike-model = { path = "../vike-model" }
+# The per-venue tables the exporter renders (decision 0162): `capabilities_for`, `venue_margin_support`,
+# `fee_schedule_for`, `amend_semantics`, `attribution_for`, and `venue_time_in_force::venue_time_in_force`, the TIF authority.
+vike-venues = { path = "../vike-venues" }
+# The JSON the exporter writes (workspace-pinned).
+serde_json = { workspace = true }
+# The built-in indicator + pair registries `indicators.json` renders (layer 15).
+vike-indicators = { path = "../vike-indicators" }
+# `file::scan::scan` and the header types (`StrategyFileHeader`, `ParamType`, `StrategyFileRunsOn`)
+# the shipped strategy files are read through for `templates.json` and `stats.json` (layer 20).
+vike-strategy = { path = "../vike-strategy" }
+# `rosters.json`: the hist store's layout contract (`vike_data::store::store_kind::STORE_KINDS`). The
+# `HistoryStore` trait side only, so this crate never pulls `vike-store`'s Arrow/DataFusion tree.
+vike-data = { path = "../vike-data" }
+# `rosters.json`: `vike_execution::recon`'s `ReconcilePolicy` presets and the `mode_applies` each reconcile
+# policy's verdict is COMPUTED through (the kinds and the policy words are `vike-model`'s). `stats.json`'s `latency_p99_budget_ns`:
+# `vike_execution::latency_budget::P99_BUDGET_NS`, the one constant the latency gate
+# (`crates/vike-core/tests/runtime_latency.rs`) asserts against (ungated: no feature needed).
+# No default features: nothing here names a lane sender (`runtime`).
+vike-execution = { path = "../vike-execution", default-features = false }
+# `rosters.json`: the per-class Symbol-picker TAB (`vike_catalog::tab_for`) — the one part of the
+# asset-class roster that is a GUI judgement rather than an instrument fact, so it stayed in the
+# catalog when `AssetClass` moved down to `vike-model`. Layer 20.
+vike-catalog = { path = "../vike-catalog" }
+# The `docs_data` bin reads its argv through `vike_utility::cli` over `clap` (decision 0155): the shared command-line
+# layer (layer 3, the floor) and the derive.
+vike-utility = { path = "../vike-utility", features = ["cli"] }
+clap = { workspace = true }
+
+# The file-writing shell `.github/workflows/release.yml`'s "Render the docs-data assets" step runs.
+# Declared rather than left to auto-discovery so the NAME the release step spells is written down
+# beside the crate that owns it.
+[[bin]]
+name = "docs_data"
+path = "src/bin/docs_data.rs"
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

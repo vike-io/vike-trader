@@ -1,0 +1,335 @@
+{
+  "argv": [
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "gate.no_node.mount_strategy",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "interval": "1m",
+            "mount_id": "sim__BTCUSDT__1m",
+            "strategy": "spread_maker.rs",
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "mount_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "guardrail": {
+              "note": "no order size to check for this verb",
+              "within_limits": true
+            },
+            "node_verdict": null,
+            "note": "PREVIEW ONLY — nothing was sent. ⚠ THE NODE WAS NOT ASKED (no node configured, no control key, or unreachable), so `guardrail` is an UNVERIFIED CLIENT-SIDE ESTIMATE — and it cannot size a market order at all, because a market order carries no price. Do not read it as approval. To execute, call again with BOTH \"confirm\": true AND this exact \"preview_token\". The token fires once, expires after 60s, and is bound to THIS command. The node's ControlLimits + RiskGate remain the enforcing gate regardless.",
+            "preview_token": "pv-1",
+            "reason": null,
+            "tier": null,
+            "tier_unread": "error [dial.node.unset]: no vike-tradehub to dial: no --node <host:port> was given and this box's config.node_addr row is not set. `vike-cli backend connect` attaches this box to a node and writes the row (or `vike-cli config set config.node_addr HOST:PORT`). Treat this account as live.",
+            "tool": "mount_strategy",
+            "venue_check": "unverified",
+            "verified_by_node": false,
+            "will_execute": false,
+            "wire_command": {
+              "MountStrategy": {
+                "controller_id": "sim__BTCUSDT__1m",
+                "file": "spread_maker.rs",
+                "interval": "1m",
+                "name": null,
+                "params": {},
+                "rhai": null,
+                "symbol": "BTCUSDT",
+                "venue": "sim"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "confirm": true,
+            "interval": "1m",
+            "mount_id": "sim__BTCUSDT__1m",
+            "strategy": "spread_maker.rs",
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "mount_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "guardrail": {
+              "note": "no order size to check for this verb",
+              "within_limits": true
+            },
+            "node_verdict": null,
+            "note": "PREVIEW ONLY — nothing was sent. ⚠ THE NODE WAS NOT ASKED (no node configured, no control key, or unreachable), so `guardrail` is an UNVERIFIED CLIENT-SIDE ESTIMATE — and it cannot size a market order at all, because a market order carries no price. Do not read it as approval. To execute, call again with BOTH \"confirm\": true AND this exact \"preview_token\". The token fires once, expires after 60s, and is bound to THIS command. The node's ControlLimits + RiskGate remain the enforcing gate regardless.",
+            "preview_token": "pv-2",
+            "reason": null,
+            "tier": null,
+            "tier_unread": "error [dial.node.unset]: no vike-tradehub to dial: no --node <host:port> was given and this box's config.node_addr row is not set. `vike-cli backend connect` attaches this box to a node and writes the row (or `vike-cli config set config.node_addr HOST:PORT`). Treat this account as live.",
+            "tool": "mount_strategy",
+            "venue_check": "unverified",
+            "verified_by_node": false,
+            "will_execute": false,
+            "wire_command": {
+              "MountStrategy": {
+                "controller_id": "sim__BTCUSDT__1m",
+                "file": "spread_maker.rs",
+                "interval": "1m",
+                "name": null,
+                "params": {},
+                "rhai": null,
+                "symbol": "BTCUSDT",
+                "venue": "sim"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "confirm": true,
+            "interval": "1m",
+            "mount_id": "sim__BTCUSDT__1m",
+            "preview_token": "pv-junk",
+            "strategy": "spread_maker.rs",
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "mount_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "preview_token \"pv-junk\" is unknown or already used — a token fires at most once. Call this tool WITHOUT `confirm` to get a fresh preview, then confirm with the `preview_token` it returns.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "interval": "1m",
+            "mount_id": "sim__BTCUSDT__1m",
+            "preview_token": "pv-2",
+            "strategy": "spread_maker.rs",
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "mount_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "guardrail": {
+              "note": "no order size to check for this verb",
+              "within_limits": true
+            },
+            "node_verdict": null,
+            "note": "PREVIEW ONLY — nothing was sent. ⚠ THE NODE WAS NOT ASKED (no node configured, no control key, or unreachable), so `guardrail` is an UNVERIFIED CLIENT-SIDE ESTIMATE — and it cannot size a market order at all, because a market order carries no price. Do not read it as approval. To execute, call again with BOTH \"confirm\": true AND this exact \"preview_token\". The token fires once, expires after 60s, and is bound to THIS command. The node's ControlLimits + RiskGate remain the enforcing gate regardless.",
+            "preview_token": "pv-3",
+            "reason": null,
+            "tier": null,
+            "tier_unread": "error [dial.node.unset]: no vike-tradehub to dial: no --node <host:port> was given and this box's config.node_addr row is not set. `vike-cli backend connect` attaches this box to a node and writes the row (or `vike-cli config set config.node_addr HOST:PORT`). Treat this account as live.",
+            "tool": "mount_strategy",
+            "venue_check": "unverified",
+            "verified_by_node": false,
+            "will_execute": false,
+            "wire_command": {
+              "MountStrategy": {
+                "controller_id": "sim__BTCUSDT__1m",
+                "file": "spread_maker.rs",
+                "interval": "1m",
+                "name": null,
+                "params": {},
+                "rhai": null,
+                "symbol": "BTCUSDT",
+                "venue": "sim"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "confirm": true,
+            "interval": "5m",
+            "mount_id": "sim__BTCUSDT__1m",
+            "preview_token": "pv-1",
+            "strategy": "spread_maker.rs",
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "mount_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "preview_token does not match this command — it was issued for a DIFFERENT one, and a token is bound to what it previewed. Preview the command you intend to send, then confirm with THAT token.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "confirm": true,
+            "interval": "1m",
+            "mount_id": "sim__BTCUSDT__1m",
+            "preview_token": "pv-2",
+            "strategy": "spread_maker.rs",
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "mount_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [dial.node.unset]: no vike-tradehub to dial: no --node <host:port> was given and this box's config.node_addr row is not set. `vike-cli backend connect` attaches this box to a node and writes the row (or `vike-cli config set config.node_addr HOST:PORT`)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "confirm": true,
+            "interval": "1m",
+            "mount_id": "sim__BTCUSDT__1m",
+            "preview_token": "pv-2",
+            "strategy": "spread_maker.rs",
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "mount_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "preview_token \"pv-2\" is unknown or already used — a token fires at most once. Call this tool WITHOUT `confirm` to get a fresh preview, then confirm with the `preview_token` it returns.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "what": "the preview gate on one write tool with no node: every token shape, in order"
+}

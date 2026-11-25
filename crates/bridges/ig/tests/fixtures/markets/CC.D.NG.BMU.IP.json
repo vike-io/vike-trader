@@ -1,0 +1,118 @@
+{
+ "dealingRules": {
+  "controlledRiskSpacing": {
+   "unit": "POINTS",
+   "value": 10.0
+  },
+  "marketOrderPreference": "AVAILABLE_DEFAULT_OFF",
+  "maxStopOrLimitDistance": {
+   "unit": "PERCENTAGE",
+   "value": 75.0
+  },
+  "minControlledRiskStopDistance": {
+   "unit": "POINTS",
+   "value": 10.0
+  },
+  "minDealSize": {
+   "unit": "POINTS",
+   "value": 0.5
+  },
+  "minNormalStopOrLimitDistance": {
+   "unit": "POINTS",
+   "value": 10.0
+  },
+  "minStepDistance": {
+   "unit": "POINTS",
+   "value": 10.0
+  },
+  "trailingStopsPreference": "AVAILABLE"
+ },
+ "instrument": {
+  "chartCode": null,
+  "contractSize": "1",
+  "controlledRiskAllowed": true,
+  "country": null,
+  "currencies": [
+   {
+    "baseExchangeRate": 1.0,
+    "code": "USD",
+    "exchangeRate": 0.66,
+    "isDefault": true,
+    "symbol": "$"
+   }
+  ],
+  "epic": "CC.D.NG.BMU.IP",
+  "expiry": "-",
+  "expiryDetails": null,
+  "forceOpenAllowed": true,
+  "limitedRiskPremium": {
+   "unit": "POINTS",
+   "value": 5
+  },
+  "lotSize": 1.0,
+  "marginDepositBands": [
+   {
+    "currency": "USD",
+    "margin": 3,
+    "max": 670,
+    "min": 0
+   },
+   {
+    "currency": "USD",
+    "margin": 9,
+    "max": 1340,
+    "min": 670
+   },
+   {
+    "currency": "USD",
+    "margin": 15.5,
+    "max": 2010,
+    "min": 1340
+   },
+   {
+    "currency": "USD",
+    "margin": 17.5,
+    "max": null,
+    "min": 2010
+   }
+  ],
+  "marginFactor": 3,
+  "marginFactorUnit": "PERCENTAGE",
+  "marketId": "NG",
+  "name": "Natural Gas ($1)",
+  "newsCode": "NGS",
+  "onePipMeans": "0.001 $ per MMBtu",
+  "openingHours": null,
+  "rolloverDetails": null,
+  "slippageFactor": {
+   "unit": "pct",
+   "value": 100.0
+  },
+  "specialInfo": [
+   "DEFAULT KNOCK OUT LEVEL DISTANCE",
+   "MAX KNOCK OUT LEVEL DISTANCE"
+  ],
+  "sprintMarketsMaximumExpiryTime": null,
+  "sprintMarketsMinimumExpiryTime": null,
+  "stopsLimitsAllowed": true,
+  "streamingPricesAvailable": true,
+  "type": "COMMODITIES",
+  "unit": "CONTRACTS",
+  "valueOfOnePip": "1.00"
+ },
+ "snapshot": {
+  "bid": 2951,
+  "binaryOdds": null,
+  "controlledRiskExtraSpread": null,
+  "decimalPlacesFactor": 0,
+  "delayTime": 0,
+  "high": 2975,
+  "low": 2950,
+  "marketStatus": "TRADEABLE",
+  "netChange": -15,
+  "offer": 2954,
+  "percentageChange": -0.51,
+  "scalingFactor": 1,
+  "updateTime": "19:50:05"
+ }
+}

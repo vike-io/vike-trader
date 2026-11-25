@@ -1,0 +1,139 @@
+//! `secret` — [`Secret<T>`], a value that never prints.
+//!
+//! # The contract
+//!
+//! A `Secret<T>` holds a credential VALUE (an API secret, a private key, an HMAC key) and makes the
+//! one thing that leaks values by accident — formatting — impossible to do by accident:
+//!
+//! - `Debug` prints `Secret(<redacted>)` and nothing of the value, so a derived `Debug` on a struct
+//!   that carries one, a `{:?}` in a log line or a panic message, and an `Option<Secret<_>>` all
+//!   stay redacted without anybody remembering to hand-write anything;
+//! - there is NO `Display` and NO `Serialize`, so the value cannot reach a log line, a UI string or
+//!   a wire document except through [`Secret::expose`] / [`Secret::into_inner`], which are the two
+//!   names a reviewer greps for.
+//!
+//! `vike_secrets::credentials::Credentials` carries its three values as `Secret<String>`, read
+//! through [`Secret::expose`] at each signer and header. The redacting `Debug`s written by hand so
+//! far (`Credentials`' — a test pins its four-character key tail — `CredentialMap`'s, `HubKeys`') stay
+//! as they are; this is the shared shape new credential-carrying types take, so the next one is not
+//! a fourth hand-written `Debug`.
+//!
+//! # A provider key: [`Secret::non_blank`] and [`Secret::redact`]
+//!
+//! A key read for a provider (the datahub's tool feeds, oanda's history token) enters through
+//! [`Secret::non_blank`], which trims and refuses a blank value, and every string that came back
+//! off the wire passes [`Secret::redact`] before it can become an error or a log line.
+//!
+//! # Equality is by VALUE and is NOT constant-time
+//!
+//! `PartialEq`/`Eq` compare the wrapped values with `T`'s own `==`, which short-circuits on the first
+//! differing byte. That is fine for what this type is for (keeping a value out of formatted output)
+//! and wrong for verifying a presented secret against a stored one over a network, where the timing
+//! of a mismatch is an oracle. A MAC or token check must use a constant-time comparison of its own
+//! (the hub-key handshake verifies an HMAC, never a raw `==`); nothing here provides one.
+//!
+//! # A key's fingerprint: [`key_tail`]
+//!
+//! A hand-written redacting `Debug` (the signers', `Credentials`', an incident bundle's environment
+//! dump) shows a KEY as `***` and its last four characters, so two keys can be told apart in a log
+//! without either being readable. [`key_tail`] is the one cut, counted in CHARACTERS: a byte slice
+//! `&key[key.len() - 4..]` panics on a key that holds a multibyte character.
+//!
+//! # No secret value enters this crate
+//!
+//! This module defines the TYPE and the one cut above and nothing else: no function here reads,
+//! stores or loads a value ([`key_tail`] cuts a string its caller already holds), so `vike-model`
+//! keeps the rule `vike-venues`' `credential_keys` module states — names only, never a value.
+
+/// A value that never prints. See the module doc for the contract.
+///
+/// ```
+/// use vike_model::secret::Secret;
+/// let key = Secret::new(String::from("hunter2"));
+/// assert_eq!(format!("{key:?}"), "Secret(<redacted>)");
+/// assert_eq!(key.expose(), "hunter2");
+/// ```
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret<T>(T);
+
+impl<T> Secret<T> {
+    /// Wrap `value`.
+    #[must_use]
+    pub fn new(value: T) -> Self {
+        Secret(value)
+    }
+
+    /// The value, borrowed — the ONE read door. Every call site is a place the value is handed to
+    /// something that will use it (a signer, a request header), and is named so a review can find it.
+    #[must_use]
+    pub fn expose(&self) -> &T {
+        &self.0
+    }
+
+    /// The value, by move — [`Secret::expose`] for a consumer that needs ownership.
+    #[must_use]
+    pub fn into_inner(self) -> T {
+        self.0
+    }
+}
+
+impl Secret<String> {
+    /// `raw` trimmed, or `None` when nothing is left: a blank credential is no credential, so a
+    /// reader answers "not configured" instead of sending an empty key. A held value is never empty,
+    /// which is what lets [`Secret::redact`] mask it.
+    ///
+    /// ```
+    /// use vike_model::secret::Secret;
+    /// assert!(Secret::non_blank("  \t ").is_none());
+    /// assert_eq!(Secret::non_blank(" tok ").expect("non-blank").expose(), "tok");
+    /// ```
+    #[must_use]
+    pub fn non_blank(raw: &str) -> Option<Self> {
+        let trimmed = raw.trim();
+        (!trimmed.is_empty()).then(|| Secret(trimmed.to_string()))
+    }
+
+    /// `text` with every occurrence of the value masked as `***`: the one cleaning of WIRE text (an
+    /// error body, a transport error) before it can become an error string or a log line. Mask
+    /// before cutting a text to its head, so a value straddling the cut leaves no readable prefix.
+    /// An empty value (only [`Secret::new`] can hold one) masks nothing.
+    #[must_use]
+    pub fn redact(&self, text: &str) -> String {
+        if self.0.is_empty() { text.to_string() } else { text.replace(self.0.as_str(), "***") }
+    }
+}
+
+impl<T> From<T> for Secret<T> {
+    fn from(value: T) -> Self {
+        Secret(value)
+    }
+}
+
+/// The last four CHARACTERS of `key`, or `""` when it has fewer: the fingerprint a redacting `Debug`
+/// prints after `***`. Cut on a character boundary, so it never panics on a non-ASCII key.
+///
+/// ```
+/// use vike_model::secret::key_tail;
+/// assert_eq!(key_tail("abcdefgh"), "efgh");
+/// assert_eq!(key_tail("abc"), "");
+/// assert_eq!(key_tail("clé-€€€€"), "€€€€");
+/// ```
+#[must_use]
+pub fn key_tail(key: &str) -> &str {
+    match key.char_indices().rev().nth(3) {
+        Some((start, _)) => &key[start..],
+        None => "",
+    }
+}
+
+impl<T> std::fmt::Debug for Secret<T> {
+    /// `Secret(<redacted>)`, whatever `T` is — the bound is deliberately absent, so even a `T` with
+    /// no `Debug` of its own can sit inside a struct that derives one.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(<redacted>)")
+    }
+}
+
+#[cfg(test)]
+#[path = "secret_tests.rs"]
+mod tests;

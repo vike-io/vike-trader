@@ -1,0 +1,1173 @@
+{
+  "argv": [
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "tools.errors",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "no_such_tool"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "unknown tool: no_such_tool",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {}
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "unknown tool: ",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": 5,
+          "name": "validate_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "validate_strategy requires a `script` string argument",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "submit_order requires `side` (1 buy / -1 sell)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "cancel_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "cancel_order requires `order_client_id`",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "modify_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "modify_order requires `order_client_id`",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "flatten"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "flatten requires `venue`",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "close_all"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "guardrail": {
+              "note": "no order size to check for this verb",
+              "within_limits": true
+            },
+            "node_verdict": null,
+            "note": "PREVIEW ONLY — nothing was sent. ⚠ THE NODE WAS NOT ASKED (no node configured, no control key, or unreachable), so `guardrail` is an UNVERIFIED CLIENT-SIDE ESTIMATE — and it cannot size a market order at all, because a market order carries no price. Do not read it as approval. To execute, call again with BOTH \"confirm\": true AND this exact \"preview_token\". The token fires once, expires after 60s, and is bound to THIS command. The node's ControlLimits + RiskGate remain the enforcing gate regardless.",
+            "preview_token": "pv-1",
+            "reason": null,
+            "tool": "close_all",
+            "venue_check": "none",
+            "verified_by_node": false,
+            "will_execute": false,
+            "wire_command": {
+              "MarketExit": {
+                "venue": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "set_trading_state"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "set_trading_state requires `state`",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 10,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "mass_cancel"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 10,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "guardrail": {
+              "note": "no order size to check for this verb",
+              "within_limits": true
+            },
+            "node_verdict": null,
+            "note": "PREVIEW ONLY — nothing was sent. ⚠ THE NODE WAS NOT ASKED (no node configured, no control key, or unreachable), so `guardrail` is an UNVERIFIED CLIENT-SIDE ESTIMATE — and it cannot size a market order at all, because a market order carries no price. Do not read it as approval. To execute, call again with BOTH \"confirm\": true AND this exact \"preview_token\". The token fires once, expires after 60s, and is bound to THIS command. The node's ControlLimits + RiskGate remain the enforcing gate regardless.",
+            "preview_token": "pv-2",
+            "reason": null,
+            "tool": "mass_cancel",
+            "venue_check": "none",
+            "verified_by_node": false,
+            "will_execute": false,
+            "wire_command": {
+              "MassCancel": {
+                "symbol": null,
+                "venue": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 11,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "mount_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 11,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "mount_strategy requires `strategy`: the strategy file's path under the NODE's strategies/ folder (a .rs or .rhai file) — not script source, and not a path on this machine",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 12,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "unmount_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 12,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "unmount_strategy requires `mount_id`",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 13,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "set_setting"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 13,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "set_setting requires `key` (the full dotted key)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 14,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "delete_series"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 14,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "`kind` is required and must be a non-empty string",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 15,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "qty": 1.0,
+            "side": "buy",
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 15,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "submit_order: `side` must be an integer (1 buy / -1 sell) - got \"buy\"",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 16,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "qty": 0.0,
+            "side": 1,
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 16,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "submit_order: qty must be > 0",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 17,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "order_type": "no_such_type",
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 17,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "submit_order: `order_type` — unknown order type \"no_such_type\": expected one of market, limit, stop, stop_limit, take_profit, market_to_limit, trailing, trailing_limit, pegged, trailing_take_profit",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 18,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "order_type": "limit",
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 18,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "submit_order: a limit order needs a price",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 19,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "account": "not a label!",
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 19,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "submit_order: `account` — an account label is A-Z and 0-9 only, and 'n' is neither. Omit it to name no account, or pass \"DEFAULT\" to name the venue's unlabelled account deliberately",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 20,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "BTCUSDT",
+            "time_in_force": "ioc",
+            "trail": 5.0,
+            "venue": "sim"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 20,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "submit_order: error [order.submit.trail_off_kind]: a trail belongs to a trailing, trailing_limit or trailing_take_profit order; this market order states 5",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 21,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "order_type": "pegged",
+            "peg": "near",
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 21,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "submit_order: error [order.submit.peg_anchor]: \"near\" is not a peg anchor: expected one of best, mid, market, primary (any case)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 22,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "order_client_id": "c-1"
+          },
+          "name": "modify_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 22,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "modify_order: error [order.modify.nothing_to_change]: nothing to change: a modify names a new qty, a new price or a new trigger price, at least one",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 23,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "state": "no_such_state"
+          },
+          "name": "set_trading_state"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 23,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "unknown state \"no_such_state\" (active | reducing | halted)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 24,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "interval": "1m",
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "mount_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 24,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "mount_strategy requires `strategy`: the strategy file's path under the NODE's strategies/ folder (a .rs or .rhai file) — not script source, and not a path on this machine",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 25,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "interval": "1m",
+            "name": "spread_maker",
+            "rhai": "a.rhai",
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "mount_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 25,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "mount_strategy requires `strategy`: the strategy file's path under the NODE's strategies/ folder (a .rs or .rhai file) — not script source, and not a path on this machine",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 26,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "interval": "1m",
+            "params": 5,
+            "strategy": "spread_maker.rs",
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "mount_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 26,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "mount_strategy's `params` must be an object (the [strategy.params] table) — it is carried to the strategy opaquely, so nothing below this would object to another shape",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 27,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "kind": "bar",
+            "produced_by": "crates/vike-data/src/klines.rs",
+            "venue": "binance"
+          },
+          "name": "delete_series"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 27,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [data.delete.produced_by_path]: --produced-by \"crates/vike-data/src/klines.rs\" looks like a PRODUCER PATH, and a datahub that has not been redeployed since 2026-09-11 resolves none: it would be asserted as a literal prefix, match no commit key in any series, and report your data as foreign when in fact it was never resolved. This protocol carries no capability string for \"this server resolves producer paths\", so a path is refused before anything is dialled. Pass the commit-key PREFIX literally (e.g. `panel_bars:`; a dry run reports each series' keys), or run the delete against a local store (`--store DIR`), which always resolves a path.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 28,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "group": "G",
+            "kind": "bar",
+            "produced_by": "klines:",
+            "symbol": "BTCUSDT",
+            "venue": "binance"
+          },
+          "name": "delete_series"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 28,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [data.delete.symbol_and_group]: --symbol and --group are ALTERNATIVES, not a pair: a grouped series has an EMPTY symbol and a per-symbol series has no group. Pass one.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 29,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "group": "G",
+            "interval": "1h",
+            "kind": "bar",
+            "produced_by": "klines:",
+            "venue": "binance"
+          },
+          "name": "delete_series"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 29,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [data.delete.interval_on_group]: --interval does not apply to --group: a grouped series' leaf has no `interval=` segment at all",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 30,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "kind": "bar",
+            "produced_by": "klines:",
+            "symbol": "BTC*",
+            "venue": "binance"
+          },
+          "name": "delete_series"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 30,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [data.delete.glob]: `symbol=` value \"BTC*\" contains the glob character '*'. Globs are refused: omitting a dimension already wildcards it, and a second matcher with its own escaping rules is not worth the ways it can be wrong.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 31,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "kind": "bar",
+            "produced_by": "klines:",
+            "symbol": "",
+            "venue": "binance"
+          },
+          "name": "delete_series"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 31,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "`symbol` must be a non-empty string, or absent to wildcard that dimension",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 32,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "kind": "no_such_kind",
+            "produced_by": "klines:",
+            "venue": "binance"
+          },
+          "name": "delete_series"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 32,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "unknown kind \"no_such_kind\". This store writes: bar, book, chain, cohort, depth, equity, exec_fill, exec_forecast, exec_funding, exec_order, financial_fact, institutional_holding, option_trade, perp_metrics, properties, quote, text, text_score, trade",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 33,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "file": "s.rs",
+            "interval": "1m",
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "mount_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 33,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [call.argument_renamed]: `file` is now `strategy`: send it under its new name",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 34,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "controller_id": "sim__BTCUSDT__1m"
+          },
+          "name": "unmount_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 34,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [call.argument_renamed]: `controller_id` is now `mount_id`: send it under its new name",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 35,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "run_status"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 35,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [mcp.run.no_run_id]: run_status requires a `run_id` string argument: the id a `background: true` call answered",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 36,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "run_id": "run-0-1"
+          },
+          "name": "run_status"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 36,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [mcp.run.unknown]: no background run \"run-0-1\" in this session: a run id lasts as long as the vike-mcp process that started it, and only the newest 16 ended runs are kept",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 37,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "cancel_run"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 37,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [mcp.run.no_run_id]: cancel_run requires a `run_id` string argument: the id a `background: true` call answered",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 38,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "run_id": "run-0-1"
+          },
+          "name": "cancel_run"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 38,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [mcp.run.unknown]: no background run \"run-0-1\" in this session: a run id lasts as long as the vike-mcp process that started it, and only the newest 16 ended runs are kept",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 39,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "background": "yes",
+            "profile": "x"
+          },
+          "name": "run_backtest"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 39,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [mcp.run.background_not_a_boolean]: `background` must be true or false, got \"yes\"",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "what": "every bad call: `isError` bodies, no preview, no token"
+}

@@ -1,0 +1,1216 @@
+//! Cross-bridge EXEC conformance: ONE scenario table run against every covered venue's REAL
+//! `event_mapper` and the shared exec plumbing, machine-checking the CLAUDE.md venue-adapter
+//! contract. Crypto venues decode private-WS frames; the FX/CFD/equity venues decode REST-reply,
+//! transactions-stream or SSE frames — see [`FillShape`].
+//!
+//! ## The contract under test
+//! * **Emitter split** — Rust emits `OrderSubmitted` synchronously at submit; the venue emits
+//!   `OrderAccepted / Rejected / Canceled / (Partially)Filled`.
+//! * **No silent vanish** — a dead venue path MUST synthesize a terminal `OrderRejected`.
+//! * **Exactly one terminal** — the `OrderRecord` FSM must reach exactly one terminal state
+//!   (`Filled | Canceled | Rejected | Denied | Expired`); illegal/out-of-order events are dropped
+//!   idempotently, never corrupting the single terminal.
+//!
+//! The invariant oracle is the REAL FSM (`vike_model::OrderRecord::apply`) — the code the live core
+//! folds through — wrapped by [`ContractOrder`], which mirrors `Engine::on_event`'s thin
+//! per-order policy (bare-fill vs wrap-fill split, trade-id dedup on reconnect replays, and the
+//! "terminal dropped on a live order" loss counter). Each venue plugs in ONLY its venue-native JSON
+//! frames and its fixture-tested mapper; the scenarios, folds and assertions are shared.
+//!
+//! ## Scenarios (the rows of the table)
+//! 1. **Lifecycle** — submit → accept → partial fill → full fill reaches `Filled`, one terminal.
+//! 2. **TransportDeath** — a dead venue path still synthesizes a terminal (no vanish), via the exact
+//!    shared seam each venue uses (`ExecutionClientActor` for command venues; `resolve_ambiguous_submit` for
+//!    REST-poll venues).
+//! 3. **CancelAfterClose** — a late venue `OrderCanceled` replay AND a late `OrderCancelRejected`
+//!    advisory arriving after the order already closed are both dropped without corrupting the
+//!    single terminal.
+//! 4. **ReconnectMidOrder** — driven through the REAL shared pump (`run_user`) with a
+//!    scripted drop+reconnect that REPLAYS the mid-order partial: no duplicate terminal, no
+//!    double-counted fill, no lost terminal.
+//! 5. **PositionFold** — the MONEY side, which rows 1-4 never look at: the Lifecycle frames folded
+//!    through a REAL `vike_execution::Engine` started on the symbol the venue's own order names,
+//!    asserting every bare `Event::Fill` they decode to moved the position. The lifecycle wraps
+//!    route by order client id, so an FSM row stays green while every fill is dropped at the
+//!    engine's symbol filter; this row is the one that sees a label mismatch. See [`AccountLane`]
+//!    for the one venue whose lifecycle frames carry no bare fill.
+//!
+//! 6. **RestingKinds** (the restart-safe-orders work: a restart cancels no order, so the node must
+//!    SEE every resting order afterwards) — a bridge's recon client may CLAIM its open-order read
+//!    lists the venue's trigger orders (`ReconcileClient::lists_trigger_orders`, default `false`); the
+//!    restore planner declares an absent stop gone only on that claim. The row: a claiming bridge
+//!    must parse, through its OWN open-order parser, a venue-native row of EVERY trigger kind its
+//!    capability row lets `submit` place, into a LIVE report carrying the order client id and the kind; a
+//!    bridge that makes no claim is checked against its sources (no override of
+//!    `lists_trigger_orders` exists unproven). See [`TriggerListing`].
+//! 7. **FillJoin** (same work: a fill that happened while the node was down must find its order) —
+//!    a bridge's REST fill parser, run on a venue-native fill row of an order, must yield a
+//!    `FillReport` that carries the order's order client id OR the venue order id the accept frame carried, so
+//!    the restore planner can join it (`plan_restore` matches both, and only for the same symbol). The
+//!    row runs the PLANNER itself on the parsed fills, as the ownership file would record the order
+//!    (the engine's symbol spelling, the acknowledged venue id), for a plain kind and for a stop
+//!    (which records no venue id, so only its order client id can join it: never gone). See [`FillJoin`].
+//!
+//!    ⚠ **It proves less than it reads.** The engine's symbol spelling per bridge
+//!    (`FillJoin::Row::symbol`) is a constant typed by hand in `venues.rs`, checked against the
+//!    parsed fixture but not against the spelling the live engine really records, so a wrong constant
+//!    that matches a wrong fixture passes. And the stop case is VACUOUS for every bridge whose fill
+//!    rows carry no order client id (binance and aster among them): such a fill cannot join a
+//!    stop that records no venue id, and the stop is held, never gone, whatever the fixture says; it
+//!    bites only for a bridge whose parsed fill carries the stop's order client id.
+//! 8. **SubmitFence** (a fill the venue pushes before it answers the order) — a bridge whose private
+//!    stream can deliver a fill with NO accept of its own ahead of it wires the shared
+//!    `vike_bridge_core::exec_actor::submit_fence` (its module doc has the race and the engine
+//!    half). The row: [`ConformanceBridge::submit_fence`] is `Fenced` or `Unfenced(reason)` on
+//!    purpose. A `Fenced` bridge's REAL fill frame, decoded by its REAL mapper and pushed from INSIDE
+//!    a mock submit, must reach the lane as `Submitted, Accepted, Fill, OrderFilled` and fold to
+//!    exactly one `Filled`; where the bridge also hands over its pump ([`FencedPump`]) the same frame
+//!    goes through the bridge's REAL user-data pump against a local fake socket, so the pump's sink
+//!    wiring is what is tested. The roster is checked against the bridge sources in both directions
+//!    (`submit_fence_roster_matches_the_bridge_sources`). Nothing runs for an `Unfenced` bridge: its
+//!    reason says why no order can strand there (or that it has its own exec loop) and
+//!    `coverage_matrix` prints it.
+//! 9. **MalformedFill** (a fill a decoder must refuse) — the bridge's REAL fill decoder, run on its
+//!    own well-formed fill ([`ConformanceBridge::malformed_fill`]) with the price, the quantity or the
+//!    execution id removed, or the price or the quantity set to 0, yields NO event carrying a fill:
+//!    neither the bare fill (nothing booked at 0) nor its wrap (no order filled with nothing booked).
+//!    The REST fill read goes through the same legs on [`FillJoin::Row`]'s fixture and yields no row.
+//!    `bridge_conformance/failure_rows.rs`.
+//! 10. **VenueReject** (the venue refuses the order) — [`ConformanceBridge::venue_reject`]'s frame,
+//!     decoded by the REAL mapper, is exactly ONE terminal `OrderRejected` for the order, carrying the
+//!     venue's own words and the refusal id `order.venue_refused` (`vike_model::OrderRefusalId`), and
+//!     folds once from `Submitted` to `Rejected`; a frame of the same lane that
+//!     decision 0303 calls OUTCOME UNKNOWN (the venue did not say whether it took the order) decodes
+//!     to no terminal and no accept. A venue whose seam carries only a refusal AFTER it took the
+//!     order declares it (`RefusedAfterTaking`: alpaca's stream `rejected`, fxcm's Orders-table status
+//!     R): the accept (in the frame, or the answer that took the order), then exactly one
+//!     `OrderCanceled` in its words with the same refusal id, ending the order once from `Submitted` or `Accepted`;
+//!     and its refusal BEFORE taking the order (the submit call's answer: alpaca's POST 4xx, fxcm's placement
+//!     code), carried to the bridge's pure answer mapper, is held exactly as a refusal frame is,
+//!     `order.venue_refused` included. A refusal that does not cross the
+//!     `decode` seam is `Deferred` with its reason. `bridge_conformance/failure_rows.rs`.
+//! 11. **Confirm** (decision 0171) — over the whole ROSTER, the deferred venues too: each venue's
+//!     active confirm is one of 0171's shapes (none, the shared form, its own), held to the venue
+//!     table and to the bridge sources, and proven by named tests of the venue's own suite (the
+//!     shared form's three answers; for an own form, 0171's reopener: absent with no dispatch proof
+//!     rejects nothing, a failed query accepts nothing). `bridge_conformance/confirm.rs`.
+//!
+//! ## Coverage and the roster gate
+//! `covered_bridges()` is the covered column and `DEFERRED` the rest, each row with its reason;
+//! `coverage_matrix` prints both under `--nocapture`, and each impl in `bridge_conformance/venues.rs`
+//! says which real mappers its `decode` dispatches to. `conformance_roster_is_exhaustive` checks the
+//! two EXHAUSTIVE against `vike_model::VENUES`: a new roster venue fails until it is wired in or
+//! deferred with a non-empty reason. Adding a venue is a drop-in [`ConformanceBridge`] impl; the
+//! table and assertions do not change.
+//!
+//! ## Captured-template sourcing
+//! A venue's `frame_*` methods may source their frame from that venue's COMMITTED sanitized capture
+//! (`crates/bridges/<venue>/tests/fixtures/captured/<kind>.json`, written by its `*_capture_smoke`
+//! arm) instead of a hand-authored `json!`: [`captured_template`] loads the first captured frame as
+//! a STRUCTURE template — the real envelope, field set and value TYPES — and the impl patches ONLY
+//! the scenario-driven leaves (order client id, trade id, qty, px, terminal marker) through the type-preserving
+//! `patch_f64`/`patch_str`. Fixture absent → the hand-authored fallback. The `coverage_matrix`
+//! printout names which venues sourced captured templates.
+
+// `check!` funnels every failure through `format!`, and a few checks carry a bare literal message,
+// which `clippy::useless_format` flags under `-D warnings`; allowed crate-wide so the macro stays
+// one-armed.
+#![allow(clippy::useless_format)]
+
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use serde_json::Value;
+
+use vike_bridge_core::exec_actor::submit_fence::SubmitFence;
+use vike_execution::EventSender;
+use vike_model::events::{Event, OrderSubmitted};
+use vike_model::{
+    FillReport, OrderRecord, OrderRequest, OrderStatus, OrderStatusReport, OrderType,
+};
+
+// `#[cfg(test)]` is always true in a test crate; it is here so `new_venue_gate`'s row-site
+// derivation folds the children into THIS file, which carries the `DEFERRED` scaffold marker and so
+// must stay a row site while `venues.rs` holds the covered venues' literals.
+#[path = "bridge_conformance/confirm.rs"]
+#[cfg(test)]
+mod confirm;
+#[path = "bridge_conformance/failure_rows.rs"]
+#[cfg(test)]
+mod failure_rows;
+#[path = "bridge_conformance/fake_private_websocket.rs"]
+#[cfg(test)]
+mod fake_private_websocket;
+#[path = "bridge_conformance/scenarios.rs"]
+#[cfg(test)]
+mod scenarios;
+#[path = "bridge_conformance/venues.rs"]
+#[cfg(test)]
+mod venues;
+
+use scenarios::{Scenario, run_cell};
+use venues::{
+    Alpaca, Aster, Binance, Bybit, Deribit, Fxcm, Hyperliquid, Ig, Oanda, Okx, captured_template,
+};
+
+// ===================================================================================================
+// The invariant oracle: the REAL FSM plus Engine's thin per-order fold policy.
+// ===================================================================================================
+
+/// Folds a venue event stream through the REAL `OrderRecord` FSM exactly as `Engine::
+/// on_event` does for a single order: the bare `FillEvent` goes to the Account side (dedup only,
+/// never the FSM); the wrapping `OrderPartiallyFilled`/`OrderFilled` advance the FSM, deduped by
+/// `trade_id` so a reconnect replay never double-counts; an `apply` error is a benign idempotent
+/// drop UNLESS a terminal event fails on a still-live order (a real, counted loss).
+struct ContractOrder {
+    mo: OrderRecord,
+    /// Account-side (bare-fill) dedup keys — mirrors `seen_trade_ids`.
+    seen_bare: HashSet<String>,
+    /// FSM-side (wrap-fill) dedup keys — mirrors `seen_fsm_trade_ids`.
+    seen_wrap: HashSet<String>,
+    /// Count of successful transitions INTO a terminal state — MUST end at exactly 1.
+    terminals_applied: usize,
+    /// A terminal event that failed to apply while the order was still live — a genuinely-lost
+    /// terminal. MUST stay 0 in every healthy scenario.
+    dropped_terminal_on_live: usize,
+}
+
+impl ContractOrder {
+    fn new(req: OrderRequest) -> Self {
+        Self {
+            mo: OrderRecord::new(req),
+            seen_bare: HashSet::new(),
+            seen_wrap: HashSet::new(),
+            terminals_applied: 0,
+            dropped_terminal_on_live: 0,
+        }
+    }
+
+    fn fold(&mut self, event: &Event) {
+        // Bare fill → Account side: dedup only, NEVER applied to the FSM (the FSM has no FillEvent
+        // transition — only the wraps advance it). Exactly the Engine split.
+        if let Event::Fill(f) = event {
+            if !f.trade_id.as_str().is_empty() {
+                self.seen_bare.insert(f.trade_id.as_str().to_string());
+            }
+            return;
+        }
+        // Wrap-fill FSM dedup by trade_id (a reconnect resync re-emits the wrap).
+        let tid = match event {
+            Event::OrderPartiallyFilled(w) => w.fill.trade_id.as_str().to_string(),
+            Event::OrderFilled(w) => w.fill.trade_id.as_str().to_string(),
+            _ => String::new(),
+        };
+        if !tid.is_empty() && self.seen_wrap.contains(&tid) {
+            return; // reconnect replay — the FSM already advanced for this fill
+        }
+        let was_terminal = self.mo.status.is_terminal();
+        match self.mo.apply(event) {
+            Ok(()) => {
+                if !tid.is_empty() {
+                    self.seen_wrap.insert(tid);
+                }
+                if !was_terminal && self.mo.status.is_terminal() {
+                    self.terminals_applied += 1;
+                }
+            }
+            Err(_) => {
+                // A terminal event rejected while the order is still LIVE is a real loss;
+                // otherwise it is a benign idempotent/out-of-order WS replay (e.g. a late cancel on
+                // an already-terminal order) and is silently dropped.
+                if event.ended_order().is_some() && !self.mo.status.is_terminal() {
+                    self.dropped_terminal_on_live += 1;
+                }
+            }
+        }
+    }
+
+    fn status(&self) -> OrderStatus {
+        self.mo.status
+    }
+    fn filled_qty(&self) -> f64 {
+        self.mo.filled_qty
+    }
+}
+
+/// The Rust-side half of the emitter split: a venue-agnostic `OrderSubmitted` (Initialized →
+/// Submitted). Real adapters emit this synchronously at submit; the venue frames drive the rest.
+fn submitted(order_client_id: &str) -> Event {
+    Event::OrderSubmitted(OrderSubmitted { order_client_id: order_client_id.into(), timestamp: 1 })
+}
+
+// ===================================================================================================
+// The venue extension point — implement this to add a venue to the table.
+// ===================================================================================================
+
+/// How a venue's `ExecutionClient` reaches the venue at submit — selects the shared no-vanish seam
+/// exercised by the TransportDeath scenario.
+///
+/// ⚠ WHICH venue is which is each [`ConformanceBridge::execution_kind`] impl, never a list in a comment:
+/// a doc comment is checked against nothing, and such a list here had already gone stale.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ExecutionKind {
+    /// Command-thread venue (`ExecutionClientActor`). A dead thread synthesizes `OrderRejected`.
+    CommandActor,
+    /// REST-poll venue (`ExecutionClientRest`). An ambiguous/timed-out submit is resolved by the shared
+    /// `resolve_ambiguous_submit`.
+    RestPoll,
+}
+
+/// A venue's fill granularity — the SECOND harness axis, orthogonal to [`ExecutionKind`]. Crypto venues
+/// stream CUMULATIVE partials: a resting order fills in pieces, each a distinct
+/// `OrderPartiallyFilled` before the terminal `OrderFilled`. A `Whole` venue's REAL mapper has NO
+/// `OrderPartiallyFilled` path at all — one execution reports the full qty as `OrderFilled` (alpaca
+/// even folds a `"partial_fill"` SSE event into `OrderFilled`); each impl's `fill_shape` names its
+/// evidence. The Lifecycle/Reconnect scenarios branch on this so a whole-fill venue is exercised
+/// through its real mapper instead of asserting a partial state it can never emit; TransportDeath
+/// and CancelAfterClose never drive a partial.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum FillShape {
+    /// Cumulative partials then a terminal fill.
+    Cumulative,
+    /// One execution = the whole order; no partial-fill state.
+    Whole,
+}
+
+/// Where a venue's POSITION-moving executions arrive — the THIRD harness axis, read only by the
+/// PositionFold scenario.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AccountLane {
+    /// The fill frames the table decodes carry the bare `Event::Fill` the `Account` folds (every
+    /// covered venue but one).
+    FillFrames,
+    /// The lifecycle frames carry the FSM wraps only and the position moves on ANOTHER lane, named
+    /// by the reason. The scenario then asserts the declaration is TRUE — no bare fill decoded —
+    /// rather than skipping the venue, so a mapper that starts emitting bare fills here reddens
+    /// until it is reclassified.
+    Separate(&'static str),
+}
+
+/// What a covered bridge's RECON CLIENT says about listing TRIGGER orders (stop, stop-limit,
+/// take-profit, algo): the harness' answer to `ReconcileClient::lists_trigger_orders`, with the proof a
+/// claim needs. The restore planner declares an absent stop gone only for a client that claims, so a
+/// claim without a proof is a stop forgotten while it still rests.
+enum TriggerListing {
+    /// The client keeps the trait default (`false`): the restore HOLDS an absent stop. Checked
+    /// against the bridge's sources: no `fn lists_trigger_orders` may exist there without a proof.
+    NoClaim,
+    /// The client answers `true`, and shows it.
+    Claims(ClaimProof),
+}
+
+/// The proof of a [`TriggerListing::Claims`].
+struct ClaimProof {
+    /// The REAL recon client's answer, built offline with throwaway credentials (no network).
+    client_claim: fn() -> bool,
+    /// The bridge's own open-order parser run on a venue-native row of the given trigger kind
+    /// carrying the given order client id. `None` = this bridge has no fixture for that kind.
+    open_rows: fn(&OrderType, &str) -> Option<Vec<OrderStatusReport>>,
+}
+
+/// How a covered bridge's REST fill read is shown to JOIN to its order (the fill-while-down half of
+/// a restore: `plan_restore` matches a fill by order client id or by venue order id).
+enum FillJoin {
+    /// The bridge's own REST fill parser (`parse`) run on a venue-native body of ONE fill row of the
+    /// order whose accept frame carried the venue order id (`body`: `(order client id,
+    /// venue_order_id)` in). `symbol` is the spelling the ENGINE gives that order (so the ownership
+    /// file records it): the planner joins a fill to its order only for the same symbol, so the
+    /// parsed fills must spell it too (the perp series label `BTCUSDT.P` for binance and aster, not
+    /// the exchange's `BTCUSDT`). `fields` is where the row states its price, quantity and
+    /// execution id: row 9 removes each.
+    Row {
+        symbol: &'static str,
+        body: fn(&str, &str) -> Value,
+        parse: fn(&Value) -> Vec<FillReport>,
+        fields: FillFields,
+    },
+    /// No fixture yet, with the reason; printed by `coverage_matrix`, never silent.
+    Deferred(&'static str),
+}
+
+/// Where one fill states its price, its quantity and its execution id, as JSON pointers into its
+/// frame or body (row 9). A field's pointers are removed together: a fallback the decoder reads in
+/// its place is the same field.
+struct FillFields {
+    price: Vec<String>,
+    quantity: Vec<String>,
+    execution_id: Vec<String>,
+}
+
+impl FillFields {
+    /// Each field as `prefix` + `/` + its key (`prefix` `""` for a field at the top).
+    fn at(prefix: &str, price: &[&str], quantity: &[&str], execution_id: &[&str]) -> Self {
+        let at = |keys: &[&str]| keys.iter().map(|key| format!("{prefix}/{key}")).collect();
+        Self { price: at(price), quantity: at(quantity), execution_id: at(execution_id) }
+    }
+}
+
+/// Row 9's input from a covered bridge: a frame of ONE whole fill its `decode` reads to a bookable
+/// fill (its fill frames' lane, or the lane that carries its bare fills where they differ), and
+/// where it states each field.
+struct FillFrame {
+    frame: Value,
+    fields: FillFields,
+}
+
+/// How a covered bridge's own refusal of an order is shown to end it (row 10).
+enum VenueRejectRow {
+    /// `frame` is the venue's refusal of the order the row names, as the bridge's `decode` reads it,
+    /// and `words` the venue's own words that the reject's reason must carry. `unknown` is a frame of
+    /// the same lane that decision 0303 calls OUTCOME UNKNOWN (an answer that says neither taken nor
+    /// refused): it must end nothing and accept nothing.
+    Frame { frame: Value, words: String, unknown: Option<Value> },
+    /// The refusal this seam's stream carries comes only AFTER the venue took the order (its stream refuses an
+    /// order it had acknowledged): the accept (in `frame` itself, or in `taken_by`, the venue's
+    /// earlier answer that took the order) and then exactly ONE end, an `OrderCanceled` carrying
+    /// `words` and the refusal id `order.venue_refused`, which ends the order once whether the engine holds it `Submitted` (the accept's
+    /// answer was lost) or `Accepted` (the order table has no `Accepted -> Rejected` edge). `why`
+    /// says why. The venue's refusal BEFORE it takes the order comes back on the submit call itself, and
+    /// `before` carries it through the same `decode`, held as [`VenueRejectRow::Frame`] is.
+    RefusedAfterTaking {
+        taken_by: Option<Value>,
+        frame: Value,
+        words: String,
+        why: &'static str,
+        before: RefusedBeforeTaking,
+    },
+    /// The refusal does not cross this seam, with the reason (and the tests that hold it there).
+    Deferred(&'static str),
+}
+
+/// A [`VenueRejectRow::RefusedAfterTaking`] venue's refusal BEFORE it takes an order: the submit call's answer as a
+/// harness carrier its `decode` hands to the bridge's own pure answer mapper (the call itself needs a live venue).
+/// Exactly [`VenueRejectRow::Frame`]'s three: the refusal, the venue's `words` it carries, and an OUTCOME UNKNOWN answer.
+struct RefusedBeforeTaking {
+    frame: Value,
+    words: String,
+    unknown: Option<Value>,
+}
+
+/// How a covered bridge stands to the shared `SubmitFence` (the SubmitFence row, 8 in the module doc).
+enum SubmitFenceRow {
+    /// The bridge wires the fence: its exec thread's REST client is a `VenueRestOrderSubmitFence` and its user-data
+    /// pump and replay go through the same fence. `pump` is how the harness spawns the bridge's REAL
+    /// pump against a fake socket; `None` where another test already runs that pump (deribit's own
+    /// scenario, `crates/bridges/deribit/tests/offline/order_event_order.rs`, also covers the replay).
+    Fenced { pump: Option<FencedPump> },
+    /// Not wired, with the reason: why no order can strand there (the stream carries the order's own
+    /// accept ahead of any fill), or that the bridge has its own exec loop, which this row does not
+    /// examine. Printed by `coverage_matrix`, never silent.
+    Unfenced(&'static str),
+}
+
+/// Spawn a bridge's `spawn_*_user_data_with_resync` against `websocket_url`, handing it the fence and the
+/// lane the fence feeds. Returns the pump's shutdown (it joins the pump's threads).
+type SpawnPump =
+    fn(websocket_url: String, events: EventSender, fence: Arc<SubmitFence>) -> Box<dyn FnOnce()>;
+
+/// The bridge's REAL user-data pump, as the SubmitFence row spawns it.
+struct FencedPump {
+    /// The bridge's replies to ITS OWN handshake frames, in order (bybit: the `auth` then the
+    /// `subscribe` ack; okx: the `login` then the `subscribe` ack): the fake socket answers the n-th
+    /// text frame the pump sends with the n-th reply.
+    handshake_replies: &'static [&'static str],
+    spawn: SpawnPump,
+}
+
+/// A venue's plug-in for the shared table: its order shape, its venue-native user-data JSON frames,
+/// and its REAL fixture-tested private-WS mapper. NOTHING else is venue-specific.
+trait ConformanceBridge {
+    fn venue(&self) -> &'static str;
+    fn execution_kind(&self) -> ExecutionKind;
+
+    /// This venue's fill granularity (see [`FillShape`]). Defaults to `Cumulative` (the crypto
+    /// shape); the whole-fill venues override it.
+    fn fill_shape(&self) -> FillShape {
+        FillShape::Cumulative
+    }
+
+    /// Where this venue's position-moving executions arrive (see [`AccountLane`]). Defaults to
+    /// `FillFrames`; the one venue whose lifecycle frames carry no bare fill overrides it.
+    fn account_lane(&self) -> AccountLane {
+        AccountLane::FillFrames
+    }
+
+    /// A well-formed limit order for this venue. Its `symbol` is ALSO the symbol the PositionFold
+    /// scenario starts the engine on, so it must be the spelling the venue's production start names
+    /// — the catalog spelling the Trade window sends, never a convenient bare twin.
+    fn order(&self, order_client_id: &str) -> OrderRequest;
+
+    /// Venue-native user-data JSON that ACCEPTS a resting order → `[OrderAccepted]`.
+    fn frame_accepted(&self, order_client_id: &str, venue_order_id: &str) -> Value;
+
+    /// Venue-native user-data JSON for ONE fill of `this_quantity` (cumulative `cum_quantity` of `total_qty`
+    /// base at `px`), keyed by `trade_id` (the reconnect-dedup key). `terminal` selects the FULL
+    /// fill (→ `[Fill, OrderFilled]`) vs a PARTIAL (→ `[Fill, OrderPartiallyFilled]`).
+    fn frame_fill(
+        &self,
+        order_client_id: &str,
+        trade_id: &'static str,
+        this_quantity: f64,
+        cum_quantity: f64,
+        total_qty: f64,
+        px: f64,
+        terminal: bool,
+    ) -> Value;
+
+    /// Venue-native user-data JSON for a venue-side cancel confirmation → `[OrderCanceled]`.
+    fn frame_canceled(&self, order_client_id: &str) -> Value;
+
+    /// The venue's REAL fixture-tested mapper(s), dispatched per frame where it has several.
+    fn decode(&self, frame: &Value) -> Vec<Event>;
+
+    /// What this venue's recon client says about listing trigger orders (see [`TriggerListing`]).
+    /// REQUIRED, not defaulted: a venue answers it on purpose.
+    fn trigger_listing(&self) -> TriggerListing;
+
+    /// How this venue's REST fill read is shown to join to its order (see [`FillJoin`]). REQUIRED.
+    fn fill_join(&self) -> FillJoin;
+
+    /// Whether this venue wires the shared `SubmitFence`, and how the row exercises it (see
+    /// [`SubmitFenceRow`]). REQUIRED: a venue answers it on purpose.
+    fn submit_fence(&self) -> SubmitFenceRow;
+
+    /// One whole fill and where it states its price, quantity and execution id (row 9, see
+    /// [`FillFrame`]). REQUIRED.
+    fn malformed_fill(&self) -> FillFrame;
+
+    /// This venue's own refusal of the order `order_client_id` (row 10, see [`VenueRejectRow`]).
+    /// REQUIRED.
+    fn venue_reject(&self, order_client_id: &str) -> VenueRejectRow;
+}
+
+/// The fill row 9 asks of a bridge whose fill frames carry its bare fills: one whole fill of 1.0 at
+/// 50 000, on the order [`failure_rows::FAILURE_ORDER_CLIENT_ID`] names.
+fn whole_fill(bridge: &dyn ConformanceBridge) -> Value {
+    bridge.frame_fill(
+        failure_rows::FAILURE_ORDER_CLIENT_ID,
+        "t-malformed-1",
+        1.0,
+        1.0,
+        1.0,
+        50_000.0,
+        true,
+    )
+}
+
+fn limit_order(order_client_id: &str, venue: &str, symbol: &str) -> OrderRequest {
+    OrderRequest {
+        order_client_id: order_client_id.into(),
+        venue: venue.into(),
+        symbol: symbol.into(),
+        side: 1,
+        qty: 1.0,
+        order_type: vike_model::OrderType::Limit,
+        price: Some(50_000.0),
+        timestamp: 1,
+        ..Default::default()
+    }
+}
+
+/// The venues COVERED by the harness. Extending: implement [`ConformanceBridge`] and add it here.
+fn covered_bridges() -> Vec<Box<dyn ConformanceBridge>> {
+    vec![
+        Box::new(Binance),
+        Box::new(Bybit),
+        Box::new(Okx),
+        Box::new(Deribit),
+        Box::new(Aster),
+        Box::new(Hyperliquid),
+        Box::new(Oanda),
+        Box::new(Ig),
+        Box::new(Alpaca),
+        Box::new(Fxcm),
+    ]
+}
+
+/// Venues explicitly DEFERRED — recorded, never faked, each with its reason; each becomes a
+/// `ConformanceBridge` impl when wired. `conformance_roster_is_exhaustive` asserts this set plus
+/// `covered_bridges()` partitions `vike_model::VENUES` exactly once. What remains here does not fit
+/// the stateless `decode(&Value) -> Vec<Event>` seam.
+///
+/// ⚠ A reason names the SHAPE that does not fit the seam, never a feature gate: a feature is a claim
+/// about a build, and a stale one stops describing it. fxcm sat here behind a reason saying its
+/// mapper was feature-gated while `map_fxcm_event` compiled in every build.
+const DEFERRED: &[(&str, &str)] = &[
+    (
+        "polymarket",
+        "registry-keyed decoder, not a stateless `decode(&Value)` — `crates/bridges/polymarket/src/execution/user_data/decode.rs`'s `decode_user` takes a shared in-memory `OrderVenueIdTracker` (the CLOB assigns the order id and echoes no client id, so every fill/cancel is re-keyed through a map the exec thread fills at accept, with unresolved ids parked and replayed)",
+    ),
+    (
+        "dukascopy",
+        "Java sidecar over JSON-lines (proto.rs), not a private-WS/JSON mapper; fake_jforex_bridge covers its lifecycle",
+    ),
+    (
+        "ibkr",
+        "stateful `EventMapper` (private module) whose fills need a two-message execDetails+commissionReport join keyed by exec_id and typed (non-JSON) reports — no stateless `decode(&Value)` shape; covered by its own tests/ibkr_lifecycle.rs",
+    ),
+    (
+        "ctrader",
+        "cTrader Open API is protobuf-framed — `exec_event_to_events` takes `ProtoOaExecutionEvent` structs + a `SymbolMap`, not JSON; wiring it needs a JSON→proto reconstruction axis beyond this PR",
+    ),
+    // vike:new-venue:row (
+    // vike:new-venue:row     "{venue}",
+    // vike:new-venue:row     "TODO(new-venue: {venue}): DEFERRED is the honest default only until this bridge has a fixture-tested stateless event_mapper — the moment it does, delete this row and add a ConformanceBridge impl to covered_bridges() instead. Replace this text with the REAL reason it cannot be covered yet.",
+    // vike:new-venue:row ),
+];
+
+// ===================================================================================================
+// The tests: one per scenario (granular signal) + the coverage matrix.
+// ===================================================================================================
+
+/// Run one scenario across every covered venue, failing with the offending venue named.
+fn assert_scenario_all(scenario: Scenario) {
+    for bridge in covered_bridges() {
+        if let Err(why) = run_cell(&*bridge, scenario) {
+            panic!("[{} × {}] {why}", bridge.venue(), scenario.label());
+        }
+    }
+}
+
+#[test]
+fn lifecycle_submit_accept_fill_all_covered_venues() {
+    assert_scenario_all(Scenario::Lifecycle);
+}
+
+#[test]
+fn transport_death_synthesizes_terminal_all_covered_venues() {
+    assert_scenario_all(Scenario::TransportDeath);
+}
+
+#[test]
+fn cancel_after_close_preserves_single_terminal_all_covered_venues() {
+    assert_scenario_all(Scenario::CancelAfterClose);
+}
+
+#[test]
+fn reconnect_mid_order_no_duplicate_or_lost_terminal_all_covered_venues() {
+    assert_scenario_all(Scenario::ReconnectMidOrder);
+}
+
+#[test]
+fn position_fold_moves_the_engine_position_all_covered_venues() {
+    assert_scenario_all(Scenario::PositionFold);
+}
+
+#[test]
+fn submit_fence_orders_the_answer_before_the_fill_all_covered_venues() {
+    assert_scenario_all(Scenario::SubmitFence);
+}
+
+/// The honest coverage matrix: runs the FULL venue × scenario grid, prints it (visible under
+/// `--nocapture`), and asserts every COVERED cell passed. The DEFERRED venues are printed with
+/// their reasons so what is NOT run is explicit.
+#[test]
+fn coverage_matrix() {
+    let bridges = covered_bridges();
+    let mut out = String::new();
+    out.push_str("\n=== cross-bridge conformance coverage (audit br5) ===\n\n");
+
+    // header
+    out.push_str(&format!("{:<10}", "venue"));
+    for s in Scenario::ALL {
+        out.push_str(&format!(" | {:<19}", s.label()));
+    }
+    out.push('\n');
+    out.push_str(&"-".repeat(10 + Scenario::ALL.len() * 22));
+    out.push('\n');
+
+    let mut failures: Vec<String> = Vec::new();
+    for bridge in &bridges {
+        out.push_str(&format!("{:<10}", bridge.venue()));
+        for s in Scenario::ALL {
+            let cell = match run_cell(&**bridge, s) {
+                Ok(()) => "PASS".to_string(),
+                Err(why) => {
+                    failures.push(format!("[{} × {}] {why}", bridge.venue(), s.label()));
+                    "FAIL".to_string()
+                }
+            };
+            out.push_str(&format!(" | {cell:<19}"));
+        }
+        out.push('\n');
+    }
+
+    out.push_str(
+        "\nDEFERRED venues (recorded, not covered in v1 — drop-in ConformanceBridge to add):\n",
+    );
+    for (venue, reason) in DEFERRED {
+        out.push_str(&format!("  - {venue:<11} {reason}\n"));
+    }
+
+    // Which venues ran against REAL captured wire templates vs hand-authored frames.
+    out.push_str("\nFrame sourcing (plan 5c — committed sanitized captures as templates):\n");
+    for bridge in &bridges {
+        let kinds: Vec<&str> = ["ws_accepted", "ws_fill", "ws_canceled"]
+            .into_iter()
+            .filter(|k| captured_template(bridge.venue(), k).is_some())
+            .collect();
+        if kinds.is_empty() {
+            out.push_str(&format!(
+                "  - {:<11} hand-authored frames (no committed capture)\n",
+                bridge.venue()
+            ));
+        } else {
+            out.push_str(&format!("  - {:<11} captured: {}\n", bridge.venue(), kinds.join(", ")));
+        }
+    }
+    // Which lane each venue's PositionFold cell actually exercised — a `Separate` cell asserts the
+    // declaration, not a fold, and the matrix must not let it read as the same kind of PASS.
+    out.push_str("\nAccount lane (position-fold):\n");
+    for bridge in &bridges {
+        match bridge.account_lane() {
+            AccountLane::FillFrames => out.push_str(&format!(
+                "  - {:<11} fill frames, engine mounted on {:?}\n",
+                bridge.venue(),
+                bridge.order("x").symbol
+            )),
+            AccountLane::Separate(lane) => out.push_str(&format!(
+                "  - {:<11} SEPARATE lane, not driven here: {lane}\n",
+                bridge.venue()
+            )),
+        }
+    }
+    out.push_str(&format!(
+        "\nCovered: {} venue(s) × {} scenario(s) = {} cells. Deferred: {} venue(s).\n",
+        bridges.len(),
+        Scenario::ALL.len(),
+        bridges.len() * Scenario::ALL.len(),
+        DEFERRED.len(),
+    ));
+
+    // The two restart rows (6 and 7 in the module doc): what each covered bridge claims and shows.
+    out.push_str("\nTrigger listing (RestingKinds) and fill join (FillJoin):\n");
+    for bridge in &bridges {
+        let listing = match bridge.trigger_listing() {
+            TriggerListing::NoClaim => "no claim (the restore HOLDS an absent stop)",
+            TriggerListing::Claims(_) => "CLAIMS, proven by a parsed row of every placeable kind",
+        };
+        let join = match bridge.fill_join() {
+            FillJoin::Row { symbol, .. } => {
+                format!("fixture on {symbol}: carries its order client id or a venue id that joins")
+            }
+            FillJoin::Deferred(why) => format!("DEFERRED: {why}"),
+        };
+        out.push_str(&format!("  - {:<11} {listing}; fill join {join}\n", bridge.venue()));
+    }
+    // Row 8: which covered bridges wire the shared fence, and why the others do not.
+    out.push_str("\nSubmit fence (SubmitFence):\n");
+    for bridge in &bridges {
+        let fence = match bridge.submit_fence() {
+            SubmitFenceRow::Fenced { pump: Some(_) } => {
+                "FENCED; the real pump is spawned against a fake socket".to_string()
+            }
+            SubmitFenceRow::Fenced { pump: None } => {
+                "FENCED; the pump is covered by the bridge's own test".to_string()
+            }
+            SubmitFenceRow::Unfenced(why) => format!("not wired: {why}"),
+        };
+        out.push_str(&format!("  - {:<11} {fence}\n", bridge.venue()));
+    }
+    // Rows 9 and 10: where each covered bridge's malformed fill and its own refusal are proven.
+    out.push_str("\nMalformed fill (MalformedFill) and the venue's refusal (VenueReject):\n");
+    for bridge in &bridges {
+        let reconcile = match bridge.fill_join() {
+            FillJoin::Row { .. } => "and its REST fill read".to_string(),
+            FillJoin::Deferred(why) => format!("(REST fill read not here: {why})"),
+        };
+        let reject = match bridge.venue_reject(failure_rows::FAILURE_ORDER_CLIENT_ID) {
+            VenueRejectRow::Frame { words, unknown, .. } => format!(
+                "its refusal in its words ({words:?}){}",
+                if unknown.is_some() { ", and an OUTCOME UNKNOWN answer" } else { "" }
+            ),
+            VenueRejectRow::RefusedAfterTaking { words, why, before, .. } => {
+                format!(
+                    "its refusal BEFORE taking the order in its words ({:?}){}; its refusal AFTER taking \
+                     the order, an accept then one cancel ({words:?}): {why}",
+                    before.words,
+                    if before.unknown.is_some() { ", and an OUTCOME UNKNOWN answer" } else { "" }
+                )
+            }
+            VenueRejectRow::Deferred(why) => format!("refusal DEFERRED: {why}"),
+        };
+        out.push_str(&format!(
+            "  - {:<11} its fill decoder {reconcile}; {reject}\n",
+            bridge.venue()
+        ));
+    }
+    // Row 11: every roster venue's active confirm.
+    out.push_str("\nActive confirm (Confirm, decision 0171; every roster venue):\n");
+    for (venue, form) in confirm::CONFIRM_ROWS {
+        out.push_str(&format!("  - {venue:<11} {}\n", form.describe()));
+    }
+
+    println!("{out}");
+    assert!(failures.is_empty(), "conformance cells failed:\n{}", failures.join("\n"));
+}
+
+// ===================================================================================================
+// Rows 6 and 7: the restart-safe-orders rows (see the module doc).
+// ===================================================================================================
+
+/// The order client id and venue order id the restart rows build their fixtures from. The accept frame of each
+/// bridge is built from the SAME pair, so a fill that matches only by venue id is joined to what the
+/// venue really acknowledged.
+const RESTART_ORDER_CLIENT_ID: &str = "restart-order-client-id";
+const RESTART_VENUE_ID: &str = "7001";
+
+/// A live open-order report of `kind` for `order_client_id`, the shape a parser fixture should produce.
+fn open_report(
+    order_client_id: &str,
+    order_type: OrderType,
+    status: OrderStatus,
+) -> OrderStatusReport {
+    OrderStatusReport {
+        venue: "probe".into(),
+        symbol: "BTCUSDT".into(),
+        venue_order_id: RESTART_VENUE_ID.into(),
+        order_client_id: Some(order_client_id.into()),
+        side: -1,
+        order_type,
+        qty: 1.0,
+        filled_qty: 0.0,
+        average_price: 0.0,
+        status,
+        timestamp: 1,
+        price: None,
+        trigger_price: None,
+        trail: None,
+        trail_percent: None,
+    }
+}
+
+/// The trigger kinds `venue`'s `submit` can place as a resting order: its capability row's
+/// `supported_order_kinds` that are trigger kinds, and the trailing kinds it places by a PERCENT
+/// (`percent_trail_kinds`), each once (the same table the pre-trade preflight refuses everything else
+/// by). A kind placed both ways is proven by a row of each shape (`venues.rs`'s open-row fns).
+fn placeable_trigger_kinds(venue: &str) -> Vec<OrderType> {
+    let capabilities = vike_venues::venue_caps::capabilities_for(venue);
+    let mut kinds: Vec<OrderType> = Vec::new();
+    for &kind in capabilities.supported_order_kinds.iter().chain(capabilities.percent_trail_kinds) {
+        let kind = OrderType::from_stored(kind);
+        if kind.is_trigger() && !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
+    }
+    kinds
+}
+
+/// The proof of one claim: the real client says `true`, and for EVERY trigger kind the venue can
+/// place the bridge's own parser yields a LIVE report of that kind carrying the order client id.
+fn check_claim(venue: &str, kinds: &[OrderType], proof: &ClaimProof) -> Result<(), String> {
+    if !(proof.client_claim)() {
+        return Err(format!(
+            "{venue}: the harness declares a claim but the real recon client answers false"
+        ));
+    }
+    for kind in kinds {
+        let Some(rows) = (proof.open_rows)(kind, RESTART_ORDER_CLIENT_ID) else {
+            return Err(format!(
+                "{venue}: claims to list trigger orders but has no fixture for the {kind:?} its \
+                 submit can place: a claim is made only where a parsed row proves the kind"
+            ));
+        };
+        let Some(report) =
+            rows.iter().find(|r| r.order_client_id.as_deref() == Some(RESTART_ORDER_CLIENT_ID))
+        else {
+            return Err(format!(
+                "{venue}: the {kind:?} row parses to no report carrying the order client id"
+            ));
+        };
+        if report.status.is_terminal() {
+            return Err(format!(
+                "{venue}: the {kind:?} row parses to a TERMINAL report, not a listing"
+            ));
+        }
+        if &report.order_type != kind {
+            return Err(format!(
+                "{venue}: the {kind:?} row parses to {:?}: the planner would read another kind",
+                report.order_type
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Does any `.rs` file under `dir` contain `needle`?
+fn source_mentions(dir: &std::path::Path, needle: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else { return false };
+    entries.flatten().any(|entry| {
+        let path = entry.path();
+        if path.is_dir() {
+            source_mentions(&path, needle)
+        } else {
+            path.extension().is_some_and(|ext| ext == "rs")
+                && std::fs::read_to_string(&path).is_ok_and(|text| text.contains(needle))
+        }
+    })
+}
+
+/// The bridge crates (their directory names under `crates/bridges/`) whose sources define
+/// `ReconcileClient::lists_trigger_orders`: the only places a claim can be made.
+fn bridges_overriding_the_trigger_claim() -> Vec<String> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../bridges");
+    let mut found: Vec<String> = std::fs::read_dir(&root)
+        .expect("crates/bridges")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|dir| dir.is_dir() && source_mentions(&dir.join("src"), "fn lists_trigger_orders("))
+        .filter_map(|dir| dir.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    found.sort();
+    found
+}
+
+/// **Row 6, RestingKinds.** A bridge may claim its recon client lists trigger orders only with a
+/// parsed row of every trigger kind its venue can place; and only the covered bridges that claim
+/// define the override at all, so every other bridge keeps the trait default `false` and the restore
+/// HOLDS its absent stops (no bridge can start to claim without joining this table).
+#[test]
+fn a_client_that_claims_to_list_trigger_orders_proves_every_trigger_kind_its_venue_places() {
+    let mut claimants: Vec<String> = Vec::new();
+    for bridge in covered_bridges() {
+        if let TriggerListing::Claims(proof) = bridge.trigger_listing() {
+            let kinds = placeable_trigger_kinds(bridge.venue());
+            check_claim(bridge.venue(), &kinds, &proof).unwrap_or_else(|why| panic!("{why}"));
+            claimants.push(bridge.venue().to_string());
+        }
+    }
+    claimants.sort();
+    assert_eq!(
+        bridges_overriding_the_trigger_claim(),
+        claimants,
+        "a bridge that defines `lists_trigger_orders` must be a covered bridge that proves its claim \
+         here (and a bridge that proves one must define it)"
+    );
+}
+
+/// The ids quoted in the initialiser of `pub const NAME: &[&str] = &[...]` in `source`, sorted.
+fn quoted_ids_of_const(source: &str, name: &str) -> Vec<String> {
+    let at =
+        source.find(&format!("pub const {name}:")).unwrap_or_else(|| panic!("no const {name}"));
+    let body = &source[at..];
+    let open = body.find("= &[").unwrap_or_else(|| panic!("{name} has no table")) + "= &[".len();
+    let close = open + body[open..].find("];").unwrap_or_else(|| panic!("{name} never closes"));
+    let mut ids: Vec<String> =
+        body[open..close].split('"').skip(1).step_by(2).map(str::to_string).collect();
+    ids.sort();
+    ids
+}
+
+/// **The node-side table of claims is exactly the harness' claimants.** The gatewayhub-client's
+/// `ReconcileClientGateway` cannot ask the daemon-side client whether its open-order read lists trigger
+/// orders (hubs link no bridge), so it answers from `RECONCILE_LISTS_TRIGGER_ORDERS`. A venue in that table
+/// the harness does not prove would have the node declare a stop gone on a claim nobody checked; a
+/// venue the harness proves and the table lacks would hold its stops for good. Read at run time (a
+/// source file, not a dependency: the gatewayhub-client links no bridge and no bridge-core).
+#[test]
+fn the_nodes_claim_table_names_exactly_the_bridges_that_prove_a_claim() {
+    let mut claimants: Vec<String> = covered_bridges()
+        .iter()
+        .filter(|b| matches!(b.trigger_listing(), TriggerListing::Claims(_)))
+        .map(|b| b.venue().to_string())
+        .collect();
+    claimants.sort();
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../vike-gatewayhub-client/src/trade/recon.rs");
+    let source =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert_eq!(
+        quoted_ids_of_const(&source, "RECONCILE_LISTS_TRIGGER_ORDERS"),
+        claimants,
+        "`RECONCILE_LISTS_TRIGGER_ORDERS` (crates/vike-gatewayhub-client/src/trade/recon.rs) must name \
+         exactly the bridges whose `TriggerListing::Claims` this harness proves"
+    );
+
+    // the reader takes the named table only, sorted
+    let sample = "pub const T: &[&str] = &[\"b\", \"a\"];\nconst U: &[&str] = &[\"z\"];";
+    assert_eq!(quoted_ids_of_const(sample, "T"), ["a", "b"]);
+}
+
+/// The row bites: a claim with no fixture for a placeable kind, a claim the real client does not
+/// make, a fixture that parses to a terminal report and one that parses to another kind are each
+/// refused, so an unproven claim cannot pass as a proven one.
+#[test]
+fn a_trigger_claim_without_its_proof_is_refused() {
+    let stop = [OrderType::Stop];
+    let no_fixture = ClaimProof { client_claim: || true, open_rows: |_, _| None };
+    assert!(check_claim("probe", &stop, &no_fixture).unwrap_err().contains("no fixture"));
+
+    let not_claimed = ClaimProof { client_claim: || false, open_rows: |_, _| None };
+    assert!(check_claim("probe", &stop, &not_claimed).unwrap_err().contains("answers false"));
+
+    let terminal = ClaimProof {
+        client_claim: || true,
+        open_rows: |kind, order_client_id| {
+            Some(vec![open_report(order_client_id, kind.clone(), OrderStatus::Canceled)])
+        },
+    };
+    assert!(check_claim("probe", &stop, &terminal).unwrap_err().contains("TERMINAL"));
+
+    let wrong_kind = ClaimProof {
+        client_claim: || true,
+        open_rows: |_, order_client_id| {
+            Some(vec![open_report(order_client_id, OrderType::Limit, OrderStatus::Accepted)])
+        },
+    };
+    assert!(check_claim("probe", &stop, &wrong_kind).unwrap_err().contains("another kind"));
+
+    let proven = ClaimProof {
+        client_claim: || true,
+        open_rows: |kind, order_client_id| {
+            Some(vec![open_report(order_client_id, kind.clone(), OrderStatus::Accepted)])
+        },
+    };
+    assert_eq!(check_claim("probe", &stop, &proven), Ok(()));
+}
+
+/// The venue order id the accept frame of `bridge` carries for [`RESTART_VENUE_ID`], as decoded by
+/// the bridge's own mapper.
+fn accepted_venue_id(bridge: &dyn ConformanceBridge) -> Option<String> {
+    bridge
+        .decode(&bridge.frame_accepted(RESTART_ORDER_CLIENT_ID, RESTART_VENUE_ID))
+        .into_iter()
+        .find_map(|event| match event {
+            Event::OrderAccepted(a) => a.venue_order_id.map(|id| id.to_string()),
+            _ => None,
+        })
+}
+
+/// Does the restore PLANNER join every parsed fill to the order? The order is restored as the
+/// ownership file would hold it: its order client id, venue, the symbol the engine spells (`symbol`) and the
+/// venue order id the accept frame acknowledged. Each fill is planned alone, and for a plain kind it
+/// must land `filled_while_down` (matched by order client id or by that id, AND the same symbol: a fill spelled
+/// otherwise joins nothing), never adopted, gone or held unproven.
+///
+/// The TRIGGER-kind case: a restored stop records no venue id (the id a venue acknowledges a stop
+/// with is its trigger-order id, not the one its fill carries), so only the order client id can join it. A fill
+/// that carries the order client id must join the stop too; one that does not leaves the stop UNPROVEN, and in
+/// no case may the planner call it gone: the client makes no claim here and the quiet passes are
+/// counted, the worst case for a stop that filled.
+fn fills_join(
+    venue: &str,
+    symbol: &str,
+    fills: &[FillReport],
+    accepted_id: Option<&str>,
+) -> Result<(), String> {
+    use vike_execution::recon::{
+        RESTORE_QUIET_PASSES, RestoreScope, RestoredOrderRef, plan_restore,
+    };
+
+    if fills.is_empty() {
+        return Err("the fill fixture parses to no fill".to_string());
+    }
+    let scope = RestoreScope {
+        venue: venue.to_string(),
+        account: None,
+        symbols: vec![symbol.to_string()],
+        lists_trigger_orders: false,
+    };
+    let restored = |kind: OrderType, venue_order_id: Option<&str>| RestoredOrderRef {
+        order_client_id: RESTART_ORDER_CLIENT_ID.to_string(),
+        venue: Some(venue.to_string()),
+        symbol: Some(symbol.to_string()),
+        account: None,
+        order_type: Some(kind),
+        venue_order_id: venue_order_id.map(str::to_string),
+        quiet_passes: RESTORE_QUIET_PASSES,
+    };
+    let plain = restored(OrderType::Limit, accepted_id);
+    let stop = restored(OrderType::Stop, None);
+    for fill in fills {
+        let one = std::slice::from_ref(fill);
+        let plan = plan_restore(&scope, std::slice::from_ref(&plain), &[], one);
+        if plan.filled_while_down != [RESTART_ORDER_CLIENT_ID] {
+            return Err(format!(
+                "the planner does not join a fill of our own order (order client id {RESTART_ORDER_CLIENT_ID:?}, venue id \
+                 {accepted_id:?}, symbol {symbol:?}); the fill carries order client id {:?}, venue id {:?}, \
+                 symbol {:?}: {plan:?}",
+                fill.order_client_id, fill.venue_order_id, fill.symbol
+            ));
+        }
+        let plan = plan_restore(&scope, std::slice::from_ref(&stop), &[], one);
+        let by_order_client_id = fill.order_client_id.as_deref() == Some(RESTART_ORDER_CLIENT_ID);
+        if !plan.gone.is_empty()
+            || (by_order_client_id && plan.filled_while_down != [RESTART_ORDER_CLIENT_ID])
+        {
+            return Err(format!(
+                "a fill of a restored STOP (no venue id, fill carries order client id {:?}) is {plan:?}: a stop \
+                 that filled must join by its order client id or stay held, never be gone",
+                fill.order_client_id
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// **Row 7, FillJoin.** A fill of our own order that the REST read returns carries the order's order client id
+/// or a venue order id that is the one its accept frame carried, so the restore planner can tell a
+/// fill-while-down from silence. A bridge with no fixture yet is `Deferred` with a reason.
+#[test]
+fn a_fill_of_our_own_order_carries_its_order_client_id_or_a_venue_id_that_joins() {
+    for bridge in covered_bridges() {
+        match bridge.fill_join() {
+            FillJoin::Deferred(why) => {
+                assert!(
+                    !why.trim().is_empty(),
+                    "{}: a deferred fill join needs a reason",
+                    bridge.venue()
+                );
+            }
+            FillJoin::Row { symbol, body, parse, .. } => {
+                let fills = parse(&body(RESTART_ORDER_CLIENT_ID, RESTART_VENUE_ID));
+                let accepted = accepted_venue_id(&*bridge);
+                fills_join(bridge.venue(), symbol, &fills, accepted.as_deref())
+                    .unwrap_or_else(|why| panic!("{}: {why}", bridge.venue()));
+            }
+        }
+    }
+}
+
+/// The row bites: a fill carrying neither the order client id nor the acknowledged venue id, a venue id the
+/// accept frame never carried, and a fill spelled with ANOTHER symbol than the engine's are each
+/// refused, by the planner itself; and a stop's fill is never gone.
+#[test]
+fn a_fill_that_cannot_be_joined_is_refused() {
+    let fill_on = |symbol: &str, order_client_id: Option<&str>, venue_id: &str| FillReport {
+        venue: "probe".into(),
+        symbol: symbol.into(),
+        trade_id: "t1".into(),
+        venue_order_id: venue_id.into(),
+        order_client_id: order_client_id.map(str::to_string),
+        side: 1,
+        last_qty: 1.0,
+        last_price: 100.0,
+        commission: 0.0,
+        commission_asset: "USDT".into(),
+        liquidity_side: vike_model::events::LiquiditySide::Taker,
+        timestamp: 1,
+    };
+    let fill = |order_client_id: Option<&str>, venue_id: &str| {
+        fill_on("BTCUSDT.P", order_client_id, venue_id)
+    };
+    let join = |fills: &[FillReport], accepted: Option<&str>| {
+        fills_join("probe", "BTCUSDT.P", fills, accepted)
+    };
+    let acknowledged = Some(RESTART_VENUE_ID);
+    assert!(
+        join(&[fill(Some(RESTART_ORDER_CLIENT_ID), "other")], acknowledged).is_ok(),
+        "by order client id"
+    );
+    assert!(join(&[fill(None, RESTART_VENUE_ID)], acknowledged).is_ok(), "by venue id");
+    assert!(join(&[fill(None, "other")], acknowledged).is_err(), "neither");
+    assert!(
+        join(&[fill(None, RESTART_VENUE_ID)], Some("another-id")).is_err(),
+        "a venue id the accept frame never carried joins nothing"
+    );
+    assert!(join(&[], acknowledged).is_err(), "an empty fixture proves nothing");
+
+    // the planner compares the SYMBOL: a differently spelled one joins nothing, a case change does
+    let other = fill_on("BTCUSDT", None, RESTART_VENUE_ID);
+    let err = join(&[other], acknowledged).unwrap_err();
+    assert!(
+        err.contains("does not join"),
+        "a fill spelled `BTCUSDT` for an order on `BTCUSDT.P`: {err}"
+    );
+    let other = fill_on("btcusdt.p", None, RESTART_VENUE_ID);
+    assert!(join(&[other], acknowledged).is_ok(), "the planner compares ASCII case-insensitively");
+}
+
+/// **Row 8's roster, against the sources.** The scenario above proves a fenced bridge's pump and
+/// ordering, but not that its exec thread's REST client really is a `VenueRestOrderSubmitFence` (`run` dials the
+/// venue, so no offline test reaches it). So the declaration is held to the sources in BOTH directions:
+/// a bridge that builds a `VenueRestOrderSubmitFence` must say `Fenced`, and a `Fenced` bridge must build one.
+///
+/// A bridge on the binance family's exec plane builds it THERE: `crates/bridges/binance/src/family/execution/mod.rs`'s
+/// `run_spot` and `run_perp` each build the `VenueRestOrderSubmitFence` (pinned below), so a bridge whose sources call
+/// `execution::run_spot(` / `run_perp(` (aster, since the plane became the family's) wires it too.
+#[test]
+fn submit_fence_roster_matches_the_bridge_sources() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../bridges");
+    let plane = std::fs::read_to_string(root.join("binance/src/family/execution/mod.rs"))
+        .expect("the binance family's exec plane");
+    assert_eq!(
+        plane.matches("VenueRestOrderSubmitFence::new(").count(),
+        2,
+        "the family exec plane's `run_spot` and `run_perp` each build the `VenueRestOrderSubmitFence` its callers ride"
+    );
+    let mut wired: Vec<String> = std::fs::read_dir(&root)
+        .expect("crates/bridges")
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|dir| {
+            dir.is_dir()
+                && (source_mentions(&dir.join("src"), "VenueRestOrderSubmitFence::new(")
+                    || source_mentions(&dir.join("src"), "execution::run_spot(")
+                    || source_mentions(&dir.join("src"), "execution::run_perp("))
+        })
+        .filter_map(|dir| dir.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    wired.sort();
+    let mut declared: Vec<String> = covered_bridges()
+        .iter()
+        .filter(|b| matches!(b.submit_fence(), SubmitFenceRow::Fenced { .. }))
+        .map(|b| b.venue().to_string())
+        .collect();
+    declared.sort();
+    assert_eq!(
+        wired, declared,
+        "the bridges whose sources build a `VenueRestOrderSubmitFence` must be exactly the ones this harness declares \
+         `Fenced` (a bridge's directory under crates/bridges is its venue id)"
+    );
+    for bridge in covered_bridges() {
+        if let SubmitFenceRow::Unfenced(why) = bridge.submit_fence() {
+            assert!(
+                !why.trim().is_empty(),
+                "{}: an unfenced bridge carries its reason",
+                bridge.venue()
+            );
+        }
+    }
+}
+
+/// The roster gate: every venue in the canonical `vike_model::VENUES` roster MUST be classified
+/// exactly once — either a COVERED `covered_bridges()` [`ConformanceBridge`] impl OR a DEFERRED row
+/// with a NON-EMPTY reason. A new bridge crate lands a `VENUES` entry; this test then fails until it
+/// is either wired into the table or deliberately deferred-with-reason, so no venue silently escapes
+/// the harness.
+#[test]
+fn conformance_roster_is_exhaustive() {
+    let covered: HashSet<&str> = covered_bridges().iter().map(|b| b.venue()).collect();
+    let deferred: HashSet<&str> = DEFERRED.iter().map(|(v, _)| *v).collect();
+
+    // Every DEFERRED reason is a real, non-empty justification (no blank placeholder deferrals).
+    for (venue, reason) in DEFERRED {
+        assert!(!reason.trim().is_empty(), "deferred venue {venue} must carry a non-empty reason");
+    }
+    // No duplicate deferrals, and no venue both covered AND deferred (each is one or the other).
+    assert_eq!(deferred.len(), DEFERRED.len(), "duplicate venue id in DEFERRED");
+    assert!(
+        covered.is_disjoint(&deferred),
+        "a venue is both COVERED and DEFERRED: {:?}",
+        covered.intersection(&deferred).collect::<Vec<_>>()
+    );
+
+    // The two sets partition the roster exactly, so a stray entry in EITHER list (not on the
+    // roster) trips here even before the per-venue loop.
+    assert_eq!(
+        covered.len() + deferred.len(),
+        vike_model::VENUES.len(),
+        "COVERED + DEFERRED must partition vike_model::VENUES exactly once \
+         (covered={covered:?}, deferred={deferred:?})"
+    );
+
+    // The load-bearing check: every roster venue is classified exactly once. A NEW roster venue in
+    // NEITHER set fails here (`is_covered ^ is_deferred` is false) — it must be wired or deferred.
+    for &v in vike_model::VENUES {
+        let is_covered = covered.contains(v);
+        let is_deferred = deferred.contains(v);
+        assert!(
+            is_covered ^ is_deferred,
+            "roster venue {v:?} must be classified exactly once: a covered_bridges() \
+             ConformanceBridge impl OR a DEFERRED row with a reason (covered={is_covered}, \
+             deferred={is_deferred})"
+        );
+    }
+}

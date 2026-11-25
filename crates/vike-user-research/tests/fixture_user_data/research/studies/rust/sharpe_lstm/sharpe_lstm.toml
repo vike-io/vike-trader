@@ -1,0 +1,29 @@
+# The book's case A: Binance's BTC perpetual, hourly bars (`content/book/data/`'s series). Point it at any
+# series your own store holds.
+venue = "binance"
+symbol = "BTCUSDT.P"
+interval = "1h"
+# The trailing returns each bar's returns are scaled by.
+vol_window = 24
+# The first 70% of the rows fit the network; the rest judge it.
+fit_share = 0.7
+# Hourly bars on a market that never closes.
+periods_per_year = 8760
+seed = 7
+# Adam's step size.
+learning_rate = 0.01
+# What the judged positions are charged, in a backtest's own keys: 0.01% (1 basis point) of each fill's value.
+commission = 0.01
+
+# The network, handed to the host's network trainer as its spec. `loss = "sharpe"` trains the position
+# itself; `turnover_cost` is its loss term, in the labels' units (returns over their trailing deviation):
+# about 1 basis point per unit traded at an hourly deviation of 0.5%, the `commission` above.
+[learner]
+kind = "neural"
+network = "lstm"
+hidden = [8]
+steps = 16
+loss = "sharpe"
+turnover_cost = 0.02
+epochs = 30
+batch_size = 64

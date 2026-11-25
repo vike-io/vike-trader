@@ -1,0 +1,11 @@
+{
+  "model": "ticks",
+  "value": null,
+  "ticks": 2.0,
+  "tick": 0.5,
+  "base": null,
+  "exec_time": null,
+  "window": null,
+  "gamma": null,
+  "eta": null
+}

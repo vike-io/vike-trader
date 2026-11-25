@@ -1,0 +1,811 @@
+//! Dukascopy `ReconcileClient` — the venue-facing report seam (`vike_execution::recon::ReconcileClient`) for the one venue with NO
+//! REST API. Every other venue's client opens a dedicated signed transport and PULLS reports on demand; Dukascopy's only
+//! trading API is the JForex Java sidecar, spoken over JSON-lines stdio, a channel owned end to end by
+//! [`crate::execution`]'s reader thread. So this client PULLS through it: each fetch asks the sidecar the `recon` question
+//! ([`crate::reconcile::query::ReconcileLink::ask`], `ReconSnapshot.java` is the Java half) and maps the ONE answer, what the
+//! venue lists NOW from `engine.getOrders()`, to the shared report rows.
+//!
+//! ## What each report is built from
+//!
+//! Every row is named by its USER name (decision 0290): the sidecar names an instrument by its wire name, which the running
+//! client's question renames through the kept row before any report is built (`in_user_names`).
+//!
+//! * **Orders**: the orders the venue shows RESTING (`OPENED`, or `CREATED` and not yet numbered), with the
+//!   order_client_id the label carries (an order opened in the platform carries none and is an `UnknownOrder` to the
+//!   diff, as on every venue), under the kind the sidecar read off the command and the comment for one of our
+//!   stop-limit or if-touched orders ([`crate::transport::ReconcileOrder`]'s `order_type`), else the command's. FILLED orders are positions, not orders, and are not listed (every wired client reports
+//!   OPEN orders only, and a long-lived position listed as an order would be an unknown order for ever once the node
+//!   reaped its own). **The node's native protections are reported too**: a stop-loss or a take-profit is no order at the
+//!   venue, it is a price on a FILLED order, and the venue stores no order client id for it, so without this the node's resting stop
+//!   (and a bracket's take-profit, a reduce-only limit) would be an orphan local order every pass. The client knows the
+//!   protections the node sent ([`ReconcileSource::protections`]); one is reported, under its order client id, while the venue's
+//!   FILLED orders on the other side still carry its price.
+//! * **Positions**: the net per instrument the sidecar computed over the FILLED orders ([`crate::transport::ReconcilePosition`]),
+//!   plus a FLAT row for every symbol the node may hold ([`crate::reconcile::query::ReconcileLink::known_symbols`]), because
+//!   `vike_execution::recon::diff` raises nothing for an absent row: the flat row is what shows a position the venue closed
+//!   unheard (decision 0200's phantom) as a `PositionDrift`, where the push-line snapshot this replaced read "in sync".
+//! * **Fills**: one fill per FILLED order (an open position) the venue shows, filled since `since`, under the trade id
+//!   `<order id>:1`, the id `OrderMap.java`'s `entryTradeId` mints for the first fill of an order. A fill the node folded
+//!   is skipped by the diff on that id. ⚠ **Closed orders are NOT reported, and that is not an omission.** The venue's
+//!   history cannot name the order_client_id of whoever closed an order, which a closing fill's id carries
+//!   (`closeTradeId`), and an entry fill's sequence is a process-local counter, so a fill rebuilt from history would be
+//!   under an id the node never folded and would book a fill twice. The residual is stated in `crates/bridges/dukascopy/CLAUDE.md`.
+//!
+//! ## An unreadable answer is an ERROR
+//!
+//! Every fetch is `Err(words)` when the question could not be answered ([`crate::reconcile::query`]'s module doc lists the
+//! ways), never `Ok(vec![])`: an empty report is a claim ("the venue holds nothing") that the restore planner and the
+//! diff act on. The failure is also said once a minute at `error` here.
+//!
+//! ## Policy and the rollout rule (decision 0043)
+//!
+//! Handing the node this client gives the default `quarantine` something to hold; it folds nothing. ⚠ **Do not set
+//! `hybrid` or `synthesize` for this venue**: its POSITION report is not live-proven complete (whether
+//! `engine.getOrders()` lists every order at every moment is unmeasured), and `PositionDrift` rewrites local size and
+//! books realized PnL. No balance leg: the venue's balance is the previous end-of-day figure (`IAccount.getBalance()`),
+//! never a live one, so `fetch_balance` keeps the trait's "not reported".
+//!
+//! ## ⚠ A client of a restarted GATEWAYHUB does not know the protections the dead one's node sent
+//!
+//! The protections are the exec client's own memory ([`crate::execution`]'s `Shared::protections`). A gatewayhub restart is a
+//! new client with none, so a stop or take-profit the node restored cannot be named and is absent from the report; a
+//! restored take-profit (a plain `limit` kind) on the MOUNTED symbol is then judged by the restore planner's silence
+//! rule. The venue stays outside `vike_gatewayhub_client::trade::RECONCILE_READS_ADMITTED` for this reason (an admitted
+//! symbol's restored orders stay held). `crates/bridges/dukascopy/CLAUDE.md` and the decision record carry it.
+
+pub mod query;
+pub(crate) mod venue_read;
+
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
+use vike_execution::recon::ReconcileClient;
+use vike_model::events::{LiquiditySide, PositionSide, TradeId};
+use vike_model::{
+    FillReport, OrderRequest, OrderStatus, OrderStatusReport, OrderType, PositionStatusReport,
+};
+
+use crate::reconcile::query::ReconcileAnswer;
+use crate::transport::ReconcileOrder;
+
+/// The venue key stamped on every report row.
+pub const VENUE: &str = "dukascopy";
+
+/// How close (relative) a protection's price must be to the price the venue holds on an order to be that protection:
+/// the sidecar puts a trigger on the instrument's grid (a tenth of a pip, half to even), so the two differ by at most
+/// that, far under half a pip (`5e-5` of the price is half a pip of a EUR pair and under a pip of a yen pair).
+pub const PROTECTION_PRICE_TOLERANCE: f64 = 5e-5;
+
+/// How often a failed query is said at `error` (every fetch of every pass fails the same way while it fails).
+const SAY_EVERY: Duration = Duration::from_secs(60);
+
+/// What the reconcile client reads from the running exec client (`crate::execution`'s `ReconcileHandle`): the one question, the
+/// protections the node sent, and the symbols that get a flat row. A trait so the client's mapping and its error paths
+/// are tested without a child process.
+pub trait ReconcileSource: Send + Sync {
+    /// Ask the sidecar what the venue holds now ([`crate::reconcile::query::ReconcileLink::ask`]): every failure is an `Err`.
+    fn ask(&self) -> Result<ReconcileAnswer, String>;
+    /// The native protections the sidecar acknowledged and the node still holds resting, `(order client id, request)`.
+    fn protections(&self) -> Vec<(String, OrderRequest)>;
+    /// The engine admitted `symbol`: it gets a flat row from now on.
+    fn know(&self, symbol: &str);
+    /// The engine gave `symbol` back.
+    fn forget(&self, symbol: &str);
+    /// The symbols that get a flat row.
+    fn known_symbols(&self) -> Vec<String>;
+}
+
+/// The order kind of an SDK order command: a pending `BUYLIMIT`/`SELLLIMIT` is a limit, a `BUYSTOP`/`SELLSTOP` an entry
+/// stop (the platform can hold one; ours is a stop-limit, which the sidecar names itself), a bare `BUY`/`SELL` a market
+/// order still being placed; any other
+/// word (`PLACE_BID`, `BUYLIMIT_BYBID`, ...) stays the venue's own spelling.
+fn order_type_of(command: &str) -> OrderType {
+    match command {
+        "BUYLIMIT" | "SELLLIMIT" => OrderType::Limit,
+        "BUYSTOP" | "SELLSTOP" => OrderType::Stop,
+        "BUY" | "SELL" => OrderType::Market,
+        other => OrderType::Unrecognized(other.to_ascii_lowercase()),
+    }
+}
+
+/// Whether the venue's price `held` on an order is the protection's price `want`.
+fn same_price(held: f64, want: f64) -> bool {
+    held > 0.0
+        && (held - want).abs() <= PROTECTION_PRICE_TOLERANCE * want.abs().max(f64::MIN_POSITIVE)
+}
+
+/// **The venue's answer under the USER names** (decision 0290): every order and position row the sidecar names by its
+/// wire name is renamed by its kept row (`crate::instrument::names::user_symbol_or_wire`; a row no kept row names keeps
+/// the venue's name, said at WARN), so the reports compare with the node's own books, its protections and its flat rows.
+/// The running client's question reads its answer so (`crate::execution`'s `ReconcileHandle`).
+pub(crate) fn in_user_names(mut answer: ReconcileAnswer) -> ReconcileAnswer {
+    for order in &mut answer.orders {
+        order.symbol = crate::instrument::names::user_symbol_or_wire(&order.symbol);
+    }
+    for position in &mut answer.positions {
+        position.symbol = crate::instrument::names::user_symbol_or_wire(&position.symbol);
+    }
+    answer
+}
+
+/// The order report: the orders the venue shows resting, then the node's protections the venue still holds. See the
+/// module doc for why FILLED orders are not here and why the protections are. Sorted by symbol then id.
+pub fn order_reports(
+    answer: &ReconcileAnswer,
+    protections: &[(String, OrderRequest)],
+) -> Vec<OrderStatusReport> {
+    let mut reports: Vec<OrderStatusReport> = Vec::new();
+    for o in answer.orders.iter().filter(|o| matches!(o.state.as_str(), "OPENED" | "CREATED")) {
+        // The sidecar's reading of one of our conditional entries (a stop-limit rests as a STOP command, an
+        // if-touched order as a LIMIT one) wins over the command's.
+        let order_type = o.order_type.clone().unwrap_or_else(|| order_type_of(&o.command));
+        // A resting order's open price is a plain limit's limit and every other entry's TRIGGER (`TriggerEntry.java`);
+        // the limit of a stop-limit or a limit-if-touched is a slippage the SDK states no getter for, so it stays None.
+        let level = Some(o.price).filter(|p| p.is_finite() && *p > 0.0);
+        let (price, trigger_price) = match order_type {
+            OrderType::Limit => (level, None),
+            OrderType::Stop | OrderType::StopLimit | OrderType::TakeProfit => (None, level),
+            _ => (None, None),
+        };
+        reports.push(OrderStatusReport {
+            venue: VENUE.to_string(),
+            symbol: o.symbol.clone(),
+            venue_order_id: o.order_id.as_str().into(),
+            order_client_id: o.order_client_id.clone(),
+            side: o.side,
+            order_type,
+            qty: o.requested,
+            filled_qty: o.amount,
+            average_price: if o.amount > 0.0 { o.price } else { 0.0 },
+            status: OrderStatus::from_fill_progress(o.amount),
+            timestamp: if o.created > 0 { o.created } else { answer.timestamp },
+            price,
+            trigger_price,
+            trail: None,
+            trail_percent: None,
+        });
+    }
+    for (order_client_id, request) in protections {
+        // The price the node asked the venue to hold, and which price of an order that is.
+        let (tag, want) = match request.order_type {
+            OrderType::Stop => ("sl", request.trigger_price),
+            OrderType::Limit => ("tp", request.price),
+            _ => continue,
+        };
+        let held = |o: &ReconcileOrder| if tag == "sl" { o.stop_loss } else { o.take_profit };
+        let Some(want) = want.filter(|p| p.is_finite() && *p > 0.0) else { continue };
+        // The orders a protection covers face it: a SELL stop protects the LONG orders.
+        let legs: Vec<&ReconcileOrder> = answer
+            .orders
+            .iter()
+            .filter(|o| {
+                o.state == "FILLED"
+                    && o.symbol.eq_ignore_ascii_case(&request.symbol)
+                    && o.side == -request.side
+                    && same_price(held(o), want)
+            })
+            .collect();
+        if legs.is_empty() {
+            continue; // the venue no longer holds it: absent, which the diff and the restore planner read as gone
+        }
+        let ids: Vec<&str> = legs.iter().map(|o| o.order_id.as_str()).collect();
+        // the price the venue holds (the first leg's: every leg matched `want`), in the request's own slot
+        let level = Some(held(legs[0]));
+        let (price, trigger_price) = if tag == "sl" { (None, level) } else { (level, None) };
+        reports.push(OrderStatusReport {
+            venue: VENUE.to_string(),
+            symbol: request.symbol.clone(),
+            venue_order_id: format!("{tag}:{}", ids.join(",")).as_str().into(),
+            order_client_id: Some(order_client_id.clone()),
+            side: request.side,
+            order_type: request.order_type.clone(),
+            qty: request.qty,
+            filled_qty: 0.0,
+            average_price: 0.0,
+            status: OrderStatus::Accepted,
+            timestamp: answer.timestamp,
+            price,
+            trigger_price,
+            trail: None,
+            trail_percent: None,
+        });
+    }
+    reports.sort_by(|a, b| {
+        (a.symbol.as_str(), a.venue_order_id.as_str())
+            .cmp(&(b.symbol.as_str(), b.venue_order_id.as_str()))
+    });
+    reports
+}
+
+/// The engine's sign for the venue's commission: the venue states a charge NEGATIVE (`IOrder.getCommission()`), the
+/// engine books a charge POSITIVE. A figure that is not a charge reports nothing.
+fn charge(venue_commission: f64) -> f64 {
+    if venue_commission.is_finite() && venue_commission < 0.0 { -venue_commission } else { 0.0 }
+}
+
+/// The fill report: one fill per FILLED order (an open position) filled at or after `since` (`0` = no bound), under the
+/// trade id the sidecar minted for the order's first fill. See the module doc for why closed orders are not here.
+pub fn fill_reports(answer: &ReconcileAnswer, since: i64) -> Vec<FillReport> {
+    let mut reports: Vec<FillReport> = Vec::new();
+    for o in answer
+        .orders
+        .iter()
+        .filter(|o| o.state == "FILLED" && o.amount > 0.0 && !o.order_id.is_empty())
+    {
+        let ts = if o.filled > 0 { o.filled } else { o.created };
+        if since > 0 && ts < since {
+            continue;
+        }
+        let Ok(trade_id) = TradeId::new(format!("{}:1", o.order_id)) else { continue };
+        reports.push(FillReport {
+            venue: VENUE.to_string(),
+            symbol: o.symbol.clone(),
+            trade_id,
+            venue_order_id: o.order_id.as_str().into(),
+            order_client_id: o.order_client_id.clone(),
+            side: o.side,
+            last_qty: o.amount,
+            last_price: o.price,
+            commission: charge(o.commission),
+            // The fill states no asset, which the engine reads as the account's currency.
+            commission_asset: String::new(),
+            liquidity_side: LiquiditySide::Taker,
+            timestamp: ts,
+        });
+    }
+    // `price` is a defaulted field of the sidecar's row: a missing one is 0.
+    reports.retain(vike_bridge_core::event_map::fill_report_is_bookable);
+    reports.sort_by(|a, b| a.trade_id.cmp(&b.trade_id));
+    reports
+}
+
+/// The position report: the venue's net per instrument, and a FLAT row for every `known` symbol the venue lists none on
+/// (the row `vike_execution::recon::diff` needs to see a position the venue closed). A symbol the venue lists that the client
+/// was never told of is reported all the same (a position the node does not hold is a `PositionOnlyExternal`). Sorted by
+/// symbol.
+///
+/// Each venue line ([`crate::transport::ReconcilePosition`]: the signed net size in UNITS and the signed-amount-weighted average
+/// of the remaining orders' open prices, the sidecar's `NetPosition.java`) is ONE row, read at the answer's `ts`:
+/// [`PositionSide::Both`] with the SIGN of `qty` carrying direction (the key the exec fill lane's `BOTH` fills fold
+/// under), the rest the flat row's (Cross, no isolated wallet). `NetPosition.java` and the shared
+/// `PositionStatusReport::from_legs` give the same answers over one golden file (`data/position_legs.json`, Dukascopy
+/// option A, owner 2026-11-11).
+pub fn position_reports(answer: &ReconcileAnswer, known: &[String]) -> Vec<PositionStatusReport> {
+    let mut rows: std::collections::BTreeMap<String, PositionStatusReport> =
+        std::collections::BTreeMap::new();
+    for p in &answer.positions {
+        let symbol = p.symbol.to_ascii_uppercase();
+        let row = PositionStatusReport {
+            position_side: PositionSide::Both,
+            qty: p.size,
+            average_price: p.average_price,
+            timestamp: answer.timestamp,
+            ..PositionStatusReport::flat(VENUE, &symbol)
+        };
+        rows.insert(symbol, row);
+    }
+    for symbol in known {
+        rows.entry(symbol.clone()).or_insert_with(|| {
+            let mut flat = PositionStatusReport::flat(VENUE, symbol);
+            flat.timestamp = answer.timestamp;
+            flat
+        });
+    }
+    rows.into_values().collect()
+}
+
+/// The Dukascopy reconcile client: three pulls over one sidecar question. Built from a running
+/// [`crate::execution::ExecutionClientDukascopy`] via its `recon_client()` (there is no endpoint to connect to: the venue's
+/// truth arrives only through the sidecar's stdio that client owns).
+pub struct ReconcileClientDukascopy {
+    source: Arc<dyn ReconcileSource>,
+    /// When a failed query was last said at `error` (see [`SAY_EVERY`]).
+    said: Mutex<Option<Instant>>,
+}
+
+impl ReconcileClientDukascopy {
+    /// A client over `source` (the exec client's handle, or a test double).
+    pub fn new(source: Arc<dyn ReconcileSource>) -> Self {
+        Self { source, said: Mutex::new(None) }
+    }
+
+    /// One question, and its failure said at `error` at most once a minute (the failure itself is returned every time).
+    /// A symbol the node may hold that no kept row names fails it too (decision 0290): the venue answers under its
+    /// own names, so a report would give that symbol a flat row and no orders beside the venue's rows of it.
+    fn read(&self) -> Result<ReconcileAnswer, String> {
+        let answer = self.source.known_symbols().iter().try_for_each(|symbol| {
+            crate::instrument::names::wire_symbol(symbol).map(drop).map_err(|why| {
+                let symbol = symbol.clone();
+                crate::refusals::DukascopyReconcileRefusal::SymbolUnnamed { why, symbol }
+                    .to_string()
+            })
+        });
+        let answer = answer.and_then(|()| self.source.ask());
+        if let Err(error) = &answer {
+            let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);
+            if said.is_none_or(|at| at.elapsed() >= SAY_EVERY) {
+                *said = Some(Instant::now());
+                tracing::error!(
+                    target: "vike_dukascopy::recon",
+                    %error,
+                    "the dukascopy reconcile query FAILED: the venue's orders and positions were NOT read, so this pass \
+                     compares nothing (an unreadable answer is an error, never 'no orders')"
+                );
+            }
+        }
+        answer
+    }
+}
+
+impl ReconcileClient for ReconcileClientDukascopy {
+    fn fetch_order_status_reports(&self, _since: i64) -> Result<Vec<OrderStatusReport>, String> {
+        let answer = self.read()?;
+        Ok(order_reports(&answer, &self.source.protections()))
+    }
+
+    fn fetch_fill_reports(&self, since: i64) -> Result<Vec<FillReport>, String> {
+        Ok(fill_reports(&self.read()?, since))
+    }
+
+    fn fetch_position_status_reports(&self) -> Result<Vec<PositionStatusReport>, String> {
+        let answer = self.read()?;
+        Ok(position_reports(&answer, &self.source.known_symbols()))
+    }
+
+    /// The engine admitted `symbol`: it gets a flat row. The read itself spans the whole account either way.
+    fn admit_symbol(&self, symbol: &str) {
+        self.source.know(symbol);
+    }
+
+    fn forget_symbol(&self, symbol: &str) {
+        self.source.forget(symbol);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+    use crate::transport::ReconcilePosition;
+
+    fn row(
+        id: &str,
+        order_client_id: Option<&str>,
+        symbol: &str,
+        side: i32,
+        state: &str,
+        command: &str,
+        amount: f64,
+        requested: f64,
+        price: f64,
+    ) -> ReconcileOrder {
+        ReconcileOrder {
+            order_id: id.into(),
+            order_client_id: order_client_id.map(str::to_string),
+            symbol: symbol.into(),
+            side,
+            state: state.into(),
+            command: command.into(),
+            order_type: None,
+            amount,
+            requested,
+            price,
+            stop_loss: 0.0,
+            take_profit: 0.0,
+            commission: -0.03,
+            created: 1_000,
+            filled: if state == "FILLED" { 2_000 } else { 0 },
+        }
+    }
+
+    fn answer(orders: Vec<ReconcileOrder>, positions: Vec<ReconcilePosition>) -> ReconcileAnswer {
+        ReconcileAnswer { orders, positions, foreign: 0, timestamp: 9_000 }
+    }
+
+    fn stop(
+        order_client_id: &str,
+        symbol: &str,
+        side: i32,
+        trigger: f64,
+    ) -> (String, OrderRequest) {
+        (
+            order_client_id.to_string(),
+            OrderRequest {
+                order_client_id: order_client_id.into(),
+                venue: VENUE.into(),
+                symbol: symbol.into(),
+                side,
+                qty: 1000.0,
+                order_type: OrderType::Stop,
+                trigger_price: Some(trigger),
+                reduce_only: true,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn take_profit(
+        order_client_id: &str,
+        symbol: &str,
+        side: i32,
+        price: f64,
+    ) -> (String, OrderRequest) {
+        (
+            order_client_id.to_string(),
+            OrderRequest {
+                order_client_id: order_client_id.into(),
+                venue: VENUE.into(),
+                symbol: symbol.into(),
+                side,
+                qty: 1000.0,
+                order_type: OrderType::Limit,
+                price: Some(price),
+                reduce_only: true,
+                ..Default::default()
+            },
+        )
+    }
+
+    // ---- the order report ------------------------------------------------------------------
+
+    /// A resting order of ours names its order client id and is `Accepted`; one opened in the platform carries no order client id; a FILLED order
+    /// is a position and is no order at all.
+    #[test]
+    fn resting_orders_are_reported_with_their_order_client_ids_and_filled_orders_are_not_orders() {
+        let a = answer(
+            vec![
+                row("11", Some("c1"), "EURUSD", 1, "OPENED", "BUYLIMIT", 0.0, 2000.0, 1.05),
+                row("12", None, "EURUSD", -1, "OPENED", "SELLLIMIT", 0.0, 1000.0, 1.2),
+                row("13", Some("c3"), "USDJPY", 1, "CREATED", "BUYLIMIT", 0.0, 1000.0, 150.0),
+                row("14", Some("c4"), "USDJPY", 1, "FILLED", "BUY", 1000.0, 1000.0, 156.9),
+            ],
+            vec![],
+        );
+        let reports = order_reports(&a, &[]);
+        assert_eq!(reports.len(), 3, "the FILLED order is a position, not an order: {reports:?}");
+        let c1 = reports.iter().find(|r| r.venue_order_id.as_str() == "11").expect("c1");
+        assert_eq!(c1.order_client_id.as_deref(), Some("c1"));
+        assert_eq!(c1.venue, "dukascopy");
+        assert_eq!(c1.order_type, OrderType::Limit);
+        assert_eq!((c1.side, c1.qty, c1.filled_qty, c1.average_price), (1, 2000.0, 0.0, 0.0));
+        assert_eq!(c1.status, OrderStatus::Accepted);
+        assert_eq!(c1.timestamp, 1_000);
+        let platform =
+            reports.iter().find(|r| r.venue_order_id.as_str() == "12").expect("platform");
+        assert_eq!(
+            platform.order_client_id, None,
+            "an order opened in the platform names no order client id"
+        );
+        assert!(reports.iter().all(|r| r.order_client_id.as_deref() != Some("c4")));
+        // sorted by symbol, then id
+        let order: Vec<&str> = reports.iter().map(|r| r.venue_order_id.as_str()).collect();
+        assert_eq!(order, ["11", "12", "13"]);
+    }
+
+    /// A resting order that is partly filled says so.
+    #[test]
+    fn a_partly_filled_resting_order_is_partially_filled() {
+        let a = answer(
+            vec![row("11", Some("c1"), "EURUSD", 1, "OPENED", "BUYLIMIT", 1000.0, 3000.0, 1.05)],
+            vec![],
+        );
+        let r = &order_reports(&a, &[])[0];
+        assert_eq!(r.status, OrderStatus::PartiallyFilled);
+        assert_eq!((r.qty, r.filled_qty, r.average_price), (3000.0, 1000.0, 1.05));
+    }
+
+    #[test]
+    fn the_sdk_commands_map_to_the_order_kinds() {
+        assert_eq!(order_type_of("BUYLIMIT"), OrderType::Limit);
+        assert_eq!(order_type_of("SELLLIMIT"), OrderType::Limit);
+        assert_eq!(order_type_of("BUYSTOP"), OrderType::Stop);
+        assert_eq!(order_type_of("SELL"), OrderType::Market);
+        assert_eq!(order_type_of("PLACE_BID"), OrderType::Unrecognized("place_bid".into()));
+    }
+
+    /// **A resting stop-limit or if-touched order of ours is reported under the kind the sidecar read back**, not the
+    /// command's (a stop-limit rests as `BUYSTOP`, an if-touched order as `BUYLIMIT`); an order the sidecar names no
+    /// kind for keeps the command's reading.
+    #[test]
+    fn a_resting_conditional_entry_is_reported_under_the_kind_the_sidecar_read_back() {
+        let mut stop_limit =
+            row("61", Some("sl1"), "EURUSD", 1, "OPENED", "BUYSTOP", 0.0, 1000.0, 1.5);
+        stop_limit.order_type = Some(OrderType::StopLimit);
+        let mut lit = row("63", Some("lit1"), "EURUSD", 1, "OPENED", "BUYLIMIT", 0.0, 1000.0, 0.9);
+        lit.order_type = Some(OrderType::TakeProfit);
+        let plain = row("65", Some("p1"), "EURUSD", 1, "OPENED", "BUYLIMIT", 0.0, 1000.0, 0.9);
+        let reports = order_reports(&answer(vec![stop_limit, lit, plain], vec![]), &[]);
+        let kind = |id: &str| {
+            reports.iter().find(|r| r.venue_order_id.as_str() == id).expect(id).order_type.clone()
+        };
+        assert_eq!(kind("61"), OrderType::StopLimit);
+        assert_eq!(kind("63"), OrderType::TakeProfit);
+        assert_eq!(kind("65"), OrderType::Limit);
+        // the open price is the plain limit's limit and the conditional entries' trigger; their limit (a slippage
+        // the SDK states no getter for) stays unstated
+        let terms = |id: &str| {
+            let r = reports.iter().find(|r| r.venue_order_id.as_str() == id).expect(id);
+            (r.price, r.trigger_price, r.trail, r.trail_percent)
+        };
+        assert_eq!(terms("61"), (None, Some(1.5), None, None));
+        assert_eq!(terms("63"), (None, Some(0.9), None, None));
+        assert_eq!(terms("65"), (Some(0.9), None, None, None));
+    }
+
+    /// **A native stop-loss is a price on a FILLED order, and the node's resting stop is reported while the venue still
+    /// holds that price on an order facing it** (a SELL stop covers LONG orders), under the stop's own order client id.
+    #[test]
+    fn a_resting_stop_loss_is_reported_while_the_venue_holds_its_price_on_an_order_it_covers() {
+        let mut long = row("21", Some("m1"), "USDJPY", 1, "FILLED", "BUY", 1000.0, 1000.0, 156.9);
+        long.stop_loss = 156.5;
+        let a = answer(vec![long], vec![]);
+        let reports = order_reports(&a, &[stop("s1", "USDJPY", -1, 156.5)]);
+        assert_eq!(reports.len(), 1, "{reports:?}");
+        let s = &reports[0];
+        assert_eq!(s.order_client_id.as_deref(), Some("s1"));
+        assert_eq!(s.order_type, OrderType::Stop);
+        assert_eq!((s.side, s.qty, s.status), (-1, 1000.0, OrderStatus::Accepted));
+        assert_eq!(s.venue_order_id.as_str(), "sl:21");
+        assert_eq!(
+            (s.price, s.trigger_price),
+            (None, Some(156.5)),
+            "the stop-loss the venue holds"
+        );
+
+        // the grid snap (a tenth of a pip) is inside the tolerance
+        assert_eq!(order_reports(&a, &[stop("s1", "USDJPY", -1, 156.5004)]).len(), 1);
+        // the venue holds ANOTHER price: the node's stop is absent (gone at the venue), not reported
+        assert!(order_reports(&a, &[stop("s1", "USDJPY", -1, 156.0)]).is_empty());
+        // a stop on the SAME side as the order covers nothing
+        assert!(order_reports(&a, &[stop("s1", "USDJPY", 1, 156.5)]).is_empty());
+        // another symbol's order carries it: not this stop's
+        assert!(order_reports(&a, &[stop("s1", "EURUSD", -1, 156.5)]).is_empty());
+        // the venue carries no stop-loss any more
+        let mut bare = row("21", Some("m1"), "USDJPY", 1, "FILLED", "BUY", 1000.0, 1000.0, 156.9);
+        bare.stop_loss = 0.0;
+        assert!(
+            order_reports(&answer(vec![bare], vec![]), &[stop("s1", "USDJPY", -1, 156.5)])
+                .is_empty()
+        );
+    }
+
+    /// The take-profit is the stop-loss's twin: a reduce-only `limit` is the `take_profit` price of the order.
+    #[test]
+    fn a_resting_take_profit_is_reported_from_the_take_profit_price_not_the_stop_loss() {
+        let mut long = row("21", Some("m1"), "EURUSD", 1, "FILLED", "BUY", 1000.0, 1000.0, 1.1);
+        long.take_profit = 1.12;
+        long.stop_loss = 1.09;
+        let a = answer(vec![long], vec![]);
+        let reports = order_reports(&a, &[take_profit("t1", "EURUSD", -1, 1.12)]);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].order_type, OrderType::Limit);
+        assert_eq!(reports[0].venue_order_id.as_str(), "tp:21");
+        assert_eq!((reports[0].price, reports[0].trigger_price), (Some(1.12), None));
+        // the stop-loss price is not a take-profit
+        assert!(order_reports(&a, &[take_profit("t1", "EURUSD", -1, 1.09)]).is_empty());
+        // one order may carry both: both are reported
+        let both = order_reports(
+            &a,
+            &[take_profit("t1", "EURUSD", -1, 1.12), stop("s1", "EURUSD", -1, 1.09)],
+        );
+        assert_eq!(both.len(), 2);
+    }
+
+    /// One stop over several orders: every covered order is named in the venue id.
+    #[test]
+    fn one_stop_over_several_orders_names_them_all() {
+        let mut a1 = row("21", Some("m1"), "USDJPY", 1, "FILLED", "BUY", 1000.0, 1000.0, 156.9);
+        let mut a2 = row("22", Some("m2"), "USDJPY", 1, "FILLED", "BUY", 1000.0, 1000.0, 157.0);
+        a1.stop_loss = 156.5;
+        a2.stop_loss = 156.5;
+        let r = order_reports(&answer(vec![a1, a2], vec![]), &[stop("s1", "USDJPY", -1, 156.5)]);
+        assert_eq!(r[0].venue_order_id.as_str(), "sl:21,22");
+    }
+
+    // ---- the position report ---------------------------------------------------------------
+
+    /// The venue's rows are reported, sorted, a symbol the venue lists no order on and the client knows is FLAT (the row that
+    /// shows a position closed unheard), and a symbol the client was never told of is reported all the same.
+    #[test]
+    fn positions_are_the_venues_rows_plus_a_flat_row_for_every_known_symbol() {
+        let a = answer(
+            vec![],
+            vec![
+                ReconcilePosition { symbol: "USDJPY".into(), size: 2000.0, average_price: 155.25 },
+                ReconcilePosition { symbol: "GBPUSD".into(), size: -1000.0, average_price: 1.3 },
+            ],
+        );
+        let known = vec!["EURUSD".to_string(), "USDJPY".to_string()];
+        let rows = position_reports(&a, &known);
+        let symbols: Vec<&str> = rows.iter().map(|r| r.symbol.as_str()).collect();
+        assert_eq!(symbols, ["EURUSD", "GBPUSD", "USDJPY"]);
+        assert_eq!(rows[0].qty, 0.0, "EURUSD: the venue lists no order on it, so it is flat");
+        assert_eq!(rows[0].average_price, 0.0);
+        assert_eq!(rows[0].timestamp, 9_000);
+        assert_eq!(rows[1].qty, -1000.0, "a position the client was never told of is reported");
+        assert_eq!(
+            rows[2].qty, 2000.0,
+            "a known symbol the venue lists keeps the venue's row, not a flat one"
+        );
+        assert_eq!(rows[2].average_price, 155.25);
+        assert!(
+            rows.iter().all(|r| r.venue == "dukascopy" && r.position_side == PositionSide::Both)
+        );
+    }
+
+    /// A flat venue with no known symbol is an empty report, and that is an ANSWER (the sidecar said so).
+    #[test]
+    fn a_flat_venue_the_client_knows_no_symbol_on_is_an_empty_report() {
+        assert!(position_reports(&answer(vec![], vec![]), &[]).is_empty());
+    }
+
+    // ---- the fill report -------------------------------------------------------------------
+
+    /// One fill per FILLED order, under the id of its first fill; the commission in the engine's sign; the lookback bound.
+    #[test]
+    fn a_filled_order_is_one_fill_under_its_first_trade_id_and_the_lookback_bounds_it() {
+        let mut older = row("31", Some("m0"), "EURUSD", 1, "FILLED", "BUY", 1000.0, 1000.0, 1.1);
+        older.filled = 500;
+        let a = answer(
+            vec![
+                row("32", Some("m1"), "USDJPY", -1, "FILLED", "SELL", 2000.0, 2000.0, 156.9),
+                older,
+                row("33", Some("r1"), "EURUSD", 1, "OPENED", "BUYLIMIT", 0.0, 1000.0, 1.0),
+                row("34", None, "EURUSD", 1, "FILLED", "BUY", 1000.0, 1000.0, 1.2),
+            ],
+            vec![],
+        );
+        let all = fill_reports(&a, 0);
+        assert_eq!(all.len(), 3, "a resting order is no fill: {all:?}");
+        let f = all.iter().find(|f| f.venue_order_id.as_str() == "32").expect("32");
+        assert_eq!(f.trade_id.as_str(), "32:1", "OrderMap.entryTradeId(orderId, 1)");
+        assert_eq!(f.order_client_id.as_deref(), Some("m1"));
+        assert_eq!((f.side, f.last_qty, f.last_price), (-1, 2000.0, 156.9));
+        assert_eq!(f.commission, 0.03, "the venue's charge is negative; the engine's is positive");
+        assert_eq!(f.liquidity_side, LiquiditySide::Taker);
+        assert_eq!(f.timestamp, 2_000);
+        let platform = all.iter().find(|f| f.venue_order_id.as_str() == "34").expect("34");
+        assert!(platform.order_client_id.is_none());
+        // since: the order filled at 500 is older than the window
+        let recent = fill_reports(&a, 1_000);
+        assert_eq!(recent.len(), 2);
+        assert!(recent.iter().all(|f| f.venue_order_id.as_str() != "31"));
+    }
+
+    /// An order with no id yet has no first-fill id to name: it is not reported as a fill.
+    #[test]
+    fn a_filled_order_with_no_id_is_not_a_fill() {
+        let a = answer(
+            vec![row("", Some("m1"), "EURUSD", 1, "FILLED", "BUY", 1000.0, 1000.0, 1.1)],
+            vec![],
+        );
+        assert!(fill_reports(&a, 0).is_empty());
+    }
+
+    // ---- the client ------------------------------------------------------------------------
+
+    struct Source {
+        reply: Result<ReconcileAnswer, String>,
+        protections: Vec<(String, OrderRequest)>,
+        asked: AtomicUsize,
+        told: Mutex<Vec<String>>,
+        forgotten: Mutex<Vec<String>>,
+        known: Vec<String>,
+    }
+
+    impl Source {
+        /// A source whose node holds `EURUSD`, read through the kept list every test of this binary holds.
+        fn new(reply: Result<ReconcileAnswer, String>) -> Arc<Self> {
+            crate::test_support::hold_kept_list_for_tests();
+            Arc::new(Self {
+                reply,
+                protections: Vec::new(),
+                asked: AtomicUsize::new(0),
+                told: Mutex::new(Vec::new()),
+                forgotten: Mutex::new(Vec::new()),
+                known: vec!["EURUSD".to_string()],
+            })
+        }
+    }
+
+    impl ReconcileSource for Source {
+        fn ask(&self) -> Result<ReconcileAnswer, String> {
+            self.asked.fetch_add(1, Ordering::SeqCst);
+            self.reply.clone()
+        }
+        fn protections(&self) -> Vec<(String, OrderRequest)> {
+            self.protections.clone()
+        }
+        fn know(&self, symbol: &str) {
+            self.told.lock().unwrap().push(symbol.to_string());
+        }
+        fn forget(&self, symbol: &str) {
+            self.forgotten.lock().unwrap().push(symbol.to_string());
+        }
+        fn known_symbols(&self) -> Vec<String> {
+            self.known.clone()
+        }
+    }
+
+    /// **An unreadable answer is an ERROR on all three reads, never an empty report**: an empty one is a claim the diff and
+    /// the restore planner would act on.
+    #[test]
+    fn a_failed_query_is_an_error_on_every_read_and_never_an_empty_report() {
+        let source = Source::new(Err("dukascopy: the JForex sidecar did not answer".into()));
+        let client = ReconcileClientDukascopy::new(source.clone());
+        assert_eq!(
+            client.fetch_order_status_reports(0),
+            Err("dukascopy: the JForex sidecar did not answer".to_string())
+        );
+        assert!(client.fetch_fill_reports(0).is_err());
+        assert!(client.fetch_position_status_reports().is_err());
+        assert!(
+            client.fetch_mass_status(0).is_err(),
+            "the composed snapshot fails with its first read"
+        );
+        assert!(source.asked.load(Ordering::SeqCst) >= 4);
+    }
+
+    #[test]
+    fn the_client_maps_one_answer_to_the_three_reports_and_claims_nothing_it_does_not_read() {
+        let mut long = row("21", Some("m1"), "USDJPY", 1, "FILLED", "BUY", 1000.0, 1000.0, 156.9);
+        long.stop_loss = 156.5;
+        let a = answer(
+            vec![row("11", Some("c1"), "EURUSD", 1, "OPENED", "BUYLIMIT", 0.0, 1000.0, 1.05), long],
+            vec![ReconcilePosition { symbol: "USDJPY".into(), size: 1000.0, average_price: 156.9 }],
+        );
+        let mut source = Source::new(Ok(a));
+        Arc::get_mut(&mut source).unwrap().protections = vec![stop("s1", "USDJPY", -1, 156.5)];
+        let client = ReconcileClientDukascopy::new(source);
+        let orders = client.fetch_order_status_reports(0).unwrap();
+        assert_eq!(orders.len(), 2, "the resting limit and the node's stop-loss");
+        assert_eq!(client.fetch_fill_reports(0).unwrap().len(), 1);
+        let positions = client.fetch_position_status_reports().unwrap();
+        assert_eq!(
+            positions.iter().map(|p| (p.symbol.as_str(), p.qty)).collect::<Vec<_>>(),
+            [("EURUSD", 0.0), ("USDJPY", 1000.0)]
+        );
+        let mass = client.fetch_mass_status(0).unwrap();
+        assert_eq!((mass.orders.len(), mass.fills.len(), mass.positions.len()), (2, 1, 2));
+        // what this client does not do
+        assert_eq!(
+            client.fetch_balance(),
+            Ok(None),
+            "the venue's balance is the previous end-of-day figure: not reported"
+        );
+        assert!(!client.lists_trigger_orders(), "no claim a conformance row has not proven");
+        assert_eq!(
+            client.admitted_symbols(),
+            None,
+            "the read spans the account but claims no admitted list"
+        );
+    }
+
+    /// **A symbol the node holds that no kept row names fails every read in words** (decision 0290): the venue answers
+    /// under its own names, so a report would give it a flat row beside the venue's rows of it. Nothing is asked.
+    #[test]
+    fn a_held_symbol_no_kept_row_names_fails_every_read_in_words() {
+        let mut source = Source::new(Ok(answer(vec![], vec![])));
+        Arc::get_mut(&mut source).unwrap().known = vec!["EURUSD".into(), "NOSUCH.CFD".into()];
+        let client = ReconcileClientDukascopy::new(source.clone());
+        let why = client.fetch_position_status_reports().expect_err("no row, no report");
+        let unnamed = crate::refusals::DukascopyReconcileRefusal::SymbolUnnamed {
+            why: crate::instrument::names::wire_symbol("NOSUCH.CFD").expect_err("no kept row"),
+            symbol: "NOSUCH.CFD".to_string(),
+        };
+        assert_eq!(why, unnamed.to_string());
+        assert!(client.fetch_order_status_reports(0).is_err());
+        assert_eq!(source.asked.load(Ordering::SeqCst), 0, "the venue is not asked");
+    }
+
+    #[test]
+    fn the_engines_admissions_reach_the_flat_row_list() {
+        let source = Source::new(Ok(answer(vec![], vec![])));
+        let client = ReconcileClientDukascopy::new(source.clone());
+        client.admit_symbol("USDJPY");
+        client.forget_symbol("USDJPY");
+        assert_eq!(*source.told.lock().unwrap(), ["USDJPY"]);
+        assert_eq!(*source.forgotten.lock().unwrap(), ["USDJPY"]);
+    }
+}

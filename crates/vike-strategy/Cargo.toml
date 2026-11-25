@@ -1,0 +1,71 @@
+[package]
+name = "vike-strategy"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike strategy-authoring layer: the PositionExecutor triple-barrier state machine and the Controller/ControllerHarness framework a strategy FILE builds on, the strategy-file header format, its params checks and the folder scan, the shipped-file seed, and the prediction-market helpers the shipped files share (the up/down token grammar, the fair-value maths, the copy-trading conviction detector). No strategy is compiled in: a strategy is a file under strategies/. Every NORMAL dependency is down-only, so nothing in this LIBRARY reaches up into the simulator. The PARAM types the framework consumes (TripleBarrier, PositionControllerParams) stay in vike-model because they ride the StrategyParams payload the exec lane carries."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain` — a
+# single-purpose pure core over the vocabulary and the leaf band.
+# ⚠ WAS `engine` (30) until 2026-09-23. It names no runtime, no transport and no simulator: its
+# ceiling is `vike-indicators` (15) once `vike-market-making` moved there with it, so `engine` overstated it
+# by two tiers. The move is not cosmetic — at 30 this crate shared a rank with `vike-core`, which
+# forced `vike-user-strategies` (which names this one) up to 40 and therefore ABOVE the live core,
+# where a user-authored strategy could name it. See that crate's manifest for the fence this
+# closes. docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md.
+# Since the compiled strategies were deleted (plan 2b) `vike-indicators` and `vike-market-making` are no edge
+# of this crate: its ceiling is `vike-model` (10). The rank is unchanged.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+# Behavior (the executor state machine + controller framework) references ONLY vike-model domain
+# types + its own siblings — so this crate depends on vike-model alone, keeping down-only layering
+# intact (nothing here reaches up into vike-execution/vike-core).
+vike-model = { path = "../vike-model" }
+# The compensated sum (`vike_math::summation::compensated_sum`, decision 0294): layer 2, `libm` only, already in
+# this crate's closure through vike-model. Also `fair_value::trailing_sigma`'s log returns
+# (`vike_math::time_series::log_ratio`), the one transcendental in this crate: its `libm::log` is the
+# crate's, not the platform's (`docs/decisions/0032-transcendentals-come-from-the-libm-crate-not-the-platform.md`;
+# all six pinned `sigma_bits` are bit-identical under `libm::log`), so this crate names `libm` no more.
+vike-math = { path = "../vike-math" }
+# The market-data vocabulary (`Bar`, the tick types, `L2Book`, `L2BookUpdate`, `OptionKind`, ...):
+# spelled `vike_marketdata::X` everywhere -- vike-model names but does not re-export it (0067).
+vike-marketdata = { path = "../vike-marketdata" }
+serde = { workspace = true }
+# `file`: a strategy file's header is a TOML block inside the file (`toml::from_str` into its
+# declarations, `toml::Spanned` to keep `[params]` in the order the header wrote it). The header
+# tests also write params tables as TOML text. Already workspace-pinned and in the template's own
+# dependencies, so this adds no crate to the audit surface.
+toml = { workspace = true }
+# `file::scan`'s sha256 of each file; its lowercase hex is `vike_utility::hex::hex_lower` (below). Direct,
+# NOT `vike_hub_protocol::hash::sha256_hex`: that crate's normal tree carries `rand`, and this crate's
+# `DETERMINISM_CRITICAL_CRATES` membership (`crates/vike-ops/tests/architecture/clock_pin.rs`) forbids an
+# RNG in it. Workspace-pinned and already in the lockfile; it pulls no RNG.
+sha2 = { workspace = true }
+# `file::scan`'s extensions (`RUST_EXT`, `RHAI_EXT`). Layer 7, std only.
+vike-paths = { path = "../vike-paths" }
+# The seed's atomic replace (`vike_utility::atomic_file::write_atomic`): a shipped file replacing one
+# never edited, a `.new` beside an edited one, the reference twin; and `file::scan`'s hex
+# (`vike_utility::hex::hex_lower`, decision 0141). Already in the tree under vike-model.
+vike-utility = { path = "../vike-utility" }
+
+[dev-dependencies]
+# The executor/controller machine tests drive vike-model's shared `OrderBrokerMock` (the `OrderBroker` test
+# double) — enabled here as a test-only feature so it never reaches the normal (production) dep.
+vike-model = { path = "../vike-model", features = ["test-support"] }
+# `vike_utility::libm_walk`, the shared source parser `tests/libm_platform_probe.rs` reads `src/` with
+# (decision 0074), behind vike-utility's `test-support`. A DEV edge with the feature, never a normal one.
+vike-utility = { path = "../vike-utility", features = ["test-support"] }
+# `vike_marketdata::test_support`: the shared bar/tick builders. A DEV edge only; the normal edge
+# above already exists, so no lockfile entry.
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+# The tests round-trip the position executor's and the controller's serde shapes through JSON. A DEV
+# edge since the execution algorithms left for `vike-execution` (decision 0275): no library code here names it.
+serde_json = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`. This crate is unsafe-free.
+[lints]
+workspace = true

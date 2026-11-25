@@ -1,0 +1,907 @@
+// @generated — rendered by `crates/vike-strategy-builder/src/render.rs` from this file
+// (`template/lib.rs.in`). Edit the TEMPLATE, never a rendered copy: a rendered copy lives in a
+// scratch directory under `std::env::temp_dir()` and is never committed.
+//
+// This file wraps the user's UNCHANGED entry point —
+// `pub fn build<B: vike_model::OrderBroker + 'static>(params: &vike_model::params::Params) -> Box<dyn Strategy<B> + Send>` —
+// in monomorphised `extern "C"` exports. The strategy FILE is this crate's module `strategy`
+// (`src/strategy.rs`, written VERBATIM beside this file): never reformatted, never edited, and it
+// never imports this crate or learns that FFI exists. A module and not a splice (plan 2b): a file
+// opens with its `//!` header, which must lead its module, rustc's line numbers are the file's
+// own, and no name of the file can meet one of this wrapper's. Every export below wraps its body in
+// `std::panic::catch_unwind` and returns a `StrategyFileStatusAbi`; a panic across a C-ABI boundary is UB,
+// so none of these may unwind (docs/superpowers/specs/2026-09-21-runtime-loaded-rust-strategies-design.md).
+//
+// ⚠ **`B` must be a CONCRETE type to monomorphise an `extern "C"` fn** — a generic `extern "C" fn`
+// does not exist — and the concrete type is `vike_rust_strategy::guest::HostBroker`, which
+// implements `vike_model::OrderBroker` (the one broker interface, `ABI_VERSION` 8), every verb and
+// read forwarded to the host with the symbol it names. So `build::<HostBroker>(&params)` below
+// compiles against the bound the entry contract states, and a test that compiles the file in-process
+// (`crates/vike-strategy-lab/src/takers.rs`) binds the same
+// `B: OrderBroker`, so one source compiles in both, unchanged. From 2 to 7 the bound was
+// `vike_model::HftBroker` (and from 5 either one); `HostBroker` no longer implements it, so a source
+// still bounding `B: HftBroker` fails its Build, and the builder prints the one-line fix after
+// rustc's error (`vike_model::host_build::moved_name::renamed_name_hint`).
+//
+// ⚠ **From `ABI_VERSION` 6 a user's strategy declares the stored series it reads beside its own bars
+// (`vike_model::Strategy::inputs`) and reads them, and its closed trades, through the broker
+// (`OrderBroker::input`, `OrderBroker::input_bars`, `OrderBroker::closed_trades`; in the order language
+// `vike_tactics::Rule::inputs`, `Tactics::input`, `Tactics::closed_trades`)** exactly as a built-in
+// does: `vike_strategy_inputs` below hands the host the names, and `HostBroker` forwards both reads.
+//
+// ⚠ **From `ABI_VERSION` 8 every `Strategy` hook crosses**: the symbols a strategy trades
+// (`Strategy::symbols`), its live params (`params`) and its restart state (`save_state`,
+// `load_state`) cross as JSON text through the four `vike_strategy_*` exports below, the first
+// three LENT from the handle exactly as `vike_strategy_inputs` lends its names.
+//
+// ⚠ **From `ABI_VERSION` 9 a strategy FILE exports one of two entries, and `create` takes the mount
+// facts beside the params.** The builder reads which one the file exports and renders the ENTRY
+// placeholder below (`crates/vike-strategy-builder/src/render.rs`'s `render_lib_rs`):
+//
+// - `build` — `build(params)` or `build(params, facts)` (`vike_model::params::MountFacts`), called
+//   through `vike_rust_strategy::guest::build_entry`, which takes either form;
+// - `rule` — `pub fn rule(params: &vike_model::params::Params) -> Box<dyn vike_tactics::Rule + Send>`,
+//   the order language, run by `vike_tactics::RuleRun` on the facts' symbol with the file header's `[run]`
+//   options. A `rule` file handed no symbol is not created (null), never run on an empty symbol.
+//
+// The file's own `tracing` events are the host's: the loader calls `vike_strategy_set_log` at load, and
+// the file's dispatcher (its OWN copy's process-global) forwards each event to the host's log slot.
+//
+// The optional `refuse` and `echo` exports: a refusal of a params document, asked BEFORE any strategy
+// is created (a `build` may panic on the params it refuses), and the effective-params line, asked of
+// the created handle over its params and mount facts — `echo(params)` or `echo(params, facts)`, called
+// through `vike_rust_strategy::guest::echo_entry` as `build` is; a file without one answers "none" (the
+// REFUSE and ECHO placeholders).
+
+// ⚠ **No crate-root `use` in this file.** Since plan 2b the file is a module of its own and cannot
+// collide with this wrapper's names; the rule stays because it cost nothing and keeps the wrapper
+// readable on its own. It was a fix while the file was SPLICED into this one: this template's
+// FIRST real lane run hit exactly the failure that motivates it: a strategy file author's `<name>.rs`
+// conventionally opens with `use vike_model::{OrderBroker, Strategy};` + `use vike_marketdata::Bar;` (as
+// the shipped files under `strategies/` do), and this wrapper needs `Bar`/`Strategy` too — so a module-level `use` here
+// collided with the user's own (`error[E0252]: the name 'Bar' is defined multiple times`,
+// measured on this branch's own lane before this comment existed). Every name this wrapper needs
+// is therefore reached through a fully-qualified path in a SIGNATURE (which resolves at module
+// scope and so still cannot collide with anything the user's file imports) or a `use` scoped
+// INSIDE a function body (which Rust confines to that block, invisible to sibling items and to
+// the spliced-in source above it). Neither shape can ever collide with whatever the user's file
+// imports at its own top level, no matter what it is.
+
+// ---- the strategy file, VERBATIM: `src/strategy.rs` --------------------------------------------
+mod strategy;
+
+/// The live strategy instance, boxed and erased behind the raw pointer the host holds as its
+/// strategy file "handle". `Send` because the host may call in from whichever thread owns its engine.
+struct StrategyFileHandle {
+    strategy: Box<dyn ::vike_model::Strategy<::vike_rust_strategy::guest::HostBroker> + Send>,
+    /// The params it was created with: what the file's `refuse` and `echo` are asked over.
+    params: ::vike_model::params::Params,
+    /// The mount facts it was created with: what a two-argument `echo` is asked over beside `params`.
+    facts: ::vike_model::params::MountFacts,
+    /// The JSON text a lending export (`vike_strategy_inputs`, `vike_strategy_symbols`,
+    /// `vike_strategy_params`) last lent the host, kept alive here until the next call; the host
+    /// copies it at once.
+    lent: String,
+    /// The state `vike_strategy_save_state` last lent the host (its msgpack bytes, `ABI_VERSION` 15),
+    /// kept alive here until the next call; the host copies it at once.
+    state: ::vike_model::StrategyState,
+}
+
+// ---- handshake ---------------------------------------------------------------------------------
+//
+// ⚠ Both exports below wrap their body in `catch_unwind` per this file's own header rule, even
+// though neither can realistically panic (each returns a compile-time constant): the point is not
+// defending against a real failure mode here, it is that a caught panic must never surface as a
+// value indistinguishable from a genuine answer (the same rule the lifecycle/dispatch exports
+// below observe for a REAL failure mode). Each therefore returns a value its own handshake check
+// can never accept as a match: `0` for the ABI version (`abi::ABI_VERSION`'s own doc: "a zero
+// version cannot be distinguished from an unset field, so it must never be reachable" — enforced
+// there at compile time, which is exactly why it is available here as an impossible answer), and a
+// null pointer for the fingerprint (`loader.rs`'s `read_c_str` reads a null pointer as an empty
+// string, which can never equal the host's own non-empty, `target=`-carrying fingerprint).
+
+/// Cheap, catches a DELIBERATE vtable change — see `abi::ABI_VERSION`'s own doc. The toolchain
+/// fingerprint below is the guard against an ACCIDENTAL one.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_abi_version() -> u32 {
+    ::std::panic::catch_unwind(|| ::vike_rust_strategy::abi::ABI_VERSION).unwrap_or(0)
+}
+
+/// The toolchain fingerprint this `.so` was compiled with (rustc release+commit, target triple,
+/// profile, opt-level — `vike_rust_strategy::fingerprint`'s module doc), baked in by
+/// `vike-rust-strategy`'s own `build.rs` and therefore identical to the host's whenever this
+/// crate and the host binary share a toolchain. Pairs with `vike_strategy_abi_version` per the
+/// design's "Two guards" section: that one catches a DELIBERATE vtable change, this one an
+/// ACCIDENTAL toolchain divergence — the builder took a rustc update the server was not rebuilt
+/// against.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_fingerprint() -> *const ::std::os::raw::c_char {
+    ::std::panic::catch_unwind(::vike_rust_strategy::fingerprint::fingerprint_c_str)
+        .unwrap_or(::std::ptr::null())
+}
+
+/// The layout of the two types this file reads where the host keeps them (`ABI_VERSION` 14:
+/// `vike_marketdata::Bar` and `vike_model::TradeClosedRow`, `vike_rust_strategy::abi::layout`), compared by
+/// the host's loader after the version and the fingerprint: a file built against another layout is refused,
+/// never misread. `0`, which the loader never accepts, after a caught panic.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_layout() -> u64 {
+    ::std::panic::catch_unwind(::vike_rust_strategy::abi::layout).unwrap_or(0)
+}
+
+/// This file's COMPATIBILITY RECORD (`ABI_VERSION` 15, `vike_rust_strategy::identity`): its interface
+/// version, toolchain fingerprint, layout and strategy boundary, baked at compile time into the ELF section
+/// `.vike_identity`, which the host's loader reads from the FILE and checks before it opens the file.
+#[used]
+#[unsafe(link_section = ".vike_identity")]
+static VIKE_IDENTITY: [u8; ::vike_rust_strategy::identity::RECORD_LEN] =
+    ::vike_rust_strategy::identity::RECORD;
+
+/// The record's address: an export that reaches the static, so the linker's section garbage collection
+/// keeps it in the artifact.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_identity() -> *const u8 {
+    VIKE_IDENTITY.as_ptr()
+}
+
+/// Hand this file's `tracing` events to the host's log slot (`ABI_VERSION` 9), up to `max_level`
+/// (`vike_rust_strategy::abi::log_level_filter`): the file links its OWN `tracing`, whose dispatcher
+/// is a process-global of that copy, so without this its `tracing::warn!`s (and `vike-market-making`'s inside
+/// it) reach no subscriber. The host's loader calls it once at load; a later call changes nothing.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_set_log(log: ::vike_rust_strategy::abi::LogFn, max_level: u32) {
+    let _ = ::std::panic::catch_unwind(|| {
+        ::vike_rust_strategy::guest::forward_tracing(log, max_level);
+    });
+}
+
+// ---- lifecycle -----------------------------------------------------------------------------
+
+/// Build the user's strategy over `HostBroker` and hand the host an opaque handle. `params_ptr`/
+/// `params_len` are a borrowed `(ptr, len)` valid only for the duration of this call — the same
+/// contract `abi`'s module doc states for every string that crosses this boundary — so the bytes
+/// are copied into an owned `str`, then parsed into an owned `vike_model::params::Params`, before
+/// anything else happens.
+///
+/// Returns null on a panic OR on a params parse failure: a host that gets null back must treat
+/// creation as refused, never dereference the result.
+///
+/// `(facts_ptr, facts_len)` is the mount's `vike_model::params::MountFacts` as JSON, borrowed the
+/// same way (`ABI_VERSION` 9); empty text states none, text that is not a facts document is null.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_create(
+    params_ptr: *const u8,
+    params_len: usize,
+    facts_ptr: *const u8,
+    facts_len: usize,
+) -> *mut ::std::ffi::c_void {
+    let created = ::std::panic::catch_unwind(|| {
+        let params = params_from(params_ptr, params_len)?;
+        let facts_text = ::vike_rust_strategy::abi::StrAbi { ptr: facts_ptr, len: facts_len }.read();
+        let facts = if facts_text.is_empty() {
+            ::vike_model::params::MountFacts::default()
+        } else {
+            ::vike_rust_strategy::guest::facts_from_json(&facts_text)?
+        };
+        let strategy: Box<
+            dyn ::vike_model::Strategy<::vike_rust_strategy::guest::HostBroker> + Send,
+        > = {{ENTRY}};
+        let handle = StrategyFileHandle {
+            strategy,
+            params,
+            facts,
+            lent: String::new(),
+            state: ::vike_model::StrategyState::default(),
+        };
+        Some(Box::into_raw(Box::new(handle)) as *mut ::std::ffi::c_void)
+    });
+    match created {
+        Ok(Some(handle)) => handle,
+        Ok(None) | Err(_) => ::std::ptr::null_mut(),
+    }
+}
+
+/// The params document the host lends as `(params_ptr, params_len)`, parsed: `None` for bytes that
+/// are not UTF-8 or not a TOML document. Shared by `vike_strategy_create` and `vike_strategy_refuse`.
+fn params_from(params_ptr: *const u8, params_len: usize) -> Option<::vike_model::params::Params> {
+    // SAFETY: the host owns `params_ptr`/`params_len` for the duration of THIS call only,
+    // per the borrowed-(ptr,len) contract every crossing string in `abi` follows.
+    // An empty document may come as a null pointer, which `from_raw_parts` must never see.
+    let bytes: &[u8] = if params_len == 0 {
+        &[]
+    } else {
+        unsafe { ::std::slice::from_raw_parts(params_ptr, params_len) }
+    };
+    let text = ::std::str::from_utf8(bytes).ok()?;
+    // ⚠ `toml::from_str`, NOT `text.parse::<toml::Value>()`, and the difference is the whole
+    // strategy. Under the workspace's pinned `toml` 1.1, `<toml::Value as FromStr>` parses a
+    // single VALUE EXPRESSION, not a document — so `"qty = 2.5"` comes back as
+    // `unexpected content, expected nothing` and even `""` fails. This line WAS `.parse()`,
+    // and the consequence was silent and total: every `vike_strategy_create` returned null,
+    // every dispatch reported `StrategyFileStatusAbi::BadHandle`, and a strategy-file-loaded strategy traded
+    // NOTHING while the artifact built, loaded and handshook cleanly. Found by
+    // `crates/vike-rust-strategy/tests/equivalence.rs`, which is the one test that drives a
+    // strategy file all the way to a trade list. The DOCUMENT is deserialized straight into
+    // `vike_model::params::Params` (serde), so `toml` is this wrapper's PARSER only: the user
+    // file below `build` reads `&Params` and names no `toml`.
+    let params: ::vike_model::params::Params = ::toml::from_str(text).ok()?;
+    Some(params)
+}
+
+/// Drop the strategy and free the handle. A null `handle` is a no-op — the host's own contract,
+/// mirrored from every other FFI teardown site in this tree.
+///
+/// # Safety (documented for the SITE below, per this crate's `unsafe` convention)
+/// `handle` must be exactly what `vike_strategy_create` returned on THIS strategy file, not yet destroyed.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_destroy(handle: *mut ::std::ffi::c_void) {
+    if handle.is_null() {
+        return;
+    }
+    let _ = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        // SAFETY: `handle` is non-null and, by the contract on this function, was produced by
+        // `vike_strategy_create` on this strategy file and has not been destroyed yet.
+        drop(unsafe { Box::from_raw(handle as *mut StrategyFileHandle) });
+    }));
+}
+
+/// The user's declared warmup — how many bars the R2 gate (`index >= warmup()`,
+/// `crates/vike-backtest/src/engine.rs` / `crates/vike-core/src/runtime/strategy_drive.rs`) skips
+/// before this instance's `on_bar` is ever called (`vike_model::Strategy::warmup`'s own default is
+/// `0`, no warmup).
+///
+/// ⚠ **A caught panic (or a null `handle`) must NOT return `0`.** Unlike `vike_strategy_on_bar`,
+/// this export's wire signature (fixed by `loader.rs`'s `bind!` call and `host.rs`'s
+/// `StrategyVTableAbi`) is a bare `usize` with no `StrategyFileStatusAbi` channel — so there is no way to say
+/// "this call failed" distinct from "this strategy legitimately declares no warmup", and `0` is
+/// exactly the value a HEALTHY strategy commonly returns. That is this file's own "a caught panic
+/// must not read as a real answer" rule, restated for a count instead of a price. `usize::MAX` is
+/// the one answer that can never be a plausible real warmup: fed back through the R2 gate, it
+/// means this instance's `on_bar` is never admitted — the fail-SAFE direction for a strategy whose
+/// own `warmup()` panicked, rather than one that silently trades from state its constructor never
+/// finished setting up. (`crates/vike-backtest/src/engine.rs`'s `warmup` field is a plain `usize`
+/// used only as that comparison, so `usize::MAX` here changes no arithmetic elsewhere — it just
+/// never opens the gate.) A null `handle` — never produced by the real host path, which
+/// short-circuits on it before calling this export at all, per `host.rs`'s
+/// `StrategyFileHost::warmup` — is treated the same way, for the same reason.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_warmup(handle: *mut ::std::ffi::c_void) -> usize {
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return usize::MAX;
+        }
+        // SAFETY: `handle` is non-null and, by `vike_strategy_create`'s contract, was produced by
+        // that call on this strategy file and has not been destroyed yet. `Strategy::warmup` takes
+        // `&self`, so a shared reference is enough.
+        let h = unsafe { &*(handle as *const StrategyFileHandle) };
+        h.strategy.warmup()
+    }));
+    result.unwrap_or(usize::MAX)
+}
+
+/// The names of the stored series the user's strategy reads (`Strategy::inputs`, `ABI_VERSION` 6),
+/// as the JSON array text `vike_rust_strategy::guest::names_json` writes. The text is kept in the
+/// handle and LENT: valid until a lending export is called again or the handle is destroyed, so the
+/// host copies it at once and nothing allocated here is freed across the boundary.
+///
+/// ⚠ A caught panic (or a null `handle`) answers `None`, never an empty list: a strategy that
+/// reads an input but declared none would run with nothing loaded for it.
+///
+/// SAFETY: `handle` is a live `StrategyFileHandle` from `vike_strategy_create`, not yet destroyed.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_inputs(
+    handle: *mut ::std::ffi::c_void,
+) -> ::vike_rust_strategy::abi::OptionAbi<::vike_rust_strategy::abi::StrAbi> {
+    use ::vike_rust_strategy::abi::{OptionAbi, StrAbi};
+    let lent = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return None;
+        }
+        // SAFETY: see this function's doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        h.lent = ::vike_rust_strategy::guest::names_json(&h.strategy.inputs());
+        Some(StrAbi::of(&h.lent))
+    }));
+    OptionAbi::new(lent.ok().flatten(), StrAbi::empty())
+}
+
+/// The symbols the user's strategy trades beside its own (`Strategy::symbols`, `ABI_VERSION` 8),
+/// lent exactly as `vike_strategy_inputs` lends its names, and `None` on a caught panic or a null
+/// `handle` for the same reason: a mount that declared none of the legs the strategy trades would
+/// refuse every order it sends there.
+///
+/// SAFETY: as `vike_strategy_inputs`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_symbols(
+    handle: *mut ::std::ffi::c_void,
+) -> ::vike_rust_strategy::abi::OptionAbi<::vike_rust_strategy::abi::StrAbi> {
+    use ::vike_rust_strategy::abi::{OptionAbi, StrAbi};
+    let lent = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return None;
+        }
+        // SAFETY: see `vike_strategy_inputs`' doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        h.lent = ::vike_rust_strategy::guest::names_json(&h.strategy.symbols());
+        Some(StrAbi::of(&h.lent))
+    }));
+    OptionAbi::new(lent.ok().flatten(), StrAbi::empty())
+}
+
+/// The user strategy's live params (`Strategy::params`, `ABI_VERSION` 8): the inner `None` is the
+/// strategy publishing none, the text the JSON `vike_rust_strategy::guest::params_json` writes,
+/// lent as `vike_strategy_inputs` lends. The outer `None` is a caught panic or a null `handle`, never
+/// read as "publishes none".
+///
+/// SAFETY: as `vike_strategy_inputs`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_params(
+    handle: *mut ::std::ffi::c_void,
+) -> ::vike_rust_strategy::abi::OptionAbi<
+    ::vike_rust_strategy::abi::OptionAbi<::vike_rust_strategy::abi::StrAbi>,
+> {
+    use ::vike_rust_strategy::abi::{OptionAbi, StrAbi};
+    let lent = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return None;
+        }
+        // SAFETY: see `vike_strategy_inputs`' doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        let answer = h.strategy.params().map(|p| {
+            h.lent = ::vike_rust_strategy::guest::params_json(&p);
+            StrAbi::of(&h.lent)
+        });
+        Some(OptionAbi::new(answer, StrAbi::empty()))
+    }));
+    let none = OptionAbi::new(None, StrAbi::empty());
+    OptionAbi::new(lent.ok().flatten(), none)
+}
+
+/// The commission the user strategy states (`Strategy::stated_fee`, `ABI_VERSION` 13), answered as
+/// `vike_strategy_params` answers: the inner `None` is the strategy stating none, the text the JSON
+/// `vike_rust_strategy::guest::fee_json` writes.
+///
+/// SAFETY: as `vike_strategy_inputs`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_stated_fee(
+    handle: *mut ::std::ffi::c_void,
+) -> ::vike_rust_strategy::abi::OptionAbi<
+    ::vike_rust_strategy::abi::OptionAbi<::vike_rust_strategy::abi::StrAbi>,
+> {
+    use ::vike_rust_strategy::abi::{OptionAbi, StrAbi};
+    let lent = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return None;
+        }
+        // SAFETY: see `vike_strategy_inputs`' doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        let answer = h.strategy.stated_fee().map(|fee| {
+            h.lent = ::vike_rust_strategy::guest::fee_json(&fee);
+            StrAbi::of(&h.lent)
+        });
+        Some(OptionAbi::new(answer, StrAbi::empty()))
+    }));
+    let none = OptionAbi::new(None, StrAbi::empty());
+    OptionAbi::new(lent.ok().flatten(), none)
+}
+
+/// The slippage the user strategy states (`Strategy::stated_slippage`, `ABI_VERSION` 13), answered as
+/// `vike_strategy_stated_fee` answers, the text the JSON `vike_rust_strategy::guest::slippage_json` writes.
+///
+/// SAFETY: as `vike_strategy_inputs`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_stated_slippage(
+    handle: *mut ::std::ffi::c_void,
+) -> ::vike_rust_strategy::abi::OptionAbi<
+    ::vike_rust_strategy::abi::OptionAbi<::vike_rust_strategy::abi::StrAbi>,
+> {
+    use ::vike_rust_strategy::abi::{OptionAbi, StrAbi};
+    let lent = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return None;
+        }
+        // SAFETY: see `vike_strategy_inputs`' doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        let answer = h.strategy.stated_slippage().map(|slippage| {
+            h.lent = ::vike_rust_strategy::guest::slippage_json(&slippage);
+            StrAbi::of(&h.lent)
+        });
+        Some(OptionAbi::new(answer, StrAbi::empty()))
+    }));
+    let none = OptionAbi::new(None, StrAbi::empty());
+    OptionAbi::new(lent.ok().flatten(), none)
+}
+
+/// The user strategy's restart state (`Strategy::save_state`, `ABI_VERSION` 8), answered as
+/// `vike_strategy_params` answers: the inner `None` is the strategy saving nothing, else the bytes it
+/// encoded (`vike_model::StrategyState`, msgpack with field names since `ABI_VERSION` 15), LENT from the
+/// handle until its next call, never re-encoded.
+///
+/// SAFETY: as `vike_strategy_inputs`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_save_state(
+    handle: *mut ::std::ffi::c_void,
+) -> ::vike_rust_strategy::abi::OptionAbi<
+    ::vike_rust_strategy::abi::OptionAbi<::vike_rust_strategy::abi::SliceAbi<u8>>,
+> {
+    use ::vike_rust_strategy::abi::{OptionAbi, SliceAbi};
+    let lent = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return None;
+        }
+        // SAFETY: see `vike_strategy_inputs`' doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        let answer = h.strategy.save_state().map(|state| {
+            h.state = state;
+            SliceAbi::of(h.state.bytes())
+        });
+        Some(OptionAbi::new(answer, SliceAbi::empty()))
+    }));
+    let none = OptionAbi::new(None, SliceAbi::empty());
+    OptionAbi::new(lent.ok().flatten(), none)
+}
+
+/// Restore the user strategy's state (`Strategy::load_state`, `ABI_VERSION` 8) from the bytes the host
+/// lends for this call (msgpack with field names since `ABI_VERSION` 15). Bytes that are not one msgpack
+/// value answer `BadParams` and restore NOTHING, never a half-read state.
+///
+/// SAFETY: as `vike_strategy_inputs`; `(state_ptr, state_len)` is the host's for this call only.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_load_state(
+    handle: *mut ::std::ffi::c_void,
+    state_ptr: *const u8,
+    state_len: usize,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        let lent = ::vike_rust_strategy::abi::SliceAbi { ptr: state_ptr, len: state_len };
+        let Some(state) = ::vike_rust_strategy::guest::state_from_bytes(lent) else {
+            return StrategyFileStatusAbi::BadParams;
+        };
+        // SAFETY: see `vike_strategy_inputs`' doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        h.strategy.load_state(&state);
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}
+
+/// The file's own refusal of a params document (its optional `refuse` export, `ABI_VERSION` 9), asked
+/// BEFORE any strategy is created — a file's `build` may panic on the very params it refuses —
+/// and answered as `vike_strategy_params` answers: the inner `None` is no refusal, or a file with no
+/// `refuse` export; the outer `None` a caught panic or a document that does not parse. The text is
+/// LENT from this thread's buffer until the thread's next `vike_strategy_refuse`.
+///
+/// SAFETY: `(params_ptr, params_len)` is the host's for this call only.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_refuse(
+    params_ptr: *const u8,
+    params_len: usize,
+) -> ::vike_rust_strategy::abi::OptionAbi<
+    ::vike_rust_strategy::abi::OptionAbi<::vike_rust_strategy::abi::StrAbi>,
+> {
+    use ::vike_rust_strategy::abi::{OptionAbi, StrAbi};
+    ::std::thread_local! {
+        static LENT: ::std::cell::RefCell<String> = const { ::std::cell::RefCell::new(String::new()) };
+    }
+    let lent = ::std::panic::catch_unwind(|| {
+        let params = &params_from(params_ptr, params_len)?;
+        let refusal: Option<String> = {{REFUSE}};
+        let answer = refusal.map(|text| {
+            LENT.with(|cell| {
+                *cell.borrow_mut() = text;
+                // The String stays in the thread-local until the next call replaces it.
+                StrAbi::of(&cell.borrow())
+            })
+        });
+        Some(OptionAbi::new(answer, StrAbi::empty()))
+    });
+    let none = OptionAbi::new(None, StrAbi::empty());
+    OptionAbi::new(lent.ok().flatten(), none)
+}
+
+/// The file's effective-params line over the params and mount facts the handle was created with (its
+/// optional `echo` export, `ABI_VERSION` 9): the inner `None` is a file with no `echo` export, the text
+/// the JSON `vike_rust_strategy::guest::echo_json` writes.
+///
+/// SAFETY: as `vike_strategy_inputs`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_echo(
+    handle: *mut ::std::ffi::c_void,
+) -> ::vike_rust_strategy::abi::OptionAbi<
+    ::vike_rust_strategy::abi::OptionAbi<::vike_rust_strategy::abi::StrAbi>,
+> {
+    use ::vike_rust_strategy::abi::{OptionAbi, StrAbi};
+    let lent = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return None;
+        }
+        // SAFETY: see `vike_strategy_inputs`' doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        let params = &h.params;
+        let facts = &h.facts;
+        let echo: Option<Vec<(&'static str, String)>> = {{ECHO}};
+        let answer = echo.map(|pairs| {
+            h.lent = ::vike_rust_strategy::guest::echo_json(&pairs);
+            StrAbi::of(&h.lent)
+        });
+        Some(OptionAbi::new(answer, StrAbi::empty()))
+    }));
+    let none = OptionAbi::new(None, StrAbi::empty());
+    OptionAbi::new(lent.ok().flatten(), none)
+}
+
+// ---- dispatch ------------------------------------------------------------------------------
+//
+// ⚠ **Every `vike_model::Strategy` seam method is wired, since `ABI_VERSION` 8** — the last four
+// (`symbols`, `params`, `save_state`, `load_state`) are the `vike_strategy_*` exports above, and
+// `vike_rust_strategy::host::UNWIRED_HOOKS` is empty; its own doc says why it stays.
+//
+// ⚠ **This block used to wire `on_bar` ALONE and call it "the worked example".** That was a
+// declared scope boundary, not a safe one: a user file overriding `on_fill` compiled, rendered
+// here, linked, loaded and handshook, and then never received the hook — the same source
+// producing different, entirely plausible numbers under the two mechanisms with no signal
+// anywhere. `vike_strategy_builder::render::build_strategy_file` refuses a source that overrides
+// anything still in `UNWIRED_HOOKS`, and wiring a hook here (plus its `StrategyVTableAbi` field, its
+// `loader.rs` bind and its `WIRED_HOOKS` entry) is what lifts that refusal for it. Thirteen of
+// them were lifted at `ABI_VERSION` 3.
+//
+// ⚠ **EVERY export below wraps its body in `catch_unwind` and none may return a neutral value on
+// a caught panic.** A panic across a C-ABI frame is UB, so the wrapper is not optional — and
+// `StrategyFileStatusAbi::Panicked` rather than `Ok` is what stops a caught panic reading, to the host, as
+// a dispatch that happened. The host's own thunks carry the mirror-image guard for the OTHER
+// direction (`host.rs`'s `guarded` and its `POISONED` latch); neither side's rule covers the
+// other's, which is the correction that block's header records.
+//
+// The shape every one of them follows: null-check the handle and the payload, recover
+// `&mut StrategyFileHandle`, copy the borrowed payload into an owned Rust value, call the matching
+// `Strategy` method over the `BrokerRef` wearing a `HostBroker` (which reads the host's history where
+// the host keeps it, `ABI_VERSION` 14), answer `Ok`.
+
+/// SAFETY (documented for the site, per this crate's convention, and shared by every dispatch
+/// export below): `handle` is a live `StrategyFileHandle` from `vike_strategy_create`, not yet destroyed;
+/// a payload pointer is non-null and aligned and the host owns what it points at for the duration
+/// of this call; `broker`'s `vtable` is host-owned, `'static`, and non-null for the whole lifetime
+/// of this loaded strategy file.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_on_bar(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_rust_strategy::abi::BrokerRef,
+    bar: *const ::vike_rust_strategy::abi::LentBarAbi,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || bar.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        // SAFETY: see the function-level doc above.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        // The host's own bar, the boundary's row (`abi::layout`, checked at load), read in place as this SDK's
+        // `Bar` (`guest::bar_in_place`, which proves the layout).
+        let bar = ::vike_rust_strategy::guest::bar_in_place(unsafe { &*bar });
+        h.strategy.on_bar(&mut ::vike_rust_strategy::guest::HostBroker::new(broker), bar);
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}
+
+// ---- tier 1: no payload, or one scalar / borrowed string -------------------------------------
+
+/// SAFETY: see `vike_strategy_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_on_start(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_rust_strategy::abi::BrokerRef,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        // SAFETY: see `vike_strategy_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        // A run starts: what an earlier run's broker answered is not this one's.
+        h.strategy.on_start(&mut ::vike_rust_strategy::guest::HostBroker::new(broker));
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}
+
+/// SAFETY: see `vike_strategy_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_on_stop(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_rust_strategy::abi::BrokerRef,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        // SAFETY: see `vike_strategy_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        h.strategy.on_stop(&mut ::vike_rust_strategy::guest::HostBroker::new(broker));
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}
+
+/// The scheduled callback's TAG, as the borrowed `(ptr, len)` every string in this ABI uses.
+///
+/// SAFETY: see `vike_strategy_on_bar`'s doc; `(tag_ptr, tag_len)` is the host's for this call only.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_on_schedule(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_rust_strategy::abi::BrokerRef,
+    tag_ptr: *const u8,
+    tag_len: usize,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        let tag = ::vike_rust_strategy::abi::StrAbi { ptr: tag_ptr, len: tag_len }.read();
+        // SAFETY: see `vike_strategy_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        h.strategy.on_schedule(&mut ::vike_rust_strategy::guest::HostBroker::new(broker), &tag);
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}
+
+/// ⚠ A `status` code this strategy file does not know answers `BadParams`, never a guessed variant: a
+/// fabricated `Disconnected` would make a strategy pull quotes that were never in danger.
+///
+/// SAFETY: see `vike_strategy_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_on_feed_status(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_rust_strategy::abi::BrokerRef,
+    status: u32,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        let Some(status) = ::vike_rust_strategy::abi::feed_status_from_code(status) else {
+            return StrategyFileStatusAbi::BadParams;
+        };
+        // SAFETY: see `vike_strategy_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        h.strategy.on_feed_status(&mut ::vike_rust_strategy::guest::HostBroker::new(broker), status);
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}
+
+/// SAFETY: see `vike_strategy_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_on_flow(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_rust_strategy::abi::BrokerRef,
+    flow: *const ::vike_rust_strategy::abi::FlowToxicityAbi,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || flow.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        // SAFETY: see `vike_strategy_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        let flow = unsafe { &*flow }.to_flow();
+        h.strategy.on_flow(&mut ::vike_rust_strategy::guest::HostBroker::new(broker), flow);
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}
+
+// ---- tier 2: flat mirrors, each copied here from the payload the host lends ----------------------
+
+/// SAFETY: see `vike_strategy_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_on_quote_tick(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_rust_strategy::abi::BrokerRef,
+    quote: *const ::vike_rust_strategy::abi::LentTickQuoteAbi,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || quote.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        // SAFETY: see `vike_strategy_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        // The host's own quote, the boundary's row, read in place as this SDK's `TickQuote`.
+        let q = ::vike_rust_strategy::guest::quote_in_place(unsafe { &*quote });
+        h.strategy.on_quote_tick(&mut ::vike_rust_strategy::guest::HostBroker::new(broker), q);
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}
+
+/// SAFETY: see `vike_strategy_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_on_trade_tick(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_rust_strategy::abi::BrokerRef,
+    trade: *const ::vike_rust_strategy::abi::LentTickTradeAbi,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || trade.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        // SAFETY: see `vike_strategy_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        // The host's own trade, the boundary's row, read in place as this SDK's `TickTrade`.
+        let t = ::vike_rust_strategy::guest::trade_in_place(unsafe { &*trade });
+        h.strategy.on_trade_tick(&mut ::vike_rust_strategy::guest::HostBroker::new(broker), t);
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}
+
+/// SAFETY: see `vike_strategy_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_on_mark(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_rust_strategy::abi::BrokerRef,
+    mark: *const ::vike_rust_strategy::abi::TickMarkAbi,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || mark.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        // SAFETY: see `vike_strategy_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        let m = unsafe { &*mark }.to_mark_tick();
+        h.strategy.on_mark(&mut ::vike_rust_strategy::guest::HostBroker::new(broker), &m);
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}
+
+/// The cross-EXCHANGE reference touch. `venue` rides as its own borrowed `(ptr, len)` argument
+/// because no tick type carries a venue — `vike_model::Strategy::on_reference_quote`'s own doc
+/// argues why, and the strategy file boundary changes nothing about it.
+///
+/// SAFETY: see `vike_strategy_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_on_reference_quote(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_rust_strategy::abi::BrokerRef,
+    venue_ptr: *const u8,
+    venue_len: usize,
+    quote: *const ::vike_rust_strategy::abi::LentTickQuoteAbi,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || quote.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        let venue =
+            ::vike_rust_strategy::abi::StrAbi { ptr: venue_ptr, len: venue_len }.read();
+        // SAFETY: see `vike_strategy_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        // The host's own quote, as `vike_strategy_on_quote_tick`'s.
+        let q = ::vike_rust_strategy::guest::quote_in_place(unsafe { &*quote });
+        h.strategy.on_reference_quote(&mut ::vike_rust_strategy::guest::HostBroker::new(broker), &venue, q);
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}
+
+/// SAFETY: see `vike_strategy_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_on_fill(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_rust_strategy::abi::BrokerRef,
+    fill: *const ::vike_rust_strategy::abi::FillAbi,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || fill.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        // SAFETY: see `vike_strategy_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        let f = unsafe { &*fill }.to_fill();
+        h.strategy.on_fill(&mut ::vike_rust_strategy::guest::HostBroker::new(broker), &f);
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}
+
+// ---- tier 3: the payloads no flat mirror can express ------------------------------------------
+
+/// The L2 book, rebuilt on THIS side from the host's cursor — see
+/// `vike_rust_strategy::guest::book_from_ref` for what the rebuild costs and why a copy is
+/// unavoidable whatever shape the payload takes.
+///
+/// SAFETY: see `vike_strategy_on_bar`'s doc; `book`'s `vtable` is host-owned and `'static` and its
+/// `ctx` is valid for exactly this call.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_on_order_book(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_rust_strategy::abi::BrokerRef,
+    book: ::vike_rust_strategy::abi::BookRef,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || book.vtable.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        // SAFETY: see `vike_strategy_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        let rebuilt = ::vike_rust_strategy::guest::book_from_ref(book);
+        h.strategy.on_order_book(&mut ::vike_rust_strategy::guest::HostBroker::new(broker), &rebuilt);
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}
+
+/// ⚠ A `kind` code this strategy file does not know answers `BadParams` and delivers NOTHING, rather
+/// than delivering a guessed transition: a strategy's retry/refresh/abort machine keys off
+/// exactly this tag, so an invented `Canceled` would make a live order look dead and free a slot
+/// that is still occupied.
+///
+/// SAFETY: see `vike_strategy_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_on_order_event(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_rust_strategy::abi::BrokerRef,
+    event: *const ::vike_rust_strategy::abi::OrderEventAbi,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() || event.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        // SAFETY: see `vike_strategy_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        let Some(ev) = unsafe { &*event }.to_order_lifecycle() else {
+            return StrategyFileStatusAbi::BadParams;
+        };
+        h.strategy.on_order_event(&mut ::vike_rust_strategy::guest::HostBroker::new(broker), &ev);
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}
+
+/// The live-parameter bag, as the JSON document the host serialised it to —
+/// `vike_rust_strategy::guest::strategy_params_from_json` carries the argument for JSON over
+/// TOML (measured: `toml` REFUSES the `None` fields `StrategyParams` reaches) and over a flat
+/// mirror. A document this strategy file cannot decode answers `BadParams` and swaps NOTHING, so the
+/// strategy keeps running the tunables it already had rather than a half-applied bag.
+///
+/// SAFETY: see `vike_strategy_on_bar`'s doc.
+#[unsafe(no_mangle)]
+pub extern "C" fn vike_strategy_on_params_updated(
+    handle: *mut ::std::ffi::c_void,
+    broker: ::vike_rust_strategy::abi::BrokerRef,
+    params_ptr: *const u8,
+    params_len: usize,
+) -> ::vike_rust_strategy::abi::StrategyFileStatusAbi {
+    use ::vike_rust_strategy::abi::StrategyFileStatusAbi;
+    let result = ::std::panic::catch_unwind(::std::panic::AssertUnwindSafe(|| {
+        if handle.is_null() {
+            return StrategyFileStatusAbi::BadHandle;
+        }
+        let json =
+            ::vike_rust_strategy::abi::StrAbi { ptr: params_ptr, len: params_len }.read();
+        let Some(params) = ::vike_rust_strategy::guest::strategy_params_from_json(&json) else {
+            return StrategyFileStatusAbi::BadParams;
+        };
+        // SAFETY: see `vike_strategy_on_bar`'s doc.
+        let h = unsafe { &mut *(handle as *mut StrategyFileHandle) };
+        h.strategy.on_params_updated(&mut ::vike_rust_strategy::guest::HostBroker::new(broker), &params);
+        StrategyFileStatusAbi::Ok
+    }));
+    result.unwrap_or(StrategyFileStatusAbi::Panicked)
+}

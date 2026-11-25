@@ -1,0 +1,121 @@
+[package]
+name = "vike-strategy-sandbox"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io
+description = "The `vike-backend strategy-sandbox` verb: the one process that loads a Rust strategy file, after jailing itself (Landlock + seccomp + rlimits). `backtest` runs a whole backtesthub request inside the jail; `live` serves one mount's hooks to the tradehub that spawned it. No hub process loads a strategy file: only this one links the loader."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `daemon` — a headless
+# top-of-graph process, the shape `vike-strategy-builder` has: a verb of the multicall (layer 68), which
+# is the ONE crate that names this one. ⚠ It does NOT name `vike-backtesthub` (also 65, so the gate would
+# refuse it): the backtest half of a sandboxed run is the backtesthub's own code, handed in by the
+# dispatcher as a function (`BacktestServe`), so the backtesthub keeps no loader edge and this crate no
+# backtesthub edge.
+[package.metadata.vike]
+layer = 65
+
+# `cargo shear` cannot see these used: the fixture STUDY files the tests build name them (see the dev-dependencies).
+[package.metadata.cargo-shear]
+ignored = ["libm", "vike-catalog"]
+
+[dependencies]
+# `Strategy<OrderBrokerSimulator>`, the boxed strategy a backtest builds from the loaded file (`BacktestServe`'s `build`).
+vike-model = { path = "../vike-model" }
+vike-simulator = { path = "../vike-simulator" }
+# THE LOADER (`loader::load`) and the host side of the C-ABI (`host::StrategyFileHost`). This crate is the only one
+# a shipped binary links it through: no hub names it.
+vike-rust-strategy = { path = "../vike-rust-strategy" }
+# The jail the child applies to itself before the load (`strategy_process_policy`, `StrategyProcessPolicy::apply`).
+vike-sandbox = { path = "../vike-sandbox" }
+# The child's console-only subscriber on stderr (`vike_log::init`, no file layer), started after the jail.
+vike-log = { path = "../vike-log" }
+# The live verb (`src/live.rs`, unit F5): the tradehub's protocol and serve loop (layer 35), so the two ends of
+# the pipe are one code; the mount facts cross the C-ABI as JSON text (`StrategyFileHost::new`'s third argument).
+vike-tradehub-core = { path = "../vike-tradehub-core" }
+# The sandbox's own refusals (`src/refusals.rs`), declared through `refusal_enum!` (layer 3).
+vike-utility = { path = "../vike-utility" }
+serde_json = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# `stdio::dup2_stdout`: fd 1 pointed at stderr after the jail, so a strategy's own `println!` cannot write into the
+# protocol (`src/lib.rs`'s module doc, step 2; `src/live.rs`'s, act 2). A SAFE call: the workspace forbids
+# `unsafe`. Already in the lockfile through `vike-sandbox`; `stdio` adds no package.
+rustix = { workspace = true, features = ["stdio"] }
+
+# `tests/live_child.rs`, the live verb's production route: the real builder builds the probe files (a
+# level edge, dev only), and a real core mounts them (its venue client counts what reaches the venue).
+[dev-dependencies]
+vike-strategy-builder = { path = "../vike-strategy-builder" }
+# `vike_catalog::kept_contract_value`: the `forward_report` fixture's context values its kept row as a host does.
+vike-catalog = { path = "../vike-catalog" }
+# `vike_boot::descriptors`: `live_child` plays a hub and runs the boot's step 0 before it starts the child.
+vike-boot = { path = "../vike-boot" }
+vike-core = { path = "../vike-core" }
+vike-execution = { path = "../vike-execution" }
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+vike-venues = { path = "../vike-venues" }
+# `study_child` (a research study FILE, end to end): the backtesthub's two halves (`study_sandbox`'s parent
+# and child, `harness_sim::HarnessSim`), and the fixture studies compiled into the test binary for the
+# direct run each sandboxed run is compared with — what they `use` (the study surface) and the shared
+# doubles they are run against. DEV edges only: a dev-dependency may point level or up.
+vike-backtesthub = { path = "../vike-backtesthub" }
+# `src/lib.rs`'s `a_refused_load_reaches_a_backtest_with_one_id`: the backtest's carrier of a load refusal
+# (`run::refusals::ProfileRefusal::StrategyFileLoadRefused`, `HarnessError::message`), already in this graph through
+# `vike-backtesthub`. A DEV edge.
+vike-backtest = { path = "../vike-backtest" }
+vike-user-research = { path = "../vike-user-research" }
+vike-data = { path = "../vike-data", features = ["test-support"] }
+vike-ml-prediction = { path = "../vike-ml-prediction" }
+vike-ml-training = { path = "../vike-ml-training", features = ["test-support"] }
+vike-analytics = { path = "../vike-analytics" }
+# The fixture study `impact_fit` names the study template's `vike_fills::market_impact` (the fit and its market
+# context); already a normal dependency of `vike-simulator` above.
+vike-fills = { path = "../vike-fills" }
+# The fixture study `instrument_graph` reads a kept row's bars under its store name
+# (`vike_paths::store_path::store_name_of_user_name`, decision 0290). Std-only; already in the lock.
+vike-paths = { path = "../vike-paths" }
+vike-indicators = { path = "../vike-indicators" }
+vike-orderflow = { path = "../vike-orderflow" }
+vike-math = { path = "../vike-math" }
+vike-rag = { path = "../vike-rag" }
+vike-options = { path = "../vike-options" }
+# The fixture study `alpha_pool` (book W21) names the study surface's `vike-portfolio` and `vike-math`.
+vike-portfolio = { path = "../vike-portfolio" }
+# The `pairs_reversion` and `funding_carry` studies (book chapters 37 and 38) `use` the arbitrage maths
+# beside the study surface's `vike-math` (the `Matrix` every covariance and regression argument takes).
+vike-arbitrage = { path = "../vike-arbitrage" }
+# Their `#[cfg(test)]` fixture markets' `exp` of a log price (decision 0032), compiled into this binary only.
+libm = { workspace = true }
+toml = { workspace = true }
+rayon = { workspace = true }
+# `book_listings`: the base LightGBM parameters of a listing's recipe, read as the study hosts read them
+# (`study_dispatch::learner_params`). Already linked through vike-backtesthub; no package joins the lock.
+vike-study-runner = { path = "../vike-study-runner" }
+
+# `harness = false`: the binary is also the CHILD it spawns (`strategy-sandbox live <builds> <artifact>`), which the
+# jail requires to start with one thread and three descriptors, as no libtest harness does.
+[[test]]
+name = "live_child"
+harness = false
+
+# The same, for a research study FILE (`strategy-sandbox study <builds> <sha>`).
+[[test]]
+name = "study_child"
+harness = false
+
+# The same child, for the book's listings: each one a study FILE under `content/book/listings/`, built, run
+# in the jail on the synthetic test tape, and its result compared with the page CI committed for it.
+[[test]]
+name = "book_listings"
+harness = false
+
+# The same, for the BACKTEST verb's several artifacts (`strategy-sandbox backtest <builds> <artifact>...`: a
+# portfolio's `.rs` mounts in one jail), an unlisted file beside them refused, and the descriptor ceiling measured
+# with eight of them.
+[[test]]
+name = "backtest_child"
+harness = false
+
+[lints]
+workspace = true

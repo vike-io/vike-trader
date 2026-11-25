@@ -1,0 +1,654 @@
+//! `SessionCalendar` — the ONE market-hours law (law-map T10; LEAN `SecurityExchangeHours` analog).
+//!
+//! Before this module nothing in the workspace could answer *"is this venue open at `ts`?"*. The FX
+//! week existed as a prose comment in one venue's live-smoke test; live execution discovered a
+//! closed market only as a venue REJECTION, and backtests discovered it only as a data GAP. Two
+//! different discovery mechanisms for one fact is exactly the divergence class the law-mapping
+//! audit exists to kill.
+//!
+//! ## Policy as DATA, one query
+//!
+//! The shape is [`crate::venue_caps`]'s: a declarative table plus one pure query, so the backtest
+//! fill gate, a future live gate, and the GUI all read the SAME rows. There is deliberately no
+//! second session codepath anywhere — a consumer either calls [`SessionCalendar::is_open`] or it is
+//! not consulting the law.
+//!
+//! ## Keyed by (venue, ASSET CLASS) — resolved by the CALLER, never by a model→catalog edge
+//!
+//! The correct key for a session is **(venue, asset class)**, not the venue alone. Venue-alone
+//! keying is a real defect: Alpaca trades cash equities AND 24/7 crypto on one venue, and IBKR is a
+//! global multi-asset book — so "what venue is this?" cannot answer "when is it open?". The fill
+//! must resolve per SYMBOL.
+//!
+//! The resolution lives **where both venue and asset class are visible** — in `vike-catalog`
+//! (`vike_catalog::session_calendar_for`) or in the consumer — and this module takes the resolved
+//! thing as a **caller-supplied parameter**:
+//!
+//! - the pure query works on a [`SessionCalendar`] the caller hands it (backtest stores one PER
+//!   SYMBOL; see `StrategyEngineConfig::session_calendars`);
+//! - [`session_for`] is only a **venue-ONLY convenience default** — see its doc for why it is
+//!   deliberately fail-permissive for the mixed-asset venues rather than guessing their class.
+//!
+//! ⚠ **This paragraph used to say the map CANNOT live here** — that [`vike_model::AssetClass`] was a
+//! `vike-catalog` concept and owning the map would invert a down-only edge. **That reason is
+//! DEAD**: the taxonomy moved INTO this crate (see [`vike_model::instrument::asset_class`]) so that the hist store
+//! could name it, and both halves of the key are visible here now. The split above is preserved
+//! deliberately rather than by necessity — the rows a resolver would consult are a per-venue
+//! CATALOG table, and `docs/decisions/0061`'s second reason (nothing forces a per-venue table into
+//! the vocabulary crate) is the one still standing. A future PR that moves the resolver down has to
+//! argue it on those terms, not on a layering refusal that no longer exists.
+//!
+//! ## The time model: week-minutes, no timezone database
+//!
+//! A calendar is a set of half-open [`SessionCalendarSegment`]s over the trading week, measured in
+//! **minutes since Monday 00:00 UTC** (`0 .. 10_080`). Timestamps are epoch-ms UTC, the workspace
+//! convention, and the only calendar arithmetic is the day division this crate's
+//! [`vike_model::time`] module already owns ([`vike_model::time::utc_weekday`]) — no `chrono`, no tz
+//! database, no hand-rolled civil math.
+//!
+//! Resolution is ONE MINUTE. Every boundary in every shipped row falls on a minute, so this costs
+//! nothing today; a venue needing sub-minute precision would need a wider type, not a workaround.
+//!
+//! ## The DST rule (read this before adding a row)
+//!
+//! Several real session boundaries move with daylight-saving time, and without a tz database we
+//! cannot know which side of a transition a `ts` falls on. **Where a boundary moves, the declared
+//! segment is the UNION of both offsets.** The consequence is stated once and holds for the whole
+//! table:
+//!
+//! > The gate may UNDER-block by up to one hour. It can never OVER-block.
+//!
+//! That asymmetry is the safe one for a fill gate. Under-blocking leaves an hour of genuinely
+//! closed time looking open — the pre-existing behavior, since today nothing blocks at all.
+//! Over-blocking would silently DELETE fills that really happened in-session and quietly corrupt a
+//! backtest's results. A tz database (LEAN ships a 3.2 MB market-hours JSON for exactly this) is the
+//! deferred follow-up that would narrow these rows; see "Deliberately not built" below.
+//!
+//! ## The exact query, for the one consumer that must not be a union
+//!
+//! The live door's closed-market NOTE (`crates/vike-tradehub/src/server/session_note.rs`) is a
+//! sentence an operator reads, so it wants the civil answer, not a union that leaves a closed hour
+//! looking open: [`SessionCalendar::is_open_civil`] / [`SessionCalendar::next_open_civil`] narrow a
+//! New-York-quoted row to the real session by the US daylight-saving rule
+//! ([`new_york_utc_offset_min`]), from the SAME segments (no second table). It is a note and not a
+//! refusal: a wrong note is one false sentence, where the fill gate's wrong answer deletes a fill.
+//! The backtest is untouched and keeps the union query.
+//!
+//! ## Fail-PERMISSIVE, unlike `venue_caps`
+//!
+//! Every resolver here answers [`SessionCalendar::ALWAYS_OPEN`] when it cannot pin a session —
+//! [`session_for`] for an unknown venue, and (up one layer) `vike_catalog::session_calendar_for`
+//! for an unmodeled (venue, asset-class) pair. That is the opposite of `venue_caps`'s fail-CLOSED
+//! [`crate::venue_caps::VenueCapabilities::UNSUPPORTED`]. The two defaults differ because the two questions
+//! differ: a capability we cannot confirm must not be OFFERED, but a session we have no data for
+//! must not silently BLOCK a venue that in reality trades fine. A table that halts a venue it simply
+//! has no row for is worse than no table. This also drives the DST-union direction above — the whole
+//! law only ever under-blocks, never over-blocks.
+//!
+//! ## Deliberately not built (follow-ups, not oversights)
+//!
+//! - **Holiday calendars / half-days.** LEAN's per-market holiday + early-close database is the
+//!   thing we are explicitly not building yet. Every row here is a plain recurring week: a US
+//!   holiday reads as OPEN.
+//! - **A tz-database `SessionCalendar`.** The rows here are DST-union approximations (see the DST
+//!   rule). Narrowing them to the exact civil-time session per date is the LEAN market-hours-DB
+//!   follow-up — it lives above this crate (it needs a tz database), not in the pure model.
+//! - **Non-US regional equity sessions and listed-derivative hours.** Only the US regular session
+//!   is modeled ([`US_EQUITY_REGULAR`]); LSE/TSE/etc. and CME/CBOE extended hours are resolved
+//!   fail-permissive by `vike_catalog::session_calendar_for` until their rows land here.
+//! - **Pre/post-market.** [`SessionCalendarState`] has no `PreOpen`/`PostClose` variant because no shipped
+//!   row carries extended-hours data to distinguish them with. Adding the variant before the data
+//!   exists would be a field that is never set.
+//! - **Session-aware bar labeling** (LEAN's close-labeled daily bars) is a separate concern.
+
+use vike_model::{MS_PER_DAY, MS_PER_HOUR, MS_PER_MINUTE, utc_weekday};
+use vike_utility::calendar::{civil_from_days, days_from_civil};
+
+/// Minutes in a day.
+pub const DAY_MINUTES: i64 = 1_440;
+/// Minutes in a trading week — the modulus every [`SessionCalendarSegment`] lives under.
+pub const WEEK_MINUTES: i64 = 7 * DAY_MINUTES;
+
+/// Epoch-ms (UTC) → minutes since **Monday 00:00 UTC**, in `0 .. WEEK_MINUTES`. Total over the
+/// whole `i64` range (both divisions are Euclidean, so pre-1970 timestamps floor toward -inf and
+/// land in the same buckets as their positive counterparts).
+#[inline]
+pub fn week_minute(ts_ms: i64) -> i64 {
+    let minute_of_day = ts_ms.div_euclid(MS_PER_MINUTE).rem_euclid(DAY_MINUTES);
+    utc_weekday(ts_ms) as i64 * DAY_MINUTES + minute_of_day
+}
+
+/// The zone [`SessionCalendar::is_open_civil`] knows the daylight-saving rule of: the one both
+/// New-York-quoted rows ([`FX_WEEK`], [`US_EQUITY_REGULAR`]) are declared in.
+const NEW_YORK: &str = "America/New_York";
+
+/// New York's offset BEHIND UTC at `timestamp_ms`, in minutes: **240 under daylight time (EDT), 300 under
+/// standard time (EST)**. The US rule in force since 2007: daylight time runs from 02:00 local on the
+/// second Sunday of March (07:00 UTC) to 02:00 local daylight time on the first Sunday of November
+/// (06:00 UTC). A rule for those years on: an instant before 2007 reads as the same rule, which is
+/// wrong for 2006 and earlier and which no live caller can ask.
+///
+/// The year is the UTC year of `timestamp_ms`: both transitions are far from New Year, so UTC and local
+/// agree on it for every instant that matters.
+pub fn new_york_utc_offset_min(ts_ms: i64) -> i64 {
+    let (year, _, _) = civil_from_days(ts_ms.div_euclid(MS_PER_DAY));
+    // The first Sunday on or after `month`/`day`: Monday is weekday 0 (`utc_weekday`'s anchor), so
+    // Sunday is 6 and a day's weekday is `(days + 3) mod 7` (1970-01-01 was a Thursday).
+    let sunday_from = |month: u32, day: u32| {
+        let days = days_from_civil(year, month, day);
+        days + (6 - (days + 3).rem_euclid(7))
+    };
+    let dst_starts = sunday_from(3, 8) * MS_PER_DAY + 7 * MS_PER_HOUR; // 02:00 EST
+    let dst_ends = sunday_from(11, 1) * MS_PER_DAY + 6 * MS_PER_HOUR; // 02:00 EDT
+    if (dst_starts..dst_ends).contains(&ts_ms) { 240 } else { 300 }
+}
+
+/// When British Summer Time runs in `year`, as a half-open `[start, end)` pair of epoch ms: 01:00 UTC on
+/// the last Sunday of March to 01:00 UTC on the last Sunday of October, the UK rule in force since 1996.
+/// The UK's twin of [`new_york_utc_offset_min`]'s US rule (ig's history clock reads it); an earlier year
+/// reads as the same rule, which is wrong before 1996, and a caller that must refuse those years checks
+/// the year itself.
+pub fn uk_summer_time(year: i64) -> (i64, i64) {
+    // The last Sunday of a 31-day month at 01:00 UTC: 1970-01-01 was a Thursday, so a day number plus 4,
+    // modulo 7, is 0 on a Sunday.
+    let last_sunday_0100_utc = |month: u32| {
+        let last = days_from_civil(year, month, 31);
+        (last - (last + 4).rem_euclid(7)) * MS_PER_DAY + MS_PER_HOUR
+    };
+    (last_sunday_0100_utc(3), last_sunday_0100_utc(10))
+}
+
+/// Whether British Summer Time is in force at `ts_ms` ([`uk_summer_time`] of its UTC year; both changes
+/// are far from New Year, so the UTC year is the UK's).
+pub fn in_uk_summer_time(ts_ms: i64) -> bool {
+    let (year, _, _) = civil_from_days(ts_ms.div_euclid(MS_PER_DAY));
+    let (starts, ends) = uk_summer_time(year);
+    (starts..ends).contains(&ts_ms)
+}
+
+/// One half-open `[start_min, end_min)` stretch of the trading week, in week-minutes
+/// ([`week_minute`]). Segments never wrap: a session spanning Sunday into Monday is declared as TWO
+/// segments (see [`FX_WEEK`]), which keeps every query a plain ordered scan with no modular
+/// interval arithmetic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionCalendarSegment {
+    /// inclusive start, week-minutes
+    pub start_min: i64,
+    /// exclusive end, week-minutes
+    pub end_min: i64,
+}
+
+impl SessionCalendarSegment {
+    /// A segment from `start_min` (inclusive) to `end_min` (exclusive), both week-minutes.
+    pub const fn new(start_min: i64, end_min: i64) -> Self {
+        SessionCalendarSegment { start_min, end_min }
+    }
+
+    /// Does this segment cover `week_min`? Half-open, so a segment ending at `end_min` and one
+    /// starting at `end_min` are contiguous with no covered-twice minute between them.
+    #[inline]
+    pub const fn covers(&self, week_min: i64) -> bool {
+        week_min >= self.start_min && week_min < self.end_min
+    }
+}
+
+/// Whether a venue is trading. Two states only — see the module doc's "Deliberately not built" on
+/// why there is no `PreOpen`/`PostClose`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionCalendarState {
+    /// The venue accepts and matches orders.
+    Open,
+    /// The venue is outside its trading session.
+    Closed,
+}
+
+/// The declared weekly trading session for ONE venue class. `Copy` (a `&'static str` plus a
+/// `&'static [_]`) so it is free to hand to a UI frame by value, like [`crate::venue_caps::VenueCapabilities`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SessionCalendar {
+    /// The IANA zone the venue itself QUOTES its session in — documentation and UI labeling, and
+    /// the one key of [`Self::is_open_civil`] (`America/New_York` selects the US daylight-saving
+    /// narrowing). [`Self::is_open`] never consults it: `segments` are already resolved to UTC
+    /// week-minutes under the module's DST rule. Recording it keeps the provenance of each row
+    /// legible and is what a future tz-database implementation would key on.
+    pub tz: &'static str,
+    /// Ascending, non-overlapping half-open segments in week-minutes. Queries scan them in order.
+    pub segments: &'static [SessionCalendarSegment],
+}
+
+impl SessionCalendar {
+    /// Open every minute of every day — the 24/7 calendar AND the fail-permissive fallback for a
+    /// venue [`session_for`] has no row for (see the module doc).
+    pub const ALWAYS_OPEN: SessionCalendar =
+        SessionCalendar { tz: "UTC", segments: &[SessionCalendarSegment::new(0, WEEK_MINUTES)] };
+
+    /// Is this venue trading at `timestamp_ms` (epoch-ms UTC)? The ONE query every consumer calls; O(number
+    /// of segments), which is ≤ 5 for every shipped row, so it is cheap enough for a fill path.
+    #[inline]
+    pub fn is_open(&self, ts_ms: i64) -> bool {
+        let w = week_minute(ts_ms);
+        self.segments.iter().any(|s| s.covers(w))
+    }
+
+    /// [`SessionCalendarState`] form of [`Self::is_open`].
+    #[inline]
+    pub fn state(&self, ts_ms: i64) -> SessionCalendarState {
+        if self.is_open(ts_ms) { SessionCalendarState::Open } else { SessionCalendarState::Closed }
+    }
+
+    /// The earliest instant `>= timestamp_ms` at which this venue is open, or `None` when it never opens
+    /// (a calendar with no segments). **`Some(timestamp_ms)` when already open** — the query is "from when
+    /// may I trade?", so an open venue answers "now" rather than skipping to the next week's open.
+    ///
+    /// Minute-aligned when it moves: the returned instant is a whole-minute boundary. Costs at most
+    /// one week of minute steps, which merges contiguous and adjacent segments for free — this is an
+    /// ops/GUI surface, not a fill-path call.
+    pub fn next_open(&self, ts_ms: i64) -> Option<i64> {
+        self.scan_to(ts_ms, true)
+    }
+
+    /// The earliest instant `>= timestamp_ms` at which this venue is closed, or `None` when it never closes
+    /// (a 24/7 calendar). `Some(timestamp_ms)` when already closed, mirroring [`Self::next_open`].
+    pub fn next_close(&self, ts_ms: i64) -> Option<i64> {
+        self.scan_to(ts_ms, false)
+    }
+
+    /// [`Self::is_open`], EXACT to New York's daylight-saving time for a calendar quoted in
+    /// `America/New_York` ([`FX_WEEK`], [`US_EQUITY_REGULAR`]); any other zone answers exactly as
+    /// [`Self::is_open`] does (its rows carry no DST).
+    ///
+    /// The rows are declared as the DST UNION (module doc): a segment OPENS at its EDT instant and
+    /// CLOSES at its EST instant. So under EDT every boundary that moves with the clocks is one hour
+    /// EARLIER at the close, and under EST one hour LATER at the open; this narrows the union to the
+    /// civil session without a second table. A boundary that does not move is one another segment
+    /// continues across (the week wrap: `FX_WEEK`'s Monday 00:00 and its end of week), and is left
+    /// alone.
+    ///
+    /// ⚠ **The backtest's fill gate keeps calling [`Self::is_open`], on purpose**: its law is "may
+    /// under-block, never over-block" (a fill wrongly deleted corrupts a result), and this query is
+    /// exact in BOTH directions. A consumer that must be exact (the live door's closed-market
+    /// note, where a wrong answer is one false sentence) calls this one. Holidays stay unmodelled.
+    pub fn is_open_civil(&self, ts_ms: i64) -> bool {
+        if self.tz != NEW_YORK {
+            return self.is_open(ts_ms);
+        }
+        let w = week_minute(ts_ms);
+        let edt = new_york_utc_offset_min(ts_ms) == 240;
+        let wrap = |m: i64| m.rem_euclid(WEEK_MINUTES);
+        self.segments.iter().any(|s| {
+            let start_moves = !self.segments.iter().any(|o| wrap(o.end_min) == wrap(s.start_min));
+            let end_moves = !self.segments.iter().any(|o| wrap(o.start_min) == wrap(s.end_min));
+            let start = s.start_min + if start_moves && !edt { 60 } else { 0 };
+            let end = s.end_min - if end_moves && edt { 60 } else { 0 };
+            SessionCalendarSegment::new(start, end).covers(w)
+        })
+    }
+
+    /// **The instant `interval_ms` after `timestamp_ms` on this calendar's civil clock**: the open of the next bar of
+    /// a series whose bar opened at `timestamp_ms`. A bar of a day or longer of a calendar quoted in
+    /// `America/New_York` keeps its New York wall-clock time (the FX week rolls its day at 17:00 New York,
+    /// 21:00 UTC under daylight time and 22:00 under standard time), so the step is an hour shorter across
+    /// the March change and an hour longer across the November one; a shorter bar, a day bar opened at UTC
+    /// midnight (a venue that rolls its day in UTC), and every other zone step by the plain `interval_ms`.
+    /// Pure arithmetic: two [`new_york_utc_offset_min`] reads.
+    pub fn civil_after(&self, ts_ms: i64, interval_ms: i64) -> i64 {
+        let next = ts_ms.saturating_add(interval_ms);
+        if self.tz != NEW_YORK || interval_ms < MS_PER_DAY || ts_ms.rem_euclid(MS_PER_DAY) == 0 {
+            return next;
+        }
+        let shift = new_york_utc_offset_min(next) - new_york_utc_offset_min(ts_ms);
+        next.saturating_add(shift * MS_PER_MINUTE)
+    }
+
+    /// **Whether `start_ms ..= end_ms` is NOT a hole in a tape of this market**: the market was closed
+    /// throughout it (civil time, [`Self::is_open_civil`]), or open in it for exactly ONE WHOLE session of
+    /// at most a day: closed the minute before that session opened and the minute it closed, which is the
+    /// shape a holiday leaves (this calendar is weekly and lists none). Walked a minute at a time and
+    /// stopped at the first minute that says no, so a long span costs at most two sessions' walk.
+    ///
+    /// The ONE rule a missing stretch is judged by: a backtest's input coverage (`vike_backtest`'s
+    /// `data_plan/inputs.rs`) and the datahub's stored gaps ([`Self::trading_gaps`]). ⚠ One missing
+    /// trading day of a market whose session is a day or shorter reads exactly as a holiday does.
+    pub fn closed_or_one_session(&self, start_ms: i64, end_ms: i64) -> bool {
+        let open = |t: i64| self.is_open_civil(t);
+        let (mut open_ms, mut sessions) = (0_i64, 0_u32);
+        let mut before = open(start_ms.saturating_sub(MS_PER_MINUTE));
+        let mut t = start_ms;
+        while t <= end_ms {
+            let now = open(t);
+            if now {
+                match (before, t == start_ms) {
+                    // The session was already open when the span began: a part of it is missing.
+                    (true, true) => return false,
+                    (true, false) => {}
+                    (false, _) => sessions += 1,
+                }
+                open_ms += MS_PER_MINUTE;
+                if sessions > 1 || open_ms > MS_PER_DAY {
+                    return false;
+                }
+            }
+            before = now;
+            t = t.saturating_add(MS_PER_MINUTE);
+        }
+        // A session still open when the span ends is a part of one too.
+        !(before && open(end_ms.saturating_add(1)))
+    }
+
+    /// **The missing stretches of a stored series that are TRADING time on this calendar**: `gaps` are the
+    /// store's inclusive epoch-ms ranges of whole missing UTC days (`vike_data::HistoryStore::series_gaps`),
+    /// `bar_ms` the series' bar width (`None` for a tick tape). A range is
+    ///
+    /// 1. trimmed of the whole UTC days at either end on which the market is closed all day (a range
+    ///    of nothing else, a weekend of the FX week or of a share, is gone);
+    /// 2. dropped when [`Self::closed_or_one_session`] excuses it (closed throughout, or one whole
+    ///    session alone: a holiday);
+    /// 3. dropped when it holds less trading time than ONE bar: a bar of a day or longer counts a day as
+    ///    the longest trading day of the week (`longest_day_minutes`), because where a venue labels
+    ///    its daily bar differs (an FX day rolls at 17:00 New York, so one venue's bars are dated Sunday to
+    ///    Thursday and another's Monday to Friday) and the stretch a weekend leaves, a Friday or a Sunday
+    ///    evening, holds less than one such day.
+    ///
+    /// Every range kept stays whole: a hole of several weeks is one range with its weekends inside it, so
+    /// the count of ranges is a count of holes, and a collector asked for it skips the closed days itself.
+    pub fn trading_gaps(&self, gaps: &[(i64, i64)], bar_ms: Option<i64>) -> Vec<(i64, i64)> {
+        let need_min = match bar_ms {
+            Some(ms) if ms >= MS_PER_DAY => (ms / MS_PER_DAY) * self.longest_day_minutes(),
+            Some(ms) => (ms / MS_PER_MINUTE).max(1),
+            None => 1,
+        };
+        let mut out = Vec::new();
+        for &(from, to) in gaps {
+            let (mut first, mut last) = (from.div_euclid(MS_PER_DAY), to.div_euclid(MS_PER_DAY));
+            while first <= last && self.closed_all_day(first) {
+                first += 1;
+            }
+            while last >= first && self.closed_all_day(last) {
+                last -= 1;
+            }
+            if first > last {
+                continue;
+            }
+            let (start, end) = (from.max(first * MS_PER_DAY), to.min((last + 1) * MS_PER_DAY - 1));
+            if !self.closed_or_one_session(start, end)
+                && self.open_minutes_reach(start, end, need_min)
+            {
+                out.push((start, end));
+            }
+        }
+        out
+    }
+
+    /// Whether the market is closed for the whole of UTC day `day` (days since the epoch), read off the
+    /// segments: the DST union is open at least whenever the civil session is, so a day the union keeps
+    /// closed is closed in civil time too.
+    fn closed_all_day(&self, day: i64) -> bool {
+        let start = week_minute(day.saturating_mul(MS_PER_DAY));
+        let end = start + DAY_MINUTES;
+        !self.segments.iter().any(|s| s.start_min < end && s.end_min > start)
+    }
+
+    /// The most minutes the segments hold open on one UTC day of the week: 1,440 for the FX week (Monday
+    /// to Thursday), 450 for the US regular session's union.
+    fn longest_day_minutes(&self) -> i64 {
+        (0..7)
+            .map(|d| {
+                let (lo, hi) = (d * DAY_MINUTES, (d + 1) * DAY_MINUTES);
+                self.segments.iter().map(|s| (s.end_min.min(hi) - s.start_min.max(lo)).max(0)).sum()
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Whether the market is open (civil) for at least `need_min` minutes of `start_ms ..= end_ms`,
+    /// stopping at the minute that reaches it.
+    fn open_minutes_reach(&self, start_ms: i64, end_ms: i64, need_min: i64) -> bool {
+        let mut seen = 0;
+        let mut t = start_ms;
+        while t <= end_ms {
+            if self.is_open_civil(t) {
+                seen += 1;
+                if seen >= need_min {
+                    return true;
+                }
+            }
+            t = t.saturating_add(MS_PER_MINUTE);
+        }
+        false
+    }
+
+    /// [`Self::next_open`] by [`Self::is_open_civil`]: the earliest instant `>= timestamp_ms` at which the
+    /// session is open in civil time, `Some(timestamp_ms)` when it is open now, `None` when it never opens
+    /// within a week. Minute-aligned when it moves. Costs at most a week of minute steps: a cold
+    /// ops/door surface, never a fill path.
+    pub fn next_open_civil(&self, ts_ms: i64) -> Option<i64> {
+        if self.is_open_civil(ts_ms) {
+            return Some(ts_ms);
+        }
+        let base = ts_ms.div_euclid(MS_PER_MINUTE) * MS_PER_MINUTE;
+        (1..=WEEK_MINUTES).map(|k| base + k * MS_PER_MINUTE).find(|&t| self.is_open_civil(t))
+    }
+
+    /// Shared body of [`Self::next_open`]/[`Self::next_close`]: the first instant `>= timestamp_ms` whose
+    /// openness equals `want`. Returns `timestamp_ms` verbatim when it already matches; otherwise walks
+    /// whole minutes for at most one full week (after which the weekly pattern has repeated, so no
+    /// such instant exists).
+    fn scan_to(&self, ts_ms: i64, want: bool) -> Option<i64> {
+        if self.is_open(ts_ms) == want {
+            return Some(ts_ms);
+        }
+        // `timestamp_ms` is in a minute that does NOT match, and `week_minute` is minute-granular, so the
+        // whole minute does not match — the answer therefore falls on a later minute boundary.
+        let base = ts_ms.div_euclid(MS_PER_MINUTE) * MS_PER_MINUTE;
+        let w = week_minute(ts_ms);
+        for k in 1..=WEEK_MINUTES {
+            let m = (w + k).rem_euclid(WEEK_MINUTES);
+            if self.segments.iter().any(|s| s.covers(m)) == want {
+                return Some(base + k * MS_PER_MINUTE);
+            }
+        }
+        None
+    }
+}
+
+impl Default for SessionCalendar {
+    fn default() -> Self {
+        SessionCalendar::ALWAYS_OPEN
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The rows. Three classes cover the whole `vike_model::VENUES` roster; each states its source.
+// ---------------------------------------------------------------------------------------------
+
+/// **Crypto CEX/DEX + prediction markets — 24/7/365.** binance, bybit, okx, deribit, aster,
+/// hyperliquid, polymarket.
+///
+/// These venues have no weekly close at all: matching runs continuously, and the only interruptions
+/// are unscheduled maintenance windows (which a static calendar cannot predict and which surface as
+/// venue rejections / feed gaps regardless). No DST exposure — the row is offset-free.
+pub const CRYPTO_24_7: SessionCalendar =
+    SessionCalendar { tz: "UTC", segments: &[SessionCalendarSegment::new(0, WEEK_MINUTES)] };
+
+/// **FX / CFD — the FX week.** dukascopy, oanda, ig, fxcm, ctrader.
+///
+/// The documented law (`crates/bridges/dukascopy/tests/dukascopy_live_smoke.rs`, until now the
+/// workspace's ONLY statement of it) is *Sunday 22:00 GMT → Friday 22:00 GMT*. The true boundary is
+/// the New York 17:00 close, which is **21:00 UTC under EDT and 22:00 UTC under EST** — so the
+/// nominal "22:00 GMT" is the standard-time value and the boundary really does move by an hour
+/// twice a year.
+///
+/// Per the module's DST rule this row declares the UNION: it OPENS at the earlier of the two
+/// (Sunday 21:00 UTC) and CLOSES at the later of the two (Friday 22:00 UTC). The weekend gap it
+/// blocks is therefore Friday 22:00 → Sunday 21:00 UTC — always a true closure, never a false one,
+/// with up to one hour of genuinely closed Sunday evening left permissively open.
+///
+/// Declared as two segments because the week wraps: Monday 00:00 through Friday 22:00, then Sunday
+/// 21:00 to the end of the week.
+pub const FX_WEEK: SessionCalendar = SessionCalendar {
+    tz: "America/New_York", // the 17:00 NY close is what the week boundary tracks
+    segments: &[
+        // Mon 00:00 UTC → Fri 22:00 UTC
+        SessionCalendarSegment::new(0, 4 * DAY_MINUTES + 22 * 60),
+        // Sun 21:00 UTC → end of week
+        SessionCalendarSegment::new(6 * DAY_MINUTES + 21 * 60, WEEK_MINUTES),
+    ],
+};
+
+/// **US equities — the regular session.** The row `vike_catalog::session_calendar_for` returns for
+/// `(alpaca | ibkr, Equity | Etf)`. It is reached by the (venue, asset-class) resolver, NOT by
+/// venue alone — see [`session_for`], which deliberately does not hand it back for those venues.
+///
+/// 09:30–16:00 `America/New_York`, Monday through Friday. In UTC that is 13:30–20:00 under EDT and
+/// 14:30–21:00 under EST, so per the module's DST rule the declared segment is the UNION —
+/// **13:30–21:00 UTC** — leaving one hour permissively open at whichever end the season is not
+/// currently using.
+///
+/// Limitations, deliberate and listed as module-doc follow-ups:
+/// - **No holidays.** Thanksgiving reads as a normal open Thursday. LEAN's holiday/early-close
+///   database is the thing this row deliberately does not build.
+/// - **US region only.** IBKR is a global book; `session_calendar_for` returns this row only for
+///   the venues it is confident trade the US session, and answers `ALWAYS_OPEN` (never over-block)
+///   for a region it cannot infer from (venue, asset-class) — a per-symbol override supplies the
+///   real session. See that resolver's doc.
+pub const US_EQUITY_REGULAR: SessionCalendar = SessionCalendar {
+    tz: "America/New_York",
+    segments: &[
+        SessionCalendarSegment::new(13 * 60 + 30, 21 * 60), // Mon
+        SessionCalendarSegment::new(DAY_MINUTES + 13 * 60 + 30, DAY_MINUTES + 21 * 60), // Tue
+        SessionCalendarSegment::new(2 * DAY_MINUTES + 13 * 60 + 30, 2 * DAY_MINUTES + 21 * 60), // Wed
+        SessionCalendarSegment::new(3 * DAY_MINUTES + 13 * 60 + 30, 3 * DAY_MINUTES + 21 * 60), // Thu
+        SessionCalendarSegment::new(4 * DAY_MINUTES + 13 * 60 + 30, 4 * DAY_MINUTES + 21 * 60), // Fri
+    ],
+};
+
+/// **A share CFD whose row names no region — whole weekdays.** Monday 00:00 to Saturday 00:00 UTC, the
+/// weekend closed. The row of a share CFD says what it tracks and not where, so its exchange hours are
+/// unknown; that every share market is shut on Saturday and Sunday needs no region (the coordinator's
+/// ruling of 2026-11-16, checked against the 85 Dukascopy share-CFD series on the CI box: 30,270 day
+/// partitions, none on a weekend). `vike_catalog::trading_calendar` gives it to such a row. Whole days on
+/// purpose: a day's hours of the share's own exchange are what the row cannot tell, so the weekday is open
+/// throughout and a missing weekday, a holiday included, is a gap.
+pub const SHARE_WEEKDAYS: SessionCalendar =
+    SessionCalendar { tz: "UTC", segments: &[SessionCalendarSegment::new(0, 5 * DAY_MINUTES)] };
+
+/// **The crypto-native EXCHANGES — deribit, binance, bybit, okx, aster, hyperliquid.** The venues
+/// that are themselves continuous crypto order books, so the LISTED DERIVATIVES they carry
+/// (options, futures, index products, combos) trade continuously too: Deribit options are 24/7.
+///
+/// THE one list of them. [`session_for`] reads it for the venue-only default, and
+/// `vike_catalog::session_calendar_for` reads it for the derivative classes (its
+/// `Option | Future | Index | Combo` arm), where the venue is the only thing that can say. Neither
+/// carries a copy, and a new crypto exchange is classified HERE and nowhere else
+/// (`just new-venue`'s `session_for` marker names this fn).
+///
+/// ⚠ **`polymarket` is the one venue-only 24/7 book that is NOT in it, on purpose.**
+/// [`session_for`] gives it [`CRYPTO_24_7`] (a prediction market has no weekly close), but this
+/// set answers a narrower question — "does this venue's derivatives book trade 24/7?" — and
+/// polymarket lists no options, futures, index products or combos: its outcome contracts are
+/// `AssetClass::PredictionMarket`, which `vike_catalog::session_calendar_for` already resolves to
+/// 24/7 for every venue by CLASS. Listing it here would claim derivatives it does not carry. So
+/// the relation, pinned by `session_tests.rs`'s
+/// `the_crypto_native_set_is_pinned_and_polymarket_is_the_one_24_7_book_outside_it`: the roster
+/// venues with a 24/7 venue-only book are exactly this set plus polymarket.
+///
+/// ⚠ Today [`CRYPTO_24_7`] equals [`SessionCalendar::ALWAYS_OPEN`] by value, so the derivative
+/// rule is value-inert: a venue missing from this set resolves to the same calendar as one in it.
+/// The set is still the declared fact (a calendar that stops being open every minute of the week
+/// would make it bite), which is why it is pinned by NAME rather than by value.
+pub fn is_crypto_native(venue: &str) -> bool {
+    matches!(venue, "deribit" | "binance" | "bybit" | "okx" | "aster" | "hyperliquid")
+}
+
+/// The **venue-only convenience default** — the [`SessionCalendar`] you get when the venue is all
+/// you know. Correct for the venues whose whole book shares ONE session (a crypto CEX is 24/7; a
+/// spot-FX broker runs the FX week), and the fallback the backtest gate lands on when a symbol has
+/// no per-symbol override.
+///
+/// It is NOT the keying authority. The correct key is (venue, asset class), and for a **mixed-asset
+/// venue this function deliberately answers [`SessionCalendar::ALWAYS_OPEN`]** rather than guess:
+/// Alpaca runs equities AND 24/7 crypto, IBKR is global multi-asset, so a venue-only answer that
+/// restricted their hours would wrongly block whichever asset it guessed wrong (over-blocking =
+/// deleting real fills, the one direction the whole law forbids). To get a restricting session for
+/// those venues, resolve `(venue, asset_class)` through `vike_catalog::session_calendar_for`, or
+/// pin the exact row per symbol via `StrategyEngineConfig::session_calendars`.
+///
+/// An unknown venue answers `ALWAYS_OPEN` too — **fail-PERMISSIVE**, deliberately the opposite of
+/// [`crate::venue_caps::capabilities_for`]'s fail-closed fallback (module doc explains why the two differ).
+pub fn session_for(venue: &str) -> SessionCalendar {
+    match venue {
+        // crypto CEX/DEX — the whole book has no weekly close (the set is [`is_crypto_native`]'s)
+        v if is_crypto_native(v) => CRYPTO_24_7,
+        // the prediction market — a 24/7 book too, but NOT a crypto exchange: see the
+        // "polymarket" paragraph of [`is_crypto_native`]'s doc for why it is an arm of its own
+        "polymarket" => CRYPTO_24_7,
+        // FX / CFD brokers — the whole book runs the FX week
+        "dukascopy" | "oanda" | "ig" | "fxcm" | "ctrader" => FX_WEEK,
+        // vike:new-venue:row // TODO(new-venue: {venue}): pick CRYPTO_24_7 (continuous book: a crypto EXCHANGE joins
+        // vike:new-venue:row // is_crypto_native instead of getting an arm) / FX_WEEK (FX or CFD) /
+        // vike:new-venue:row // SessionCalendar::ALWAYS_OPEN (MIXED-asset — venue alone cannot say, so fail-permissive
+        // vike:new-venue:row // and let vike-catalog's (venue, asset-class) resolver restrict it).
+        // vike:new-venue:row "{venue}" => SessionCalendar::ALWAYS_OPEN,
+        // MIXED-asset venues (equities + 24/7 crypto, or a global book): venue alone cannot pick a
+        // session, so fail-permissive here and let the (venue, asset_class) resolver / per-symbol
+        // override restrict them. `alpaca`/`ibkr` fall through to the arm below deliberately.
+        _ => SessionCalendar::ALWAYS_OPEN,
+    }
+}
+
+/// Is `venue` trading at `timestamp_ms`, by its **venue-only** default session? The one-call read surface
+/// for the GUI / ops ("venue closed" badge) and any future live gate — [`session_for`] composed
+/// with [`SessionCalendar::is_open`].
+///
+/// Carries [`session_for`]'s caveat: for a mixed-asset venue (alpaca/ibkr) this is always `true`,
+/// because venue alone cannot say. A per-instrument badge must resolve `(venue, asset_class)` via
+/// `vike_catalog::session_calendar_for` and call [`SessionCalendar::is_open`] directly.
+///
+/// READ-ONLY, and the UNION answer ([`SessionCalendar::is_open`]): nothing in the live order path
+/// blocks on it, and a live BLOCK would be a separate change with its own venue smokes. The live
+/// door's closed-market NOTE reads the exact one, per symbol (module doc).
+#[inline]
+pub fn venue_is_open(venue: &str, ts_ms: i64) -> bool {
+    session_for(venue).is_open(ts_ms)
+}
+
+/// **An FX venue logs in only while the FX week is open** (owner ruling 2026-11-13, "dont try to login on
+/// weekends": no login and no login retry while the FX market is closed; the first attempt is at the open).
+/// `Some(open_ms)`, the next open, when `venue`'s venue-only session ([`session_for`]) is [`FX_WEEK`] and that
+/// week is closed at `now_ms`; `None` when it may log in now, which every other venue always may.
+///
+/// The UNION query ([`SessionCalendar::is_open`]): closed Friday 22:00 → Sunday 21:00 UTC (Sunday 21:00 UTC is
+/// midnight in Moscow), so it never holds a login back from an open market and may let one through in the hour
+/// the union leaves open. Pure: the caller reads its own clock.
+pub fn fx_login_closed_until(venue: &str, now_ms: i64) -> Option<i64> {
+    let session = session_for(venue);
+    if session != FX_WEEK || session.is_open(now_ms) {
+        return None;
+    }
+    session.next_open(now_ms)
+}
+
+/// The words a login [`fx_login_closed_until`] holds back is told in, the one sentence every daemon and every
+/// surface says: `FX market closed: login at 2026-11-15T21:00:00Z`.
+pub fn fx_login_closed_words(open_ms: i64) -> String {
+    format!("FX market closed: login at {}", vike_model::time::epoch_ms_to_utc_timestamp(open_ms))
+}
+
+/// What a retry ladder of `venue` waits instead of its own `pause` at `now_ms`: `pause`, or the wait from `now_ms` to
+/// the FX open when the attempt it leads to (at `now_ms + pause`) would fall while the market is closed
+/// ([`fx_login_closed_until`]): one wait to the open, never a pause that lands a login inside the closed window. Pure:
+/// the caller reads its own clock.
+pub fn fx_login_held_pause(
+    venue: &str,
+    pause: std::time::Duration,
+    now_ms: i64,
+) -> std::time::Duration {
+    let due = now_ms.saturating_add(i64::try_from(pause.as_millis()).unwrap_or(i64::MAX));
+    fx_login_closed_until(venue, due).map_or(pause, |open| {
+        std::time::Duration::from_millis(u64::try_from(open.saturating_sub(now_ms)).unwrap_or(0))
+    })
+}
+
+#[path = "session_tests.rs"]
+#[cfg(test)]
+mod session_tests;

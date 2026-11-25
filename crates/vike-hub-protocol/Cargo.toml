@@ -1,0 +1,66 @@
+[package]
+name = "vike-hub-protocol"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The substrate BOTH hub protocols share: the HMAC-SHA256 nonce-challenge handshake generalized over its domain separator (auth), and the length-prefixed frame codec (frame). No vike-* dependency but the helper floor vike-utility (its lowercase hex) — it is the crate below vike-datahub-client and vike-tradehub-client, which speak the two protocols and depend on it rather than on each other."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `leaf` — a crate that
+# names AT MOST the floor. This one names only the helper floor vike-utility (layer 3, the one lowercase hex; a FLOOR_EDGES row of
+# crates/vike-ops/tests/architecture/layer_gate/vike_free.rs), never a domain crate, which is the
+# property that lets both hub protocols sit above it as PEERS rather than as a ladder.
+#
+# Why this is a crate of its own rather than a module of either client:
+# docs/decisions/0107-the-node-protocol-substrate-is-a-crate-below-both-clients.md.
+[package.metadata.vike]
+layer = 15
+
+[dependencies]
+# The HMAC-SHA256 the handshake signs with — the EXACT crates
+# `crates/vike-bridge-core/src/signer.rs` already links, so this adds ZERO new external packages to
+# the workspace audit surface (deny.toml bans a second crypto crate).
+# `sha2` is also the plain digest behind `src/hash.rs`'s `sha256_hex`.
+hmac = { workspace = true }
+sha2 = { workspace = true }
+# `hex::hex_lower`, the workspace's one lowercase hex (`src/hash.rs`'s digests, `src/auth.rs`'s `key_fingerprint`), and
+# `errors::FailureOutcome`, the word `src/call.rs`'s `HubCallError::failure_outcome` answers in: the helper floor, std only and itself
+# vike-free, this crate's one `FLOOR_EDGES` row (decision 0107's amendment).
+vike-utility = { path = "../vike-utility" }
+# A device's own Ed25519 key pair and its signature check (`src/access.rs`, decision 0288): the crate rustls already
+# links as its provider, so no new external package and no second crypto stack (deny.toml).
+ring = { workspace = true }
+# The per-connection auth NONCE (`auth::fresh_nonce`) — 32 bytes from the OS-backed default
+# generator, which is what makes a captured handshake transcript unreplayable against a later
+# connection.
+#
+# ⚠ It lives in THIS crate rather than in either server because
+# `crates/vike-ops/tests/architecture/clock_pin/ratchet.rs`'s `no_scoped_crate_declares_an_rng_dependency`
+# forbids `vike-backtest` — one of the daemons speaking this protocol — from naming an RNG at all.
+rand = { workspace = true }
+# `Scope`/`HubKeys` derive on the auth side; the frame codec serializes and deserializes whatever
+# its caller hands it, which is what keeps this crate ignorant of BOTH protocols' schemas.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The MSGPACK frame body a client negotiates per connection (`src/frame.rs`'s `BodyCodec`, "JSON only at the
+# edges", 2026-11-19): msgpack with field names, and LZ4 for a client on a thin link; and the child pipe's
+# positional msgpack body (`src/child_pipe.rs`: a hub and the child it starts from its own executable, behind a
+# build check). Both workspace pins already in the tree (the sandbox pipe's msgpack, the bar columns' LZ4): no new
+# package, no C build for the desktop.
+rmp-serde = { workspace = true }
+lz4_flex = { workspace = true }
+
+[dev-dependencies]
+# A self-deleting temp file for the file-hash test (`src/hash_tests.rs`): what the journal scratch gate asks of a test
+# that writes under the temp dir, so a failed run leaves nothing behind.
+tempfile = { workspace = true }
+
+# `crate::test_support`: the wire-golden checks (round trip through the frame codec, the subset compare,
+# the coverage walk over `fixtures/`) the gatewayhub-client, market-stream and datahub-client tag suites
+# share. Turned on only by those crates' DEV edges; no shipped edge may enable it
+# (`crates/vike-ops/tests/architecture/test_surface_gate.rs`).
+[features]
+test-support = []
+
+[lints]
+workspace = true

@@ -1,0 +1,40 @@
+[package]
+name = "vike-fills"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the shared FILL cluster: cost scalars, tiered fill-price models (bar / L1 tick / L2 book-walk), intrabar fill resolution, the stale-price wait and the market-impact slippage model with its fit. Depends on vike-model, vike-marketdata and vike-math only, so the paper exchange and the simulator share ONE definition of a fill."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain` — one hop over the vocabulary: a single-purpose pure core.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 20
+
+[dependencies]
+# The ONLY dependency, by design (see the crate doc): Bar / L2Book / OrderKind / OrderResting, the
+# `order_fill_price` trigger oracle and the `book_taker_price` taker law all live in vike-model.
+# Adding vike-execution, vike-core or vike-data here would defeat the reason this crate exists — it must
+# stay a leaf that BOTH the simulator and a live-adjacent paper executor can depend on.
+vike-model = { path = "../vike-model" }
+# The market-data vocabulary (`Bar`, the tick types, `L2Book`, `L2BookUpdate`, `OptionKind`, ...):
+# spelled `vike_marketdata::X` everywhere -- vike-model names but does not re-export it (0067).
+vike-marketdata = { path = "../vike-marketdata" }
+# The formula floor (decision 0294, layer 2, `libm` only; already in this crate's closure through
+# vike-model): `compensated_sum` and the sample statistics `market_impact` measures sigma and mean
+# volume with and fits its coefficients by. It came with the impact model out of vike-analytics on
+# 2026-11-18 and adds no package.
+vike-math = { path = "../vike-math" }
+# `vike_utility::refusal_enum!` (layer 3, already in this crate's closure through vike-model): the cost
+# params' refusals are typed (`src/refusals.rs`), each with its id, and adds no package.
+vike-utility = { path = "../vike-utility" }
+libm = { workspace = true } # `libm::pow`, the impact model's two powers (decision 0032)
+
+[dev-dependencies]
+# `vike_utility::libm_walk`, the shared text walk `tests/libm_platform_probe.rs` reads `src/` with
+# (decision 0074). A DEV edge with the feature, never a normal one.
+vike-utility = { path = "../vike-utility", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

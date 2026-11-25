@@ -1,0 +1,154 @@
+use super::*;
+use vike_bridge_core::venue_adapter_fixture::{
+    AdapterFixture, assert_demo_only_resolve, assert_never_resolves_live, found_tier_events,
+};
+use vike_log::capture::captured;
+use vike_model::accounts::account_keys::AccountLabel;
+
+/// The whole pair `load_oanda_config_from` requires, by FIELD.
+const KEYS: &[(&str, &str)] = &[("API_KEY", "tok"), ("ACCOUNT_ID", "101-004-1-001")];
+
+#[test]
+fn the_declaration_is_the_rows_the_tradehub_core_carried() {
+    let d = VenueAdapterOanda.declaration();
+    assert_eq!(VenueAdapterOanda.venue(), "oanda");
+    assert!(d.addresses_accounts && d.process_exclusive.is_none());
+    assert_eq!(d.grid_source, GridSource::NoGrid);
+    assert_eq!(
+        d.book_identity,
+        BookIdentityRule::Named { name_fields: &["ACCOUNT_ID"], evm_key_fields: &[] }
+    );
+    // The whole row, reason included: it is the operator-facing sentence the clock leg reports
+    // as `NotChecked`, and this declaration is where it lives.
+    assert_eq!(
+        d.clock,
+        ClockDeclaration::NotWired {
+            reason: "its only time field is the pricing snapshot's publication tick, quantized to \
+                     a 1 s grid — a check over it would flap across a ±900 ms band on a healthy \
+                     host",
+            unmeasured_risk: None,
+        }
+    );
+}
+
+/// The arming row: only `Practice` arms — an account below `live` holding its whole pair — and a
+/// `live` account's whole pair is REFUSED as `LiveTierNotWired`. Anything less is `NoCredentials`
+/// at every tier.
+#[test]
+fn resolve_is_the_arms_own_gate_including_the_live_tier_refusal() {
+    assert_demo_only_resolve(&VenueAdapterOanda, KEYS, &[&KEYS[..1], &KEYS[1..]]);
+}
+
+#[test]
+fn no_tier_ever_resolves_live() {
+    assert_never_resolves_live(&VenueAdapterOanda, KEYS);
+}
+
+/// An unconfigured account, and a `live` account holding its whole pair, each start PAPER. The
+/// second row is the live-tier refusal's own pin at the START:
+/// `resolve_is_the_arms_own_gate_including_the_live_tier_refusal` pins only `resolve`, and `start`
+/// asks `demo_only_arm` for itself. A start that served the pair from the practice hosts — the
+/// silent ignore the module doc names as the original bug — arms the practice account here and
+/// fails on `exec`. That failing run dials fxPractice with the fixture's fake token; under the
+/// correct start the refusal is decided before any config is used, so neither row reaches the
+/// network.
+///
+/// Reconciliation is ON in the request, and neither account needs the reconcile factory: the start
+/// returns without it and nothing panics. `out.recon` being `None` cannot show more than that
+/// offline — the factory itself answers `None` on any connect failure, so a factory that was
+/// called and one that was not look the same here.
+#[test]
+fn an_unconfigured_or_live_account_starts_paper() {
+    let (tx, _rx) = vike_execution::event_channel(8);
+    for (account, fx, tier) in [
+        ("an unconfigured account", AdapterFixture::new(&[]), AccountTier::Demo),
+        ("a live account holding its pair", AdapterFixture::new(KEYS), AccountTier::Live),
+    ] {
+        let mut req = fx.request(tier, "EUR_USD", &tx);
+        req.reconcile_enabled = true;
+        let out = VenueAdapterOanda.start(req);
+        assert!(
+            matches!(out.exec, VenueAdapterExecutionOutcome::NotRunning),
+            "{account} must mount PAPER"
+        );
+        assert!(out.reconcile.is_none() && out.identity.is_none(), "{account}");
+    }
+}
+
+/// **A practice pair whose address rows are refused does not run, and says why**: it still ARMS (the
+/// probe judges credentials, and the pair is present), and the start returns paper before any config
+/// is used, with one `error!` naming the missing `venue_url` row. The fixture's settings hold no row.
+#[test]
+fn a_practice_pair_with_no_address_row_is_not_running_and_names_the_row() {
+    let fx = AdapterFixture::new(KEYS);
+    assert!(matches!(
+        VenueAdapterOanda.resolve(&fx.inputs(AccountTier::Demo)),
+        ArmingResolution::Armed { .. }
+    ));
+    let (tx, _rx) = vike_execution::event_channel(8);
+    let (out, events) =
+        captured(|| VenueAdapterOanda.start(fx.request(AccountTier::Demo, "EUR_USD", &tx)));
+    assert!(matches!(out.exec, VenueAdapterExecutionOutcome::NotRunning), "NOT RUNNING");
+    let errors: Vec<_> = events.iter().filter(|e| e.level == tracing::Level::ERROR).collect();
+    assert_eq!(errors.len(), 1, "{events:?}");
+    assert!(errors[0].message.contains("venue_url"), "names the row: {:?}", errors[0]);
+    // The one refused-address line every demo-only start says (owner rulings B-15 / U-7), with its fields.
+    assert!(
+        errors[0].message.starts_with("oanda: REFUSED — ")
+            && errors[0].message.ends_with("; the account is NOT RUNNING"),
+        "{:?}",
+        errors[0]
+    );
+    assert_eq!(errors[0].field("venue"), Some("oanda"), "{:?}", errors[0]);
+}
+
+/// A LABELLED account is started only when it armed, so a `live` one holding its pair never reaches
+/// `start` and said nothing at all — `vike-tradehub-core` asks the arm to speak for it instead, and the arm
+/// says exactly what `start` says for the default account: the one refusal sentence, once, naming
+/// THAT account and never a credential name or value.
+#[test]
+fn an_account_that_is_never_started_is_spoken_for_in_the_same_words() {
+    let unmounted = AccountLabel::parse("UNMNT").expect("a legal label");
+    let mut live = AdapterFixture::new(&[
+        ("API_KEY", "SECRET-VALUE-do-not-log"),
+        ("ACCOUNT_ID", "SECRET-VALUE-do-not-log"),
+    ]);
+    live.account = unmounted.clone();
+    let (_, events) =
+        captured(|| VenueAdapterOanda.report_not_running_account(&live.inputs(AccountTier::Live)));
+    let said = found_tier_events(&events);
+    assert_eq!(said.len(), 1, "{events:?}");
+    let e = said[0];
+    assert_eq!(e.level, tracing::Level::ERROR, "{e:?}");
+    assert_eq!((e.field("venue"), e.field("account")), (Some("oanda"), Some("UNMNT")), "{e:?}");
+    assert_eq!(e.field("found_tier"), Some("live"), "{e:?}");
+    assert!(e.field("tier").is_none(), "a refusal carries `found_tier`, never `tier`: {e:?}");
+    assert!(e.message.contains("account UNMNT"), "names the account it speaks for: {}", e.message);
+    assert!(
+        e.message.contains("LIVE") && e.message.contains("NOT RUNNING"),
+        "names the tier and what it costs: {}",
+        e.message
+    );
+    // secret-absent: the planted credential value never reaches the line
+    assert!(!format!("{e:?}").contains("SECRET-VALUE"), "never a value: {e:?}");
+    // The shared demo-only phrase (owner ruling B-15), in OANDA's word for the tier it starts.
+    assert!(
+        e.message.starts_with("oanda: account UNMNT is a LIVE account (tier `live`)")
+            && e.message.contains("mounts only its practice tier"),
+        "{}",
+        e.message
+    );
+
+    // A practice account, a half-written live account, and an empty one are not refusals.
+    let mut half = AdapterFixture::new(&KEYS[..1]);
+    half.account = unmounted;
+    for (quiet, tier) in [
+        (&live, AccountTier::Demo),
+        (&half, AccountTier::Live),
+        (&AdapterFixture::new(&[]), AccountTier::Live),
+    ] {
+        let (_, events) =
+            captured(|| VenueAdapterOanda.report_not_running_account(&quiet.inputs(tier)));
+        assert!(events.is_empty(), "silent ({tier}): {events:?}");
+    }
+}

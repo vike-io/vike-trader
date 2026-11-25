@@ -1,0 +1,856 @@
+//! IBKR contract model: ONE secType-tagged contract (STK/OPT/FUT/CASH/IND/CRYPTO + Other) covering
+//! every asset class, plus symbology and the contract-details→`SymbolProperties` bridge.
+//!
+//! # The user name and its kept row (decision 0290)
+//!
+//! Above this bridge an instrument is its USER name (`AAPL`, `BRK.B`, `USDJPY`, `ES_261218`): the engine, the
+//! journal, the fills, the reconcile reports and the price lane carry it. IBKR publishes no list, so the
+//! instrument's KEPT row is the operator's (`vike-cli data instruments add --venue ibkr`, decision 0290's O-10), and
+//! the row's own name is the WIRE name this module's grammar reads: a stock `AAPL.SMART.USD` (a pinned one
+//! `AAPL.SMART.USD.STK.265598`), a pair `USD.JPY.IDEALPRO`, a future `ES.CME.USD.FUT.20261218`.
+//! [`contract_of_user_name`] is the ONE way in: the user name's kept row ([`operator_row_of`]), its wire read
+//! by [`parse_simplified`], and the two held to agree ([`contract_of_row`]: the class, the ticker or base, the
+//! currency and a future's day are the row's, so an operator's typo never trades another contract than the name
+//! says). No row is a refusal naming the command that adds one; a wire name typed as a symbol (`AAPL.SMART.USD`) is
+//! refused naming its user name. The way back needs no lookup: a fill carries the user name its order was
+//! registered under (`crate::execution::event_mapper`), and a reconcile report the user name it was asked for.
+//!
+//! # Symbology — what a WIRE name means at this venue
+//!
+//! A wire name is dot-delimited and its FIRST THREE fields are always `SYMBOL.EXCHANGE.CURRENCY`
+//! (`AAPL.SMART.USD`). Everything after that is an EXPLICIT CLAIM about what kind of contract the
+//! operator means:
+//!
+//! | spelling | contract |
+//! |---|---|
+//! | `AAPL.SMART.USD` | equity — the three-field form, allowed ONLY on a cash-equity exchange |
+//! | `EUR.IDEALPRO.USD` | forex EUR/USD on IDEALPRO (the stated field order) |
+//! | `EUR.USD.IDEALPRO` | the SAME contract, legacy field order (see the ⚠ below) |
+//! | `VOD.LSE.GBP.STK` | equity, claimed explicitly — works on ANY exchange |
+//! | `ES.GLOBEX.USD.FUT.20251219` | the December-2025 E-mini S&P future |
+//! | `ES.GLOBEX.USD.FUT.202512.50` | the same, month-precision expiry plus an explicit multiplier |
+//! | `SPY.SMART.USD.OPT.20251219.500.C` | a listed call |
+//! | `BTC.PAXOS.USD.CRYPTO`, `SPX.CBOE.USD.IND` | the two remaining secTypes |
+//!
+//! **Anything else is REFUSED**, with a message naming the field it could not read and the
+//! spellings it accepts. That refusal is the whole point of this module and it replaces a SILENT
+//! EQUITY DEFAULT: until 2026-09-16 every canonical whose last field was not `IDEALPRO` was
+//! returned as a STOCK, so `ESZ5.GLOBEX.USD` — the E-mini S&P future — was submitted as
+//! `SecType::STK`, on the order path, with nothing warning anybody. A *better guess* would be the
+//! same defect wearing a nicer coat; the cure for a missing claim is to make the caller supply one.
+//!
+//! ⚠ **A futures month code is NOT decoded, deliberately.** `ESZ5` encodes December 2025 in the
+//! exchange's own single-digit-year convention, and that convention is ambiguous across decades:
+//! read in 2035 the same five characters name December 2035, and read against a historical tape
+//! they name December 2015. IBKR's own field is `lastTradeDateOrContractMonth` — `YYYYMM` or
+//! `YYYYMMDD` — so this grammar asks for exactly that and refuses to invent the century. An order
+//! on the wrong expiry is a real position in the wrong contract, and no error is raised for it.
+//!
+//! ⚠ **The three-field form is EXCHANGE-GATED, and the gate is an ALLOWLIST**
+//! ([`EQUITY_EXCHANGES`]). An unknown exchange is refused rather than read as equity, because the
+//! two failures are not symmetric: a missing allowlist row costs a NAMED refusal carrying its own
+//! remedy (spell the secType), while a wrong equity default costs an order in the wrong
+//! instrument. `SMART` is the one row that is a convention rather than a fact — it is a ROUTER
+//! reaching futures and options too — and it is kept because `AAPL.SMART.USD` is the spelling this
+//! tree already starts.
+//!
+//! ⚠ **The legacy forex order is kept because it is what the tree already writes**
+//! (`EUR.USD.IDEALPRO`). It inverts the stated field order, which used to mean the obedient
+//! spelling `EUR.IDEALPRO.USD` silently produced an EQUITY named EUR — a trap this crate's own
+//! `CLAUDE.md` documents. Both spellings now name the one contract, so no caller can be wrong.
+//!
+//! ⚠ **A symbol containing a dot is UNREACHABLE through this grammar** — so are the dotted IBKR
+//! exchange codes (`NASDAQ.NMS`, `ENEXT.BE`). They are refused as a malformed canonical rather
+//! than mis-split. Reaching one needs a different delimiter, which is a grammar change.
+//!
+//! # The typed contract (`docs/decisions/0126-every-instrument-class-is-a-typed-contract-in-vike-model-and-feed-values-live-in-vike-marketdata.md`)
+//!
+//! [`IbkrContract::to_contract`] is the ONE mapping from IBKR's secType-tagged contract to
+//! [`vike_model::Contract`], and [`SecType::asset_class`] is its projection: the two must agree for
+//! every secType that maps (`instrument/contract_tests.rs` pins it). It reads only the contract's own fields —
+//! never the symbol text — and answers `None` rather than invent a field the contract does not
+//! carry (a month-precision expiry, a combo's legs, a continuous future). IBKR publishes no
+//! catalog, so nothing here builds a `vike_model::Instrument`; the engine symbol's grid is
+//! [`contract_details_to_properties`].
+
+use vike_marketdata::OptionKind;
+use vike_model::{
+    AssetClass, Contract, ContractCfd, ContractCfdExpiry, ContractCfdProduct,
+    ContractCfdUnderlying, ContractEquity, ContractFuture, ContractFutureDelivery,
+    ContractFutureFamily, ContractFx, ContractOption, ContractOptionExerciseStyle, Instrument,
+    MS_PER_DAY, Margining, SymbolProperties, utc_day,
+};
+use vike_utility::calendar::{civil_from_days, days_from_civil};
+
+use crate::refusals::IbkrSymbolRefusal;
+
+/// The IBKR exchange codes the THREE-FIELD canonical is allowed to read as a CASH EQUITY.
+///
+/// **The admission rule for a new row: the venue lists cash equities, and an order routed there
+/// with no secType can mean nothing else.** A row that is wrong in that direction reinstates the
+/// silent equity default for that venue, which is the defect this module exists to remove — so
+/// when in doubt leave the code out and let the operator spell `SYMBOL.EXCHANGE.CCY.STK`.
+///
+/// ⚠ `SMART` is the ONE row admitted against that rule. It is IBKR's smart ROUTER, not an
+/// exchange, and it reaches futures and options as well as stocks — so `ES.SMART.USD` is exactly
+/// as ambiguous as `ES.GLOBEX.USD` and this table cannot see the difference. It stays because
+/// `AAPL.SMART.USD` is the symbol `crates/vike-venues/src/venue_wiring.rs`'s `VENUE_WIRING` ibkr row starts and the one
+/// every test in this crate uses; removing it would be a behaviour change dressed as a fix. The
+/// explicit form overrides it on any symbol where it is wrong.
+///
+/// Dotted codes (`NASDAQ.NMS`, `ENEXT.BE`) are deliberately absent: this grammar splits on `.`, so
+/// they cannot be written at all. See the module doc.
+/// The rows, in the order they are written: the US venues, then Europe (`LSE` … `BVL`), then
+/// Asia-Pacific and the Americas ex-US (`SEHK` onward). Region comments are deliberately NOT
+/// interleaved — a trailing `//` inside an array is rustfmt-unstable, and this array is a table an
+/// order path reads.
+#[rustfmt::skip]
+pub const EQUITY_EXCHANGES: &[&str] = &[
+    "SMART", "NYSE", "NASDAQ", "ISLAND", "ARCA", "AMEX", "BATS", "IEX", "BEX", "PSX", "DRCTEDGE",
+    "LSE", "LSEETF", "IBIS", "SBF", "AEB", "BVME", "EBS", "SWB", "FWB", "GETTEX", "TGATE", "VSE",
+    "OMXNO", "SFB", "CPH", "HEX", "BVL",
+    "SEHK", "TSEJ", "ASX", "TSE", "VENTURE", "MEXI", "NSE", "BSE",
+];
+
+/// IBKR's forex venue. The one exchange code this grammar recognises in EITHER of the two
+/// positions the tree spells it in — see the module doc's ⚠ on the legacy field order.
+const FOREX_EXCHANGE: &str = "IDEALPRO";
+
+/// The secType codes an OPERATOR may claim in a canonical. `Other` is deliberately NOT reachable
+/// from a canonical: [`SecType::from_ibkr_code`] answers `Other` for anything it does not know, and
+/// forwarding an unrecognised code to the wire is a guess wearing a claim's clothes. `Other` stays
+/// on the INBOUND side, where IBKR itself is the one saying the word.
+const CLAIMABLE_SEC_TYPES: &[&str] = &["STK", "OPT", "FUT", "CASH", "IND", "CRYPTO"];
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum SecType {
+    Stk,
+    Opt,
+    Fut,
+    Cash,
+    Ind,
+    Crypto,
+    Other(String),
+}
+
+impl SecType {
+    pub fn as_ibkr_code(&self) -> &str {
+        match self {
+            SecType::Stk => "STK",
+            SecType::Opt => "OPT",
+            SecType::Fut => "FUT",
+            SecType::Cash => "CASH",
+            SecType::Ind => "IND",
+            SecType::Crypto => "CRYPTO",
+            SecType::Other(s) => s.as_str(),
+        }
+    }
+
+    /// This secType's [`AssetClass`], for [`contract_details_to_properties`] — IBKR's OWN word for
+    /// what the contract IS. It is the only honest source here: IBKR's symbology gives `AAPL` and
+    /// `ESZ5` the same shape, so the ticker cannot answer, and this module's doc already records
+    /// what a *better guess* off one cost (`ESZ5.GLOBEX.USD` submitted as `SecType::Stk`).
+    ///
+    /// ⚠ It is the PROJECTION of [`IbkrContract::to_contract`]: wherever that answers a
+    /// [`Contract`], `Contract::class()` equals this, for every secType
+    /// (`instrument/contract_tests.rs`'s `asset_class_is_the_class_of_the_typed_contract`). It answers even
+    /// where `to_contract` cannot (a month-precision future, a `BAG` without legs): the secType
+    /// alone names the class, while the contract also needs fields the canonical may not carry.
+    ///
+    /// - `STK` → [`AssetClass::Equity`], and NOT [`AssetClass::Etf`]: IBKR files ETFs under `STK`
+    ///   too, so the venue makes no distinction for this parser to read. `SPY` answering `Equity`
+    ///   is the venue's answer, not an approximation of one.
+    /// - `CASH` → [`AssetClass::Fx`] — IB's word for a spot currency pair (`FOREX_EXCHANGE`,
+    ///   IDEALPRO), not for cash equities.
+    /// - `CRYPTO` → [`AssetClass::CryptoSpot`]: the PAXOS-routed spot coins are the only crypto
+    ///   IBKR lists — it offers no perpetual, so `CryptoPerp` is unreachable from this venue.
+    /// - [`SecType::Other`] → `other_asset_class`, which is a DECISION PER WORD rather than one
+    ///   blanket `None`. It is still the INBOUND-only variant (`CLAIMABLE_SEC_TYPES` keeps an
+    ///   operator from minting one), so the word inside it is always IBKR's own.
+    #[must_use]
+    pub fn asset_class(&self) -> Option<AssetClass> {
+        match self {
+            SecType::Stk => Some(AssetClass::Equity),
+            SecType::Opt => Some(AssetClass::Option),
+            SecType::Fut => Some(AssetClass::Future),
+            SecType::Cash => Some(AssetClass::Fx),
+            SecType::Ind => Some(AssetClass::Index),
+            SecType::Crypto => Some(AssetClass::CryptoSpot),
+            SecType::Other(code) => SecType::other_asset_class(code),
+        }
+    }
+
+    /// The class an inbound [`SecType::Other`] names — IBKR's REMAINING secType vocabulary, one
+    /// written decision per word, reached only through [`SecType::asset_class`].
+    ///
+    /// The list this was decided against is `ibapi` 3.2.1's `SecurityType`
+    /// (<https://docs.rs/ibapi/3.2.1/ibapi/contracts/enum.SecurityType.html>), whose `from` reads
+    /// the wire words IBKR actually sends. ⚠ It is WIDER than the five this catch-all was first
+    /// described by (`CFD`/`BOND`/`WAR`/`FOP`/`BAG`): `CONTFUT`, `CMDTY`, `NEWS` and `FUND` fall in
+    /// here too, and a decision that stopped at five would have left four words looking undecided
+    /// when they are not.
+    ///
+    /// ⚠ **Matched CASE-SENSITIVELY, on the word as the venue spells it, and deliberately NOT
+    /// upper-cased first.** [`SecType::from_ibkr_code`]'s own arms are already case-sensitive — a
+    /// lowercase `stk` lands in `Other` — so normalising HERE and nowhere else would make one type
+    /// answer two ways about one defect: `cfd` would resolve a class while `stk` would not. IBKR
+    /// sends these uppercase; a lowercase one is a caller bug and should keep looking like one.
+    ///
+    /// # The words that answer — each is IB's own word for a class the taxonomy has
+    ///
+    /// - `CFD` → [`AssetClass::Cfd`]: IB's expansion of the code is *contract for difference*.
+    /// - `FOP` → [`AssetClass::Option`], an option ON a future. ⚠ A consumer that filters on
+    ///   `Option` and assumes equity-option settlement sees contracts that settle into a FUTURES
+    ///   position; the typed [`ContractOption::underlying`] (the future's root) is what tells them
+    ///   apart, not the class.
+    /// - `BOND` → [`AssetClass::Bond`], `WAR` → [`AssetClass::Warrant`] (an issuer-written
+    ///   security, NOT a listed `Option`), `CMDTY` → [`AssetClass::Commodity`] (spot metal, NOT
+    ///   `Fx`), `FUND` → [`AssetClass::Fund`] (a mutual fund, NOT an `Etf`). Decision 0126 added
+    ///   these classes; until then each answered `None` rather than its tempting neighbour.
+    /// - `BAG` → [`AssetClass::Combo`]: IB's COMBO is a multi-leg instrument, which 0126 made a
+    ///   class. Its typed contract is NOT built (`to_contract` answers `None`): the legs, and so
+    ///   whether it is an option combo or a futures spread, are not on [`IbkrContract`].
+    ///
+    /// # The rest answer `None`, and that is a FINISHED answer rather than a TODO
+    ///
+    /// - `NEWS`: a news-feed subscription contract is not a tradable instrument in any sense.
+    /// - `CONTFUT` is a CONTINUOUS future — a stitched front-month SERIES with no expiry and no
+    ///   order path. [`AssetClass::Future`] is the neighbour and is refused: the series is a
+    ///   market-data construct rather than a contract, and a `Future` contract needs an expiry the
+    ///   series does not have.
+    fn other_asset_class(code: &str) -> Option<AssetClass> {
+        match code {
+            "CFD" => Some(AssetClass::Cfd),
+            "FOP" => Some(AssetClass::Option),
+            "BOND" => Some(AssetClass::Bond),
+            "WAR" => Some(AssetClass::Warrant),
+            "CMDTY" => Some(AssetClass::Commodity),
+            "FUND" => Some(AssetClass::Fund),
+            "BAG" => Some(AssetClass::Combo),
+            // Named rather than swept into `_`, so grepping the word IBKR sends finds the decision
+            // instead of finding nothing. Their reasons are on this doc.
+            "NEWS" | "CONTFUT" => None,
+            _ => None,
+        }
+    }
+
+    pub fn from_ibkr_code(code: &str) -> SecType {
+        match code {
+            "STK" => SecType::Stk,
+            "OPT" => SecType::Opt,
+            "FUT" => SecType::Fut,
+            "CASH" => SecType::Cash,
+            "IND" => SecType::Ind,
+            "CRYPTO" => SecType::Crypto,
+            other => SecType::Other(other.to_string()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct IbkrContract {
+    pub sec_type: SecType,
+    pub symbol: String,
+    pub exchange: String,
+    pub currency: String,
+    pub expiry: Option<String>,     // YYYYMM | YYYYMMDD (OPT/FUT)
+    pub strike: Option<f64>,        // OPT
+    pub right: Option<OptionKind>,  // OPT
+    pub multiplier: Option<String>, // OPT/FUT
+    pub con_id: Option<i64>,
+}
+
+/// **IB's symbol for an engine ticker** (decision 0218): the engine spells a class share with `_` where IB has a
+/// space (`BRK_B` is IB's `BRK B`; a dot cannot be written in this grammar), so the wire symbol is the ticker with
+/// each `_` turned into a space. Every other ticker is unchanged. Only a STOCK's symbol goes through it: the
+/// order carries the contract id when the name pins one, and the id is what IB resolves by.
+#[must_use]
+pub fn ibkr_symbol(ticker: &str) -> String {
+    ticker.replace('_', " ")
+}
+
+/// Whether two spellings name one ticker: letters and digits only, case ignored, so IB's `BRK B`, the engine's
+/// `BRK_B` and a trader's `BRK.B` or `brk-b` are one. Used where IB's symbol is compared with the name a trader
+/// wrote (the symbol search, and the details of a pinned contract id).
+#[must_use]
+pub fn same_ticker(a: &str, b: &str) -> bool {
+    let key = |s: &str| -> Vec<u8> {
+        s.bytes().filter(u8::is_ascii_alphanumeric).map(|c| c.to_ascii_uppercase()).collect()
+    };
+    let (a, b) = (key(a), key(b));
+    !a.is_empty() && a == b
+}
+
+impl IbkrContract {
+    fn stk(symbol: &str, exchange: &str, currency: &str) -> Self {
+        IbkrContract {
+            sec_type: SecType::Stk,
+            symbol: symbol.into(),
+            exchange: exchange.into(),
+            currency: currency.into(),
+            expiry: None,
+            strike: None,
+            right: None,
+            multiplier: None,
+            con_id: None,
+        }
+    }
+
+    fn cash(symbol: &str, exchange: &str, currency: &str) -> Self {
+        IbkrContract { sec_type: SecType::Cash, ..IbkrContract::stk(symbol, exchange, currency) }
+    }
+
+    /// True when this contract's identity depends on a field a `secdef/search?symbol=&secType=`
+    /// query CANNOT express — today, exactly the expiry.
+    ///
+    /// ⚠ **This is an ORDER-PATH guard, not a hint.**
+    /// `crates/bridges/vike-ibkr/src/transport/cpapi/decode.rs`'s `decode_conid`
+    /// takes the FIRST row of the search result, and the search is keyed on symbol + secType
+    /// alone. For an equity that first row is a listing choice; for a FUTURE it is a different
+    /// EXPIRY — a wholly different contract with its own price, and the operator named the one
+    /// they wanted. So the cpapi conId lanes REFUSE to resolve rather than pick, and the caller
+    /// fails loudly (`conid: 0`, which the gateway itself rejects) instead of filling on a contract
+    /// nobody asked for. The socket backend is unaffected: it sends
+    /// symbol/secType/exchange/currency/expiry and lets IBKR resolve or answer error 200.
+    pub fn conid_search_is_ambiguous(&self) -> bool {
+        self.expiry.is_some()
+    }
+
+    /// The typed [`Contract`] this IBKR contract IS, read from its own fields — or `None` when the
+    /// contract lacks a field the class needs. Pure; no network. [`SecType::asset_class`] is its
+    /// projection.
+    ///
+    /// - `STK` → `Equity`: `exchange` is the routing exchange, except that `SMART` (IB's router,
+    ///   not a listing — see [`EQUITY_EXCHANGES`]) answers `None`; `currency` the contract's.
+    ///   Never `Etf`: IBKR files ETFs under `STK` too.
+    /// - `OPT` and `FOP` → `Option`: right, strike and a DAY-precision expiry are all required, else
+    ///   `None`. `underlying` is IB's `symbol` (the share or the future's root), `settle` and
+    ///   `value_currency` the currency, `margining` `Linear` (premium and payoff in the quote currency).
+    ///   `style` is `Unknown`: US equity options are American, but the contract does not say so.
+    /// - `FUT` → `Future`: a DAY-precision expiry is required, else `None`; `Linear`, settled in
+    ///   the currency, `family` `Traditional`; `delivery` `Unknown` and `tenor` `None` (the contract
+    ///   carries neither). The
+    ///   `multiplier` is not a contract field here: it is the grid's `contract_size`
+    ///   ([`contract_details_to_properties`]).
+    /// - `CASH` → `Fx` (pip, lot and swaps unknown: the contract carries none), `IND` → `Index`,
+    ///   `CRYPTO` → `CryptoSpot`, `CFD` → `Cfd` with every unknown left `Other`/`Unknown`/`None`,
+    ///   `BOND`/`WAR`/`CMDTY`/`FUND` → `Bond`/`Warrant`/`Commodity`/`Fund`.
+    /// - `None` for `BAG` (the legs, and so the combo kind, are not on this struct), `CONTFUT` (a
+    ///   series with no expiry, not a contract), `NEWS`, and any word IB has not been decided for.
+    ///
+    /// ⚠ **A `YYYYMM` expiry answers `None`.** IBKR's `lastTradeDateOrContractMonth` names a
+    /// contract MONTH in that form, not the last trading day, and the day differs per product (the
+    /// third Friday, the business day before the 25th, …); a month-end or first-of-month convention
+    /// would be a fabricated date on a typed field consumers read as fact. A `YYYYMMDD` expiry is
+    /// that day at 00:00 UTC: the exchange-local last-trade TIME (`lastTradeTime`, `timeZoneId` on
+    /// `contractDetails`) is not on this struct, so the instant is day-precise only.
+    #[must_use]
+    pub fn to_contract(&self) -> Option<Contract> {
+        let currency_value = &self.currency;
+        match &self.sec_type {
+            SecType::Stk => Some(Contract::Equity(ContractEquity {
+                exchange: (!self.exchange.eq_ignore_ascii_case("SMART"))
+                    .then(|| self.exchange.clone()),
+                currency: Some(currency_value.clone()),
+            })),
+            SecType::Opt => self.option_contract(),
+            SecType::Fut => Some(Contract::Future(ContractFuture {
+                margining: Margining::Linear,
+                settle: currency_value.clone(),
+                value_currency: Some(currency_value.clone()),
+                expiry_ms: expiry_day_ms(self.expiry.as_deref()?)?,
+                tenor: None,
+                delivery: ContractFutureDelivery::Unknown,
+                family: ContractFutureFamily::Traditional,
+            })),
+            SecType::Cash => Some(Contract::Fx(ContractFx {
+                pip_size: None,
+                lot_size: None,
+                swap_long: None,
+                swap_short: None,
+            })),
+            SecType::Ind => Some(Contract::Index),
+            SecType::Crypto => Some(Contract::CryptoSpot),
+            SecType::Other(code) => match code.as_str() {
+                "CFD" => Some(Contract::Cfd(ContractCfd {
+                    underlying_kind: ContractCfdUnderlying::Other,
+                    underlying: None,
+                    product: ContractCfdProduct::Cfd,
+                    expiry: ContractCfdExpiry::Unknown,
+                    margin_rate: None,
+                    swap_long: None,
+                    swap_short: None,
+                })),
+                "FOP" => self.option_contract(),
+                "BOND" => Some(Contract::Bond),
+                "WAR" => Some(Contract::Warrant),
+                "CMDTY" => Some(Contract::Commodity),
+                "FUND" => Some(Contract::Fund),
+                // Named, with their reasons on this fn's doc.
+                "BAG" | "CONTFUT" | "NEWS" => None,
+                _ => None,
+            },
+        }
+    }
+
+    /// `OPT`/`FOP`'s [`Contract::Option`], or `None` when right, strike or a day-precision expiry
+    /// is missing — see [`IbkrContract::to_contract`].
+    fn option_contract(&self) -> Option<Contract> {
+        let right = self.right?;
+        let strike = self.strike.filter(|s| s.is_finite() && *s > 0.0)?;
+        Some(Contract::Option(ContractOption {
+            right,
+            strike,
+            expiry_ms: expiry_day_ms(self.expiry.as_deref()?)?,
+            style: ContractOptionExerciseStyle::Unknown,
+            margining: Margining::Linear,
+            settle: self.currency.clone(),
+            value_currency: Some(self.currency.clone()),
+            underlying: Some(self.symbol.clone()),
+        }))
+    }
+}
+
+/// A `YYYYMMDD` `lastTradeDateOrContractMonth` as that day's 00:00 UTC in epoch ms, or `None` for
+/// anything else — a `YYYYMM` month included, deliberately (see [`IbkrContract::to_contract`]).
+/// A day the month does not have (`20250231`) is `None`: [`check_expiry`] only bounds the day by
+/// 31, so the calendar round-trip is the check. The crate's one `YYYYMMDD` reading (a forex future's
+/// last trading day reads it too).
+pub(crate) fn expiry_day_ms(expiry: &str) -> Option<i64> {
+    if expiry.len() != 8 || !expiry.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let y: i64 = expiry[0..4].parse().ok()?;
+    let m: u32 = expiry[4..6].parse().ok()?;
+    let d: u32 = expiry[6..8].parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    let days = days_from_civil(y, m, d);
+    (civil_from_days(days) == (y, m, d)).then_some(days * MS_PER_DAY)
+}
+
+/// Parse a canonical vike symbol into the IBKR contract it names, or say why it could not.
+///
+/// The grammar, the refusal and the reasons behind both are in this module's doc. The one thing to
+/// carry here: **there is no fall-through.** A canonical either matches a spelling that names
+/// exactly one contract, or it is an `Err` whose refusal names the offending field and lists what
+/// this venue accepts — because the caller is on an order path, and a default there is an order in
+/// the wrong instrument.
+pub fn parse_simplified(canonical: &str) -> Result<IbkrContract, IbkrSymbolRefusal> {
+    let parts: Vec<&str> = canonical.split('.').collect();
+    if parts.len() < 3 || parts.iter().any(|p| p.trim().is_empty()) {
+        return Err(IbkrSymbolRefusal::ContractNameTooShort { canonical: canonical.to_string() });
+    }
+    let (symbol, exchange, currency) = (parts[0], parts[1], parts[2]);
+    if parts.len() == 3 {
+        return parse_three_field(canonical, symbol, exchange, currency);
+    }
+    parse_claimed(canonical, &parts)
+}
+
+/// The THREE-FIELD form: forex on IDEALPRO (either field order), or a cash equity on an
+/// allowlisted exchange. Anything else is refused — see the module doc for why the allowlist runs
+/// this way round.
+fn parse_three_field(
+    canonical: &str,
+    symbol: &str,
+    exchange: &str,
+    currency: &str,
+) -> Result<IbkrContract, IbkrSymbolRefusal> {
+    // Forex, stated field order: `EUR.IDEALPRO.USD`.
+    if exchange.eq_ignore_ascii_case(FOREX_EXCHANGE) {
+        check_currency(canonical, currency)?;
+        return Ok(IbkrContract::cash(symbol, exchange, currency));
+    }
+    // Forex, LEGACY field order: `EUR.USD.IDEALPRO` — the spelling this tree already writes. The
+    // SAME contract as the arm above, reached by swapping the two trailing fields back.
+    if currency.eq_ignore_ascii_case(FOREX_EXCHANGE) {
+        check_currency(canonical, exchange)?;
+        return Ok(IbkrContract::cash(symbol, currency, exchange));
+    }
+    if EQUITY_EXCHANGES.iter().any(|e| e.eq_ignore_ascii_case(exchange)) {
+        check_currency(canonical, currency)?;
+        return Ok(IbkrContract::stk(&ibkr_symbol(symbol), exchange, currency));
+    }
+    Err(IbkrSymbolRefusal::UnknownEquityExchange {
+        canonical: canonical.to_string(),
+        exchange: exchange.to_string(),
+        currency: currency.to_string(),
+    })
+}
+
+/// The EXPLICIT form: the fourth field is the operator's secType claim, and the fields after it are
+/// whatever that claim requires. No exchange allowlist applies — the claim has already said what
+/// the contract is, which is the entire point of spelling it.
+fn parse_claimed(canonical: &str, parts: &[&str]) -> Result<IbkrContract, IbkrSymbolRefusal> {
+    let (symbol, exchange, currency) = (parts[0], parts[1], parts[2]);
+    let claim = parts[3].to_ascii_uppercase();
+    if !CLAIMABLE_SEC_TYPES.contains(&claim.as_str()) {
+        return Err(IbkrSymbolRefusal::UnknownSecurityType {
+            canonical: canonical.to_string(),
+            claim: parts[3].to_string(),
+            accepted: CLAIMABLE_SEC_TYPES.join(" / "),
+        });
+    }
+    check_currency(canonical, currency)?;
+    let sec_type = SecType::from_ibkr_code(&claim);
+    let base = IbkrContract {
+        sec_type: sec_type.clone(),
+        ..IbkrContract::stk(symbol, exchange, currency)
+    };
+    match sec_type {
+        // SYMBOL.EXCHANGE.CCY.FUT.EXPIRY[.MULTIPLIER]
+        SecType::Fut => {
+            if !(5..=6).contains(&parts.len()) {
+                return Err(IbkrSymbolRefusal::FutureWithoutExpiry {
+                    canonical: canonical.to_string(),
+                });
+            }
+            Ok(IbkrContract {
+                expiry: Some(check_expiry(canonical, parts[4])?),
+                multiplier: check_multiplier(canonical, parts.get(5).copied())?,
+                ..base
+            })
+        }
+        // SYMBOL.EXCHANGE.CCY.OPT.EXPIRY.STRIKE.RIGHT[.MULTIPLIER]
+        SecType::Opt => {
+            if !(7..=8).contains(&parts.len()) {
+                return Err(IbkrSymbolRefusal::OptionWithoutTerms {
+                    canonical: canonical.to_string(),
+                });
+            }
+            Ok(IbkrContract {
+                expiry: Some(check_expiry(canonical, parts[4])?),
+                strike: Some(check_strike(canonical, parts[5])?),
+                right: Some(check_right(canonical, parts[6])?),
+                multiplier: check_multiplier(canonical, parts.get(7).copied())?,
+                ..base
+            })
+        }
+        // SYMBOL.EXCHANGE.CCY.STK[.CONID]: the optional contract id PINS the contract (decision 0218), so a
+        // ticker listed on more than one exchange (no spelling could pick one before) names exactly one, and a
+        // class share's `_` is IB's space.
+        SecType::Stk => {
+            if !(4..=5).contains(&parts.len()) {
+                return Err(IbkrSymbolRefusal::StockTrailingFields {
+                    canonical: canonical.to_string(),
+                    extra: parts.len() - 4,
+                });
+            }
+            Ok(IbkrContract {
+                symbol: ibkr_symbol(symbol),
+                con_id: check_con_id(canonical, parts.get(4).copied())?,
+                ..base
+            })
+        }
+        // CASH / IND / CRYPTO need nothing beyond the claim itself, so a trailing field is a
+        // field this parser would silently IGNORE — refused, since an ignored field is an operator
+        // believing they said something.
+        _ => {
+            if parts.len() != 4 {
+                return Err(IbkrSymbolRefusal::ClaimTakesNoField {
+                    canonical: canonical.to_string(),
+                    claim,
+                    extra: parts.len() - 4,
+                });
+            }
+            Ok(base)
+        }
+    }
+}
+
+/// An ISO-4217 currency: exactly three ASCII letters. Cheap, and it is the check that catches a
+/// canonical whose trailing fields were transposed (`AAPL.SMART.NASDAQ`) before the wire does.
+fn check_currency(canonical: &str, currency: &str) -> Result<(), IbkrSymbolRefusal> {
+    if currency.len() == 3 && currency.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return Ok(());
+    }
+    Err(IbkrSymbolRefusal::NotACurrencyCode {
+        canonical: canonical.to_string(),
+        currency: currency.to_string(),
+    })
+}
+
+/// IBKR's `lastTradeDateOrContractMonth`: `YYYYMM` or `YYYYMMDD`, digits only, with a real month
+/// (and day, when one is given). Nothing here guesses a century — see the module doc's ⚠.
+fn check_expiry(canonical: &str, expiry: &str) -> Result<String, IbkrSymbolRefusal> {
+    let bad = || IbkrSymbolRefusal::ExpiryNotADate {
+        canonical: canonical.to_string(),
+        expiry: expiry.to_string(),
+    };
+    if !matches!(expiry.len(), 6 | 8) || !expiry.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(bad());
+    }
+    let month: u32 = expiry[4..6].parse().map_err(|_| bad())?;
+    if !(1..=12).contains(&month) {
+        return Err(bad());
+    }
+    if expiry.len() == 8 {
+        let day: u32 = expiry[6..8].parse().map_err(|_| bad())?;
+        if !(1..=31).contains(&day) {
+            return Err(bad());
+        }
+    }
+    Ok(expiry.to_string())
+}
+
+/// The option strike: a finite, strictly-positive decimal. A zero or negative strike is not a
+/// contract, and a NaN would reach the wire as whatever the formatter made of it.
+fn check_strike(canonical: &str, strike: &str) -> Result<f64, IbkrSymbolRefusal> {
+    match strike.parse::<f64>() {
+        Ok(v) if v.is_finite() && v > 0.0 => Ok(v),
+        _ => Err(IbkrSymbolRefusal::StrikeNotPositive {
+            canonical: canonical.to_string(),
+            strike: strike.to_string(),
+        }),
+    }
+}
+
+/// The option right, as IBKR spells it: `C`/`P` (or the words), case-insensitive, read into the
+/// [`OptionKind`] `IbkrContract::right` carries.
+fn check_right(canonical: &str, right: &str) -> Result<OptionKind, IbkrSymbolRefusal> {
+    match right.to_ascii_uppercase().as_str() {
+        "C" | "CALL" => Ok(OptionKind::Call),
+        "P" | "PUT" => Ok(OptionKind::Put),
+        _ => Err(IbkrSymbolRefusal::OptionRightUnknown {
+            canonical: canonical.to_string(),
+            right: right.to_string(),
+        }),
+    }
+}
+
+/// IBKR's contract id: a positive whole number that fits the wire's `int` (digits only: a sign, a dot or a space
+/// would be forwarded as something else). Optional — absent is the contract the exchange and symbol resolve.
+fn check_con_id(canonical: &str, id: Option<&str>) -> Result<Option<i64>, IbkrSymbolRefusal> {
+    let Some(id) = id else { return Ok(None) };
+    match id.parse::<i64>() {
+        Ok(n)
+            if id.bytes().all(|b| b.is_ascii_digit()) && (1..=i64::from(i32::MAX)).contains(&n) =>
+        {
+            Ok(Some(n))
+        }
+        _ => Err(IbkrSymbolRefusal::ContractIdNotPositive {
+            canonical: canonical.to_string(),
+            id: id.to_string(),
+        }),
+    }
+}
+
+/// IBKR's `multiplier` is a NUMERIC STRING on the wire (`"50"`, `"100"`). Optional — omit it and
+/// IBKR resolves the listed one; supply garbage and the contract silently stops matching.
+fn check_multiplier(
+    canonical: &str,
+    multiplier: Option<&str>,
+) -> Result<Option<String>, IbkrSymbolRefusal> {
+    let Some(m) = multiplier else { return Ok(None) };
+    if !m.is_empty() && m.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok(Some(m.to_string()));
+    }
+    Err(IbkrSymbolRefusal::MultiplierNotWhole {
+        canonical: canonical.to_string(),
+        multiplier: m.to_string(),
+    })
+}
+
+/// The venue's roster slug, the key of its kept list.
+const VENUE: &str = "ibkr";
+
+/// **The kept ibkr row a USER name names** (decision 0290): the one row of this process's ibkr kept list
+/// (`vike_catalog::kept_list`, the operator's rows) whose user name `user` is, in any ASCII case.
+///
+/// # Errors
+/// No ibkr list is kept in this process, none of its rows is `user`, or two are (the translator's words); a WIRE name
+/// typed as a symbol (`AAPL.SMART.USD`) is refused naming the user name of its row (`AAPL`); a name no row answers
+/// names the command that adds one.
+pub fn operator_row_of(user: &str) -> Result<Instrument, IbkrSymbolRefusal> {
+    let rows = vike_catalog::kept_list(VENUE);
+    let rows = rows.as_deref().map_or(&[][..], Vec::as_slice);
+    vike_catalog::kept_row_of_user_name(rows, VENUE, user).cloned().map_err(|why| {
+        let typed = user.trim();
+        match user_name_in(rows, typed) {
+            Some(name) => IbkrSymbolRefusal::WireNameTyped { typed: typed.to_string(), name },
+            None if rows.iter().any(|row| row.venue == VENUE) => {
+                IbkrSymbolRefusal::NoKeptRow { why }
+            }
+            None => IbkrSymbolRefusal::NoKeptList { why },
+        }
+    })
+}
+
+/// **The USER name of a WIRE name** (`AAPL` of `AAPL.SMART.USD`): the user name of the kept ibkr row whose own name
+/// `wire` is, in any ASCII case, or `None` when this process keeps no such row. The way back for what is keyed by the
+/// venue's spelling (the market rules a facts lookup noted, `crate::instrument::any_symbol::socket`).
+#[must_use]
+pub fn user_name_of_wire(wire: &str) -> Option<String> {
+    user_name_in(vike_catalog::kept_list(VENUE)?.as_slice(), wire.trim())
+}
+
+/// [`user_name_of_wire`] over `rows`.
+fn user_name_in(rows: &[Instrument], wire: &str) -> Option<String> {
+    rows.iter()
+        .filter(|row| row.venue == VENUE)
+        .find(|row| vike_catalog::wire_name_of_row(row).eq_ignore_ascii_case(wire))
+        .and_then(|row| vike_catalog::user_name_of_row(row).ok())
+}
+
+/// **The contract a USER name trades** (`AAPL` is the SMART USD stock, `USDJPY` the IDEALPRO CASH pair): its kept
+/// row ([`operator_row_of`]) read by [`contract_of_row`]. The ONE reading of an engine's symbol on every path of
+/// this bridge (an order, an amend, a price, a bar, a grid, a reconcile pass).
+///
+/// # Errors
+/// [`operator_row_of`]'s and [`contract_of_row`]'s refusal, as its text (the order, feed and reconcile paths carry
+/// words).
+pub fn contract_of_user_name(user: &str) -> Result<IbkrContract, String> {
+    operator_row_of(user).and_then(|row| contract_of_row(&row)).map_err(|e| e.to_string())
+}
+
+/// **The WIRE name of a USER name**: its kept row's own name ([`operator_row_of`]), once [`contract_of_row`] holds
+/// the row to what its wire reads as. What a lookup keyed by the venue's spelling is asked with (the gatewayhub's
+/// facts of a name, `crate::instrument::any_symbol`).
+///
+/// # Errors
+/// [`contract_of_user_name`]'s.
+pub fn wire_name_of_user_name(user: &str) -> Result<String, String> {
+    let row = operator_row_of(user).map_err(|e| e.to_string())?;
+    contract_of_row(&row).map_err(|e| e.to_string())?;
+    Ok(vike_catalog::wire_name_of_row(&row))
+}
+
+/// **The contract a kept row's WIRE name is, held to the row** (decision 0290: the class is the row's): the row's
+/// wire (`vike_catalog::wire_name_of_row`, its own name) read by [`parse_simplified`], then refused unless the
+/// contract IS what the row states: its class (a share or an ETF is `STK`, a pair `CASH`, a future `FUT`, a coin
+/// `CRYPTO`), its ticker or base ([`same_ticker`], so the row's `BRK.B` is IB's `BRK B`), its currency the row's
+/// quote, and a future's day the row's expiry day. The user name is spelled off the row and the order goes out on
+/// the wire, so a row whose two halves disagree (`--base MSFT` stated on `AAPL.SMART.USD`) would trade another
+/// contract than its name says.
+///
+/// # Errors
+/// [`parse_simplified`]'s refusal, or the disagreement naming both.
+pub fn contract_of_row(row: &Instrument) -> Result<IbkrContract, IbkrSymbolRefusal> {
+    let wire = vike_catalog::wire_name_of_row(row);
+    let contract = parse_simplified(&wire)?;
+    let class = match contract.sec_type.asset_class() {
+        Some(AssetClass::Equity) => {
+            matches!(row.asset_class(), AssetClass::Equity | AssetClass::Etf)
+        }
+        class => class == Some(row.asset_class()),
+    };
+    let same_day = match (&row.contract, contract.expiry.as_deref()) {
+        (Contract::Future(future), Some(expiry)) => {
+            expiry_day_ms(expiry).is_some_and(|day| utc_day(day) == utc_day(future.expiry_ms))
+        }
+        (Contract::Future(_), None) => false,
+        _ => true,
+    };
+    if class
+        && same_day
+        && same_ticker(&contract.symbol, &row.base)
+        && contract.currency.eq_ignore_ascii_case(row.quote.trim())
+    {
+        return Ok(contract);
+    }
+    let expiring = match &row.contract {
+        Contract::Future(future) => {
+            let (year, month, day, ..) = vike_model::time::utc_parts(future.expiry_ms);
+            format!(" expiring {year:04}{month:02}{day:02}")
+        }
+        _ => String::new(),
+    };
+    Err(IbkrSymbolRefusal::KeptRowDisagrees {
+        stated: format!(
+            "a {} of base `{}` quoted in `{}`{expiring}",
+            row.asset_class().sql_word(),
+            row.base,
+            row.quote
+        ),
+        read: format!(
+            "a {} contract of `{}` in `{}`",
+            contract.sec_type.as_ibkr_code(),
+            contract.symbol,
+            contract.currency
+        ),
+        wire,
+    })
+}
+
+/// Map IB `contractDetails` fields to vike `SymbolProperties` for the live-`RiskGate` pre-fetch
+/// (`vike_model::RiskLimits::from_properties`, applied by `vike-tradehub-core`'s fold to the grid
+/// `VenueAdapterIbkr`'s start pre-fetches through `crate::fetch_ibkr_properties`, which exists under
+/// the `ibkr-socket` feature only).
+///
+/// - `min_tick` → `tick_size`: already in display units; IB's `priceMagnifier` (bonds) does NOT
+///   scale it, so the tick stays `min_tick` verbatim. It is only the start's fallback: the pre-fetch then
+///   moves it to the band of the contract's price, as an admitted symbol's (`crate::instrument::properties`'s
+///   `on_the_band`, decision 0220), and keeps `min_tick` only when the market rules cannot be read.
+/// - `size_increment` → `step_size`, `min_size` → `min_qty`: the order-size grid IB publishes on
+///   the same `contractDetails` reply. Older TWS builds may report these as `0.0` ("not sent"),
+///   which `RiskLimits::from_properties` folds to unconstrained via `nz_step` — the inert case,
+///   byte-identical to a venue that reports no grid.
+///
+/// - `multiplier` → `contract_size`, already resolved by [`resolve_multiplier`] (`0.0` = unknown,
+///   the struct's absent convention, which `SymbolProperties::multiplier` folds to the inert
+///   `1.0`). It used to stay `0.0` because the `Account` multiplier grid it feeds was the
+///   deribit-path follow-up; that seam now exists (`vike_bridge_core`'s `VenueAdapterExecutionRunning::contract_size`,
+///   which the start fills from this grid), so an E-mini's `50` reaches the notional.
+///
+/// `sec_type` carries the class: the `contractDetails` reply's grid says nothing about WHAT it is
+/// a grid for, while the contract the caller asked about does. [`SecType::asset_class`] is the
+/// mapping, including which words answer nothing.
+pub fn contract_details_to_properties(
+    sec_type: &SecType,
+    min_tick: f64,
+    size_increment: f64,
+    min_size: f64,
+    multiplier: f64,
+) -> SymbolProperties {
+    SymbolProperties {
+        tick_size: min_tick,
+        step_size: size_increment,
+        min_qty: min_size,
+        contract_size: multiplier,
+        asset_class: sec_type.asset_class(),
+        // Everything else absent: no per-contract max/min-notional, a flat grid (ONE tick: the
+        // market rules' bands are the pre-fetch's to read), and no venue taker hold.
+        // FRU rather than an exhaustive literal so a new `SymbolProperties` field costs this
+        // parser nothing.
+        ..Default::default()
+    }
+}
+
+/// The per-contract multiplier for [`contract_details_to_properties`], or `0.0` (unknown) — from
+/// the operator's CLAIM when the canonical spells one, else from the `contractDetails` reply only
+/// when EVERY row of it names the same positive number.
+///
+/// ⚠ **The reply is a LADDER, not one contract.** `crate::fetch_ibkr_properties` asks by symbol,
+/// secType, exchange and currency (the market-data contract carries no expiry or multiplier), so a
+/// future answers one row per expiry, and one symbol can list several sizes (EUREX's `DAX`: the
+/// 25, 5 and 1 contracts). Taking the first row's multiplier would book a position at another
+/// contract's size; a disagreement therefore answers `0.0`, which is the pre-existing inert `1.0`.
+/// A claimed multiplier wins because it is what the order path sends
+/// (`crates/bridges/vike-ibkr/src/transport/socket.rs`'s `build_contract`), so IBKR either trades
+/// exactly that or refuses. An empty or non-numeric
+/// field (IB sends `""` for a share) is "the row says nothing" and also answers `0.0`.
+#[must_use]
+pub fn resolve_multiplier<'a>(
+    claimed: Option<&str>,
+    reply: impl IntoIterator<Item = &'a str>,
+) -> f64 {
+    let positive = |s: &str| s.trim().parse::<f64>().ok().filter(|m| m.is_finite() && *m > 0.0);
+    if let Some(m) = claimed.and_then(positive) {
+        return m;
+    }
+    let mut agreed: Option<f64> = None;
+    for row in reply {
+        match (positive(row), agreed) {
+            (None, _) => return 0.0,
+            (Some(m), Some(a)) if m != a => return 0.0,
+            (Some(m), _) => agreed = Some(m),
+        }
+    }
+    agreed.unwrap_or(0.0)
+}
+
+#[path = "contract_tests.rs"]
+#[cfg(test)]
+mod contract_tests;

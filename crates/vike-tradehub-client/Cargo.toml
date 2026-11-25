@@ -1,0 +1,103 @@
+[package]
+name = "vike-tradehub-client"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the CLIENT half of the headless live-core (\"tradehub\") hub protocol, begun as PR-10's Layer-2 auth+proto primitive. The node wire protocol (proto: Hello/Auth/Subscribe/Snapshot/Command over the shared length-prefixed serde_json framing), the HMAC-SHA256 nonce-challenge auth handshake (auth: sign/verify + scoped HubKeys), the standalone serde wire mirrors of the core snapshot + order-command types (wire), their codecs against vike-execution's read model and commands (observe_decode: the observe frame back to a CoreSnapshot; node_words: what a frame says beyond it; command_lift: a Command lifted to its CommandWire), and the thin-client side that DIALS a node over std TCP (tradehub_handle: the read-only TradehubCoreHandle and one-shot reads; tradehub_control: the order-write TradehubControlHandle and one-shot writes). DataFusion-FREE and SERVER-free — the node's listener lives in vike-tradehub, and this crate's only network I/O is the std::net connection its client side opens, with no async runtime and no bridge transport stack. Rides the FAST CI lane."
+# The integration tests are ONE test binary, `tests/integration.rs` (every `tests/<name>.rs` a `mod` of it), declared
+# below: one binary links instead of one per file. Discovery is off so each file keeps the path its citations name; a
+# new root file builds only as a `mod` there or a `[[test]]` row (`crates/vike-ops/tests/hygiene/test_registry_gate.rs`'s `every_root_test_file_is_built_where_discovery_is_off`).
+autotests = false
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `domain-stacked`.
+# ⚠ **25, the arithmetic floor since 2026-11-18, and the rung was HELD on purpose before it.** The highest
+# vike-* edge is `vike-execution` (20, the observe decode's read model; `vike-hub-protocol` is 15, `vike-model`
+# 10), so the floor is 25. Before that edge the floor was 20, and 25 was held so the user-code hosts
+# (`vike-user-strategies`, `vike-user-research`, both 25) could not name this crate by rank. At 25 equal rank
+# refuses it, and `crates/vike-ops/tests/architecture/named_run_closure_gate.rs` refuses it by name
+# (docs/decisions/0089-the-user-code-fence-is-held-by-name-not-by-rank.md), the same gate that keeps
+# this crate away from `vike-simulator` and `vike-backtest`. The live core (`vike-core`, 30) is kept off it
+# by that gate's live-core row, not by rank
+# (docs/decisions/0091-the-live-core-names-no-transport-and-no-node-client.md). The lowest consumer is
+# `vike-client` (30), and the rung keeps the two hub-protocol clients at the SAME rank.
+# Why the rank follows the declaration: docs/decisions/0085-the-rank-follows-the-declaration-not-the-role.md;
+# why the shared floor is a crate of its own: docs/decisions/0107-the-node-protocol-substrate-is-a-crate-below-both-clients.md.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 25
+
+[dependencies]
+# ONE framing and ONE handshake across both localhost services, from the crate BELOW both clients.
+# `vike-hub-protocol` names no vike-* crate, so the edge carries no HistoryStore, no DataFusion and no
+# venue vocabulary into this graph.
+vike-hub-protocol = { path = "../vike-hub-protocol" }
+# The domain vocabulary (layer 10), for a wire type that IS its domain type: a combo's leg crosses as
+# `vike_model::OrderComboLeg` itself, strict like the copy it replaced (the owner's rulings 14 and E8,
+# 2026-11-11; ruling 15 amends decisions 0091 section 3 and 0129 item 7, which kept this crate off it).
+# It adds no package to any shipped graph: every normal dependent (vike-client, vike-cli, vike-mcp,
+# vike-telegram, vike-app-core, vike-desktop, vike-tradehub) already links vike-model, and vike-model
+# is serde, serde_json, indexmap, compact_str, libm and two vike leaves (vike-marketdata,
+# vike-utility): no transport, no store, no async runtime.
+vike-model = { path = "../vike-model" }
+# The read model (`CoreSnapshot` and its views) and the command vocabulary (`Command`, `OrderIntent`) the two
+# codecs speak: `observe_decode` decodes a frame into the first, `command_lift` lifts the second onto the wire
+# (D56: they moved here from vike-app-core, the owner's 2026-11-17 ruling). ⚠ `default-features = false` is
+# load-bearing: vike-execution's default `runtime` feature is `tokio` + `core_affinity` (its lane senders), and
+# one default-on edge here would put both in vike-cli's normal tree and redden `scripts/ci_feature_suite.sh`'s
+# `light-consumers` lane, because features unify. Layer 20, so this crate's floor is 25, its declared rank.
+# It adds no external package to any dependent: vike-cli already links it the same way through vike-journal,
+# and vike-client, vike-mcp and vike-telegram gain this one crate over packages vike-model already brings.
+vike-execution = { path = "../vike-execution", default-features = false }
+# `Bar`, spelled `vike_marketdata::Bar` (decision 0067: vike-model names but does not re-export it), for the
+# observe decode's bar cache. Layer 5, already in every dependent's graph through vike-model.
+vike-marketdata = { path = "../vike-marketdata" }
+# `vike_utility::errors::FailureOutcome`, the four words `UnansweredCommand` (the one wording of an unanswered
+# command, `tradehub_control/outcome.rs`) is classed in, a node's refusal is read in (`proto::refusal_outcome`: a node
+# still starting or a busy core is NOT NOW) and a settings write's lost reply is marked with. Layer 3, already in every
+# dependent's graph through vike-model.
+vike-utility = { path = "../vike-utility" }
+# The observe decode's one warn (an order status no node build spells). The facade only; a binary installs
+# the subscriber. Already in every dependent's graph through vike-execution.
+tracing = { workspace = true }
+serde = { workspace = true }        # derive on the Request/Response wire enums + the wire mirrors
+serde_json = { workspace = true }   # (transitively) the frame payload codec re-exported from proto
+# ⚠ No `hmac`/`sha2` here: the auth primitive lives in `vike-hub-protocol` and `src/auth.rs` is only this
+# service's binding of it (its own DOMAIN and key names), so the crypto crates arrive transitively.
+# deny.toml bans a second crypto crate; these are the ones vike-bridge-core/src/signer.rs links.
+# The receive thread's latest-wins snapshot cell (`TradehubCoreHandle`): the same lossy arc-swap
+# primitive vike-core publishes CoreSnapshots through. Already a workspace dep, not a new external
+# crate, and it keeps this crate DataFusion-free.
+arc-swap = { workspace = true }
+# The observe stream's COMPRESSED frame body (`observe_stream`, the `observe-compressed` feature word): deflate on the node,
+# inflate here. Already a workspace dependency and in the lockfile (pure-Rust miniz_oxide backend, no C build, no
+# transport, no runtime; the desktop already links it through `png`), so no new package enters the tree.
+flate2 = { workspace = true }
+# NOTE: no key-store / credentials dep on purpose. Every dial takes its signer (a device key) as a
+# PARAMETER, so the CALLER owns the I/O. The crate reads no key store and drags no bridge
+# stack (ureq/tungstenite/rustls) into a LIGHT client that a thin GUI/CLI links. Its only I/O is the
+# `std::net` TCP connection its client side opens to a node, in
+# `crates/vike-tradehub-client/src/handshake.rs`'s `hub_handshake`.
+
+# `crate::test_support`: the negotiation suites' scripted node (a loopback LISTENER, test code only) and
+# the strategy-plane script over it, compiled once by the lib instead of once per binary, plus the
+# `CommandWire` variant names the vike-tradehub and vike-cli capability gates classify. Turned on by the
+# self dev-dependency below and by those two crates' dev edges; no shipped edge may enable it
+# (`crates/vike-ops/tests/architecture/test_surface_gate.rs`), so a shipped build stays server-free.
+[features]
+test-support = []
+
+[dev-dependencies]
+# Self-referential dev-dep (the `vike-execution`/`vike-model` idiom): turns `test-support` on for THIS crate's
+# own `tests/` targets.
+vike-tradehub-client = { path = ".", features = ["test-support"] }
+# `vike_log::poll::wait_until`, the one test polling loop the silent-link tests wait through (dev only).
+vike-log = { path = "../vike-log", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

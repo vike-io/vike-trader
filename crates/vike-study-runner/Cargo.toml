@@ -1,0 +1,74 @@
+[package]
+name = "vike-study-runner"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false
+description = "The study host the backtest server runs: the run and study listings, the study runner that leaves a run behind, the one dispatch on a study's tier, and the interpreted (Rhai) tier. Studies run only on the server; the desktop links none of this."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `research`: it
+# loads frozen history through its host's store, runs a study's out-of-sample evaluation and STARTS NO
+# VENUE. Its ceiling is `vike-studio-core` (30), whose study vocabulary (`study_run::StudyDetail`,
+# `StudyMetric`, `STUDY_RUN_KIND`, `STUDY_METRICS_NOTE`) it writes; its consumers are `vike-backtesthub` (65)
+# and, as DEV edges, `vike-strategy-sandbox`'s and `vike-backend`'s tests. 45 was vacant and its description
+# fits (the owner's ruling of 2026-11-19: studies run only on the server, and this host left
+# `vike-studio-core`, which the desktop links).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 45
+
+[dependencies]
+# What a study run IS as every reader shows it, which the runner WRITES: the manifest's `kind`, the typed
+# `detail`, a metric's on-disk shape and printed form, the note. The desktop reads the same types.
+vike-studio-core = { path = "../vike-studio-core" }
+# The STUDY CONTRACT (`StudyContext`, `StudyOutcome`, `StudyError`, the learner and backtest seams, the study
+# FILE's host half). Both tiers reach it from here: the runner builds the context, `rhai_study` registers the
+# same types as Rhai custom types, and a Rust study FILE's host half is `vike_user_research::file::host`.
+vike-user-research = { path = "../vike-user-research" }
+# The learner seam (`GbdtParams` for a recipe's `[learner]`, `Capture`/`GridPoint`/`TrainData` for the Rhai
+# tier's fit verbs) and the inference half a fitted model answers through (`Predictor`, `FitImportance`).
+vike-ml-training = { path = "../vike-ml-training" }
+vike-ml-prediction = { path = "../vike-ml-prediction" }
+# `vike_catalog::kept_contract_value`, the valuation `study_run::run_study_with` hands every study's context
+# (`StudyContext::with_contract_valuation`): the study contract crate links no catalog (decision 0089's fence),
+# so the HOST values a kept contract and a study asks it.
+vike-catalog = { path = "../vike-catalog" }
+# The run directory a study run is minted into and the listing reads: `create_run_dir`, `RunManifest`,
+# `RunConfig`, the reserved file names, `scan_runs`, and the saved-run readers a study reads through.
+vike-runs = { path = "../vike-runs" }
+# The store SEAM only (`HistoryStore`, `TimestampRange`): the store is a PARAMETER, built by the binary.
+vike-data = { path = "../vike-data" }
+vike-model = { path = "../vike-model" }
+vike-marketdata = { path = "../vike-marketdata" }
+# The study folders' layout constants (`RHAI_SUBDIR`, `RUST_SUBDIR`, `RHAI_EXT`, `RUST_EXT`): std-only, layer 7.
+vike-paths = { path = "../vike-paths" }
+# The workspace's ONE Rhai sandbox (`sandboxed_engine`: no `import`, `print` into `tracing`, the study tier's
+# operation and size caps).
+vike-rhai = { path = "../vike-rhai" }
+# `atomic_file::write_atomic`, the one workspace write policy `study_run.rs` writes a run's artifacts with (synced
+# before the manifest names them). Layer 3, and already in this crate's tree through vike-runs.
+vike-utility = { path = "../vike-utility" }
+# The interpreter itself, named directly because `src/rhai_study/bind.rs` registers types and functions
+# against `rhai::Engine`: the registration list IS the interpreted tier's boundary. Already in this crate's
+# tree through vike-rhai, so naming it adds no crate.
+rhai = { workspace = true }
+# `study_run.rs` serializes a `StudyOutcome` (the study returns DATA and the caller writes it) and writes a
+# network's `model.onnx` as the bytes of the STANDARD base64 it crosses the contract as (decision 0292).
+serde_json = { workspace = true }
+base64 = { workspace = true }
+# A study recipe is a user DOCUMENT (`toml::Value`).
+toml = { workspace = true }
+
+[dev-dependencies]
+# The workspace's OWN store double (`HistoryStoreMemory`) and learner double (`ScriptedLearner`), so both tiers
+# and the persistence are proven on a box with no DataFusion and no LightGBM binary. DEV edges only: a shipped
+# build compiles none of either double.
+vike-data = { path = "../vike-data", features = ["test-support"] }
+vike-ml-training = { path = "../vike-ml-training", features = ["test-support"] }
+# `vike_marketdata::test_support`: the shared bar builders.
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+# A runs root and a study tree on disk per test.
+tempfile = { workspace = true }
+
+[lints]
+workspace = true

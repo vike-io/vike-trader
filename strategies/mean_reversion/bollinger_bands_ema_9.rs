@@ -1,0 +1,79 @@
+// SPDX-License-Identifier: MPL-2.0
+// This Source Code Form is subject to the terms of the Mozilla Public License, v. 2.0. If a copy of the MPL
+// was not distributed with this file, You can obtain one at https://mozilla.org/MPL/2.0/.
+// Derived from "Bollinger Bands + EMA 9" by D499, https://www.tradingview.com/script/Ff0DNTh1/
+// The original's notice: © D499
+// Changed: rewritten by hand in Rust for vike.
+
+//! Flat, long when the bar before closed under the lower Bollinger band (20 bars, 2 deviations) and this bar is green; short
+//! when the bar before closed over the upper band and this bar is red. The size risks 1 of money on the distance to the stop:
+//! `1 / (close × |close - stop| / stop / 100)`, the stop being the low (for a short, the high) of the bar before. From the bar
+//! after the entry, the exit rests at that stop and at EMA(9) of the entry bar as its target. Orders fill at the close of the
+//! bar that places them. No costs; starts with 1,000.
+//!
+//! The levels come from the entry's bar (`strategy.opentrades.entry_bar_index` in the rule), kept here when it is placed.
+//!
+//! ```toml
+//! [strategy]
+//! runs_on = "paper"
+//! fill = "close"
+//!
+//! [run]
+//! bound_exits = true
+//! ```
+
+use vike_indicators::indicators::{Bollinger, Ema};
+use vike_marketdata::Bar;
+use vike_model::OrderSide::{Long, Short};
+use vike_model::params::Params;
+use vike_tactics::{Rule, RuleDefaults, Tactics};
+
+struct S {
+    bands: Bollinger,
+    ema: Ema,
+    previous: Option<Bar>,
+    /// The open trade's `(target, stop)`.
+    levels: (f64, f64),
+}
+
+pub fn rule(_params: &Params) -> Box<dyn Rule + Send> {
+    Box::new(S {
+        bands: Bollinger::new(20.0, 2.0).expect("valid parameters"),
+        ema: Ema::new(9.0).expect("a valid length"),
+        previous: None,
+        levels: (f64::NAN, f64::NAN),
+    })
+}
+
+impl Rule for S {
+    fn defaults(&self) -> RuleDefaults {
+        RuleDefaults::PLAIN
+    }
+
+    fn on_bar(&mut self, strategy: &mut Tactics<'_>, bar: &Bar) {
+        let sizing = strategy.sizing();
+        let [upper, _, lower] = self.bands.next(bar);
+        let ema = self.ema.next(bar);
+        let Some(previous) = self.previous.replace(bar.clone()) else { return };
+        let held = strategy.position();
+        let size =
+            |stop: f64, away: f64| sizing.floor((1.0 / (bar.close * away / stop / 100.0)).abs());
+        if held == 0.0 {
+            if previous.close < lower && bar.close > bar.open {
+                let stop = previous.low;
+                self.levels = (ema, stop);
+                strategy.entry("LONG", Long).size(size(stop, bar.close - stop));
+            } else if previous.close > upper && bar.close < bar.open {
+                let stop = previous.high;
+                self.levels = (ema, stop);
+                strategy.entry("SHORT", Short).size(size(stop, stop - bar.close));
+            }
+        }
+        let (take, cut) = self.levels;
+        if held > 0.0 {
+            strategy.exit("LONG exit").from("LONG").take(take).stop(cut);
+        } else if held < 0.0 {
+            strategy.exit("SHORT exit").from("SHORT").take(take).stop(cut);
+        }
+    }
+}

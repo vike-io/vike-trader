@@ -1,0 +1,773 @@
+{
+  "argv": [
+    "--node",
+    "<node-addr>",
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "order_gate",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "MCP_WIRE_TOKEN",
+            "venue": "polymarket"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "guardrail": {
+              "max_notional": 1.0,
+              "max_qty": null,
+              "notional": null,
+              "qty": 1.0,
+              "unpriced": "the node has published no engine yet (it has not folded)",
+              "within_limits": null
+            },
+            "node_verdict": {
+              "accepted": true,
+              "checked_by": "node",
+              "reason": null
+            },
+            "note": "PREVIEW ONLY — nothing was sent. `node_verdict` is the NODE's own dry-run against the real ControlLimits + RiskGate; it is the verdict that counts. To execute, call again with BOTH \"confirm\": true AND this exact \"preview_token\". The token fires once, expires after 60s, and is bound to THIS command — confirming a different command with it is refused. For submit_order, `wire_command.Submit.order_client_id` was minted here and is the id that will be sent. Any `reason` is recorded in the node's audit trail (sanitized) and never reaches the order.",
+            "preview_token": "pv-1",
+            "reason": null,
+            "tier": null,
+            "tier_unread": "the node has published no engine yet (it has not folded). Treat this account as live.",
+            "tool": "submit_order",
+            "venue_check": "unverified",
+            "verified_by_node": true,
+            "will_execute": false,
+            "wire_command": {
+              "Submit": {
+                "order_client_id": "<minted-order-client-id-1>",
+                "order_type": "market",
+                "price": null,
+                "qty": 1.0,
+                "reduce_only": false,
+                "side": 1,
+                "symbol": "MCP_WIRE_TOKEN",
+                "trigger_price": null,
+                "venue": "polymarket"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "confirm": true,
+            "preview_token": "pv-1",
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "MCP_WIRE_TOKEN",
+            "venue": "polymarket"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "note": "the node ACCEPTED this command (empty order_client_id = an account-wide verb); call node_snapshot to observe the result. The node's server-side ControlLimits + RiskGate are the enforcing gate. This is only the node's RECEIPT for the command: the node answers before its core acts, so a denial or a rejection (OrderDenied, OrderRejected, OrderCancelRejected) shows up later and only in node_snapshot's recent_events.",
+            "order_client_id": "<minted-order-client-id-1>",
+            "outcome": "accepted",
+            "sent": true,
+            "venue_check": "unverified"
+          }
+        }
+      }
+    },
+    {
+      "observed": "the warm-up is on the frame: the node publishes its book"
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "order_client_id": "<minted-order-client-id-2>",
+            "order_type": "limit",
+            "price": 0.5,
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "MCP_WIRE_TOKEN",
+            "venue": "polymarket"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "guardrail": {
+              "max_notional": 1.0,
+              "max_qty": null,
+              "notional": 0.5,
+              "qty": 1.0,
+              "within_limits": true
+            },
+            "node_verdict": {
+              "accepted": true,
+              "checked_by": "node",
+              "reason": null
+            },
+            "note": "PREVIEW ONLY — nothing was sent. `node_verdict` is the NODE's own dry-run against the real ControlLimits + RiskGate; it is the verdict that counts. To execute, call again with BOTH \"confirm\": true AND this exact \"preview_token\". The token fires once, expires after 60s, and is bound to THIS command — confirming a different command with it is refused. For submit_order, `wire_command.Submit.order_client_id` was minted here and is the id that will be sent. Any `reason` is recorded in the node's audit trail (sanitized) and never reaches the order.",
+            "preview_token": "pv-2",
+            "reason": null,
+            "tier": "paper",
+            "tool": "submit_order",
+            "venue_check": "mounted",
+            "verified_by_node": true,
+            "will_execute": false,
+            "wire_command": {
+              "Submit": {
+                "order_client_id": "<minted-order-client-id-2>",
+                "order_type": "limit",
+                "price": 0.5,
+                "qty": 1.0,
+                "reduce_only": false,
+                "side": 1,
+                "symbol": "MCP_WIRE_TOKEN",
+                "trigger_price": null,
+                "venue": "polymarket"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "confirm": true,
+            "order_client_id": "<minted-order-client-id-2>",
+            "order_type": "limit",
+            "preview_token": "pv-2",
+            "price": 0.5,
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "MCP_WIRE_TOKEN",
+            "venue": "polymarket"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "note": "the node ACCEPTED this command (empty order_client_id = an account-wide verb); call node_snapshot to observe the result. The node's server-side ControlLimits + RiskGate are the enforcing gate. This is only the node's RECEIPT for the command: the node answers before its core acts, so a denial or a rejection (OrderDenied, OrderRejected, OrderCancelRejected) shows up later and only in node_snapshot's recent_events.",
+            "order_client_id": "<minted-order-client-id-2>",
+            "outcome": "accepted",
+            "sent": true,
+            "venue_check": "mounted"
+          }
+        }
+      }
+    },
+    {
+      "observed": "the resting limit <minted-order-client-id-2> is on the frame"
+    },
+    {
+      "send": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "order_type": "limit",
+            "price": 0.5,
+            "qty": 10.0,
+            "side": 1,
+            "symbol": "MCP_WIRE_TOKEN",
+            "venue": "polymarket"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [order.edge.over_max_notional]: not sent: notional 5 is over this box's policy.max_notional_per_order 1; nothing went to the node. Lower `qty`; the ceiling is this box's `policy.max_notional_per_order`, which only the operator changes, with `vike-cli config set`. Nothing was previewed, no preview_token was issued, and nothing was sent.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "order_client_id": "BAD-ID-1",
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "MCP_WIRE_TOKEN",
+            "venue": "polymarket"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "submit_order: error [order.edge.order_client_id_charset]: \"BAD-ID-1\" is not a usable order_client_id: it must be 1..=32 alphanumeric characters, A-Z a-z 0-9 (the strictest charset every venue accepts)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "order_type": "limit",
+            "price": 0.5,
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "MCP_WIRE_TOKEN",
+            "venue": "nosuchvenue"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [order.edge.venue_not_mounted]: not sent: venue `nosuchvenue` is not mounted on the node, which mounts: polymarket. Call node_snapshot and read `venues[].route_key`; the comparison is exact (case-sensitive). Nothing was previewed, no preview_token was issued, and nothing was sent.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "limit_price": 0.5,
+            "qty": 10.0,
+            "shape": "oco",
+            "side": 1,
+            "stop_price": 0.6,
+            "symbol": "MCP_WIRE_TOKEN",
+            "venue": "polymarket"
+          },
+          "name": "submit_order_list"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [order.edge.over_max_notional]: not sent: notional 6 is over this box's policy.max_notional_per_order 1; nothing went to the node. Lower `qty`; the ceiling is this box's `policy.max_notional_per_order`, which only the operator changes, with `vike-cli config set`. Nothing was previewed, no preview_token was issued, and nothing was sent.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "limit_price": 0.5,
+            "order_client_ids": "BAD-1,Good2",
+            "qty": 1.0,
+            "shape": "oco",
+            "side": 1,
+            "stop_price": 0.6,
+            "symbol": "MCP_WIRE_TOKEN",
+            "venue": "polymarket"
+          },
+          "name": "submit_order_list"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "submit_order_list: error [order.edge.order_client_id_charset]: \"BAD-1\" is not a usable order_client_id: it must be 1..=32 alphanumeric characters, A-Z a-z 0-9 (the strictest charset every venue accepts)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 10,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "legs": [
+              {
+                "limit": 0.5,
+                "ratio": 1,
+                "symbol": "MCP_WIRE_TOKEN"
+              },
+              {
+                "limit": 0.4,
+                "ratio": -1,
+                "symbol": "OTHER"
+              }
+            ],
+            "order_client_id": "BAD-ID-2",
+            "qty": 1.0,
+            "side": 1,
+            "venue": "polymarket"
+          },
+          "name": "submit_combo"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 10,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "submit_combo: error [order.edge.order_client_id_charset]: \"BAD-ID-2\" is not a usable order_client_id: it must be 1..=32 alphanumeric characters, A-Z a-z 0-9 (the strictest charset every venue accepts)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 11,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "new_qty": 10.0,
+            "order_client_id": "<minted-order-client-id-2>"
+          },
+          "name": "modify_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 11,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [order.edge.over_max_notional]: not sent: notional 5 is over this box's policy.max_notional_per_order 1; nothing went to the node. Lower `qty`; the ceiling is this box's `policy.max_notional_per_order`, which only the operator changes, with `vike-cli config set`. Nothing was previewed, no preview_token was issued, and nothing was sent.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 12,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "new_price": 2.0,
+            "order_client_id": "<minted-order-client-id-2>"
+          },
+          "name": "modify_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 12,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "error [order.edge.over_max_notional]: not sent: notional 2 is over this box's policy.max_notional_per_order 1; nothing went to the node. Lower `qty`; the ceiling is this box's `policy.max_notional_per_order`, which only the operator changes, with `vike-cli config set`. Nothing was previewed, no preview_token was issued, and nothing was sent.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 13,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "order_client_id": "BAD-ID-3"
+          },
+          "name": "cancel_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 13,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "guardrail": {
+              "note": "no order size to check for this verb",
+              "within_limits": true
+            },
+            "node_verdict": {
+              "accepted": true,
+              "checked_by": "node",
+              "reason": null
+            },
+            "note": "PREVIEW ONLY — nothing was sent. `node_verdict` is the NODE's own dry-run against the real ControlLimits + RiskGate; it is the verdict that counts. To execute, call again with BOTH \"confirm\": true AND this exact \"preview_token\". The token fires once, expires after 60s, and is bound to THIS command — confirming a different command with it is refused. For submit_order, `wire_command.Submit.order_client_id` was minted here and is the id that will be sent. Any `reason` is recorded in the node's audit trail (sanitized) and never reaches the order.",
+            "order_client_id_note": "note: \"BAD-ID-3\" is not an order_client_id this node could have minted (1..=32 alphanumeric characters, A-Z a-z 0-9) — sending it anyway, but check it: nothing will match, and a cancel that matches nothing still reports as accepted",
+            "preview_token": "pv-3",
+            "reason": null,
+            "tier": null,
+            "tier_unread": "the node's frame holds no order `BAD-ID-3` (placed moments ago, or it never existed), so which account it rests in is not known. Treat this account as live.",
+            "tool": "cancel_order",
+            "venue_check": "none",
+            "verified_by_node": true,
+            "will_execute": false,
+            "wire_command": {
+              "Cancel": "BAD-ID-3"
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 14,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "symbol": "MCP_WIRE_TOKEN",
+            "venue": "polymarket"
+          },
+          "name": "flatten"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 14,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "guardrail": {
+              "note": "no order size to check for this verb",
+              "within_limits": true
+            },
+            "node_verdict": {
+              "accepted": true,
+              "checked_by": "node",
+              "reason": null
+            },
+            "note": "PREVIEW ONLY — nothing was sent. `node_verdict` is the NODE's own dry-run against the real ControlLimits + RiskGate; it is the verdict that counts. To execute, call again with BOTH \"confirm\": true AND this exact \"preview_token\". The token fires once, expires after 60s, and is bound to THIS command — confirming a different command with it is refused. For submit_order, `wire_command.Submit.order_client_id` was minted here and is the id that will be sent. Any `reason` is recorded in the node's audit trail (sanitized) and never reaches the order.",
+            "preview_token": "pv-4",
+            "reason": null,
+            "tier": "paper",
+            "tool": "flatten",
+            "venue_check": "mounted",
+            "verified_by_node": true,
+            "will_execute": false,
+            "wire_command": {
+              "Flatten": {
+                "symbol": "MCP_WIRE_TOKEN",
+                "venue": "polymarket"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 15,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "venue": "polymarket"
+          },
+          "name": "close_all"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 15,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "guardrail": {
+              "note": "no order size to check for this verb",
+              "within_limits": true
+            },
+            "node_verdict": {
+              "accepted": true,
+              "checked_by": "node",
+              "reason": null
+            },
+            "note": "PREVIEW ONLY — nothing was sent. `node_verdict` is the NODE's own dry-run against the real ControlLimits + RiskGate; it is the verdict that counts. To execute, call again with BOTH \"confirm\": true AND this exact \"preview_token\". The token fires once, expires after 60s, and is bound to THIS command — confirming a different command with it is refused. For submit_order, `wire_command.Submit.order_client_id` was minted here and is the id that will be sent. Any `reason` is recorded in the node's audit trail (sanitized) and never reaches the order.",
+            "preview_token": "pv-5",
+            "reason": null,
+            "tier": "paper",
+            "tool": "close_all",
+            "venue_check": "mounted",
+            "verified_by_node": true,
+            "will_execute": false,
+            "wire_command": {
+              "MarketExit": {
+                "venue": "polymarket"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 16,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "close_all"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 16,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "guardrail": {
+              "note": "no order size to check for this verb",
+              "within_limits": true
+            },
+            "node_verdict": {
+              "accepted": true,
+              "checked_by": "node",
+              "reason": null
+            },
+            "note": "PREVIEW ONLY — nothing was sent. `node_verdict` is the NODE's own dry-run against the real ControlLimits + RiskGate; it is the verdict that counts. To execute, call again with BOTH \"confirm\": true AND this exact \"preview_token\". The token fires once, expires after 60s, and is bound to THIS command — confirming a different command with it is refused. For submit_order, `wire_command.Submit.order_client_id` was minted here and is the id that will be sent. Any `reason` is recorded in the node's audit trail (sanitized) and never reaches the order.",
+            "preview_token": "pv-6",
+            "reason": null,
+            "tool": "close_all",
+            "venue_check": "none",
+            "verified_by_node": true,
+            "will_execute": false,
+            "wire_command": {
+              "MarketExit": {
+                "venue": null
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 17,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "venue": "polymarket"
+          },
+          "name": "mass_cancel"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 17,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "guardrail": {
+              "note": "no order size to check for this verb",
+              "within_limits": true
+            },
+            "node_verdict": {
+              "accepted": true,
+              "checked_by": "node",
+              "reason": null
+            },
+            "note": "PREVIEW ONLY — nothing was sent. `node_verdict` is the NODE's own dry-run against the real ControlLimits + RiskGate; it is the verdict that counts. To execute, call again with BOTH \"confirm\": true AND this exact \"preview_token\". The token fires once, expires after 60s, and is bound to THIS command — confirming a different command with it is refused. For submit_order, `wire_command.Submit.order_client_id` was minted here and is the id that will be sent. Any `reason` is recorded in the node's audit trail (sanitized) and never reaches the order.",
+            "preview_token": "pv-7",
+            "reason": null,
+            "tier": "paper",
+            "tool": "mass_cancel",
+            "venue_check": "mounted",
+            "verified_by_node": true,
+            "will_execute": false,
+            "wire_command": {
+              "MassCancel": {
+                "symbol": null,
+                "venue": "polymarket"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "what": "the one order gate at a ceiling of 1, against a real paper node"
+}

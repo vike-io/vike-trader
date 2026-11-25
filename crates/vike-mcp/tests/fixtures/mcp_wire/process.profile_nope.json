@@ -1,0 +1,19 @@
+{
+  "argv": [
+    "--profile",
+    "nope"
+  ],
+  "case": "process.profile_nope",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 2,
+  "stderr": {
+    "<lines>": [
+      "<program>: unknown --profile \"nope\" — valid profiles: full, read-only, offline",
+      ""
+    ]
+  },
+  "stdout": "",
+  "what": "one command line, stdin closed: stdout, stderr, exit"
+}

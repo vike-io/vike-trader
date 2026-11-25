@@ -1,0 +1,199 @@
+//! The daemon's live counters: what `GatewayStatus` reports and what the caps are counted against.
+//!
+//! Names and counts only, never a value (`GatewayStatusReport`'s own rule). Every count that bounds
+//! something (connections, stream sessions, options feeds) is a [`ServerStatisticsCounter`] whose [`ServerStatisticsSlot`] is released
+//! by `Drop`, so a connection thread that PANICS gives its place back: a plain `fetch_sub` at the end
+//! of the thread body would leak it past an unwind, and a leaked slot is a cap that closes for good.
+//! (`crates/vike-hub-protocol/src/limits.rs`'s `ConnSlot`, generalised.)
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::Instant;
+
+use vike_gatewayhub_client::proto::{BudgetCounter, GatewayStatusReport};
+use vike_hub_protocol::auth::fresh_nonce;
+
+/// A count with a release-on-drop slot.
+#[derive(Debug, Default)]
+pub struct ServerStatisticsCounter(AtomicUsize);
+
+impl ServerStatisticsCounter {
+    /// How many slots are held.
+    pub fn get(&self) -> usize {
+        self.0.load(Ordering::Acquire)
+    }
+
+    /// Take a slot unconditionally. The caller compares [`ServerStatisticsCounter::get`] with its cap and drops the
+    /// slot to refuse (the connection cap's shape: reserve BEFORE spawning, so a burst of accepts
+    /// cannot race the count past the cap).
+    pub fn enter(self: &Arc<Self>) -> ServerStatisticsSlot {
+        self.0.fetch_add(1, Ordering::AcqRel);
+        ServerStatisticsSlot(Arc::clone(self))
+    }
+
+    /// Take a slot unless `cap` are already held.
+    pub fn try_enter(self: &Arc<Self>, cap: usize) -> Option<ServerStatisticsSlot> {
+        let before = self.0.fetch_add(1, Ordering::AcqRel);
+        if before >= cap {
+            self.0.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        Some(ServerStatisticsSlot(Arc::clone(self)))
+    }
+}
+
+/// One held place in a [`ServerStatisticsCounter`]; released on drop.
+#[derive(Debug)]
+pub struct ServerStatisticsSlot(Arc<ServerStatisticsCounter>);
+
+impl Drop for ServerStatisticsSlot {
+    fn drop(&mut self) {
+        self.0.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// The daemon's counters.
+#[derive(Debug)]
+pub struct ServerStatistics {
+    /// A random id minted per process start: a client that sees it change across a reconnect knows
+    /// the daemon restarted (every session it held is gone, not merely the link).
+    pub epoch: u64,
+    started: Instant,
+    started_ms: i64,
+    /// Accepted connections, authenticated or not.
+    pub connections: Arc<ServerStatisticsCounter>,
+    /// Open `stream` sessions.
+    pub stream_sessions: Arc<ServerStatisticsCounter>,
+    /// Open options `feed` sockets.
+    pub options_feeds: Arc<ServerStatisticsCounter>,
+    /// Fetches running right now.
+    pub fetches_running: Arc<ServerStatisticsCounter>,
+    next_session: AtomicU64,
+}
+
+impl Default for ServerStatistics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ServerStatistics {
+    /// Counters for a daemon starting now.
+    pub fn new() -> Self {
+        let nonce = fresh_nonce();
+        let mut word = [0u8; 8];
+        word.copy_from_slice(&nonce[..8]);
+        Self {
+            epoch: u64::from_be_bytes(word),
+            started: Instant::now(),
+            started_ms: vike_model::now_ms(),
+            connections: Arc::new(ServerStatisticsCounter::default()),
+            stream_sessions: Arc::new(ServerStatisticsCounter::default()),
+            options_feeds: Arc::new(ServerStatisticsCounter::default()),
+            fetches_running: Arc::new(ServerStatisticsCounter::default()),
+            next_session: AtomicU64::new(1),
+        }
+    }
+
+    /// The next session id: unique per process, starting at 1.
+    pub fn next_session(&self) -> u64 {
+        self.next_session.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// The `GatewayStatus` answer for a daemon serving `market_data` and `cd`, with the lane's `budget` rows.
+    pub fn report(
+        &self,
+        market_data: &[String],
+        cd: &[String],
+        budget: Vec<BudgetCounter>,
+    ) -> GatewayStatusReport {
+        let count = |c: &ServerStatisticsCounter| u32::try_from(c.get()).unwrap_or(u32::MAX);
+        GatewayStatusReport {
+            epoch: self.epoch,
+            started_ms: self.started_ms,
+            uptime_ms: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            connections: count(&self.connections),
+            stream_sessions: count(&self.stream_sessions),
+            fetches_running: count(&self.fetches_running),
+            market_data_venues: market_data.to_vec(),
+            credentialed_data_venues: cd.to_vec(),
+            budget,
+            list_refusals: vike_catalog::held_list::refusals(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_slot_is_released_on_drop_even_through_a_panic() {
+        let counter = Arc::new(ServerStatisticsCounter::default());
+        let slot = counter.enter();
+        assert_eq!(counter.get(), 1);
+        drop(slot);
+        assert_eq!(counter.get(), 0);
+
+        let c = Arc::clone(&counter);
+        let result = std::thread::Builder::new()
+            .name("stats-test".into())
+            .spawn(move || {
+                let _slot = c.enter();
+                panic!("a connection thread panicked");
+            })
+            .expect("spawn")
+            .join();
+        assert!(result.is_err());
+        assert_eq!(counter.get(), 0, "an unwinding thread leaked its slot");
+    }
+
+    #[test]
+    fn try_enter_refuses_at_the_cap_and_does_not_leak_the_refusal() {
+        let counter = Arc::new(ServerStatisticsCounter::default());
+        let a = counter.try_enter(2).expect("first");
+        let b = counter.try_enter(2).expect("second");
+        assert!(counter.try_enter(2).is_none(), "a third entered a cap of two");
+        assert_eq!(counter.get(), 2, "the refused attempt leaked a count");
+        drop(a);
+        assert!(counter.try_enter(2).is_some());
+        drop(b);
+    }
+
+    #[test]
+    fn the_report_carries_names_and_counts_only() {
+        let stats = ServerStatistics::new();
+        let _connection = stats.connections.enter();
+        let _session = stats.stream_sessions.enter();
+        let market_data = vec!["binance".to_string()];
+        let report = stats.report(&market_data, &[], Vec::new());
+        assert_eq!(report.epoch, stats.epoch);
+        assert_eq!((report.connections, report.stream_sessions, report.fetches_running), (1, 1, 0));
+        assert_eq!(report.market_data_venues, market_data);
+        assert!(report.credentialed_data_venues.is_empty() && report.budget.is_empty());
+        assert!(report.started_ms > 0);
+    }
+
+    /// **A refused kept-list read is in the report**, in its words and with when, and leaves it once a read of that
+    /// venue succeeds (the venue key is this test's own: the record is process-wide).
+    #[test]
+    fn the_report_names_each_refused_list_read() {
+        const VENUE: &str = "stats-list-test";
+        let stats = ServerStatistics::new();
+        vike_catalog::held_list::note_read(VENUE, Some("401: refused at the start"));
+        let report = stats.report(&[], &[], Vec::new());
+        let row = report.list_refusals.iter().find(|r| r.venue == VENUE).expect("reported");
+        assert_eq!(row.why, "401: refused at the start");
+        assert!(row.at_ms > 0);
+        vike_catalog::held_list::note_read(VENUE, None);
+        let report = stats.report(&[], &[], Vec::new());
+        assert!(report.list_refusals.iter().all(|r| r.venue != VENUE), "a good read forgets it");
+    }
+
+    #[test]
+    fn session_ids_are_unique_and_start_at_one() {
+        let stats = ServerStatistics::new();
+        assert_eq!(stats.next_session(), 1);
+        assert_eq!(stats.next_session(), 2);
+    }
+}

@@ -1,0 +1,51 @@
+{
+  "result": {
+    "list": [
+      {
+        "accountIMRate": "0",
+        "accountIMRateByMp": "0",
+        "accountLTV": "0",
+        "accountMMRate": "0",
+        "accountMMRateByMp": "0",
+        "accountType": "UNIFIED",
+        "coin": [
+          {
+            "accruedInterest": "0",
+            "availableToBorrow": "",
+            "availableToWithdraw": "",
+            "bonus": "0",
+            "borrowAmount": "0.000000000000000000",
+            "coin": "DOGE",
+            "colRes": "0",
+            "collateralSwitch": false,
+            "cumRealisedPnl": "-0.33799953",
+            "equity": "0.06153658",
+            "locked": "0",
+            "marginCollateral": true,
+            "spotBorrow": "0",
+            "spotHedgingQty": "0",
+            "totalOrderIM": "0",
+            "totalPositionIM": "0",
+            "totalPositionMM": "0",
+            "unrealisedPnl": "0",
+            "usdValue": "0.00463809",
+            "walletBalance": "0.06153658"
+          }
+        ],
+        "totalAvailableBalance": "174659.63815995",
+        "totalEquity": "174659.70593245",
+        "totalInitialMargin": "0",
+        "totalInitialMarginByMp": "0",
+        "totalMaintenanceMargin": "0",
+        "totalMaintenanceMarginByMp": "0",
+        "totalMarginBalance": "174659.63815995",
+        "totalPerpUPL": "0",
+        "totalWalletBalance": "174659.63815995"
+      }
+    ]
+  },
+  "retCode": 0,
+  "retExtInfo": {},
+  "retMsg": "OK",
+  "time": 1793390088861
+}

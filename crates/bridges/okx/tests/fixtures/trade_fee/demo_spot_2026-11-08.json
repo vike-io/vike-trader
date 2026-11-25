@@ -1,0 +1,251 @@
+{
+  "code": "0",
+  "data": [
+    {
+      "category": "1",
+      "delivery": "",
+      "exercise": "",
+      "feeGroup": [
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "1",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "elpMaker": "-0.0005",
+          "groupId": "2",
+          "maker": "-0.0005",
+          "rpiMaker": "-0.0005",
+          "taker": "-0.0007"
+        },
+        {
+          "elpMaker": "-0.001",
+          "groupId": "3",
+          "maker": "-0.001",
+          "rpiMaker": "-0.001",
+          "taker": "-0.0022"
+        },
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "4",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "elpMaker": "-0.001",
+          "groupId": "5",
+          "maker": "-0.001",
+          "rpiMaker": "-0.001",
+          "taker": "-0.004"
+        },
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "6",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "elpMaker": "-0.001",
+          "groupId": "7",
+          "maker": "-0.001",
+          "rpiMaker": "-0.001",
+          "taker": "-0.00135"
+        },
+        {
+          "elpMaker": "-0.004",
+          "groupId": "8",
+          "maker": "-0.004",
+          "rpiMaker": "-0.004",
+          "taker": "-0.004"
+        },
+        {
+          "elpMaker": "-0.0005",
+          "groupId": "9",
+          "maker": "-0.0005",
+          "rpiMaker": "-0.0005",
+          "taker": "-0.0007"
+        },
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "10",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "elpMaker": "0",
+          "groupId": "11",
+          "maker": "0",
+          "rpiMaker": "0",
+          "taker": "0"
+        },
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "12",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "13",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "14",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "elpMaker": "-0.001",
+          "groupId": "15",
+          "maker": "-0.001",
+          "rpiMaker": "-0.001",
+          "taker": "-0.0015"
+        },
+        {
+          "elpMaker": "0",
+          "groupId": "16",
+          "maker": "0",
+          "rpiMaker": "0",
+          "taker": "-0.0004"
+        },
+        {
+          "elpMaker": "0",
+          "groupId": "17",
+          "maker": "0",
+          "rpiMaker": "0",
+          "taker": "-0.0005"
+        },
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "18",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "19",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "20",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "21",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "22",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "23",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "24",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "elpMaker": "-0.0008",
+          "groupId": "25",
+          "maker": "-0.0008",
+          "rpiMaker": "-0.0008",
+          "taker": "-0.001"
+        }
+      ],
+      "fiat": [
+        {
+          "ccy": "AED",
+          "maker": "-0.001",
+          "taker": "-0.00135"
+        },
+        {
+          "ccy": "AUD",
+          "maker": "-0.004",
+          "taker": "-0.004"
+        },
+        {
+          "ccy": "HKD",
+          "maker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "ccy": "SGD",
+          "maker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "ccy": "PLN",
+          "maker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "ccy": "EUR",
+          "maker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "ccy": "VES",
+          "maker": "-0.0008",
+          "taker": "-0.001"
+        },
+        {
+          "ccy": "USD",
+          "maker": "-0.0005",
+          "taker": "-0.0007"
+        },
+        {
+          "ccy": "TRY",
+          "maker": "-0.001",
+          "taker": "-0.0022"
+        },
+        {
+          "ccy": "BRL",
+          "maker": "-0.001",
+          "taker": "-0.004"
+        }
+      ],
+      "instType": "SPOT",
+      "level": "Lv1",
+      "maker": "-0.0008",
+      "makerU": "",
+      "makerUSDC": "-0.0005",
+      "ruleType": "normal",
+      "settle": "",
+      "taker": "-0.001",
+      "takerU": "",
+      "takerUSDC": "-0.0007",
+      "ts": "1794154637675"
+    }
+  ],
+  "msg": ""
+}

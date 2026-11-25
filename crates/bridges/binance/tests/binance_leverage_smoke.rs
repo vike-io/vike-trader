@@ -1,0 +1,181 @@
+//! LIVE DEMO smokes for binance USDⓈ-M futures' per-account leverage (decision 0182): the READ half
+//! (`crates/bridges/binance/src/account/leverage.rs`'s `leverage_reader`) and the WRITE-AND-READ-BACK round
+//! trip through the bridge's one existing writer (`crates/bridges/binance/src/execution/rest/perp.rs`'s
+//! `VenueRestBinancePerp`, whose `set_leverage` posts `POST /fapi/v1/leverage` and which the exec thread fires
+//! at every start). Neither places an order.
+//!
+//!     cargo test -p vike-binance --test integration -- --ignored --nocapture binance_leverage_smoke::
+//!
+//! HAND-RUN ONLY: no workflow lists this file. `positionRisk` is read by the reconcile client
+//! (`binance_reconcile_smoke.rs`), but `leverageBracket` had only ever been proven as the unauthenticated
+//! `-2014` answer; these are the drill that was owed.
+//!
+//! * `binance_leverage_read_smoke` — READ-ONLY. Asks the two GETs the reader makes (`positionRisk`, the
+//!   signed `leverageBracket`) and PRINTS each answer through `vike_bridge_core::capture::capture_frame`
+//!   (identity keys redacted, structure verbatim: the form a committed fixture takes), then the verdicts
+//!   of the pure parsers, then asserts the production reader answers exactly what the parsers do and
+//!   that the account is one the feature accepts (one-way, cross). The bracket is OPTIONAL by design
+//!   (an unreadable one is "no maximum known"), so a missing maximum is printed loudly, not asserted.
+//!   READ THE PRINTED BODY BEFORE PASTING IT ANYWHERE: the sanitizer is an enumeration of keys.
+//! * `binance_leverage_write_read_back_smoke` — WRITES the demo account's leverage for `API_SYMBOL`,
+//!   once, and puts it back. It reads the prior figure, writes a small different one through
+//!   `VenueRestBinancePerp::set_leverage`, polls the reader until the venue holds it (`confirm`, the lane's
+//!   own poll), then writes the PRIOR figure and reads that back. The restore is armed BEFORE the write
+//!   and also runs from a drop guard, so a panic in between still puts the figure back. It refuses
+//!   (self-skips) while the account holds an open position on `API_SYMBOL`. ⚠ If a daemon runs this
+//!   account, `API_SYMBOL`'s leverage is the smoke's for a few seconds; the daemon's exec thread writes
+//!   only at its own start.
+//!
+//! Double-gated like every `*_smoke.rs` here: the store's default DEMO account (`TIER`, resolved through
+//! `vike_secrets::smoke_directory`, self-skipping with a `SKIP:` warn when its key pair is absent) and
+//! the venue's DEMO futures host (`hosts().fapi_rest`, the seed's `demo` `trade` `usdm` row in
+//! `crates/vike-venues/src/venue_urls.rs`'s `VENUE_URL_SEED`, on every request this file makes, pinned by
+//! `assert_demo_only`).
+
+use vike_binance::account::leverage::{
+    PATH_LEVERAGE_BRACKET, leverage_reader, parse_bracket_max, parse_position_risk,
+};
+use vike_binance::execution::BinanceUrls;
+use vike_binance::execution::rest::perp::{PATH_POSITIONS, VenueRestBinancePerp};
+use vike_binance::family::perp_series_symbol;
+use vike_binance::family::signer::BinanceHmacSigner;
+use vike_bridge_core::capture::print_sanitized;
+use vike_bridge_core::leverage_read::LeverageReader;
+use vike_bridge_core::smoke::leverage_write_read_back;
+use vike_bridge_core::transport::{RestTransport, UreqTransport};
+use vike_model::accounts::account_keys::AccountLabel;
+use vike_model::{AccountTier, SymbolProperties, now_ms};
+use vike_secrets::credentials::{Credentials, api_credentials};
+use vike_venues::venue_urls::VenueUrls;
+
+/// The instrument as the venue names it on the wire — what the fapi REST clients are built on.
+const API_SYMBOL: &str = "BTCUSDT";
+/// The only tier this file resolves an account at.
+const TIER: AccountTier = AccountTier::Demo;
+
+/// The release's `venue_url` rows for binance.
+fn urls() -> VenueUrls {
+    VenueUrls::seed("binance")
+}
+
+/// The exec hosts at [`TIER`], as the adapter's start looks them up.
+fn hosts() -> BinanceUrls {
+    BinanceUrls::resolve(&urls(), TIER).expect("the seed holds every binance row")
+}
+
+/// The guard's two keys, checked before any request: the tier the account is resolved at is `demo`, and
+/// the futures host this file signs against still names the demo one.
+fn assert_demo_only() {
+    assert_eq!(TIER, AccountTier::Demo, "a leverage smoke resolves the DEMO account only");
+    let fapi = hosts().fapi_rest;
+    assert!(fapi.contains("demo-fapi"), "{fapi} is not a demo host");
+}
+
+fn transport() -> UreqTransport {
+    UreqTransport::new("binance")
+        .with_rate_gate(vike_binance::transport::ratelimit::perp_rest_gate())
+}
+
+fn rest_at(
+    creds: &Credentials,
+    leverage: f64,
+) -> VenueRestBinancePerp<BinanceHmacSigner, UreqTransport> {
+    VenueRestBinancePerp {
+        link_id: None,
+        signer: BinanceHmacSigner::new(creds, now_ms),
+        transport: transport(),
+        base_url: hosts().fapi_rest.to_string(),
+        ty: hosts().ty,
+        margining: vike_binance::execution::rest::coin_m::margining_of(API_SYMBOL),
+        algo_order_client_ids: Default::default(),
+        symbol: API_SYMBOL.to_string(),
+        properties: SymbolProperties::default(),
+        leverage,
+    }
+}
+
+#[test]
+#[ignore = "network + demo creds — run manually (see module doc)"]
+fn binance_leverage_read_smoke() {
+    vike_log::test_init();
+    assert_demo_only();
+    let directory = vike_secrets::smoke_directory();
+    let account = directory.credentials_for("binance", &AccountLabel::Default, TIER);
+    let Some(creds) = api_credentials(&account, "binance") else {
+        tracing::warn!(target: "vike_binance", "SKIP: BINANCE_DEMO creds absent");
+        return;
+    };
+
+    let transport = transport();
+    let signer = BinanceHmacSigner::new(&creds, now_ms);
+    let params = [("symbol", API_SYMBOL.to_string())];
+    let fapi = hosts().fapi_rest;
+    let position = transport
+        .signed(fapi, PATH_POSITIONS, "GET", &params, &signer)
+        .unwrap_or_else(|e| panic!("GET {PATH_POSITIONS} failed: {e}"));
+    print_sanitized("binance", "position-risk", &position);
+    // The bracket is optional to the reader: a refusal here is an ANSWER to print, not a failure.
+    let bracket = transport.signed(fapi, PATH_LEVERAGE_BRACKET, "GET", &params, &signer);
+    let bracket_max = match &bracket {
+        Ok(body) => {
+            print_sanitized("binance", "leverage-bracket", body);
+            parse_bracket_max(body, API_SYMBOL)
+        }
+        Err(e) => {
+            println!("\n=== leverage-bracket REFUSED ===\n{e}\n");
+            None
+        }
+    };
+
+    // The reader's seam carries the refusal's text (`vike_bridge_core::leverage_read::LeverageReader`).
+    let held = parse_position_risk(&position, API_SYMBOL).map_err(|refusal| refusal.to_string());
+    println!(
+        "\n=== VERDICTS ({API_SYMBOL}, DEMO) ===\nheld (mode + leverage): {held:?}\nbracket max           : {bracket_max:?}\n"
+    );
+    if bracket_max.is_none() {
+        println!(
+            "NOTE: no maximum known — the bracket was refused or its shape is not the one \
+             `parse_bracket_max` reads. The reader treats that as 'unknown' and the poll is the \
+             judge of a rejected figure; paste the body above if it was an answer."
+        );
+    }
+
+    // The production reader, over its own transport, must answer what the parsers did over this one.
+    let reader = leverage_reader(&account, &urls(), TIER, &perp_series_symbol(API_SYMBOL))
+        .expect("a binance reader for the account");
+    assert_eq!(
+        reader.check_account(),
+        held.clone().map(|_| ()),
+        "reader and parser disagree on the mode"
+    );
+    assert_eq!(reader.held(), held, "reader and parser disagree on what is held");
+    assert_eq!(reader.venue_max(), Ok(bracket_max), "reader and parser disagree on the maximum");
+
+    let held =
+        held.expect("the positionRisk row is not one this feature accepts (see the body above)");
+    assert!(held.held >= 1.0, "{held:?}");
+    tracing::info!(target: "vike_binance", "binance leverage read smoke green: mode and held read live");
+}
+
+#[test]
+#[ignore = "network + demo creds + WRITES the demo leverage, then restores it — run manually (see module doc)"]
+fn binance_leverage_write_read_back_smoke() {
+    vike_log::test_init();
+    assert_demo_only();
+    let directory = vike_secrets::smoke_directory();
+    let account = directory.credentials_for("binance", &AccountLabel::Default, TIER);
+    let Some(creds) = api_credentials(&account, "binance") else {
+        tracing::warn!(target: "vike_binance", "SKIP: BINANCE_DEMO creds absent");
+        return;
+    };
+
+    let reader = leverage_reader(&account, &urls(), TIER, &perp_series_symbol(API_SYMBOL))
+        .expect("a binance reader for the account");
+    let write = |figure| rest_at(&creds, figure).set_leverage();
+    match leverage_write_read_back(&reader, API_SYMBOL, "DEMO", "leverage", write) {
+        Ok((prior, target)) => {
+            tracing::info!(target: "vike_binance", "binance leverage write/read-back smoke green: {prior}x -> {target}x -> {prior}x")
+        }
+        Err(skip) => tracing::warn!(target: "vike_binance", "SKIP: {skip}"),
+    }
+}

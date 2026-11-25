@@ -1,0 +1,571 @@
+use super::*;
+use crate::ui::windows::POLYMARKET_PLACEHOLDER_TOKEN;
+
+fn area() -> egui::Rect {
+    egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(1920.0, 1080.0))
+}
+
+fn env_with_shot_win(win: &str) -> StartupEnvironment {
+    StartupEnvironment { shot_win: Some(win.to_string()), ..StartupEnvironment::default() }
+}
+
+/// A saved workspace carrying one chart window per `(venue, symbol, interval)`, built through
+/// the REAL `workspace::capture` so the fixture can never drift from the serde shape `plan`
+/// consumes. The favourites are stamped on afterwards (`capture` deliberately leaves
+/// `indicator_favourites` empty — see its doc).
+fn workspace_with(wins: &[(&str, &str, &str)]) -> workspace::WindowWorkspace {
+    let states: Vec<WindowState> = wins
+        .iter()
+        .map(|(venue, symbol, interval)| {
+            let mut w = WindowState::new(
+                symbol,
+                symbol,
+                interval,
+                WindowKind::Chart,
+                egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 300.0)),
+            );
+            w.venue = venue.to_string();
+            w
+        })
+        .collect();
+    let mut ws = workspace::capture(&states);
+    ws.indicator_favourites = vec!["rsi".to_string()];
+    ws
+}
+
+// ── the default layout ──────────────────────────────────────────────────────────────────
+
+/// No symbol is compiled in (the owner's ruling of 2026-11-13): with no saved workspace the one
+/// chart opens EMPTY — no venue, no symbol — and unpinned, so a series the backend publishes is
+/// adopted into it.
+#[test]
+fn no_knobs_and_no_workspace_opens_one_empty_chart_with_three_indicators() {
+    let l = plan(area(), &StartupEnvironment::default(), Ok(None));
+    assert_eq!(l.wins.len(), 1);
+    assert_eq!((l.wins[0].venue.as_str(), l.wins[0].symbol.as_str()), ("", ""));
+    assert_eq!(l.wins[0].interval, crate::ui::window::spawn::EMPTY_CHART_INTERVAL);
+    assert_eq!(l.wins[0].kind, WindowKind::Chart);
+    assert!(!l.wins[0].series_pinned, "nobody chose it, so it may adopt");
+    assert_eq!(l.wins[0].indicators.len(), 3, "sma + rsi + macd");
+    assert!(l.indicator_favourites.is_none(), "nothing restored ⇒ App's own field defaults stand");
+    assert_eq!(l.restored_windows, None);
+}
+
+/// The empty default chart names no series, so it asks for no feed: a feed for a compiled symbol
+/// is exactly what the ruling removed.
+#[test]
+fn the_default_chart_ensures_no_feed() {
+    let l = plan(area(), &StartupEnvironment::default(), Ok(None));
+    assert!(l.ensure_feeds.is_empty(), "{:?}", l.ensure_feeds);
+}
+
+/// `App::new` created the default chart FLOATING at `area.min + (40,30)`, deliberately NOT
+/// maximized to `area` — see the long comment at that site: maximizing here gave the startup
+/// chart a stale `pre_maximize` and min/max/restore misbehaved.
+#[test]
+fn the_default_chart_is_floating_at_the_documented_offset_not_maximized() {
+    let a = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(1920.0, 1080.0));
+    let l = plan(a, &StartupEnvironment::default(), Ok(None));
+    assert_eq!(l.wins[0].screen_position, a.min + egui::vec2(40.0, 30.0));
+    assert_eq!(l.wins[0].size, egui::vec2(700.0, 440.0));
+    assert_ne!(l.wins[0].size, a.size(), "must not be maximized to the construction-time area");
+    assert!(!l.wins[0].maximized, "a stale pre_maximize is what min/max/restore used to break on");
+}
+
+/// An unrecognized `VIKE_SHOT_WIN` must fall through to the default chart, not open nothing.
+#[test]
+fn an_unrecognized_shot_win_falls_through_to_the_default_chart() {
+    // `tearsheet` among them: its window is the Account window's History tab now.
+    for val in ["nope", "tearsheet"] {
+        let l = plan(area(), &env_with_shot_win(val), Ok(None));
+        assert_eq!(l.wins.len(), 1, "{val}");
+        assert_eq!(l.wins[0].kind, WindowKind::Chart, "{val}");
+        assert!(
+            l.ensure_feeds.is_empty(),
+            "{val}: the default chart is empty and asks for no feed"
+        );
+    }
+}
+
+// ── the saved-workspace restore ─────────────────────────────────────────────────────────
+
+#[test]
+fn a_restored_workspace_carries_its_indicator_favourites() {
+    let l = plan(
+        area(),
+        &StartupEnvironment::default(),
+        Ok(Some(workspace_with(&[("okx", "ETHUSDT", "5m")]))),
+    );
+    let favourites =
+        l.indicator_favourites.expect("a restored workspace always yields its favourites");
+    assert_eq!(favourites, vec!["rsi".to_string()]);
+}
+
+/// The bug class this move exists to close: a restored window must ensure a feed **on its own
+/// venue**, not on the default one. Routing every restored chart to binance is exactly the
+/// venue-discarding shape `core_sync`'s bug 1 had.
+#[test]
+fn restored_windows_ensure_feeds_on_their_own_venues_not_the_default_one() {
+    let ws = workspace_with(&[
+        ("okx", "ETHUSDT", "5m"),
+        ("bybit", "SOLUSDT", "1m"),
+        ("binance", "BTCUSDT", "1h"),
+    ]);
+    let l = plan(area(), &StartupEnvironment::default(), Ok(Some(ws)));
+    let venues: Vec<&str> = l.ensure_feeds.iter().map(|f| f.venue.as_str()).collect();
+    assert_eq!(venues, vec!["okx", "bybit", "binance"]);
+    let symbols: Vec<&str> = l.ensure_feeds.iter().map(|f| f.symbol.as_str()).collect();
+    assert_eq!(symbols, vec!["ETHUSDT", "SOLUSDT", "BTCUSDT"]);
+}
+
+/// One feed per restored window, and the count reported for the log line must match — a
+/// silently-short `ensure_feeds` is a chart that never ticks.
+#[test]
+fn every_restored_window_gets_exactly_one_feed_and_the_count_is_reported() {
+    let ws = workspace_with(&[("okx", "ETHUSDT", "5m"), ("bybit", "SOLUSDT", "1m")]);
+    let l = plan(area(), &StartupEnvironment::default(), Ok(Some(ws)));
+    assert_eq!(l.wins.len(), 2);
+    assert_eq!(l.ensure_feeds.len(), 2);
+    assert_eq!(l.restored_windows, Some(2));
+}
+
+/// A restored workspace must NOT also open the default BTCUSDT chart, and must not ensure a
+/// binance feed nobody asked for.
+#[test]
+fn a_restored_workspace_suppresses_the_default_chart_entirely() {
+    let l = plan(
+        area(),
+        &StartupEnvironment::default(),
+        Ok(Some(workspace_with(&[("okx", "ETHUSDT", "5m")]))),
+    );
+    assert_eq!(l.wins.len(), 1);
+    assert_eq!(l.wins[0].symbol, "ETHUSDT");
+    assert_eq!(l.ensure_feeds.len(), 1);
+}
+
+/// An EMPTY saved workspace still counts as restored: it must open nothing, not silently fall
+/// back to the default chart (that would resurrect windows a user deliberately closed).
+#[test]
+fn an_empty_restored_workspace_opens_no_windows_rather_than_the_default_chart() {
+    let l = plan(area(), &StartupEnvironment::default(), Ok(Some(workspace_with(&[]))));
+    assert!(l.wins.is_empty());
+    assert!(l.ensure_feeds.is_empty());
+    assert_eq!(l.restored_windows, Some(0));
+    assert!(l.indicator_favourites.is_some(), "its globals still apply");
+}
+
+/// `VIKE_SHOT` suppresses the restore at the `restored_workspace` boundary, so `plan` sees
+/// `None` — but the QA window arms must still beat the restore when both are somehow present.
+#[test]
+fn a_restored_workspace_outranks_every_shot_win_arm() {
+    let env = env_with_shot_win("studio");
+    let l = plan(area(), &env, Ok(Some(workspace_with(&[("okx", "ETHUSDT", "5m")]))));
+    assert_eq!(l.wins[0].kind, WindowKind::Chart, "restore is the first branch");
+}
+
+// ── the VIKE_SHOT_WIN QA arms ───────────────────────────────────────────────────────────
+
+/// The HAND-WRITTEN arms, one row each. The Data Manager's are deliberately absent: they are
+/// no longer arms, and `the_data_manager_arms_select_the_destination_they_name` iterates the
+/// real roster rather than a copy of it that could fall behind.
+#[test]
+fn each_shot_win_value_opens_exactly_its_own_tool_window_and_no_feed() {
+    for (val, kind) in [
+        ("studio", WindowKind::Studio),
+        ("gateway-compact", WindowKind::Data),
+        ("gateway-account", WindowKind::Data),
+        ("polymarket", WindowKind::Polymarket),
+        ("trade", WindowKind::Trade),
+        ("account", WindowKind::Account),
+        (DATA_SHOT_WIN_ALIAS, WindowKind::Data),
+        ("options", WindowKind::Options),
+        ("settings", WindowKind::Settings),
+    ] {
+        let l = plan(area(), &env_with_shot_win(val), Ok(None));
+        assert_eq!(l.wins.len(), 1, "{val}");
+        assert_eq!(l.wins[0].kind, kind, "{val}");
+        assert!(l.ensure_feeds.is_empty(), "{val}: tool windows open no kline feed");
+        assert_eq!(l.restored_windows, None, "{val}");
+    }
+}
+
+/// **Every** rail destination is reachable, and each one opens on the destination it NAMES.
+///
+/// ⚠ Neither test above can see this, and that is the whole reason this one exists: both assert
+/// the window KIND, and every Data-Manager value opens the SAME kind. An arm that pointed the
+/// Venues capture at the stored grid would pass them both and silently put the wrong pane in
+/// the contact sheet — a capture that ran, produced a file, and proved nothing about the
+/// surface it claimed to show.
+///
+/// ⚠ This doc used to add that "`windows::data`'s `debug_assert` guards the index from the
+/// other side". It did not: that assert ran in no lane (see
+/// [`crate::ui::windows::data_manager::rail`]'s module doc), so this test was the ONLY guard, not one of
+/// two. It still is — the other side is a type now rather than a second check.
+///
+/// ⚠ **It iterates the real `DataManagerDestination::ALL`, and that is what makes it a COLLISION gate too.**
+/// [`data_shot_destination`] is the last arm in [`plan`]'s chain, so a rail label that folded to a
+/// shipped value (`options`, `trade`, `studio`) would leave its destination unreachable rather
+/// than hijacking the shipped capture — a safe failure, and an invisible one. Here it is loud:
+/// the shadowed destination arrives with `data_destination == None` and fails by name. A hand-written
+/// twelve-row list would have proved the twelve rows somebody remembered.
+#[test]
+fn the_data_manager_arms_select_the_destination_they_name() {
+    for want in DataManagerDestination::ALL {
+        let val = shot_key(want.label());
+        let l = plan(area(), &env_with_shot_win(&val), Ok(None));
+        assert_eq!(l.wins.len(), 1, "{val}");
+        assert_eq!(l.wins[0].kind, WindowKind::Data, "{val}: shadowed by an earlier arm");
+        let (id, destination) =
+            l.data_destination.unwrap_or_else(|| panic!("{val}: no destination selected"));
+        assert_eq!(destination, want, "{val}: the arm selected a destination it does not name");
+        assert_eq!(
+            id, l.wins[0].id,
+            "{val}: the selection must bind to the window this arm opened"
+        );
+        assert!(l.ensure_feeds.is_empty(), "{val}: tool windows open no kline feed");
+    }
+}
+
+/// The spellings that shipped before — or instead of — the derivation still resolve exactly
+/// where they always did.
+///
+/// ⚠ **`instruments` / `overview` / `gateway` survive by DERIVATION, and
+/// [`DATA_SHOT_WIN_ALIAS`] survives by ALIAS — the difference is the point.** The first three
+/// are what [`shot_key`] folds their destinations' own labels to, so they cost nothing and would
+/// break only under a rail RENAME — which this test is what catches. [`DATA_SHOT_WIN_ALIAS`] is
+/// the one value that names no label at all and exists purely so `scripts/qa_shots.sh`'s
+/// `06-data-manager` keeps capturing the stored grid.
+///
+/// The failure this guards is silent by construction: a broken spelling still produces a PNG,
+/// still lands in the sheet under the destination's filename, and shows the default chart.
+///
+/// ⚠ **A spelling, `venues`, shipped here until the destination it derived from (`ArmingAccount`)
+/// was removed — and this doc used to say its replacement, `credentials` (now `gateway`),
+/// was "deliberately not substituted into its place ... updating `scripts/qa_shots.sh`'s
+/// capture to match is a separate follow-up, left undone here on purpose".** That follow-up landed
+/// (Connections-merges-into-Data-Manager, task 4): `scripts/qa_shots.sh`'s former `10-venues`
+/// capture is `10-gateway` now, spelling `VIKE_SHOT_WIN=gateway` (it was `credentials` until the
+/// destination was renamed, decision 0164 verdict 3 — that spelling is no longer read), and the
+/// row below takes the slot `venues` used to occupy.
+#[test]
+fn the_shipped_spellings_still_resolve_where_they_always_did() {
+    for (val, want) in [
+        (DATA_SHOT_WIN_ALIAS, DATA_SHOT_DESTINATION),
+        ("overview", DataManagerDestination::Overview),
+        ("instruments", DataManagerDestination::Instruments),
+        ("gateway", DataManagerDestination::Gateway),
+    ] {
+        assert_eq!(
+            data_shot_destination(val),
+            Some(want),
+            "{val}: a spelling `scripts/qa_shots.sh` and the operator's notes both use"
+        );
+        let l = plan(area(), &env_with_shot_win(val), Ok(None));
+        assert_eq!(l.data_destination.map(|(_, d)| d), Some(want), "{val}: through the real plan");
+    }
+}
+
+/// Two destinations that folded to one spelling would make the second unreachable — `find`
+/// returns the FIRST match — and the reader of `DataManagerDestination::ALL` would have no way to see it.
+#[test]
+fn every_destination_folds_to_its_own_distinct_spelling() {
+    let mut seen: Vec<String> = Vec::new();
+    for d in DataManagerDestination::ALL {
+        let key = shot_key(d.label());
+        assert!(!key.is_empty(), "{d:?}: an empty label is a destination nobody can name");
+        assert!(!seen.contains(&key), "{d:?} folds to `{key}`, which another destination owns");
+        seen.push(key);
+    }
+}
+
+/// The operator types the rail label they are looking at, in whichever shell-safe shape they
+/// reach for, and every shape reaches the same screen. A value naming no destination resolves
+/// to `None` — it must never be rounded to the nearest one, because the capture that
+/// destination produces is indistinguishable from the one it was meant to produce.
+#[test]
+fn the_spelling_is_forgiving_about_case_spaces_and_underscores() {
+    for val in ["all-series", "all_series", "All series", "  ALL-SERIES  "] {
+        assert_eq!(data_shot_destination(val), Some(DataManagerDestination::AllSeries), "{val}");
+    }
+    for val in ["", "   ", "nope", "all seires", "series", "all-series-2"] {
+        assert_eq!(data_shot_destination(val), None, "{val}: a near-miss must not resolve");
+    }
+}
+
+/// A value that names a NON-Data window must not be claimed by the derived arm — it names no
+/// destination, so the hand-written arm above it is the one that answers.
+#[test]
+fn the_derived_arm_claims_no_hand_written_window_value() {
+    for val in [
+        "studio",
+        "gateway-compact",
+        "gateway-account",
+        "polymarket",
+        "trade",
+        "account",
+        "options",
+    ] {
+        assert_eq!(data_shot_destination(val), None, "{val}");
+    }
+}
+
+/// The Gateway arms are a pair that shares a window KIND with every Data Manager destination
+/// now (`WindowKind::Data` — the standalone Connections window and its own `WindowKind::Connections` are
+/// deleted, 2026-10-05), and this is their
+/// `the_data_manager_arms_select_the_destination_they_name`.
+///
+/// ⚠ Neither iterating test above can tell them apart — both open `WindowKind::Data` landed on
+/// `DataManagerDestination::Gateway`, so an arm that opened the panel on the DEFAULT account would pass them
+/// both while the capture it produced showed nothing the plain `gateway-compact` shot does not already
+/// show. That capture would still save a PNG, still be counted in the index, and still prove
+/// nothing about the chip strip or the removal line it was added for.
+///
+/// The other half is the non-negotiable one: `gateway-compact` must select NOTHING, so the arm that
+/// shipped opens exactly what it always opened.
+#[test]
+fn the_labelled_account_arm_selects_the_account_it_names() {
+    let l = plan(area(), &env_with_shot_win("gateway-account"), Ok(None));
+    let (id, account) = l.gateway_account.clone().expect("the arm exists to carry a selection");
+    assert_eq!(account, shot_account_label(), "the arm selected an account it does not name");
+    assert_eq!(
+        id, l.wins[0].id,
+        "the selection must bind to the window this arm opened, not to a stale id"
+    );
+    assert_eq!(
+        l.data_destination,
+        Some((id, DataManagerDestination::Gateway)),
+        "the labelled-account arm also lands on the Gateway destination, same as the plain one"
+    );
+
+    let plain = plan(area(), &env_with_shot_win("gateway-compact"), Ok(None));
+    assert_eq!(
+        plain.gateway_account, None,
+        "the gateway-compact arm that shipped must still open the DEFAULT account"
+    );
+    assert_eq!(
+        plain.data_destination,
+        Some((plain.wins[0].id, DataManagerDestination::Gateway)),
+        "the plain gateway-compact arm lands on Gateway too"
+    );
+}
+
+/// The label the arm selects has to be one `AccountLabel::parse` accepts, because
+/// [`shot_account_label`] cannot panic — it degrades to the default account, and a degraded
+/// capture is indistinguishable from an ordinary `gateway-compact` shot.
+///
+/// Reddens on an edit to [`SHOT_ACCOUNT_LABEL`] that breaks the `[A-Z0-9]`/length/reserved
+/// rules — the failure this test exists for is the SILENT one, where the arm still opens the
+/// right window and the account dimension quietly leaves the frame.
+#[test]
+fn the_labelled_account_arm_names_a_valid_label() {
+    assert_eq!(
+        shot_account_label().text(),
+        Some(SHOT_ACCOUNT_LABEL),
+        "SHOT_ACCOUNT_LABEL must survive AccountLabel::parse — an unparseable one silently \
+             captures the DEFAULT account under a labelled-account arm's name"
+    );
+}
+
+/// ⚠ **The three Data-Manager rows are pinned BY HAND on purpose, although the size is derived
+/// now.** [`data_shot_size`]'s rule reproduces them, and a rule that quietly stopped doing so
+/// would change what frames already on the contact sheet show — which is a comparison nobody
+/// would notice losing. Deriving the expectation from the code under test is the
+/// assertion-that-cannot-fail shape; these stay literals.
+///
+/// ⚠ A fourth row, `venues`, was pinned here until the destination it captured
+/// (`DataManagerDestination::ArmingAccount`) was removed — see
+/// `the_shipped_spellings_still_resolve_where_they_always_did`'s note on the same retirement.
+#[test]
+fn the_shot_win_arms_keep_their_documented_sizes() {
+    for (val, size) in [
+        ("studio", egui::vec2(1520.0, 800.0)),
+        ("gateway-compact", egui::vec2(760.0, 620.0)),
+        // ⚠ EQUAL to `gateway-compact` on purpose, not by coincidence: the two captures sit side by
+        // side on the contact sheet and the account dimension is meant to be the ONLY thing
+        // that differs between them. A size change here silently costs that comparison.
+        ("gateway-account", egui::vec2(760.0, 620.0)),
+        ("polymarket", egui::vec2(760.0, 620.0)),
+        // The design's 600 at Small, 26 pt wider at the default Standard text: the window opens as much
+        // wider as the ticket grew (`vike_order_entry::trade_window::layout::spec_size`).
+        ("trade", egui::vec2(626.0, 560.0)),
+        // The size the window opens at, so the capture shows what an operator gets.
+        ("account", crate::ui::window::spawn::tool_window_size(WindowKind::Account)),
+        (DATA_SHOT_WIN_ALIAS, egui::vec2(1200.0, 760.0)),
+        ("overview", egui::vec2(1200.0, 760.0)),
+        ("instruments", egui::vec2(1200.0, 700.0)),
+        ("options", egui::vec2(1200.0, 820.0)),
+        ("settings", egui::vec2(760.0, 620.0)),
+    ] {
+        let l = plan(area(), &env_with_shot_win(val), Ok(None));
+        assert_eq!(l.wins[0].size, size, "{val}");
+        assert_eq!(l.wins[0].screen_position, area().min + egui::vec2(8.0, 8.0), "{val}");
+    }
+}
+
+/// Every destination is capturable at a size a human can review, and at the ONE body width the
+/// rail-plus-grid layout is designed for. The widths must not drift apart: two Data-Manager
+/// frames of different widths on one sheet read as a layout change rather than a screen change.
+#[test]
+fn every_destination_opens_at_the_one_body_width() {
+    for d in DataManagerDestination::ALL {
+        let l = plan(area(), &env_with_shot_win(&shot_key(d.label())), Ok(None));
+        let size = l.wins[0].size;
+        assert_eq!(size.x, 1200.0, "{d:?}: the rail plus the grid wants one width");
+        assert!(size.y >= 700.0, "{d:?}: {size:?} is too short to review a body in");
+    }
+}
+
+// ── the cockpit token ladder ────────────────────────────────────────────────────────────
+
+/// Unseeded ⇒ the window carries the placeholder (nothing resolves it to a real market any more:
+/// the desktop makes no venue call, so the ladder stays STALE until a token is seeded).
+#[test]
+fn an_unseeded_cockpit_gets_the_placeholder() {
+    let l = plan(area(), &env_with_shot_win("polymarket"), Ok(None));
+    assert_eq!(l.wins[0].symbol, POLYMARKET_PLACEHOLDER_TOKEN);
+}
+
+/// A seeded token must be used verbatim (trimmed).
+#[test]
+fn a_seeded_cockpit_token_is_used_verbatim() {
+    let env = StartupEnvironment {
+        shot_win: Some("polymarket".to_string()),
+        polymarket_cockpit_token: Some(
+            "  71321045679252212594626385532706912750332728571942532289631379312455583992563  "
+                .to_string(),
+        ),
+        ..StartupEnvironment::default()
+    };
+    let l = plan(area(), &env, Ok(None));
+    assert_eq!(
+        l.wins[0].symbol,
+        "71321045679252212594626385532706912750332728571942532289631379312455583992563"
+    );
+}
+
+#[test]
+fn the_cockpit_window_is_titled_and_only_the_polymarket_arm_reads_the_token() {
+    let l = plan(area(), &env_with_shot_win("polymarket"), Ok(None));
+    assert_eq!(l.wins[0].title, "Polymarket · Cockpit");
+    // The token knob must not leak into any other arm.
+    let env = StartupEnvironment {
+        shot_win: Some("trade".to_string()),
+        polymarket_cockpit_token: Some("abc".to_string()),
+        ..StartupEnvironment::default()
+    };
+    assert!(plan(area(), &env, Ok(None)).wins.iter().all(|w| w.symbol != "abc"));
+}
+
+#[test]
+fn polymarket_cockpit_seed_token_ladder() {
+    assert_eq!(polymarket_cockpit_seed_token(None), POLYMARKET_PLACEHOLDER_TOKEN);
+    assert_eq!(polymarket_cockpit_seed_token(Some("")), POLYMARKET_PLACEHOLDER_TOKEN);
+    assert_eq!(polymarket_cockpit_seed_token(Some("   ")), POLYMARKET_PLACEHOLDER_TOKEN);
+    assert_eq!(polymarket_cockpit_seed_token(Some(" 12345 ")), "12345");
+}
+
+// ── the VIKE_STYLE / VIKE_SCALE capture overrides ───────────────────────────────────────
+
+#[test]
+fn vike_style_forces_every_window_to_the_indexed_chart_style() {
+    let ws = workspace_with(&[("okx", "ETHUSDT", "5m"), ("bybit", "SOLUSDT", "1m")]);
+    let env = StartupEnvironment { style: Some("3".to_string()), ..StartupEnvironment::default() };
+    let l = plan(area(), &env, Ok(Some(ws)));
+    assert_eq!(l.wins.len(), 2);
+    for w in &l.wins {
+        assert_eq!(w.style, ChartStyle::ALL[3]);
+    }
+}
+
+#[test]
+fn vike_scale_maps_only_zero_one_two() {
+    for (raw, want) in [
+        ("0", ChartScaleMode::Linear),
+        ("1", ChartScaleMode::Logarithmic),
+        ("2", ChartScaleMode::Percent),
+    ] {
+        let env =
+            StartupEnvironment { scale: Some(raw.to_string()), ..StartupEnvironment::default() };
+        assert_eq!(plan(area(), &env, Ok(None)).wins[0].scale, want, "{raw}");
+    }
+}
+
+/// Garbage in either knob must be INERT — an unparseable or out-of-range value leaves the
+/// windows exactly as the layout built them, never panics and never picks arm 0.
+#[test]
+fn unparseable_or_out_of_range_style_and_scale_are_inert() {
+    let baseline = plan(area(), &StartupEnvironment::default(), Ok(None));
+    for env in [
+        StartupEnvironment { style: Some("nope".to_string()), ..StartupEnvironment::default() },
+        StartupEnvironment { style: Some("9999".to_string()), ..StartupEnvironment::default() },
+        StartupEnvironment { style: Some("-1".to_string()), ..StartupEnvironment::default() },
+        StartupEnvironment { scale: Some("nope".to_string()), ..StartupEnvironment::default() },
+        StartupEnvironment { scale: Some("3".to_string()), ..StartupEnvironment::default() },
+    ] {
+        let l = plan(area(), &env, Ok(None));
+        assert_eq!(l.wins[0].style, baseline.wins[0].style, "{env:?}");
+        assert_eq!(l.wins[0].scale, baseline.wins[0].scale, "{env:?}");
+    }
+}
+
+/// The overrides run LAST, so they reach the QA tool windows too — the same order `App::new`
+/// applied them in (after every layout arm, before `next_window_number`).
+#[test]
+fn the_capture_overrides_apply_after_every_layout_arm_including_the_tool_windows() {
+    let env = StartupEnvironment {
+        shot_win: Some("trade".to_string()),
+        style: Some("2".to_string()),
+        scale: Some("1".to_string()),
+        ..StartupEnvironment::default()
+    };
+    let l = plan(area(), &env, Ok(None));
+    assert_eq!(l.wins[0].style, ChartStyle::ALL[2]);
+    assert_eq!(l.wins[0].scale, ChartScaleMode::Logarithmic);
+}
+
+/// **A desktop logs no server policy row at start** (the owner, 2026-11-16): the settings directory,
+/// the rows this PC's database sets, the summary and the credential-store line stay; every
+/// `policy.*` row goes but the one the desktop reads, the Trade window's notional guard. Chosen by each
+/// line's setting key, never its words: a line that is no setting's is kept whatever it says.
+#[test]
+fn the_desktop_logs_no_server_policy_row_at_start() {
+    use vike_config::{BootLine, BootLineLevel};
+    let line = |text: &str| {
+        let setting = text
+            .strip_prefix("setting: ")
+            .and_then(|rest| rest.split_once(" = "))
+            .map(|(key, _)| key.to_string());
+        BootLine { text: text.to_string(), level: BootLineLevel::Info, setting }
+    };
+    let mut boot: Vec<BootLine> = [
+        "settings dir: /pc/settings",
+        "setting: config.datahub_addr = 127.0.0.1:7878 [db]",
+        "setting: config.node_addr = 127.0.0.1:7879 [db]",
+        "setting: policy.deadman_action = cancel_all_and_halt [default]",
+        "setting: policy.max_leverage = <unset> [default]",
+        "setting: policy.max_notional_per_order = <unset> [default]",
+        "setting: policy.mount_loss_action = flatten [default]",
+        "settings: 2 set by the settings database, 107 at their compiled-in default",
+        "credential store: /pc/settings/db/vike.db PRESENT",
+    ]
+    .map(line)
+    .to_vec();
+    boot.push(BootLine {
+        text: "setting: policy.quoted by a line that resolves no setting".to_string(),
+        level: BootLineLevel::Warn,
+        setting: None,
+    });
+    let kept: Vec<&str> = desktop_boot_lines(&boot).map(|l| l.text.as_str()).collect();
+    assert_eq!(
+        kept,
+        vec![
+            "settings dir: /pc/settings",
+            "setting: config.datahub_addr = 127.0.0.1:7878 [db]",
+            "setting: config.node_addr = 127.0.0.1:7879 [db]",
+            "setting: policy.max_notional_per_order = <unset> [default]",
+            "settings: 2 set by the settings database, 107 at their compiled-in default",
+            "credential store: /pc/settings/db/vike.db PRESENT",
+            "setting: policy.quoted by a line that resolves no setting",
+        ]
+    );
+}

@@ -1,0 +1,56 @@
+{
+  "about": "One symbol's legs (signed size, own entry price) and the answers two implementations must agree on. `rows`: vike_model::PositionStatusReport::from_legs (one direction is one BOTH row, both directions a LONG and a SHORT row, nothing open is the flat row). `net`: the sidecar's NetPosition.java over every leg (the per-fill `position` line). Each row is also NetPosition.java over that row's legs. Read by crates/bridges/dukascopy/tests/position_legs_golden.rs and jforex-bridge's NetPositionTest.",
+  "cases": [
+    {
+      "name": "an empty book is flat",
+      "legs": [],
+      "rows": [{ "side": "BOTH", "size": 0.0, "price": 0.0 }],
+      "net": { "size": 0.0, "price": 0.0 }
+    },
+    {
+      "name": "two shorts weight their own entries",
+      "legs": [{ "size": -1.0, "price": 100.0 }, { "size": -1.0, "price": 110.0 }],
+      "rows": [{ "side": "BOTH", "size": -2.0, "price": 105.0 }],
+      "net": { "size": -2.0, "price": 105.0 }
+    },
+    {
+      "name": "the remainder after a partial net close keeps its own entry",
+      "legs": [{ "size": -1.0, "price": 110.0 }],
+      "rows": [{ "side": "BOTH", "size": -1.0, "price": 110.0 }],
+      "net": { "size": -1.0, "price": 110.0 }
+    },
+    {
+      "name": "uneven amounts weight by size",
+      "legs": [{ "size": 2.0, "price": 100.0 }, { "size": 1.0, "price": 130.0 }],
+      "rows": [{ "side": "BOTH", "size": 3.0, "price": 110.0 }],
+      "net": { "size": 3.0, "price": 110.0 }
+    },
+    {
+      "name": "a mixed book is two rows; its net uses signed weighting",
+      "legs": [{ "size": 2.0, "price": 100.0 }, { "size": -1.0, "price": 110.0 }],
+      "rows": [
+        { "side": "LONG", "size": 2.0, "price": 100.0 },
+        { "side": "SHORT", "size": -1.0, "price": 110.0 }
+      ],
+      "net": { "size": 1.0, "price": 90.0 }
+    },
+    {
+      "name": "a fully hedged book is two rows; its net is flat with no basis",
+      "legs": [{ "size": 1.0, "price": 100.0 }, { "size": -1.0, "price": 110.0 }],
+      "rows": [
+        { "side": "LONG", "size": 1.0, "price": 100.0 },
+        { "side": "SHORT", "size": -1.0, "price": 110.0 }
+      ],
+      "net": { "size": 0.0, "price": 0.0 }
+    },
+    {
+      "name": "a locked pair keeps each side at its own entry",
+      "legs": [{ "size": 10.0, "price": 1.1 }, { "size": -4.0, "price": 1.11 }],
+      "rows": [
+        { "side": "LONG", "size": 10.0, "price": 1.1 },
+        { "side": "SHORT", "size": -4.0, "price": 1.11 }
+      ],
+      "net": { "size": 6.0, "price": 1.0933333333333333 }
+    }
+  ]
+}

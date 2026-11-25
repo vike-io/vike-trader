@@ -1,0 +1,2349 @@
+{
+  "argv": [
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "tools.offline",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": {
+              "<lines>": [
+                "let fast = param(\"fast\", 10);",
+                "let slow = param(\"slow\", 20.5);",
+                "fn on_bar() { }",
+                ""
+              ]
+            }
+          },
+          "name": "validate_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "ok": true
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": "fn on_bar( {"
+          },
+          "name": "validate_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "error": "Expecting ')' to close the parameters list of function 'on_bar' (line 1, position 12)",
+            "ok": false
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": "let x = no_such_function();"
+          },
+          "name": "validate_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "error": "Function not found: no_such_function () (line 1, position 9)",
+            "ok": false
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "validate_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 4,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "validate_strategy requires a `script` string argument",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": 7
+          },
+          "name": "validate_strategy"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 5,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "validate_strategy requires a `script` string argument",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": {
+              "<lines>": [
+                "let fast = param(\"fast\", 10);",
+                "let slow = param(\"slow\", 20.5);",
+                "fn on_bar() { }",
+                ""
+              ]
+            }
+          },
+          "name": "discover_params"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 6,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "params": [
+              {
+                "default": 10.0,
+                "name": "fast"
+              },
+              {
+                "default": 20.5,
+                "name": "slow"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": "fn on_bar() { }"
+          },
+          "name": "discover_params"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 7,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "params": []
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "script": "fn on_bar( {"
+          },
+          "name": "discover_params"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 8,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "rhai compile error: Expecting ')' to close the parameters list of function 'on_bar' (line 1, position 12)",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "discover_params"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 9,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "discover_params requires a `script` string argument",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 10,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "list_templates"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 10,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "templates": [
+              {
+                "code": {
+                  "<lines>": [
+                    "",
+                    "let fast = param(\"fast\", 5.0);",
+                    "let slow = param(\"slow\", 20.0);",
+                    "let equity_percent = param(\"equity_percent\", 10.0);",
+                    "fn on_bar(strategy) {",
+                    "    let f = sma(fast.to_int()); let s = sma(slow.to_int());",
+                    "    if s.is_nan() { return; }",
+                    "    let size = strategy.equity() * equity_percent / 100.0 / close();",
+                    "    if f > s { strategy.entry(\"Long\", OrderSide::Long).size(size); } else { strategy.close(\"Long\"); }",
+                    "}",
+                    ""
+                  ]
+                },
+                "name": "SMA cross"
+              },
+              {
+                "code": {
+                  "<lines>": [
+                    "",
+                    "let len = param(\"len\", 14.0);",
+                    "let lo = param(\"lo\", 30.0);",
+                    "let hi = param(\"hi\", 70.0);",
+                    "let equity_percent = param(\"equity_percent\", 10.0);",
+                    "fn on_bar(strategy) {",
+                    "    let r = rsi(len.to_int());",
+                    "    if r.is_nan() { return; }",
+                    "    let held = strategy.position();",
+                    "    // a step closes what is held, else opens a share of the equity",
+                    "    let size = if held != 0.0 { held.abs() } else { strategy.equity() * equity_percent / 100.0 / close() };",
+                    "    if r < lo && held <= 0.0 { strategy.order(\"buy\", OrderSide::Long).size(size); }",
+                    "    if r > hi && held >= 0.0 { strategy.order(\"sell\", OrderSide::Short).size(size); }",
+                    "}",
+                    ""
+                  ]
+                },
+                "name": "RSI reversion"
+              },
+              {
+                "code": {
+                  "<lines>": [
+                    "",
+                    "let len = param(\"len\", 20.0);",
+                    "let equity_percent = param(\"equity_percent\", 10.0);",
+                    "fn on_bar(strategy) {",
+                    "    let h = sma(len.to_int());   // symmetric proxy. donchian is NOT bound: it is multi-output",
+                    "                                 // (upper/mid/lower) and the bridge binds single-output indicators",
+                    "                                 // only, so `donchian(len)` is a function-not-found at the first",
+                    "                                 // call rather than a silent upper-band read.",
+                    "    if h.is_nan() { return; }",
+                    "    let held = strategy.position();",
+                    "    // a step closes what is held, else opens a share of the equity",
+                    "    let size = if held != 0.0 { held.abs() } else { strategy.equity() * equity_percent / 100.0 / close() };",
+                    "    if high() > h && held <= 0.0 { strategy.order(\"buy\", OrderSide::Long).size(size); }",
+                    "    if low() < h && held >= 0.0 { strategy.order(\"sell\", OrderSide::Short).size(size); }",
+                    "}",
+                    ""
+                  ]
+                },
+                "name": "Donchian breakout"
+              },
+              {
+                "code": {
+                  "<lines>": [
+                    "",
+                    "let fast = param(\"fast\", 5.0);",
+                    "let slow = param(\"slow\", 20.0);",
+                    "let stop_pct = param(\"stop_pct\", 2.0);",
+                    "let take_pct = param(\"take_pct\", 4.0);",
+                    "let equity_percent = param(\"equity_percent\", 10.0);",
+                    "fn on_bar(strategy) {",
+                    "    let f = sma(fast.to_int()); let s = sma(slow.to_int());",
+                    "    if s.is_nan() { return; }",
+                    "    if f > s && strategy.position() <= 0.0 {",
+                    "        strategy.entry(\"Long\", OrderSide::Long).size(strategy.equity() * equity_percent / 100.0 / close());",
+                    "        strategy.exit(\"Long\").stop_pct(stop_pct).take_pct(take_pct);",
+                    "    }",
+                    "    if f < s && strategy.position() > 0.0 { strategy.close(\"Long\"); }",
+                    "}",
+                    ""
+                  ]
+                },
+                "name": "SMA cross with stop and target"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 11,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "list_indicators"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 11,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "count": 219,
+            "indicators": [
+              {
+                "category": "Overlap",
+                "name": "sma"
+              },
+              {
+                "category": "Overlap",
+                "name": "ema"
+              },
+              {
+                "category": "Overlap",
+                "name": "wma"
+              },
+              {
+                "category": "Volatility",
+                "name": "bollinger"
+              },
+              {
+                "category": "Volatility",
+                "name": "donchian"
+              },
+              {
+                "category": "Volatility",
+                "name": "keltner"
+              },
+              {
+                "category": "Volume",
+                "name": "vwap"
+              },
+              {
+                "category": "Overlap",
+                "name": "psar"
+              },
+              {
+                "category": "Momentum",
+                "name": "rsi"
+              },
+              {
+                "category": "Momentum",
+                "name": "macd"
+              },
+              {
+                "category": "Momentum",
+                "name": "stochastic"
+              },
+              {
+                "category": "Volatility",
+                "name": "atr"
+              },
+              {
+                "category": "Momentum",
+                "name": "cci"
+              },
+              {
+                "category": "Momentum",
+                "name": "roc"
+              },
+              {
+                "category": "Momentum",
+                "name": "williams"
+              },
+              {
+                "category": "Volume",
+                "name": "obv"
+              },
+              {
+                "category": "Momentum",
+                "name": "awesome"
+              },
+              {
+                "category": "Momentum",
+                "name": "mom"
+              },
+              {
+                "category": "Momentum",
+                "name": "rocp"
+              },
+              {
+                "category": "Momentum",
+                "name": "rocr"
+              },
+              {
+                "category": "Momentum",
+                "name": "rocr100"
+              },
+              {
+                "category": "Momentum",
+                "name": "apo"
+              },
+              {
+                "category": "Momentum",
+                "name": "ppo"
+              },
+              {
+                "category": "Momentum",
+                "name": "cmo"
+              },
+              {
+                "category": "Momentum",
+                "name": "bop"
+              },
+              {
+                "category": "Momentum",
+                "name": "dpo"
+              },
+              {
+                "category": "Momentum",
+                "name": "trix"
+              },
+              {
+                "category": "Momentum",
+                "name": "tsi"
+              },
+              {
+                "category": "Momentum",
+                "name": "smi_ergodic"
+              },
+              {
+                "category": "Momentum",
+                "name": "coppock"
+              },
+              {
+                "category": "Momentum",
+                "name": "aroon"
+              },
+              {
+                "category": "Momentum",
+                "name": "aroonosc"
+              },
+              {
+                "category": "Momentum",
+                "name": "adx"
+              },
+              {
+                "category": "Momentum",
+                "name": "adxr"
+              },
+              {
+                "category": "Momentum",
+                "name": "elder_ray"
+              },
+              {
+                "category": "Momentum",
+                "name": "stochf"
+              },
+              {
+                "category": "Momentum",
+                "name": "stochrsi"
+              },
+              {
+                "category": "Momentum",
+                "name": "ultosc"
+              },
+              {
+                "category": "Momentum",
+                "name": "vortex"
+              },
+              {
+                "category": "Momentum",
+                "name": "chande_kroll_stop"
+              },
+              {
+                "category": "Momentum",
+                "name": "asi"
+              },
+              {
+                "category": "Momentum",
+                "name": "fisher"
+              },
+              {
+                "category": "Momentum",
+                "name": "connors_rsi"
+              },
+              {
+                "category": "Momentum",
+                "name": "relative_vigor"
+              },
+              {
+                "category": "Momentum",
+                "name": "ac"
+              },
+              {
+                "category": "Volatility",
+                "name": "true_range"
+              },
+              {
+                "category": "Volatility",
+                "name": "natr"
+              },
+              {
+                "category": "Volatility",
+                "name": "stddev"
+              },
+              {
+                "category": "Volatility",
+                "name": "hvol"
+              },
+              {
+                "category": "Volatility",
+                "name": "bbands_pctb"
+              },
+              {
+                "category": "Volatility",
+                "name": "bbands_width"
+              },
+              {
+                "category": "Volatility",
+                "name": "donchian_width"
+              },
+              {
+                "category": "Volatility",
+                "name": "ulcer"
+              },
+              {
+                "category": "Volatility",
+                "name": "chop"
+              },
+              {
+                "category": "Volatility",
+                "name": "relative_volatility"
+              },
+              {
+                "category": "Volatility",
+                "name": "high_low_52w"
+              },
+              {
+                "category": "Volatility",
+                "name": "mass"
+              },
+              {
+                "category": "Volatility",
+                "name": "rvol_ewma"
+              },
+              {
+                "category": "Volatility",
+                "name": "rvol_close_to_close"
+              },
+              {
+                "category": "Volatility",
+                "name": "rvol_parkinson"
+              },
+              {
+                "category": "Volatility",
+                "name": "rvol_garman_klass"
+              },
+              {
+                "category": "Volatility",
+                "name": "rvol_rogers_satchell"
+              },
+              {
+                "category": "Volatility",
+                "name": "rvol_yang_zhang"
+              },
+              {
+                "category": "Overlap",
+                "name": "dema"
+              },
+              {
+                "category": "Overlap",
+                "name": "tema"
+              },
+              {
+                "category": "Overlap",
+                "name": "trima"
+              },
+              {
+                "category": "Overlap",
+                "name": "smma"
+              },
+              {
+                "category": "Overlap",
+                "name": "zlema"
+              },
+              {
+                "category": "Overlap",
+                "name": "hma"
+              },
+              {
+                "category": "Overlap",
+                "name": "vwma"
+              },
+              {
+                "category": "Overlap",
+                "name": "t3"
+              },
+              {
+                "category": "Overlap",
+                "name": "alma"
+              },
+              {
+                "category": "Overlap",
+                "name": "midpoint"
+              },
+              {
+                "category": "Overlap",
+                "name": "midprice"
+              },
+              {
+                "category": "Overlap",
+                "name": "supertrend"
+              },
+              {
+                "category": "Overlap",
+                "name": "mcginley"
+              },
+              {
+                "category": "Overlap",
+                "name": "gmma"
+              },
+              {
+                "category": "Overlap",
+                "name": "envelopes"
+              },
+              {
+                "category": "Overlap",
+                "name": "alligator"
+              },
+              {
+                "category": "Volume",
+                "name": "ad"
+              },
+              {
+                "category": "Volume",
+                "name": "adosc"
+              },
+              {
+                "category": "Volume",
+                "name": "cmf"
+              },
+              {
+                "category": "Volume",
+                "name": "efi"
+              },
+              {
+                "category": "Volume",
+                "name": "eom"
+              },
+              {
+                "category": "Volume",
+                "name": "kvo"
+              },
+              {
+                "category": "Volume",
+                "name": "mfi"
+              },
+              {
+                "category": "Volume",
+                "name": "net_volume"
+              },
+              {
+                "category": "Volume",
+                "name": "nvi"
+              },
+              {
+                "category": "Volume",
+                "name": "pvi"
+              },
+              {
+                "category": "Volume",
+                "name": "pvt"
+              },
+              {
+                "category": "Volume",
+                "name": "volume_osc"
+              },
+              {
+                "category": "Volume",
+                "name": "kyle_lambda"
+              },
+              {
+                "category": "Volume",
+                "name": "amihud_illiquidity"
+              },
+              {
+                "category": "Statistics",
+                "name": "linearreg"
+              },
+              {
+                "category": "Statistics",
+                "name": "linearreg_slope"
+              },
+              {
+                "category": "Statistics",
+                "name": "linearreg_angle"
+              },
+              {
+                "category": "Statistics",
+                "name": "linearreg_intercept"
+              },
+              {
+                "category": "Statistics",
+                "name": "tsf"
+              },
+              {
+                "category": "Statistics",
+                "name": "zscore"
+              },
+              {
+                "category": "Statistics",
+                "name": "skew"
+              },
+              {
+                "category": "Statistics",
+                "name": "kurtosis"
+              },
+              {
+                "category": "Statistics",
+                "name": "mad"
+              },
+              {
+                "category": "Statistics",
+                "name": "std_error"
+              },
+              {
+                "category": "Statistics",
+                "name": "std_error_bands"
+              },
+              {
+                "category": "Statistics",
+                "name": "rank_correlation"
+              },
+              {
+                "category": "Statistics",
+                "name": "roll_spread"
+              },
+              {
+                "category": "Structure",
+                "name": "pivot_points"
+              },
+              {
+                "category": "Structure",
+                "name": "volume_profile_poc"
+              },
+              {
+                "category": "Structure",
+                "name": "confirmed_pivot"
+              },
+              {
+                "category": "Pattern",
+                "name": "doji"
+              },
+              {
+                "category": "Pattern",
+                "name": "engulfing"
+              },
+              {
+                "category": "Pattern",
+                "name": "hammer"
+              },
+              {
+                "category": "Pattern",
+                "name": "inverted_hammer"
+              },
+              {
+                "category": "Pattern",
+                "name": "hanging_man"
+              },
+              {
+                "category": "Pattern",
+                "name": "shooting_star"
+              },
+              {
+                "category": "Pattern",
+                "name": "dragonfly_doji"
+              },
+              {
+                "category": "Pattern",
+                "name": "gravestone_doji"
+              },
+              {
+                "category": "Pattern",
+                "name": "longlegged_doji"
+              },
+              {
+                "category": "Pattern",
+                "name": "rickshaw_man"
+              },
+              {
+                "category": "Pattern",
+                "name": "takuri"
+              },
+              {
+                "category": "Pattern",
+                "name": "marubozu"
+              },
+              {
+                "category": "Pattern",
+                "name": "closing_marubozu"
+              },
+              {
+                "category": "Pattern",
+                "name": "spinning_top"
+              },
+              {
+                "category": "Pattern",
+                "name": "high_wave"
+              },
+              {
+                "category": "Pattern",
+                "name": "long_line"
+              },
+              {
+                "category": "Pattern",
+                "name": "short_line"
+              },
+              {
+                "category": "Pattern",
+                "name": "belt_hold"
+              },
+              {
+                "category": "Pattern",
+                "name": "opening_marubozu"
+              },
+              {
+                "category": "Pattern",
+                "name": "doji_star"
+              },
+              {
+                "category": "Pattern",
+                "name": "harami"
+              },
+              {
+                "category": "Pattern",
+                "name": "harami_cross"
+              },
+              {
+                "category": "Pattern",
+                "name": "piercing"
+              },
+              {
+                "category": "Pattern",
+                "name": "dark_cloud_cover"
+              },
+              {
+                "category": "Pattern",
+                "name": "counterattack"
+              },
+              {
+                "category": "Pattern",
+                "name": "meeting_lines"
+              },
+              {
+                "category": "Pattern",
+                "name": "separating_lines"
+              },
+              {
+                "category": "Pattern",
+                "name": "matching_low"
+              },
+              {
+                "category": "Pattern",
+                "name": "on_neck"
+              },
+              {
+                "category": "Pattern",
+                "name": "in_neck"
+              },
+              {
+                "category": "Pattern",
+                "name": "thrusting"
+              },
+              {
+                "category": "Pattern",
+                "name": "kicking"
+              },
+              {
+                "category": "Pattern",
+                "name": "kicking_by_length"
+              },
+              {
+                "category": "Pattern",
+                "name": "homing_pigeon"
+              },
+              {
+                "category": "Pattern",
+                "name": "gap_side_side_white"
+              },
+              {
+                "category": "Pattern",
+                "name": "tasuki_gap"
+              },
+              {
+                "category": "Pattern",
+                "name": "morning_star"
+              },
+              {
+                "category": "Pattern",
+                "name": "evening_star"
+              },
+              {
+                "category": "Pattern",
+                "name": "morning_doji_star"
+              },
+              {
+                "category": "Pattern",
+                "name": "evening_doji_star"
+              },
+              {
+                "category": "Pattern",
+                "name": "three_white_soldiers"
+              },
+              {
+                "category": "Pattern",
+                "name": "three_black_crows"
+              },
+              {
+                "category": "Pattern",
+                "name": "identical_three_crows"
+              },
+              {
+                "category": "Pattern",
+                "name": "three_inside"
+              },
+              {
+                "category": "Pattern",
+                "name": "three_outside"
+              },
+              {
+                "category": "Pattern",
+                "name": "three_line_strike"
+              },
+              {
+                "category": "Pattern",
+                "name": "three_stars_in_south"
+              },
+              {
+                "category": "Pattern",
+                "name": "abandoned_baby"
+              },
+              {
+                "category": "Pattern",
+                "name": "advance_block"
+              },
+              {
+                "category": "Pattern",
+                "name": "stalled_pattern"
+              },
+              {
+                "category": "Pattern",
+                "name": "two_crows"
+              },
+              {
+                "category": "Pattern",
+                "name": "upside_gap_two_crows"
+              },
+              {
+                "category": "Pattern",
+                "name": "tristar"
+              },
+              {
+                "category": "Pattern",
+                "name": "unique_three_river"
+              },
+              {
+                "category": "Pattern",
+                "name": "stick_sandwich"
+              },
+              {
+                "category": "Pattern",
+                "name": "ladder_bottom"
+              },
+              {
+                "category": "Pattern",
+                "name": "concealing_baby_swallow"
+              },
+              {
+                "category": "Pattern",
+                "name": "rise_fall_three_methods"
+              },
+              {
+                "category": "Pattern",
+                "name": "mat_hold"
+              },
+              {
+                "category": "Pattern",
+                "name": "hikkake"
+              },
+              {
+                "category": "Pattern",
+                "name": "hikkake_mod"
+              },
+              {
+                "category": "Pattern",
+                "name": "xside_gap_three_methods"
+              },
+              {
+                "category": "Pattern",
+                "name": "breakaway"
+              },
+              {
+                "category": "Price",
+                "name": "avgprice"
+              },
+              {
+                "category": "Price",
+                "name": "medprice"
+              },
+              {
+                "category": "Price",
+                "name": "typprice"
+              },
+              {
+                "category": "Price",
+                "name": "wclprice"
+              },
+              {
+                "category": "Overlap",
+                "name": "kama"
+              },
+              {
+                "category": "Overlap",
+                "name": "vidya"
+              },
+              {
+                "category": "Overlap",
+                "name": "frama"
+              },
+              {
+                "category": "Overlap",
+                "name": "evwma"
+              },
+              {
+                "category": "Overlap",
+                "name": "median_ma"
+              },
+              {
+                "category": "Overlap",
+                "name": "chandelier"
+              },
+              {
+                "category": "Overlap",
+                "name": "hilo_activator"
+              },
+              {
+                "category": "Overlap",
+                "name": "atr_trailing_stop"
+              },
+              {
+                "category": "Volatility",
+                "name": "ttm_squeeze"
+              },
+              {
+                "category": "Volatility",
+                "name": "starc"
+              },
+              {
+                "category": "Volatility",
+                "name": "acceleration_bands"
+              },
+              {
+                "category": "Volatility",
+                "name": "linreg_channel"
+              },
+              {
+                "category": "Overlap",
+                "name": "swma"
+              },
+              {
+                "category": "Overlap",
+                "name": "gaussian_filter"
+              },
+              {
+                "category": "Overlap",
+                "name": "gh_filter"
+              },
+              {
+                "category": "Overlap",
+                "name": "kalman"
+              },
+              {
+                "category": "Momentum",
+                "name": "dx"
+              },
+              {
+                "category": "Momentum",
+                "name": "plus_di"
+              },
+              {
+                "category": "Momentum",
+                "name": "minus_di"
+              },
+              {
+                "category": "Momentum",
+                "name": "plus_dm"
+              },
+              {
+                "category": "Momentum",
+                "name": "minus_dm"
+              },
+              {
+                "category": "Momentum",
+                "name": "rwi"
+              },
+              {
+                "category": "Momentum",
+                "name": "qstick"
+              },
+              {
+                "category": "Volatility",
+                "name": "chaikin_volatility"
+              },
+              {
+                "category": "Volume",
+                "name": "williams_ad"
+              },
+              {
+                "category": "Volume",
+                "name": "anchored_vwap"
+              },
+              {
+                "category": "Price",
+                "name": "heikin_ashi"
+              },
+              {
+                "category": "Statistics",
+                "name": "r_squared"
+              },
+              {
+                "category": "Statistics",
+                "name": "autocorr"
+              },
+              {
+                "category": "Statistics",
+                "name": "hurst"
+              },
+              {
+                "category": "Momentum",
+                "name": "wavetrend"
+              },
+              {
+                "category": "Momentum",
+                "name": "qqe"
+              },
+              {
+                "category": "Momentum",
+                "name": "stc"
+              },
+              {
+                "category": "Statistics",
+                "name": "percent_rank"
+              },
+              {
+                "category": "Momentum",
+                "name": "early_onset_trend"
+              },
+              {
+                "category": "Statistics",
+                "name": "kpss"
+              },
+              {
+                "category": "Statistics",
+                "name": "fractional_difference"
+              },
+              {
+                "category": "Statistics",
+                "name": "shannon_entropy"
+              },
+              {
+                "category": "Statistics",
+                "name": "lempel_ziv"
+              },
+              {
+                "category": "Volatility",
+                "name": "garch_volatility"
+              },
+              {
+                "category": "Statistics",
+                "name": "dominant_cycle"
+              },
+              {
+                "category": "Volatility",
+                "name": "haar_detail_energy"
+              },
+              {
+                "category": "Statistics",
+                "name": "adf"
+              }
+            ],
+            "note": "the callable roster, compact, and your own (`user_indicators`, from user_data/indicators, in full). Call again with `name` for one indicator in full (its parameters with their defaults, and the value it returns) or with `category` for a whole built-in family. A name absent from both lists is NOT callable: rhai resolves a function name when the line runs, so a script naming it compiles and then fails on every bar until the strategy switches itself off. `name` on such a name answers with the reason it is held back.",
+            "user_indicators": []
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 12,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "name": "sma"
+          },
+          "name": "list_indicators"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 12,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "count": 1,
+            "indicators": [
+              {
+                "accessors": [],
+                "bare_call": true,
+                "category": "Overlap",
+                "name": "sma",
+                "outputs": [
+                  "sma"
+                ],
+                "params": [
+                  {
+                    "default": 20.0,
+                    "max": 1000.0,
+                    "min": 1.0,
+                    "name": "length"
+                  }
+                ],
+                "pretty": "Simple MA"
+              }
+            ],
+            "user_indicators": []
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 13,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "name": "no_such_indicator"
+          },
+          "name": "list_indicators"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 13,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "no indicator named 'no_such_indicator'",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 14,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "name": "   "
+          },
+          "name": "list_indicators"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 14,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "count": 219,
+            "indicators": [
+              {
+                "category": "Overlap",
+                "name": "sma"
+              },
+              {
+                "category": "Overlap",
+                "name": "ema"
+              },
+              {
+                "category": "Overlap",
+                "name": "wma"
+              },
+              {
+                "category": "Volatility",
+                "name": "bollinger"
+              },
+              {
+                "category": "Volatility",
+                "name": "donchian"
+              },
+              {
+                "category": "Volatility",
+                "name": "keltner"
+              },
+              {
+                "category": "Volume",
+                "name": "vwap"
+              },
+              {
+                "category": "Overlap",
+                "name": "psar"
+              },
+              {
+                "category": "Momentum",
+                "name": "rsi"
+              },
+              {
+                "category": "Momentum",
+                "name": "macd"
+              },
+              {
+                "category": "Momentum",
+                "name": "stochastic"
+              },
+              {
+                "category": "Volatility",
+                "name": "atr"
+              },
+              {
+                "category": "Momentum",
+                "name": "cci"
+              },
+              {
+                "category": "Momentum",
+                "name": "roc"
+              },
+              {
+                "category": "Momentum",
+                "name": "williams"
+              },
+              {
+                "category": "Volume",
+                "name": "obv"
+              },
+              {
+                "category": "Momentum",
+                "name": "awesome"
+              },
+              {
+                "category": "Momentum",
+                "name": "mom"
+              },
+              {
+                "category": "Momentum",
+                "name": "rocp"
+              },
+              {
+                "category": "Momentum",
+                "name": "rocr"
+              },
+              {
+                "category": "Momentum",
+                "name": "rocr100"
+              },
+              {
+                "category": "Momentum",
+                "name": "apo"
+              },
+              {
+                "category": "Momentum",
+                "name": "ppo"
+              },
+              {
+                "category": "Momentum",
+                "name": "cmo"
+              },
+              {
+                "category": "Momentum",
+                "name": "bop"
+              },
+              {
+                "category": "Momentum",
+                "name": "dpo"
+              },
+              {
+                "category": "Momentum",
+                "name": "trix"
+              },
+              {
+                "category": "Momentum",
+                "name": "tsi"
+              },
+              {
+                "category": "Momentum",
+                "name": "smi_ergodic"
+              },
+              {
+                "category": "Momentum",
+                "name": "coppock"
+              },
+              {
+                "category": "Momentum",
+                "name": "aroon"
+              },
+              {
+                "category": "Momentum",
+                "name": "aroonosc"
+              },
+              {
+                "category": "Momentum",
+                "name": "adx"
+              },
+              {
+                "category": "Momentum",
+                "name": "adxr"
+              },
+              {
+                "category": "Momentum",
+                "name": "elder_ray"
+              },
+              {
+                "category": "Momentum",
+                "name": "stochf"
+              },
+              {
+                "category": "Momentum",
+                "name": "stochrsi"
+              },
+              {
+                "category": "Momentum",
+                "name": "ultosc"
+              },
+              {
+                "category": "Momentum",
+                "name": "vortex"
+              },
+              {
+                "category": "Momentum",
+                "name": "chande_kroll_stop"
+              },
+              {
+                "category": "Momentum",
+                "name": "asi"
+              },
+              {
+                "category": "Momentum",
+                "name": "fisher"
+              },
+              {
+                "category": "Momentum",
+                "name": "connors_rsi"
+              },
+              {
+                "category": "Momentum",
+                "name": "relative_vigor"
+              },
+              {
+                "category": "Momentum",
+                "name": "ac"
+              },
+              {
+                "category": "Volatility",
+                "name": "true_range"
+              },
+              {
+                "category": "Volatility",
+                "name": "natr"
+              },
+              {
+                "category": "Volatility",
+                "name": "stddev"
+              },
+              {
+                "category": "Volatility",
+                "name": "hvol"
+              },
+              {
+                "category": "Volatility",
+                "name": "bbands_pctb"
+              },
+              {
+                "category": "Volatility",
+                "name": "bbands_width"
+              },
+              {
+                "category": "Volatility",
+                "name": "donchian_width"
+              },
+              {
+                "category": "Volatility",
+                "name": "ulcer"
+              },
+              {
+                "category": "Volatility",
+                "name": "chop"
+              },
+              {
+                "category": "Volatility",
+                "name": "relative_volatility"
+              },
+              {
+                "category": "Volatility",
+                "name": "high_low_52w"
+              },
+              {
+                "category": "Volatility",
+                "name": "mass"
+              },
+              {
+                "category": "Volatility",
+                "name": "rvol_ewma"
+              },
+              {
+                "category": "Volatility",
+                "name": "rvol_close_to_close"
+              },
+              {
+                "category": "Volatility",
+                "name": "rvol_parkinson"
+              },
+              {
+                "category": "Volatility",
+                "name": "rvol_garman_klass"
+              },
+              {
+                "category": "Volatility",
+                "name": "rvol_rogers_satchell"
+              },
+              {
+                "category": "Volatility",
+                "name": "rvol_yang_zhang"
+              },
+              {
+                "category": "Overlap",
+                "name": "dema"
+              },
+              {
+                "category": "Overlap",
+                "name": "tema"
+              },
+              {
+                "category": "Overlap",
+                "name": "trima"
+              },
+              {
+                "category": "Overlap",
+                "name": "smma"
+              },
+              {
+                "category": "Overlap",
+                "name": "zlema"
+              },
+              {
+                "category": "Overlap",
+                "name": "hma"
+              },
+              {
+                "category": "Overlap",
+                "name": "vwma"
+              },
+              {
+                "category": "Overlap",
+                "name": "t3"
+              },
+              {
+                "category": "Overlap",
+                "name": "alma"
+              },
+              {
+                "category": "Overlap",
+                "name": "midpoint"
+              },
+              {
+                "category": "Overlap",
+                "name": "midprice"
+              },
+              {
+                "category": "Overlap",
+                "name": "supertrend"
+              },
+              {
+                "category": "Overlap",
+                "name": "mcginley"
+              },
+              {
+                "category": "Overlap",
+                "name": "gmma"
+              },
+              {
+                "category": "Overlap",
+                "name": "envelopes"
+              },
+              {
+                "category": "Overlap",
+                "name": "alligator"
+              },
+              {
+                "category": "Volume",
+                "name": "ad"
+              },
+              {
+                "category": "Volume",
+                "name": "adosc"
+              },
+              {
+                "category": "Volume",
+                "name": "cmf"
+              },
+              {
+                "category": "Volume",
+                "name": "efi"
+              },
+              {
+                "category": "Volume",
+                "name": "eom"
+              },
+              {
+                "category": "Volume",
+                "name": "kvo"
+              },
+              {
+                "category": "Volume",
+                "name": "mfi"
+              },
+              {
+                "category": "Volume",
+                "name": "net_volume"
+              },
+              {
+                "category": "Volume",
+                "name": "nvi"
+              },
+              {
+                "category": "Volume",
+                "name": "pvi"
+              },
+              {
+                "category": "Volume",
+                "name": "pvt"
+              },
+              {
+                "category": "Volume",
+                "name": "volume_osc"
+              },
+              {
+                "category": "Volume",
+                "name": "kyle_lambda"
+              },
+              {
+                "category": "Volume",
+                "name": "amihud_illiquidity"
+              },
+              {
+                "category": "Statistics",
+                "name": "linearreg"
+              },
+              {
+                "category": "Statistics",
+                "name": "linearreg_slope"
+              },
+              {
+                "category": "Statistics",
+                "name": "linearreg_angle"
+              },
+              {
+                "category": "Statistics",
+                "name": "linearreg_intercept"
+              },
+              {
+                "category": "Statistics",
+                "name": "tsf"
+              },
+              {
+                "category": "Statistics",
+                "name": "zscore"
+              },
+              {
+                "category": "Statistics",
+                "name": "skew"
+              },
+              {
+                "category": "Statistics",
+                "name": "kurtosis"
+              },
+              {
+                "category": "Statistics",
+                "name": "mad"
+              },
+              {
+                "category": "Statistics",
+                "name": "std_error"
+              },
+              {
+                "category": "Statistics",
+                "name": "std_error_bands"
+              },
+              {
+                "category": "Statistics",
+                "name": "rank_correlation"
+              },
+              {
+                "category": "Statistics",
+                "name": "roll_spread"
+              },
+              {
+                "category": "Structure",
+                "name": "pivot_points"
+              },
+              {
+                "category": "Structure",
+                "name": "volume_profile_poc"
+              },
+              {
+                "category": "Structure",
+                "name": "confirmed_pivot"
+              },
+              {
+                "category": "Pattern",
+                "name": "doji"
+              },
+              {
+                "category": "Pattern",
+                "name": "engulfing"
+              },
+              {
+                "category": "Pattern",
+                "name": "hammer"
+              },
+              {
+                "category": "Pattern",
+                "name": "inverted_hammer"
+              },
+              {
+                "category": "Pattern",
+                "name": "hanging_man"
+              },
+              {
+                "category": "Pattern",
+                "name": "shooting_star"
+              },
+              {
+                "category": "Pattern",
+                "name": "dragonfly_doji"
+              },
+              {
+                "category": "Pattern",
+                "name": "gravestone_doji"
+              },
+              {
+                "category": "Pattern",
+                "name": "longlegged_doji"
+              },
+              {
+                "category": "Pattern",
+                "name": "rickshaw_man"
+              },
+              {
+                "category": "Pattern",
+                "name": "takuri"
+              },
+              {
+                "category": "Pattern",
+                "name": "marubozu"
+              },
+              {
+                "category": "Pattern",
+                "name": "closing_marubozu"
+              },
+              {
+                "category": "Pattern",
+                "name": "spinning_top"
+              },
+              {
+                "category": "Pattern",
+                "name": "high_wave"
+              },
+              {
+                "category": "Pattern",
+                "name": "long_line"
+              },
+              {
+                "category": "Pattern",
+                "name": "short_line"
+              },
+              {
+                "category": "Pattern",
+                "name": "belt_hold"
+              },
+              {
+                "category": "Pattern",
+                "name": "opening_marubozu"
+              },
+              {
+                "category": "Pattern",
+                "name": "doji_star"
+              },
+              {
+                "category": "Pattern",
+                "name": "harami"
+              },
+              {
+                "category": "Pattern",
+                "name": "harami_cross"
+              },
+              {
+                "category": "Pattern",
+                "name": "piercing"
+              },
+              {
+                "category": "Pattern",
+                "name": "dark_cloud_cover"
+              },
+              {
+                "category": "Pattern",
+                "name": "counterattack"
+              },
+              {
+                "category": "Pattern",
+                "name": "meeting_lines"
+              },
+              {
+                "category": "Pattern",
+                "name": "separating_lines"
+              },
+              {
+                "category": "Pattern",
+                "name": "matching_low"
+              },
+              {
+                "category": "Pattern",
+                "name": "on_neck"
+              },
+              {
+                "category": "Pattern",
+                "name": "in_neck"
+              },
+              {
+                "category": "Pattern",
+                "name": "thrusting"
+              },
+              {
+                "category": "Pattern",
+                "name": "kicking"
+              },
+              {
+                "category": "Pattern",
+                "name": "kicking_by_length"
+              },
+              {
+                "category": "Pattern",
+                "name": "homing_pigeon"
+              },
+              {
+                "category": "Pattern",
+                "name": "gap_side_side_white"
+              },
+              {
+                "category": "Pattern",
+                "name": "tasuki_gap"
+              },
+              {
+                "category": "Pattern",
+                "name": "morning_star"
+              },
+              {
+                "category": "Pattern",
+                "name": "evening_star"
+              },
+              {
+                "category": "Pattern",
+                "name": "morning_doji_star"
+              },
+              {
+                "category": "Pattern",
+                "name": "evening_doji_star"
+              },
+              {
+                "category": "Pattern",
+                "name": "three_white_soldiers"
+              },
+              {
+                "category": "Pattern",
+                "name": "three_black_crows"
+              },
+              {
+                "category": "Pattern",
+                "name": "identical_three_crows"
+              },
+              {
+                "category": "Pattern",
+                "name": "three_inside"
+              },
+              {
+                "category": "Pattern",
+                "name": "three_outside"
+              },
+              {
+                "category": "Pattern",
+                "name": "three_line_strike"
+              },
+              {
+                "category": "Pattern",
+                "name": "three_stars_in_south"
+              },
+              {
+                "category": "Pattern",
+                "name": "abandoned_baby"
+              },
+              {
+                "category": "Pattern",
+                "name": "advance_block"
+              },
+              {
+                "category": "Pattern",
+                "name": "stalled_pattern"
+              },
+              {
+                "category": "Pattern",
+                "name": "two_crows"
+              },
+              {
+                "category": "Pattern",
+                "name": "upside_gap_two_crows"
+              },
+              {
+                "category": "Pattern",
+                "name": "tristar"
+              },
+              {
+                "category": "Pattern",
+                "name": "unique_three_river"
+              },
+              {
+                "category": "Pattern",
+                "name": "stick_sandwich"
+              },
+              {
+                "category": "Pattern",
+                "name": "ladder_bottom"
+              },
+              {
+                "category": "Pattern",
+                "name": "concealing_baby_swallow"
+              },
+              {
+                "category": "Pattern",
+                "name": "rise_fall_three_methods"
+              },
+              {
+                "category": "Pattern",
+                "name": "mat_hold"
+              },
+              {
+                "category": "Pattern",
+                "name": "hikkake"
+              },
+              {
+                "category": "Pattern",
+                "name": "hikkake_mod"
+              },
+              {
+                "category": "Pattern",
+                "name": "xside_gap_three_methods"
+              },
+              {
+                "category": "Pattern",
+                "name": "breakaway"
+              },
+              {
+                "category": "Price",
+                "name": "avgprice"
+              },
+              {
+                "category": "Price",
+                "name": "medprice"
+              },
+              {
+                "category": "Price",
+                "name": "typprice"
+              },
+              {
+                "category": "Price",
+                "name": "wclprice"
+              },
+              {
+                "category": "Overlap",
+                "name": "kama"
+              },
+              {
+                "category": "Overlap",
+                "name": "vidya"
+              },
+              {
+                "category": "Overlap",
+                "name": "frama"
+              },
+              {
+                "category": "Overlap",
+                "name": "evwma"
+              },
+              {
+                "category": "Overlap",
+                "name": "median_ma"
+              },
+              {
+                "category": "Overlap",
+                "name": "chandelier"
+              },
+              {
+                "category": "Overlap",
+                "name": "hilo_activator"
+              },
+              {
+                "category": "Overlap",
+                "name": "atr_trailing_stop"
+              },
+              {
+                "category": "Volatility",
+                "name": "ttm_squeeze"
+              },
+              {
+                "category": "Volatility",
+                "name": "starc"
+              },
+              {
+                "category": "Volatility",
+                "name": "acceleration_bands"
+              },
+              {
+                "category": "Volatility",
+                "name": "linreg_channel"
+              },
+              {
+                "category": "Overlap",
+                "name": "swma"
+              },
+              {
+                "category": "Overlap",
+                "name": "gaussian_filter"
+              },
+              {
+                "category": "Overlap",
+                "name": "gh_filter"
+              },
+              {
+                "category": "Overlap",
+                "name": "kalman"
+              },
+              {
+                "category": "Momentum",
+                "name": "dx"
+              },
+              {
+                "category": "Momentum",
+                "name": "plus_di"
+              },
+              {
+                "category": "Momentum",
+                "name": "minus_di"
+              },
+              {
+                "category": "Momentum",
+                "name": "plus_dm"
+              },
+              {
+                "category": "Momentum",
+                "name": "minus_dm"
+              },
+              {
+                "category": "Momentum",
+                "name": "rwi"
+              },
+              {
+                "category": "Momentum",
+                "name": "qstick"
+              },
+              {
+                "category": "Volatility",
+                "name": "chaikin_volatility"
+              },
+              {
+                "category": "Volume",
+                "name": "williams_ad"
+              },
+              {
+                "category": "Volume",
+                "name": "anchored_vwap"
+              },
+              {
+                "category": "Price",
+                "name": "heikin_ashi"
+              },
+              {
+                "category": "Statistics",
+                "name": "r_squared"
+              },
+              {
+                "category": "Statistics",
+                "name": "autocorr"
+              },
+              {
+                "category": "Statistics",
+                "name": "hurst"
+              },
+              {
+                "category": "Momentum",
+                "name": "wavetrend"
+              },
+              {
+                "category": "Momentum",
+                "name": "qqe"
+              },
+              {
+                "category": "Momentum",
+                "name": "stc"
+              },
+              {
+                "category": "Statistics",
+                "name": "percent_rank"
+              },
+              {
+                "category": "Momentum",
+                "name": "early_onset_trend"
+              },
+              {
+                "category": "Statistics",
+                "name": "kpss"
+              },
+              {
+                "category": "Statistics",
+                "name": "fractional_difference"
+              },
+              {
+                "category": "Statistics",
+                "name": "shannon_entropy"
+              },
+              {
+                "category": "Statistics",
+                "name": "lempel_ziv"
+              },
+              {
+                "category": "Volatility",
+                "name": "garch_volatility"
+              },
+              {
+                "category": "Statistics",
+                "name": "dominant_cycle"
+              },
+              {
+                "category": "Volatility",
+                "name": "haar_detail_energy"
+              },
+              {
+                "category": "Statistics",
+                "name": "adf"
+              }
+            ],
+            "note": "the callable roster, compact, and your own (`user_indicators`, from user_data/indicators, in full). Call again with `name` for one indicator in full (its parameters with their defaults, and the value it returns) or with `category` for a whole built-in family. A name absent from both lists is NOT callable: rhai resolves a function name when the line runs, so a script naming it compiles and then fails on every bar until the strategy switches itself off. `name` on such a name answers with the reason it is held back.",
+            "user_indicators": []
+          }
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 15,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "category": "no_such_category"
+          },
+          "name": "list_indicators"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 15,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "no category 'no_such_category' — this build has: Momentum, Overlap, Pattern, Price, Statistics, Structure, Volatility, Volume",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "what": "the offline tools: answers and error shapes"
+}

@@ -1,0 +1,95 @@
+[package]
+name = "vike-rust-strategy"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # proprietary — never to crates.io
+description = "The quarantined FFI surface for runtime-loaded user Rust strategies: the C-ABI types, both sides' wrappers, and the dlopen loader. One of the few crates outside the workspace unsafe_code forbid, so that nothing above it has to be."
+# The integration tests are ONE test binary, `tests/integration.rs` (every `tests/<name>.rs` a `mod` of it), declared
+# below: one binary links instead of one per file. Discovery is off so each file keeps the path its citations name; a
+# new root file builds only as a `mod` there or a `[[test]]` row (`crates/vike-ops/tests/hygiene/test_registry_gate.rs`'s `every_root_test_file_is_built_where_discovery_is_off`).
+autotests = false
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs): tier `leaf`, the
+# floor its only normal vike-* dependencies (vike-model, vike-marketdata) allow.
+[package.metadata.vike]
+layer = 15
+
+# An EMPTY [lints] table, never `workspace = true`: this crate IS the quarantined FFI surface, exactly as
+# crates/bridges/fxcm is, and the workspace `unsafe_code = "forbid"` is a level a local `#[allow(unsafe_code)]`
+# cannot lift. Empty rather than absent so cargo 1.100's `missing_lints_inheritance` reads the opt-out as meant.
+[lints]
+
+[dependencies]
+# Exactly what a strategy file and the loader/host wrappers around one need. The builder service's own
+# tree lives in the sibling `vike-strategy-builder` (`src/lib.rs`'s module doc).
+vike-model = { path = "../vike-model" }
+vike-marketdata = { path = "../vike-marketdata" }
+# `Strategy::on_params_updated`'s `StrategyParams` crosses the ABI as JSON TEXT, never TOML:
+# `toml`'s serializer refuses a `None`, and the bag carries `Option` fields with no
+# `skip_serializing_if`. The argument is on `guest.rs`'s `strategy_params_from_json`. It adds an
+# edge, not a crate, to a strategy file's link: `vike-model` already depends on `serde_json`.
+serde_json = { workspace = true }
+# FNV-1a 64 (`vike_utility::fnv`, the workspace's one frozen identity hash) names an artifact's build
+# folder (`src/artifact.rs`'s `build_folder`), and `vike_utility::panic::payload_text` words a host-side
+# panic (`src/host.rs`'s `guarded`). Layer 3, below this crate's 15; it adds an edge, not a
+# crate, to a strategy file's link: the cdylib template names `vike-utility` itself.
+vike-utility = { path = "../vike-utility" }
+# The SDK marker `sdk-N/SDK` (`src/sdk.rs`'s `SdkMarker`) is a TOML document read and written through
+# serde. Both add an edge, not a crate, to a strategy file's link: the cdylib template names `serde`
+# and `toml` itself.
+serde = { workspace = true }
+toml = { workspace = true }
+# `tracing`: a strategy file's own events go to the host's log slot (`src/guest.rs`'s
+# `TracingForward`, `src/host.rs`'s `host_log`, `abi::LogFn`). It adds an edge, not a crate, to a
+# strategy file's link: the cdylib template and `vike-market-making` name it already.
+tracing = { workspace = true }
+
+# `crate::test_support`: the broker double the integration binaries share, compiled once by the lib
+# instead of once per binary. Turned on only by the self dev-dependency below; no shipped edge may
+# enable it (`crates/vike-ops/tests/architecture/test_surface_gate.rs`).
+[features]
+test-support = []
+# The GUEST glue alone, compiled against an OLDER SDK's crates through that SDK's adapter (decision 0296's
+# step 6, `src/guest.rs`'s `face`): only the builder's copy of this crate turns it on
+# (`crates/vike-strategy-builder/src/render.rs`'s `GLUE_MANIFEST`), never a workspace edge, and it needs the
+# adapter's `adapter/face.rs` beside `src/`, which only that copy has.
+adapted = []
+
+# ⚠ EVERY entry below but the first is a DEV-dependency for ONE test binary, `tests/equivalence.rs` (mechanism
+# equivalence: one fixture compiled in vs. loaded as a strategy file), and none reaches a compiled strategy file
+# (`cargo tree -p vike-rust-strategy -e normal` is unchanged by them). They point UP or level,
+# which `crates/vike-ops/tests/architecture/layer_gate.rs` exempts for dev-dependencies alone: proving two
+# mechanisms agree requires reaching both.
+[dev-dependencies]
+# Self-referential dev-dep (the `vike-execution`/`vike-model` idiom): turns `test-support` on for THIS crate's
+# own `tests/` targets. A strategy file depends on this crate by path and never sees a dev edge.
+vike-rust-strategy = { path = ".", features = ["test-support"] }
+# The real engine both halves run through (`StrategyEngine`/`OrderBrokerSimulator`). The spy-roster probe
+# also READS `crates/vike-simulator/src/engine.rs` and its `engine/` children as text, by a `CARGO_MANIFEST_DIR`-relative path.
+vike-simulator = { path = "../vike-simulator" }
+# `TradingRecord` and the `metrics` catalog the comparison scores both halves with.
+vike-analytics = { path = "../vike-analytics" }
+# The real builder (`build_strategy_file`), so the strategy file half is the PRODUCTION pipeline. This edge
+# closes a dev-dependency CYCLE (builder -> strategy file is a normal edge), which cargo supports.
+vike-strategy-builder = { path = "../vike-strategy-builder" }
+# `toml` parses the equivalence params DOCUMENT into the `vike_model::params::Params` the
+# fixture's `build` reads — the compiled-in half's stand-in for the template's own
+# `vike_strategy_create` parse. Then the rest of the user-facing API surface
+# (`crates/vike-ops/tests/docs/user_strategy_surface_gate.rs`'s `USER_SURFACE`) the two fixtures
+# name: the compiled-in half resolves their imports against this table, the strategy file half
+# against the rendered template (`vike-tactics`: `tests/fixtures/equivalence/tactics_cross.rs`).
+toml = { workspace = true }
+vike-strategy = { path = "../vike-strategy" }
+vike-indicators = { path = "../vike-indicators" }
+vike-tactics = { path = "../vike-tactics" }
+# `vike_marketdata::test_support`: the shared bar/tick builders. A DEV edge only; the normal edge
+# above already exists, so no lockfile entry.
+vike-marketdata = { path = "../vike-marketdata", features = ["test-support"] }
+# `vike_log::capture::scoped`: `src/guest_tests.rs` runs `guest::TracingForward` as a thread's
+# subscriber through the workspace's one scoped door (`crates/vike-ops/tests/hygiene/tracing_capture_gate.rs`).
+vike-log = { path = "../vike-log", features = ["test-support"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

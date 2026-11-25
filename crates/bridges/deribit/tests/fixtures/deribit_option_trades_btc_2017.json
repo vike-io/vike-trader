@@ -1,0 +1,1 @@
+{"usOut":1794859012609034,"usIn":1794859012604096,"usDiff":4938,"testnet":false,"result":{"trades":[{"trade_seq":2,"trade_id":"48054","timestamp":1483293331235,"tick_direction":2,"price":0.0337,"mark_price":null,"iv":29.73,"instrument_name":"BTC-31MAR17-940-P","index_price":994.0,"direction":"sell","amount":1.0}],"has_more":false},"jsonrpc":"2.0"}

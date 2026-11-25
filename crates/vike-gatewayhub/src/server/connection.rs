@@ -1,0 +1,305 @@
+//! One connection's life: the handshake, then the verb loop that classifies each connection by its
+//! first post-auth request and hands it to the class that serves it.
+//!
+//! # Decode versus drop
+//!
+//! A frame is read as raw bytes under `GATEWAY_UP_FRAME_CEILING_BYTES` and decoded separately, so a
+//! well-framed body that is not a known `Request` (a verb from a newer client) is a bad REQUEST
+//! answered with `Response::Error` on a connection that survives; only a framing fault (a length over
+//! the ceiling, a torn frame, a timeout) closes it, because the stream is then desynced. A timeout is
+//! never recovered into a resumed read.
+//!
+//! # The codec
+//!
+//! A body past the handshake is JSON or msgpack (`vike_hub_protocol::frame::BodyCodec`, told by its magic):
+//! a client writes msgpack only to a daemon that advertised `wire_msgpack`, which every build of this one does.
+//! Each request is answered in ITS codec (`Connection::codec`), and so is everything its class writes
+//! after it (a fetch's pages, the options feed's frames, a trade lease's frames, a stream's tube frames, whose
+//! ticks are the tube's binary bodies once the session asks). An older client writes JSON and is answered in JSON.
+//!
+//! # Scope before dispatch
+//!
+//! `vike_gatewayhub_client::proto::required_scope` is the ONE authority for which verb needs which
+//! scope (an exhaustive match in the crate both ends share); the check runs before any verb's own code,
+//! so a `Scope::Read` key can never open a credentialed lane, nor walk a venue's history through a
+//! window it names, however the verb is spelled. A refusal is answered and the loop CONTINUES: an
+//! over-scoped read is a bad request, not a bad connection.
+//!
+//! # The idle read timeout
+//!
+//! An `rpc` connection that sends nothing for `ServerTimings::idle_read_timeout` is closed (a
+//! half-open peer must not pin a thread). A `stream` or `feed` connection is not subject to it: its
+//! client is silent by design, and the daemon proves liveness with heartbeats instead
+//! (`crate::server::stream`).
+//!
+//! The idle timeout bounds the GAP between frames only. A frame that has BEGUN (its first byte is read)
+//! must finish within `ServerTimings::frame_read_timeout`, the bound the fetch monitor and the stream
+//! reader already use: an authenticated peer that sends a length prefix and stalls would otherwise hold
+//! a connection thread for the whole idle bound, 300 s, per read.
+
+use std::collections::VecDeque;
+use std::io;
+use std::net::TcpStream;
+use std::sync::Arc;
+
+use vike_gatewayhub_client::proto::{
+    Request, Response, Surface, request_kind, required_scope, surface_of,
+};
+use vike_hub_protocol::auth::{Scope, VerbScope, scope_admits};
+use vike_hub_protocol::frame::{BodyCodec, decode_body};
+use vike_hub_protocol::handshake::{
+    HandshakeOutcome, already_authenticated, handshake_frame_of, reads_refusal_frame,
+};
+use vike_hub_protocol::limits::SERVER_HANDSHAKE_MAX_FRAME_LEN;
+use vike_market_stream::frame::{StreamFrameReady, wait_readable};
+
+use super::ctl::ConnectionControl;
+use super::feed;
+use super::frame::read_client_body;
+use super::handshake::run_handshake;
+use super::rpc;
+use super::shared::{Connection, ServerAfter, ServerShared};
+use super::stream;
+use crate::session::ConnectionMemos;
+
+/// The refusal text for a verb outside the connection's scope.
+fn scope_refusal(kind: &str, needed: VerbScope, have: Scope) -> String {
+    match needed {
+        VerbScope::Read => format!(
+            "{kind} requires the {} scope; this connection authenticated as {}",
+            Scope::Read.name(),
+            have.name()
+        ),
+        VerbScope::Trade => format!(
+            "{kind} requires the {} scope; this connection authenticated as {}",
+            Scope::Trade.name(),
+            have.name()
+        ),
+        VerbScope::Write => format!(
+            "{kind} requires the {} scope; this connection authenticated as {}. A credentialed \
+             fetch spends a credential the daemon holds, and a klines, funding or ticks fetch \
+             walks a venue's history through a window the caller names: both are {}-only",
+            Scope::Write.name(),
+            have.name(),
+            Scope::Write.name()
+        ),
+    }
+}
+
+impl Connection {
+    /// The next request frame's bytes: a stashed one first, then the socket. `Ok(None)` is a clean end
+    /// (the peer closed, or the daemon is stopping); `Err` is a fault the caller logs.
+    fn next_body(&mut self) -> io::Result<Option<Vec<u8>>> {
+        if let Some(body) = self.stash.pop_front() {
+            return Ok(Some(body));
+        }
+        if self.control.is_stopping() {
+            return Ok(None);
+        }
+        let timings = self.shared.config.timings;
+        // The GAP between frames is the idle timeout's: wait for a frame to BEGIN without consuming a
+        // byte. Once its first byte is here the REST of it is `frame_read_timeout`'s, so a peer that
+        // sends a length prefix and stalls holds this thread for seconds and not for the idle bound.
+        match wait_readable(&self.stream, timings.idle_read_timeout)? {
+            StreamFrameReady::Timeout => {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "no request frame began within the idle read timeout",
+                ));
+            }
+            StreamFrameReady::Eof => return Ok(None),
+            StreamFrameReady::Data => {}
+        }
+        match read_client_body(&mut self.stream, timings.frame_read_timeout) {
+            Ok(body) => Ok(Some(body)),
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// Serve one accepted connection to its end. Never panics the caller: a fault is logged and the socket
+/// dropped.
+pub fn handle_connection(
+    shared: &Arc<ServerShared>,
+    stream: TcpStream,
+    control: Arc<ConnectionControl>,
+) {
+    let mut stream = stream;
+    let peer = stream.peer_addr().ok();
+    tracing::debug!(?peer, "vike-gatewayhub: connection opened");
+    if let Err(e) = vike_hub_protocol::frame::configure_hub_stream(&stream) {
+        tracing::warn!(?peer, error = %e, "vike-gatewayhub: TCP_NODELAY refused; frames may wait for an ACK");
+    }
+    let timings = shared.config.timings;
+    if let Err(e) = stream
+        .set_read_timeout(Some(timings.handshake_deadline))
+        .and_then(|()| stream.set_write_timeout(Some(timings.write_timeout)))
+    {
+        tracing::warn!(?peer, error = %e, "vike-gatewayhub: could not arm the socket timeouts; closing");
+        return;
+    }
+    let (scope, key_id) = match run_handshake(
+        &mut stream,
+        &shared.keys,
+        &shared.features,
+        peer,
+        SERVER_HANDSHAKE_MAX_FRAME_LEN,
+        timings.handshake_deadline,
+    ) {
+        HandshakeOutcome::Authed { scope, key_id, .. } => (scope, key_id),
+        HandshakeOutcome::Closed => {
+            tracing::debug!(?peer, "vike-gatewayhub: connection closed (handshake refused)");
+            return;
+        }
+    };
+    let mut conn = Connection {
+        shared: Arc::clone(shared),
+        stream,
+        peer,
+        scope,
+        key_id,
+        memo: Arc::new(ConnectionMemos::new()),
+        control,
+        stash: VecDeque::new(),
+        codec: BodyCodec::Json,
+        reads_refusal_frame: false,
+    };
+    serve_requests(&mut conn);
+    tracing::debug!(?peer, "vike-gatewayhub: connection closed");
+}
+
+/// The verb loop.
+fn serve_requests(conn: &mut Connection) {
+    loop {
+        let body = match conn.next_body() {
+            Ok(Some(body)) => body,
+            Ok(None) => break,
+            Err(e) => {
+                match e.kind() {
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut => {
+                        tracing::info!(peer = ?conn.peer, "vike-gatewayhub: idle read timeout; closing");
+                    }
+                    _ => {
+                        tracing::warn!(peer = ?conn.peer, error = %e, "vike-gatewayhub: read fault; closing");
+                    }
+                }
+                break;
+            }
+        };
+        // Answered in the codec it came in, whatever it is (an undecodable one included).
+        conn.codec = BodyCodec::of(&body);
+        // A HANDSHAKE frame after the handshake (a second `Hello`, a late `Auth`): `vike_hub_protocol::handshake`'s,
+        // no verb of this enum, refused by name and the connection kept. JSON only (`handshake_frame_of`): a verb's
+        // msgpack or LZ4 body is decoded once, below.
+        if let Some(frame) = handshake_frame_of(&body) {
+            // What the client reads (the refusal frame): recorded, never answered.
+            if let Some(reads) = reads_refusal_frame(&frame) {
+                conn.reads_refusal_frame = reads;
+                continue;
+            }
+            let kind = frame.kind();
+            tracing::info!(
+                peer = ?conn.peer,
+                scope = ?conn.scope,
+                verb = kind,
+                "vike-gatewayhub: a {kind} refused - this connection is already authenticated and its scope \
+                 is never re-negotiated"
+            );
+            if conn.reply_error(already_authenticated(&frame)).is_err() {
+                break;
+            }
+            continue;
+        }
+        let request = match decode_body::<Request>(&body) {
+            Ok(request) => request,
+            Err(e) => {
+                if conn
+                    .reply(&Response::Error(format!("unrecognized/undecodable request: {e}")))
+                    .is_err()
+                {
+                    break;
+                }
+                continue;
+            }
+        };
+        let kind = request_kind(&request);
+        let needed = required_scope(&request);
+        if !scope_admits(conn.scope, needed) {
+            tracing::info!(
+                peer = ?conn.peer,
+                scope = ?conn.scope,
+                ?needed,
+                verb = kind,
+                "vike-gatewayhub: verb refused - outside this connection's scope"
+            );
+            if conn.reply_error(scope_refusal(kind, needed, conn.scope)).is_err() {
+                break;
+            }
+            continue;
+        }
+        let after = match surface_of(&request) {
+            Surface::Rpc => rpc::serve(conn, request),
+            Surface::Stream => match request {
+                Request::DataOpen { venue, network } => {
+                    stream::serve(conn, &venue, network.as_deref())
+                }
+                other => refuse_surface(conn, &other),
+            },
+            Surface::FeedOptions => match request {
+                Request::OptionsFeedOpen { feed: spec } => feed::serve(conn, &spec),
+                other => refuse_surface(conn, &other),
+            },
+            // The trade lease is the trade lane's: `TradeOpen` is the mode switch, served in a `trade` build
+            // whose lane is mounted. In any other build `scope_is_served` refuses `Scope::Trade` at the
+            // handshake, so a `TradeOpen` is unreachable and answered as a surface this daemon does not
+            // serve if it is ever reached.
+            Surface::Trade => match request {
+                #[cfg(feature = "trade")]
+                Request::TradeOpen { client_id, venue, account, tier, resume, takeover, row } => {
+                    super::trade::serve(
+                        conn,
+                        vike_gatewayhub_client::client::TradeOpenArgs {
+                            client_id,
+                            venue,
+                            account,
+                            tier,
+                            resume,
+                            takeover,
+                            row,
+                        },
+                    )
+                }
+                other => refuse_surface(conn, &other),
+            },
+        };
+        if after == ServerAfter::Close {
+            break;
+        }
+    }
+}
+
+/// A verb whose class cannot be served here: answered, connection kept.
+fn refuse_surface(conn: &mut Connection, request: &Request) -> ServerAfter {
+    let text = format!("gatewayhub: {} cannot be served on this connection", request_kind(request));
+    match conn.reply_error(text) {
+        Ok(()) => ServerAfter::Continue,
+        Err(_) => ServerAfter::Close,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_scope_refusal_names_the_verb_and_both_scopes() {
+        let text = scope_refusal("FetchCredentialed", VerbScope::Write, Scope::Read);
+        assert!(
+            text.contains("FetchCredentialed")
+                && text.contains("control")
+                && text.contains("observe"),
+            "{text}"
+        );
+    }
+}

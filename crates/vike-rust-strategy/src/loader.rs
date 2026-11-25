@@ -1,0 +1,549 @@
+//! The loader: the compatibility record read from the FILE before anything is opened (`crate::identity`,
+//! `ABI_VERSION` 15), `dlopen`, the ABI-version check, the fingerprint check, and the refusals.
+//!
+//! ⚠ **`dlclose` is never called.** An edit produces a new artifact and a new `dlopen`; the old
+//! handle stays mapped and unused. Unloading a library something may still reference is unsafe —
+//! see the design doc's "Deliberately absent: `dlclose`" section. The leak is bounded by edits per
+//! session and cleared by an ordinary process restart.
+//!
+//! Only Linux is a real target: both the backtest server and the builder service run on
+//! self-hosted Linux boxes (this crate's own module doc / the design's "sandbox constraint"
+//! section), and this crate is not in the `windows-cross` compile-witness lane. `#[cfg(unix)]`
+//! carries the real implementation; a non-unix build still compiles (`plat::open`/`plat::symbol` both
+//! return `Err` unconditionally) rather than failing to build at all, in case that ever changes.
+
+use std::ffi::c_void;
+use std::os::raw::c_char;
+use std::path::{Path, PathBuf};
+
+use crate::abi;
+use crate::fingerprint;
+use crate::host::StrategyVTableAbi;
+
+/// Why a strategy file was refused, or could not even be reached.
+#[derive(Debug)]
+pub enum LoadError {
+    /// The path does not name a file at all.
+    Missing(PathBuf),
+    /// `dlopen` itself failed — the file exists but is not a loadable shared object for this
+    /// platform/architecture, or one of its own dependencies could not be resolved. Carries the
+    /// DYNAMIC LOADER's own message (`dlerror`), not just the path: which of those causes it was
+    /// is a fact only `ld.so` holds, and without it this variant tells an operator nothing they
+    /// did not already know (see `plat::open`).
+    DlOpen(String),
+    /// A required export could not be resolved via `dlsym`.
+    NoSymbol(String),
+    /// `vike_strategy_abi_version()` disagreed with [`abi::ABI_VERSION`] — a DELIBERATE vtable
+    /// change the strategy file was not rebuilt against.
+    AbiMismatch { host: u32, strategy_file: u32 },
+    /// `vike_strategy_fingerprint()` disagreed with [`fingerprint::FINGERPRINT`] — an ACCIDENTAL
+    /// toolchain divergence between the box that built the strategy file and this host.
+    FingerprintMismatch { host: String, strategy_file: String },
+    /// `vike_strategy_layout()` disagreed with [`abi::layout`] (`ABI_VERSION` 14): the file was built
+    /// against another layout of the bars and closed rows it reads in place, and would misread them.
+    LayoutMismatch { host: u64, strategy_file: u64 },
+    /// The file's compatibility record (`crate::identity`, `ABI_VERSION` 15) names another strategy
+    /// boundary (`crate::sdk::BOUNDARY_HASH`) than this host's: its C-ABI glue is not this host's.
+    BoundaryMismatch { host: String, strategy_file: String },
+    /// The file carries no compatibility record this host can read (`crate::identity::read`'s refusals:
+    /// not 64-bit ELF, truncated, oversized, overlapping sections, no record section, a malformed record),
+    /// so it was never opened.
+    IdentityUnreadable { path: PathBuf, why: String },
+}
+
+/// The words a user reads when a Run is refused (Studio shows them). Plain words: "your Rust
+/// strategy's build", never the mechanism's internal name; each says what to do.
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadError::Missing(p) => write!(
+                f,
+                "your Rust strategy's build was not found at `{}`: build it again, then run it",
+                p.display()
+            ),
+            LoadError::DlOpen(e) => {
+                write!(f, "your Rust strategy's build could not be opened ({e}): build it again")
+            }
+            LoadError::NoSymbol(name) => write!(
+                f,
+                "your Rust strategy's build lacks the entry point `{name}`: build it again"
+            ),
+            LoadError::AbiMismatch { host, strategy_file } => write!(
+                f,
+                "your Rust strategy was built for strategy interface version {strategy_file}, and this \
+                 program runs version {host}: build it again"
+            ),
+            LoadError::FingerprintMismatch { host, strategy_file } => write!(
+                f,
+                "your Rust strategy was built by another compiler setup (`{strategy_file}`) than this \
+                 program's (`{host}`): build it again here"
+            ),
+            LoadError::LayoutMismatch { host, strategy_file } => write!(
+                f,
+                "your Rust strategy was built against another bar layout ({strategy_file:016x}) than \
+                 this program's ({host:016x}): build it again"
+            ),
+            LoadError::BoundaryMismatch { host, strategy_file } => write!(
+                f,
+                "your Rust strategy was built against another strategy boundary ({strategy_file}) than \
+                 this program's ({host}): build it again"
+            ),
+            LoadError::IdentityUnreadable { path, why } => write!(
+                f,
+                "your Rust strategy's build at `{}` was not opened, because {why}: build it again",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LoadError {}
+
+/// A successfully loaded, ABI- and fingerprint-checked strategy file, ready to wrap as a
+/// [`crate::host::StrategyFileHost`].
+#[derive(Debug)]
+pub struct StrategyFileLoaded {
+    /// Kept only to document ownership of the mapping — never closed, see this module's header.
+    #[expect(dead_code)]
+    handle: *mut c_void,
+    pub path: PathBuf,
+    pub vtable: StrategyVTableAbi,
+}
+
+/// Resolve one symbol and transmute it to the type inference expects from context, or
+/// `Err(LoadError::NoSymbol)`.
+///
+/// A macro rather than a generic function for the same reason `crates/bridges/fxcm/src/transport/loader.rs`
+/// has one (`bind!`): nothing checks the transmute against the real symbol either way, so this
+/// keeps the unsafe act to ONE textual site — used at every symbol `load` resolves below, a set
+/// that TRIPLED at `ABI_VERSION` 3 without adding an unsafe site, which is the whole return on
+/// the macro — rather than one per resolved symbol, the same dedup that file argues at its own
+/// macro. (This line carried the call-site COUNT until that widening made it wrong.) Defined ahead of `load`
+/// (rather than after, with a `use bind;` to hoist it) because a plain `macro_rules!` is scoped
+/// textually: it is visible from its declaration to the end of the enclosing module, not before.
+macro_rules! bind {
+    ($handle:expr, $name:literal, $ty:ty) => {{
+        match plat::lookup_symbol($handle, $name) {
+            Ok(p) => Ok(
+                // SAFETY: nothing checks this cast — that is the unsafe act, and it is why the
+                // exported symbol's real signature and `$ty` must agree. A MISSING symbol is
+                // caught by `plat::symbol` above, before the cast; the failure mode this cannot see
+                // is a symbol present with a DIFFERENT signature (a stale or foreign `.so` built
+                // against an older ABI_VERSION — which is exactly what the `abi_version`
+                // handshake this function's own callers run FIRST exists to catch before any
+                // other symbol is trusted).
+                unsafe { std::mem::transmute::<*mut c_void, $ty>(p) },
+            ),
+            Err(_) => Err(LoadError::NoSymbol($name.to_string())),
+        }
+    }};
+}
+
+// The three dispatch SHAPES that recur across `ABI_VERSION` 3's thirteen new exports, named so the
+// `bind!` calls below read as a list of symbols rather than as a wall of repeated signatures.
+//
+// ⚠ These are aliases, not a second definition: each resolves to exactly the `extern "C" fn` type
+// the matching `StrategyVTableAbi` field declares, so a signature changed on one side and not the other
+// is a type error at the assignment rather than a `transmute` nobody checks. The three exports whose
+// shape is unique (`on_order_book`, `on_feed_status`, `on_reference_quote`) are spelled out at their
+// own call sites instead — an alias used once is a name to look up, not a shorthand. `on_bar` joined
+// `PayloadFn` at `ABI_VERSION` 14, its payload the host's own `Bar`.
+
+/// `on_start` / `on_stop`: the broker and nothing else.
+type LifecycleFn =
+    extern "C" fn(*mut c_void, crate::abi::BrokerRef) -> crate::abi::StrategyFileStatusAbi;
+
+/// One borrowed `#[repr(C)]` payload behind a pointer: a tier-2 mirror, or the host's own `Bar`
+/// (`ABI_VERSION` 14), `TickQuote` or `TickTrade` (15).
+type PayloadFn<T> = extern "C" fn(
+    *mut c_void,
+    crate::abi::BrokerRef,
+    *const T,
+) -> crate::abi::StrategyFileStatusAbi;
+
+/// A borrowed `(ptr, len)` string: `on_schedule`'s tag, `on_params_updated`'s JSON document.
+type BorrowedStrFn = extern "C" fn(
+    *mut c_void,
+    crate::abi::BrokerRef,
+    *const u8,
+    usize,
+) -> crate::abi::StrategyFileStatusAbi;
+
+/// A lent JSON list of names: `inputs`, `symbols`.
+type LentNamesFn = extern "C" fn(*mut c_void) -> crate::abi::OptionAbi<crate::abi::StrAbi>;
+
+/// A lent optional answer: `params`, `echo`, `stated_fee`, `stated_slippage` (each JSON; `save_state`
+/// lends msgpack bytes, bound by its own type).
+type LentAnswerFn =
+    extern "C" fn(*mut c_void) -> crate::abi::OptionAbi<crate::abi::OptionAbi<crate::abi::StrAbi>>;
+
+/// `dlopen` `path` and run the handshake ONLY — the REQUIRED exports every strategy file carries
+/// (`vike_strategy_abi_version` and `vike_strategy_fingerprint` regardless of `ABI_VERSION`, then
+/// `vike_strategy_layout` since 14, asked only of a file that passed the first two) — resolving
+/// nothing else. Shared by [`load`] and [`load_study`], each of which keeps the handle and resolves
+/// its own exports against it, so the comparison is spelled once — the same dedup argument this
+/// file's own `bind!` macro doc already makes for a single textual `unsafe` site.
+fn open_and_handshake(path: &Path) -> Result<*mut c_void, LoadError> {
+    if !path.is_file() {
+        return Err(LoadError::Missing(path.to_path_buf()));
+    }
+    check_identity(path)?;
+    let path_str = path.to_string_lossy().into_owned();
+    let handle = plat::open(&path_str).map_err(LoadError::DlOpen)?;
+
+    let abi_version_fn = bind!(handle, "vike_strategy_abi_version", extern "C" fn() -> u32)?;
+    let strategy_file_abi = abi_version_fn();
+    if strategy_file_abi != abi::ABI_VERSION {
+        return Err(LoadError::AbiMismatch {
+            host: abi::ABI_VERSION,
+            strategy_file: strategy_file_abi,
+        });
+    }
+
+    let fingerprint_fn =
+        bind!(handle, "vike_strategy_fingerprint", extern "C" fn() -> *const c_char)?;
+    let strategy_file_fingerprint = read_c_str(fingerprint_fn());
+    if strategy_file_fingerprint != fingerprint::FINGERPRINT {
+        return Err(LoadError::FingerprintMismatch {
+            host: fingerprint::FINGERPRINT.to_string(),
+            strategy_file: strategy_file_fingerprint,
+        });
+    }
+
+    let layout_fn = bind!(handle, "vike_strategy_layout", extern "C" fn() -> u64)?;
+    let strategy_file_layout = layout_fn();
+    if strategy_file_layout != abi::layout() {
+        return Err(LoadError::LayoutMismatch {
+            host: abi::layout(),
+            strategy_file: strategy_file_layout,
+        });
+    }
+    Ok(handle)
+}
+
+/// The file's compatibility record (`crate::identity`, `ABI_VERSION` 15), read from the FILE and compared
+/// with this host's own: in the order the exported handshake checks (the version, the fingerprint, the
+/// layout) and then the strategy boundary, each refusal in the words of its exported twin.
+///
+/// ⚠ **It READS the file and runs none of its code**, so it is the check for a caller that must not run a
+/// user's code: the builder's cache asks it of every hit (`crates/vike-strategy-builder/src/render.rs`'s
+/// `cached`), because a `dlopen` there would run the artifact's initializers (`.init_array`) inside the
+/// builder, whose jail may write the builds directory. [`load`] and [`load_study`] ask it BEFORE `dlopen`,
+/// and keep the exported handshake behind it: a record and the code it describes come from one link, and
+/// the second check costs three `dlsym`s.
+///
+/// # Errors
+/// The record unreadable ([`LoadError::IdentityUnreadable`]), or the first value that differs from this
+/// host's.
+pub fn check_identity(path: &Path) -> Result<(), LoadError> {
+    let record = crate::identity::read(path)
+        .map_err(|why| LoadError::IdentityUnreadable { path: path.to_path_buf(), why })?;
+    if record.abi_version != abi::ABI_VERSION {
+        return Err(LoadError::AbiMismatch {
+            host: abi::ABI_VERSION,
+            strategy_file: record.abi_version,
+        });
+    }
+    if record.fingerprint != fingerprint::FINGERPRINT {
+        return Err(LoadError::FingerprintMismatch {
+            host: fingerprint::FINGERPRINT.to_string(),
+            strategy_file: record.fingerprint,
+        });
+    }
+    if record.layout != abi::layout() {
+        return Err(LoadError::LayoutMismatch {
+            host: abi::layout(),
+            strategy_file: record.layout,
+        });
+    }
+    if record.boundary_hash != crate::sdk::BOUNDARY_HASH {
+        return Err(LoadError::BoundaryMismatch {
+            host: crate::sdk::BOUNDARY_HASH.to_string(),
+            strategy_file: record.boundary_hash,
+        });
+    }
+    Ok(())
+}
+
+// ⚠ **`pub fn verify_handshake(path)` was here and is DELETED (2026-11-23).** It was `open_and_handshake`
+// without the vtable, for the builder's cache: a real `dlopen`, so every cache hit ran the artifact's
+// initializers inside the builder, in a thread whose jail may write the builds directory, where one strategy
+// could swap another's artifact for a link to `vike.db`. The cache reads the record instead ([`check_identity`]),
+// which proves the three values the handshake asked (and the boundary) without running a byte of the file.
+
+/// Load, ABI-check, and fingerprint-check the strategy file at `path`.
+///
+/// ⚠ **Every dispatch symbol is REQUIRED, and that is deliberate at `ABI_VERSION` 3.** A strategy file
+/// missing one is refused with [`LoadError::NoSymbol`] rather than loaded with that hook quietly
+/// absent — which would reinstate, at load time, exactly the silent divergence the build-time
+/// refusal was invented to prevent. Nothing legitimate is caught by this: the cdylib template
+/// emits all of them unconditionally, and an artifact built against the two-slot vtable is already
+/// refused one check earlier, on its `ABI_VERSION`.
+pub fn load(path: &Path) -> Result<StrategyFileLoaded, LoadError> {
+    let handle = open_and_handshake(path)?;
+
+    let vtable = StrategyVTableAbi {
+        create: bind!(
+            handle,
+            "vike_strategy_create",
+            extern "C" fn(*const u8, usize, *const u8, usize) -> *mut c_void
+        )?,
+        destroy: bind!(handle, "vike_strategy_destroy", extern "C" fn(*mut c_void))?,
+        warmup: bind!(handle, "vike_strategy_warmup", extern "C" fn(*mut c_void) -> usize)?,
+        inputs: bind!(handle, "vike_strategy_inputs", LentNamesFn)?,
+        symbols: bind!(handle, "vike_strategy_symbols", LentNamesFn)?,
+        stated_fee: bind!(handle, "vike_strategy_stated_fee", LentAnswerFn)?,
+        stated_slippage: bind!(handle, "vike_strategy_stated_slippage", LentAnswerFn)?,
+        on_start: bind!(handle, "vike_strategy_on_start", LifecycleFn)?,
+        on_bar: bind!(handle, "vike_strategy_on_bar", PayloadFn<crate::abi::LentBarAbi>)?,
+        on_quote_tick: bind!(
+            handle,
+            "vike_strategy_on_quote_tick",
+            PayloadFn<crate::abi::LentTickQuoteAbi>
+        )?,
+        on_trade_tick: bind!(
+            handle,
+            "vike_strategy_on_trade_tick",
+            PayloadFn<crate::abi::LentTickTradeAbi>
+        )?,
+        on_order_book: bind!(
+            handle,
+            "vike_strategy_on_order_book",
+            extern "C" fn(
+                *mut c_void,
+                crate::abi::BrokerRef,
+                crate::abi::BookRef,
+            ) -> crate::abi::StrategyFileStatusAbi
+        )?,
+        on_schedule: bind!(handle, "vike_strategy_on_schedule", BorrowedStrFn)?,
+        on_fill: bind!(handle, "vike_strategy_on_fill", PayloadFn<crate::abi::FillAbi>)?,
+        on_feed_status: bind!(
+            handle,
+            "vike_strategy_on_feed_status",
+            extern "C" fn(
+                *mut c_void,
+                crate::abi::BrokerRef,
+                u32,
+            ) -> crate::abi::StrategyFileStatusAbi
+        )?,
+        on_mark: bind!(handle, "vike_strategy_on_mark", PayloadFn<crate::abi::TickMarkAbi>)?,
+        on_reference_quote: bind!(
+            handle,
+            "vike_strategy_on_reference_quote",
+            extern "C" fn(
+                *mut c_void,
+                crate::abi::BrokerRef,
+                *const u8,
+                usize,
+                *const crate::abi::LentTickQuoteAbi,
+            ) -> crate::abi::StrategyFileStatusAbi
+        )?,
+        on_flow: bind!(handle, "vike_strategy_on_flow", PayloadFn<crate::abi::FlowToxicityAbi>)?,
+        on_order_event: bind!(
+            handle,
+            "vike_strategy_on_order_event",
+            PayloadFn<crate::abi::OrderEventAbi>
+        )?,
+        on_params_updated: bind!(handle, "vike_strategy_on_params_updated", BorrowedStrFn)?,
+        params: bind!(handle, "vike_strategy_params", LentAnswerFn)?,
+        on_stop: bind!(handle, "vike_strategy_on_stop", LifecycleFn)?,
+        save_state: bind!(
+            handle,
+            "vike_strategy_save_state",
+            extern "C" fn(
+                *mut c_void,
+            )
+                -> crate::abi::OptionAbi<crate::abi::OptionAbi<crate::abi::SliceAbi<u8>>>
+        )?,
+        load_state: bind!(
+            handle,
+            "vike_strategy_load_state",
+            extern "C" fn(*mut c_void, *const u8, usize) -> crate::abi::StrategyFileStatusAbi
+        )?,
+        refuse: bind!(
+            handle,
+            "vike_strategy_refuse",
+            extern "C" fn(
+                *const u8,
+                usize,
+            )
+                -> crate::abi::OptionAbi<crate::abi::OptionAbi<crate::abi::StrAbi>>
+        )?,
+        echo: bind!(handle, "vike_strategy_echo", LentAnswerFn)?,
+    };
+
+    // The file's own `tracing` events go to this process's subscriber (`host::host_log`), up to the
+    // level it admits now: the file links its OWN `tracing`, whose dispatcher nothing else sets.
+    let set_log = bind!(handle, "vike_strategy_set_log", extern "C" fn(crate::abi::LogFn, u32))?;
+    set_log(
+        crate::host::host_log,
+        crate::abi::log_filter_code(tracing::level_filters::LevelFilter::current()),
+    );
+
+    Ok(StrategyFileLoaded { handle, path: path.to_path_buf(), vtable })
+}
+
+/// Load, ABI-check and fingerprint-check the research STUDY file at `path` (`crate::study`): the
+/// same handshake and log slot as a strategy file's, then its two study exports. A strategy
+/// artifact has neither, so it is refused here by name ([`LoadError::NoSymbol`]), and a study
+/// artifact has no strategy vtable, so [`load`] refuses it the same way.
+pub fn load_study(path: &Path) -> Result<crate::study::StudyFileLoaded, LoadError> {
+    let handle = open_and_handshake(path)?;
+    let run = bind!(handle, "vike_study_run", crate::study::StudyRunFn)?;
+    let serve = bind!(handle, "vike_study_serve", crate::study::StudyServeFn)?;
+    let set_log = bind!(handle, "vike_strategy_set_log", extern "C" fn(crate::abi::LogFn, u32))?;
+    set_log(
+        crate::host::host_log,
+        crate::abi::log_filter_code(tracing::level_filters::LevelFilter::current()),
+    );
+    Ok(crate::study::StudyFileLoaded { path: path.to_path_buf(), run, serve })
+}
+
+/// Read a NUL-terminated `*const c_char` into an owned `String` — the strategy file's handshake
+/// fingerprint, and (since the message was added to `LoadError::DlOpen`) `dlerror`'s own text.
+///
+/// Lossy, deliberately — unlike `abi::read_borrowed_str`'s checked read of a trading SYMBOL (where a
+/// contract violation must be a loud, contained failure rather than silently-corrupted data a
+/// strategy might then trade on), this string is a DIAGNOSTIC comparison key: a fingerprint with a
+/// stray replacement character will simply fail to equal [`fingerprint::FINGERPRINT`] and refuse
+/// the load exactly as a genuinely different fingerprint would — there is no downstream consumer
+/// for whom "which byte was wrong" matters the way a corrupted order symbol would.
+fn read_c_str(ptr: *const c_char) -> String {
+    if ptr.is_null() {
+        return String::new();
+    }
+    // SAFETY: the strategy file ABI contract requires `vike_strategy_fingerprint` to return a pointer to a
+    // valid, NUL-terminated, `'static` string (`fingerprint::fingerprint_c_str`'s doc states the
+    // contract a real strategy file upholds).
+    unsafe { std::ffi::CStr::from_ptr(ptr) }.to_string_lossy().into_owned()
+}
+
+#[cfg(unix)]
+mod plat {
+    use std::ffi::{CString, c_int, c_void};
+    use std::os::raw::c_char;
+
+    // RTLD_NOW: resolve every symbol at load rather than on first call, so a missing entry point
+    // is a diagnostic here rather than a SIGSEGV inside a later dispatch call. RTLD_LOCAL (the
+    // absence of RTLD_GLOBAL) keeps a strategy file's own symbols out of the process-wide namespace.
+    const RTLD_NOW: c_int = 2;
+    const RTLD_LOCAL: c_int = 0;
+
+    unsafe extern "C" {
+        fn dlopen(filename: *const c_char, flag: c_int) -> *mut c_void;
+        fn dlsym(handle: *mut c_void, symbol: *const c_char) -> *mut c_void;
+        /// The loader's own last error message. Declared here rather than reconstructed: a failed
+        /// `dlopen` has exactly one actionable cause and only `ld.so` knows it — see [`open`].
+        fn dlerror() -> *const c_char;
+    }
+
+    pub(super) fn open(path: &str) -> Result<*mut c_void, String> {
+        let c =
+            CString::new(path).map_err(|_| "interior NUL in the strategy file path".to_string())?;
+        // ⚠ **The message used to be `dlopen failed for <path>` and nothing else, which told an
+        // operator only what they already knew.** Every real cause of this failure — an
+        // unresolved symbol under `RTLD_NOW`, a missing transitive `.so`, a wrong ELF class, a
+        // file that is not a shared object at all — is distinguishable ONLY by `dlerror`, and
+        // `LoadError::DlOpen` renders whatever this returns verbatim.
+        //
+        // `dlerror` is read INSIDE this same block, immediately after the call, for two
+        // independent reasons: it is per-thread state that the very next libdl call clears (so a
+        // later read can come back null and say nothing), and this crate's `unsafe` site count is
+        // RATCHETED per file by `crates/vike-ops/tests/hygiene/unsafe_and_toolchain_gate.rs` — a second
+        // `unsafe` block here would be a raise that has to be argued for, and this diagnostic is
+        // not worth one when the same block does the job.
+        //
+        // SAFETY: `c` is a valid, NUL-terminated string for the duration of the `dlopen` call.
+        // `dlerror` takes no arguments and returns either null or a pointer to a valid,
+        // NUL-terminated message owned by the loader, which `read_c_str` (null-safe) handles.
+        let (h, detail) = unsafe {
+            let h = dlopen(c.as_ptr(), RTLD_NOW | RTLD_LOCAL);
+            let detail = if h.is_null() { super::read_c_str(dlerror()) } else { String::new() };
+            (h, detail)
+        };
+        if h.is_null() {
+            // An empty `detail` means the loader offered no message — say so rather than printing
+            // a bare trailing colon, which reads like a truncated line.
+            let detail = if detail.is_empty() {
+                "dlerror() reported no message".to_string()
+            } else {
+                detail
+            };
+            Err(format!("dlopen failed for `{path}`: {detail}"))
+        } else {
+            Ok(h)
+        }
+    }
+
+    pub(super) fn lookup_symbol(handle: *mut c_void, name: &str) -> Result<*mut c_void, String> {
+        let c = CString::new(name).map_err(|_| "interior NUL in the symbol name".to_string())?;
+        // SAFETY: `handle` came from `open` above and is never closed — this module's header.
+        let p = unsafe { dlsym(handle, c.as_ptr()) };
+        if p.is_null() { Err(format!("symbol `{name}` not found")) } else { Ok(p) }
+    }
+}
+
+#[cfg(not(unix))]
+mod plat {
+    use std::ffi::c_void;
+
+    pub(super) fn open(_path: &str) -> Result<*mut c_void, String> {
+        Err("strategy file loading is only supported on Linux (the backtest server and the builder \
+             service both run on self-hosted Linux boxes; see the design doc's sandbox \
+             section) — this platform cannot open a strategy file"
+            .to_string())
+    }
+
+    pub(super) fn lookup_symbol(_handle: *mut c_void, _name: &str) -> Result<*mut c_void, String> {
+        Err("strategy file loading is only supported on Linux".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::assert_matches;
+
+    #[test]
+    fn a_missing_path_is_refused_before_any_dlopen_is_attempted() {
+        let err = load(Path::new("/does/not/exist/anywhere.so")).unwrap_err();
+        assert_matches!(err, LoadError::Missing(_));
+        assert!(err.to_string().to_lowercase().contains("build"));
+    }
+
+    /// The real dlopen coverage (a strategy file whose `on_bar` reaches `StrategyFileStatusAbi`/`BrokerRef`/
+    /// `Bar`) lives in `tests/load_refusals.rs`, which needs a compiled fixture this crate's own
+    /// `build.rs` produces — no unit test in THIS module dlopens a real `.so`.
+    #[test]
+    fn load_error_display_names_both_sides_of_a_mismatch() {
+        let e = LoadError::AbiMismatch { host: 1, strategy_file: 2 };
+        let msg = e.to_string();
+        assert!(msg.contains('1') && msg.contains('2'), "must name both versions: {msg}");
+
+        let e = LoadError::FingerprintMismatch {
+            host: "H".to_string(),
+            strategy_file: "P".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains('H') && msg.contains('P'), "must name both fingerprints: {msg}");
+
+        let e = LoadError::LayoutMismatch { host: 0xab, strategy_file: 0xcd };
+        let msg = e.to_string();
+        assert!(msg.contains("00000000000000ab") && msg.contains("00000000000000cd"), "{msg}");
+
+        let e =
+            LoadError::BoundaryMismatch { host: "H".to_string(), strategy_file: "F".to_string() };
+        let msg = e.to_string();
+        assert!(
+            msg.contains("(F) than this program's (H)") && msg.contains("build it again"),
+            "{msg}"
+        );
+
+        let e = LoadError::IdentityUnreadable {
+            path: PathBuf::from("x.so"),
+            why: "it is truncated".to_string(),
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("`x.so`") && msg.contains("because it is truncated: build it again"));
+    }
+}

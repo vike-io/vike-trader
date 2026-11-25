@@ -1,0 +1,128 @@
+{
+  "argv": [
+    "--deny-tool",
+    "submit_order",
+    "--deny-tool",
+    "run_backtest",
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "withheld.deny",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "tool `submit_order` is not available: it was withheld by `--deny-tool submit_order`. Tools served in this session: validate_strategy, discover_params, list_templates, list_indicators, profile_template, run_sweep, run_walk_forward, run_status, cancel_run, list_strategies, list_series, node_snapshot, strategy_status, settings_show, health_node, report, decode_order_id, submit_order_list, submit_combo, cancel_order, modify_order, flatten, close_all, mass_cancel, set_trading_state, mount_strategy, unmount_strategy, set_setting, delete_series. Only the OPERATOR can widen this, by restarting the server with `--profile full` (and without that `--deny-tool`) in the MCP client's launch command — this server cannot widen its own scope, and asking again will not change the answer.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "profile": "x"
+          },
+          "name": "run_backtest"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "tool `run_backtest` is not available: it was withheld by `--deny-tool run_backtest`. Tools served in this session: validate_strategy, discover_params, list_templates, list_indicators, profile_template, run_sweep, run_walk_forward, run_status, cancel_run, list_strategies, list_series, node_snapshot, strategy_status, settings_show, health_node, report, decode_order_id, submit_order_list, submit_combo, cancel_order, modify_order, flatten, close_all, mass_cancel, set_trading_state, mount_strategy, unmount_strategy, set_setting, delete_series. Only the OPERATOR can widen this, by restarting the server with `--profile full` (and without that `--deny-tool`) in the MCP client's launch command — this server cannot widen its own scope, and asking again will not change the answer.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "order_client_id": "c-1"
+          },
+          "name": "cancel_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "<structuredContent, serde_json pretty>",
+              "type": "text"
+            }
+          ],
+          "isError": false,
+          "structuredContent": {
+            "guardrail": {
+              "note": "no order size to check for this verb",
+              "within_limits": true
+            },
+            "node_verdict": null,
+            "note": "PREVIEW ONLY — nothing was sent. ⚠ THE NODE WAS NOT ASKED (no node configured, no control key, or unreachable), so `guardrail` is an UNVERIFIED CLIENT-SIDE ESTIMATE — and it cannot size a market order at all, because a market order carries no price. Do not read it as approval. To execute, call again with BOTH \"confirm\": true AND this exact \"preview_token\". The token fires once, expires after 60s, and is bound to THIS command. The node's ControlLimits + RiskGate remain the enforcing gate regardless.",
+            "order_client_id_note": "note: \"c-1\" is not an order_client_id this node could have minted (1..=32 alphanumeric characters, A-Z a-z 0-9) — sending it anyway, but check it: nothing will match, and a cancel that matches nothing still reports as accepted",
+            "preview_token": "pv-1",
+            "reason": null,
+            "tier": null,
+            "tier_unread": "error [dial.node.unset]: no vike-tradehub to dial: no --node <host:port> was given and this box's config.node_addr row is not set. `vike-cli backend connect` attaches this box to a node and writes the row (or `vike-cli config set config.node_addr HOST:PORT`). Treat this account as live.",
+            "tool": "cancel_order",
+            "venue_check": "none",
+            "verified_by_node": false,
+            "will_execute": false,
+            "wire_command": {
+              "Cancel": "c-1"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "what": "a withheld tool is refused by name; no preview, no token"
+}

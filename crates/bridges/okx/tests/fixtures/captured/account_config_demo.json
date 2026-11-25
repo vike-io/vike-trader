@@ -1,0 +1,53 @@
+{
+  "_provenance": {
+    "captured_at_utc": "2026-11-22T21:05:04Z",
+    "frame_count": 1,
+    "kind": "account_config_demo",
+    "redacted_paths": [
+      "/data/0/mainUid",
+      "/data/0/uid"
+    ],
+    "sanitizer": "vike-bridge-core::capture v1",
+    "source": "okx V5 DEMO (https://www.okx.com, simulated-trading header) — okx_key_permissions_capture: one signed GET /api/v5/account/config, read-only; beside REDACT_KEYS the smoke blanked each data row's [\"label\", \"ip\"]",
+    "venue": "okx"
+  },
+  "frames": [
+    {
+      "code": "0",
+      "data": [
+        {
+          "acctLv": "3",
+          "acctStpMode": "cancel_maker",
+          "autoLoan": false,
+          "ctIsoMode": "automatic",
+          "enableSpotBorrow": false,
+          "feeType": "0",
+          "greeksType": "PA",
+          "ip": "[redacted:ip]",
+          "kycLv": "2",
+          "label": "[redacted:label]",
+          "level": "Lv1",
+          "levelTmp": "",
+          "liquidationGear": "-1",
+          "mainUid": "[redacted:mainuid]",
+          "mgnIsoMode": "auto_transfers_ccy",
+          "opAuth": "0",
+          "perm": "read_only,trade",
+          "posMode": "net_mode",
+          "roleType": "0",
+          "settleCcy": "USDC",
+          "settleCcyList": [],
+          "spotBorrowAutoRepay": false,
+          "spotOffsetType": "",
+          "spotRoleType": "0",
+          "spotTraderInsts": [],
+          "stgyType": "0",
+          "traderInsts": [],
+          "type": "0",
+          "uid": "[redacted:uid]"
+        }
+      ],
+      "msg": ""
+    }
+  ]
+}

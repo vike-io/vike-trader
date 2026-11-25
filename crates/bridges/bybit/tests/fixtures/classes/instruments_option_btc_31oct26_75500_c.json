@@ -1,0 +1,33 @@
+{
+  "retCode": 0,
+  "retMsg": "OK",
+  "result": {
+    "category": "option",
+    "list": [
+      {
+        "symbolId": 429480,
+        "symbol": "BTC-31OCT26-75500-C-USDT",
+        "status": "Trading",
+        "baseCoin": "BTC",
+        "quoteCoin": "USDT",
+        "settleCoin": "USDT",
+        "optionsType": "Call",
+        "launchTime": "1793387700000",
+        "deliveryTime": "1793433600000",
+        "deliveryFeeRate": "0.00015",
+        "priceFilter": {
+          "minPrice": "5",
+          "maxPrice": "1110000",
+          "tickSize": "5"
+        },
+        "lotSizeFilter": {
+          "maxOrderQty": "500",
+          "minOrderQty": "0.01",
+          "qtyStep": "0.01"
+        },
+        "displayName": "BTCUSDT-31OCT26-75500-C"
+      }
+    ],
+    "nextPageCursor": ""
+  }
+}

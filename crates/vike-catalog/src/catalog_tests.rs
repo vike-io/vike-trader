@@ -1,0 +1,127 @@
+//! Tests for the catalog's tiered search ranking, its filters and `merge_ranked`.
+
+use super::*;
+use crate::test_support::test_row;
+use crate::{CatalogSearchFilter, PickerTab};
+use vike_model::AssetClass;
+
+fn sample() -> Catalog {
+    Catalog::from_instruments(vec![
+        test_row("binance", "ETHBTC", "ETH", "BTC", AssetClass::CryptoSpot),
+        test_row("binance", "BTCUSDC", "BTC", "USDC", AssetClass::CryptoSpot),
+        test_row("binance", "BTCUSDT", "BTC", "USDT", AssetClass::CryptoSpot),
+        test_row("alpaca", "BTCUSD", "BTC", "USD", AssetClass::CryptoSpot),
+        test_row("alpaca", "AAPL", "AAPL", "USD", AssetClass::Equity),
+    ])
+}
+
+#[test]
+fn exact_symbol_ranks_first_then_prefix_then_base() {
+    let c = sample();
+    let hits = c.search("BTCUSDT", &CatalogSearchFilter::default(), 10);
+    assert_eq!(hits[0].raw_symbol, "BTCUSDT"); // exact beats prefix
+}
+
+#[test]
+fn base_prefix_hits_match_when_symbol_does_not() {
+    let c = sample();
+    let symbols: Vec<_> = c
+        .search("BTC", &CatalogSearchFilter::default(), 10)
+        .iter()
+        .map(|x| x.raw_symbol.clone())
+        .collect();
+    // BTC* symbol-prefix hits, then ETHBTC via base? ETH base doesn't prefix BTC — ETHBTC is a
+    // substring hit; ensure the three BTC-prefixed symbols come before ETHBTC.
+    assert!(
+        symbols.iter().position(|s| s == "BTCUSDT").unwrap()
+            < symbols.iter().position(|s| s == "ETHBTC").unwrap()
+    );
+}
+
+#[test]
+fn preferred_quote_breaks_ties_usdt_first() {
+    let c = sample();
+    let hits = c.search("BTC", &CatalogSearchFilter::default(), 10);
+    let usdt = hits.iter().position(|x| x.raw_symbol == "BTCUSDT").unwrap();
+    let usdc = hits.iter().position(|x| x.raw_symbol == "BTCUSDC").unwrap();
+    assert!(usdt < usdc);
+}
+
+#[test]
+fn tab_filter_restricts_to_asset_class() {
+    let c = sample();
+    let hits = c.search("", &CatalogSearchFilter { tab: Some(PickerTab::Stocks), venue: None }, 10);
+    assert!(hits.iter().all(|x| x.asset_class() == AssetClass::Equity));
+    assert_eq!(hits.len(), 1);
+}
+
+#[test]
+fn venue_filter_restricts_to_venue() {
+    let c = sample();
+    let hits =
+        c.search("BTC", &CatalogSearchFilter { tab: None, venue: Some("alpaca".into()) }, 10);
+    assert!(hits.iter().all(|x| x.venue == "alpaca"));
+}
+
+/// A row an operator named is found by its user name's prefix, though its venue spelling and its base say nothing of it
+/// (dukascopy's `VOL.IDX/USD`, named `VIX.CFD` by the operator's row).
+#[test]
+fn a_row_is_found_by_its_user_name() {
+    let mut vix = test_row("dukascopy", "VOL.IDX/USD", "VOL.IDX", "USD", AssetClass::Cfd);
+    vix.naming = Some(vike_model::InstrumentNaming::User("VIX.CFD".into()));
+    let c = Catalog::from_instruments(vec![vix]);
+    for q in ["VIX", "vix.c", "VIX.CFD"] {
+        assert_eq!(c.search(q, &CatalogSearchFilter::default(), 5).len(), 1, "{q}");
+    }
+}
+
+#[test]
+fn a_mixed_case_symbol_is_found_by_any_case() {
+    let c = Catalog::from_instruments(vec![test_row(
+        "hyperliquid",
+        "kPEPE",
+        "kPEPE",
+        "USDC",
+        AssetClass::CryptoPerp,
+    )]);
+    for q in ["kpepe", "KPEPE", "kPepe", "kp"] {
+        assert_eq!(c.search(q, &CatalogSearchFilter::default(), 5).len(), 1, "{q}");
+    }
+}
+
+#[test]
+fn empty_query_returns_filtered_head() {
+    let c = sample();
+    let hits = c.search("", &CatalogSearchFilter::default(), 2);
+    assert_eq!(hits.len(), 2);
+}
+
+#[test]
+fn merge_dedups_by_id_and_reranks() {
+    let local = vec![test_row("binance", "BTCUSDT", "BTC", "USDT", AssetClass::CryptoSpot)];
+    let remote = vec![
+        test_row("ibkr", "BTC", "BTC", "USD", AssetClass::CryptoSpot),
+        test_row("binance", "BTCUSDT", "BTC", "USDT", AssetClass::CryptoSpot), // dup of local
+    ];
+    let out = merge_ranked(local, remote, "BTC", 10);
+    let ids: Vec<_> = out.iter().map(|x| x.id()).collect();
+    assert_eq!(ids.iter().filter(|id| *id == "BTCUSDT.BINANCE").count(), 1); // deduped
+    assert!(ids.contains(&"BTC.IBKR".to_string()));
+}
+
+#[test]
+fn scale_sanity_50k() {
+    let mut items = Vec::with_capacity(50_000);
+    for n in 0..50_000u32 {
+        items.push(test_row(
+            "binance",
+            &format!("SYM{n}USDT"),
+            &format!("SYM{n}"),
+            "USDT",
+            AssetClass::CryptoSpot,
+        ));
+    }
+    let c = Catalog::from_instruments(items);
+    let hits = c.search("SYM123USDT", &CatalogSearchFilter::default(), 10);
+    assert_eq!(hits[0].raw_symbol, "SYM123USDT");
+}

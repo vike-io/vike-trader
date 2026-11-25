@@ -1,0 +1,428 @@
+use super::*;
+use std::assert_matches;
+
+// ---- float_to_wire: exact canonical forms -------------------------------------------------
+
+#[test]
+fn wire_strips_trailing_zeros() {
+    assert_eq!(float_to_wire(0.00076000).unwrap(), "0.00076");
+    assert_eq!(float_to_wire(987654321.0).unwrap(), "987654321");
+    assert_eq!(float_to_wire(92572.0).unwrap(), "92572");
+}
+
+#[test]
+fn wire_integers_render_bare() {
+    // "100.0"/"2000.0" must NEVER leave the client — they would flip the signed action hash.
+    assert_eq!(float_to_wire(100.0).unwrap(), "100");
+    assert_eq!(float_to_wire(2000.0).unwrap(), "2000");
+    assert_eq!(float_to_wire(1.0).unwrap(), "1");
+    assert_eq!(float_to_wire(0.0).unwrap(), "0");
+}
+
+#[test]
+fn wire_negative_zero_maps_to_zero() {
+    assert_eq!(float_to_wire(-0.0).unwrap(), "0");
+}
+
+#[test]
+fn wire_keeps_fractional_significance() {
+    assert_eq!(float_to_wire(3.5).unwrap(), "3.5");
+    assert_eq!(float_to_wire(0.12345678).unwrap(), "0.12345678"); // exactly 8 dp — the floor
+    assert_eq!(float_to_wire(0.00000001).unwrap(), "0.00000001"); // 1e-8, smallest wire step
+    assert_eq!(float_to_wire(12345.678).unwrap(), "12345.678");
+    assert_eq!(float_to_wire(-2.5).unwrap(), "-2.5");
+}
+
+// ---- float_to_wire: the reject guard (Python's, which the official Rust SDK omits) ---------
+
+#[test]
+fn wire_rejects_sub_8dp_significance() {
+    // A 9th decimal is load-bearing ⇒ the 8-dp form shifts the value by ≥ 1e-12.
+    assert_matches!(float_to_wire(0.123456789), Err(PriceFormatError::Rounding(_)));
+    assert_matches!(float_to_wire(1.000000001), Err(PriceFormatError::Rounding(_)));
+}
+
+#[test]
+fn wire_rejects_below_wire_resolution() {
+    // 1e-9 rounds to "0.00000000" — a silent loss of the entire value.
+    assert_matches!(float_to_wire(1e-9), Err(PriceFormatError::Rounding(_)));
+    assert_matches!(float_to_wire(5e-10), Err(PriceFormatError::Rounding(_)));
+}
+
+#[test]
+fn wire_rejects_non_finite() {
+    assert_matches!(float_to_wire(f64::NAN), Err(PriceFormatError::NotFinite(_)));
+    assert_matches!(float_to_wire(f64::INFINITY), Err(PriceFormatError::NotFinite(_)));
+    assert_matches!(float_to_wire(f64::NEG_INFINITY), Err(PriceFormatError::NotFinite(_)));
+}
+
+// ---- clamp_price: the exact HL-doc examples (research §4) ----------------------------------
+
+#[test]
+fn clamp_hl_doc_sig_fig_examples() {
+    // perp, szDecimals=0 ⇒ ≤ 6 decimals available; the 5-sig-fig rule is what bites.
+    assert_eq!(clamp_price(1234.5, 0, false), "1234.5"); // 5 sig figs — valid
+    assert_eq!(clamp_price(1234.56, 0, false), "1234.6"); // 6 sig figs — clamps
+    assert_eq!(clamp_price(0.001234, 0, false), "0.001234"); // valid
+    assert_eq!(clamp_price(0.0012345, 0, false), "0.001235"); // clamps (exact 6-dp midpoint, up)
+}
+
+#[test]
+fn clamp_hl_doc_szdecimals_example() {
+    // szDecimals=1 (perp) ⇒ ≤ 5 decimals; now the decimal-place rule is the binding one.
+    assert_eq!(clamp_price(0.01234, 1, false), "0.01234"); // 5 decimals — valid
+    assert_eq!(clamp_price(0.012345, 1, false), "0.01235"); // 6 decimals — clamps
+}
+
+#[test]
+fn clamp_integer_prices_always_valid() {
+    // max(5, integer_digits) keeps > 5-sig-fig INTEGERS legal (the reject-magnet §4 landmine).
+    assert_eq!(clamp_price(123456.0, 0, false), "123456");
+    assert_eq!(clamp_price(999999.0, 3, false), "999999");
+    assert_eq!(clamp_price(100000.0, 0, true), "100000");
+    assert_eq!(clamp_price(5.0, 0, false), "5");
+}
+
+#[test]
+fn clamp_rounds_large_noninteger_to_integer() {
+    // A > 5-sig-fig NON-integer is illegal ⇒ stage 1 rounds it to 0 dp (a valid integer).
+    assert_eq!(clamp_price(123456.7, 0, false), "123457");
+    assert_eq!(clamp_price(99999.9, 0, false), "100000");
+}
+
+#[test]
+fn clamp_spot_uses_eight_max_decimals() {
+    // spot MAX_DECIMALS=8: a 6-sig-fig value clamps to 5 sig figs even with room for 8 dp.
+    assert_eq!(clamp_price(0.00123456, 0, true), "0.0012346");
+    // szDecimals=2 spot ⇒ 6 dp — same budget as perp szDecimals=0.
+    assert_eq!(clamp_price(0.0012345, 2, true), "0.001235");
+}
+
+#[test]
+fn clamp_perp_vs_spot_decimal_budget_differs() {
+    // Same input, szDecimals=0: perp caps at 6 dp, spot at 8 dp (after the 5-sig-fig round).
+    assert_eq!(clamp_price(0.0001234567, 0, false), "0.000123"); // perp: 6 dp
+    assert_eq!(clamp_price(0.0001234567, 0, true), "0.00012346"); // spot: 8 dp
+}
+
+#[test]
+fn clamp_bad_input_is_zero() {
+    assert_eq!(clamp_price(f64::NAN, 0, false), "0");
+    assert_eq!(clamp_price(-1.0, 0, false), "0");
+    assert_eq!(clamp_price(0.0, 0, false), "0");
+    assert_eq!(clamp_price(f64::INFINITY, 0, false), "0");
+}
+
+// ---- round_size: floor to szDecimals -------------------------------------------------------
+
+#[test]
+fn size_floors_never_oversizes() {
+    assert_eq!(round_size(1.239, 2), "1.23"); // floored, not rounded up to 1.24
+    assert_eq!(round_size(0.999999, 3), "0.999");
+    assert_eq!(round_size(1.2, 0), "1"); // floor to integer
+    assert_eq!(round_size(5.0, 3), "5");
+    assert_eq!(round_size(1.0, 2), "1");
+    assert_eq!(round_size(12.34999, 2), "12.34");
+    assert_eq!(round_size(1.123456789, 8), "1.12345678"); // spot-grade 8 dp
+}
+
+#[test]
+fn size_below_step_is_zero() {
+    assert_eq!(round_size(0.0001, 2), "0"); // floored under the step
+    assert_eq!(round_size(0.4, 0), "0");
+}
+
+#[test]
+fn size_bad_input_is_zero() {
+    assert_eq!(round_size(f64::NAN, 2), "0");
+    assert_eq!(round_size(-2.0, 2), "0");
+    assert_eq!(round_size(0.0, 2), "0");
+}
+
+// ---- round_size: a grid multiple must survive the wire (the ULP lot-loss fence) ------------
+
+/// Grid multiples swept per rung: `n` in `1..=MULTIPLES`.
+///
+/// 2000 is the recording's own sample count, kept so a red table can be read straight against
+/// [`round_size`]'s witness doc. It is also well past the deepest recorded first loss (`n = 13`).
+const MULTIPLES: i64 = 2000;
+
+/// The canonical wire spelling of the exact decimal `n · 10⁻ᵈ`, built by STRING SURGERY on the
+/// integer `n` — no `f64` and no `Decimal` anywhere in it.
+///
+/// The expectation must not be produced by the machinery under test, or the law below would be
+/// satisfiable by any self-consistent bug: an `f64` expectation would carry the same
+/// multiplication that causes the defect, and a `Decimal` one would carry the same constructor
+/// the fence emits through.
+fn exact_multiple_wire(n: i64, d: u32) -> String {
+    let digits = n.to_string();
+    if d == 0 {
+        return digits;
+    }
+    let width = d as usize + 1;
+    let padded = format!("{digits:0>width$}");
+    let (int_part, fraction_part) = padded.split_at(padded.len() - d as usize);
+    let frac = fraction_part.trim_end_matches('0');
+    if frac.is_empty() { int_part.to_string() } else { format!("{int_part}.{frac}") }
+}
+
+/// THE LAW, in the shape of
+/// `crates/vike-bridge-core/tests/grid_multiple_survives_the_wire.rs`: snap `n` lots onto the
+/// venue's `szDecimals` grid the way the live path does, format for the wire, and the multiple
+/// that goes out is the multiple that was asked for.
+///
+/// ⚠ **RED WITHOUT the grid witness** (`vike_bridge_core::format::grid_multiple_image`), at rungs
+/// 6 and 7 and nowhere else **in the
+/// `0..=8` this loop sweeps** — the two `szDecimals` in that range whose `10⁻ᵈ` has an f64
+/// image BELOW its decimal, so `round_to_step`'s closing multiplication lands one ULP under the
+/// grid point and the floor eats a lot. The failure message carries the whole table, so one red
+/// run is the evidence rather than the start of a hunt.
+///
+/// ⚠ **"and nowhere else" is scoped to this sweep and was once read as a scope-free claim.**
+/// The exposed rungs continue past 8 — 11, 12 and 14 lose measurably, and deeper BELOW rungs
+/// lose in exact arithmetic but sit past `rust_decimal`'s reach; [`MAX_GRID_WITNESS_DECIMALS`]
+/// accepts every one of them, and [`round_size`]'s witness doc carries the counts and the
+/// measurement's own ceiling. The sweep stops at 8 because that is [`SPOT_MAX_DECIMALS`], the deepest
+/// grid the VENUE can declare, and this test exists to prove the venue's own domain. The deeper
+/// rungs are reachable only through [`round_size`]'s bare-`u32` public signature, which is what
+/// [`MAX_GRID_WITNESS_DECIMALS`] is there to bound.
+///
+/// Two venue laws ride along inside the loop, because they cost nothing here and no other test
+/// asserts them over a sweep: the emitted string is canonical (the signed form), and it never
+/// carries more than `szDecimals` decimal places.
+#[test]
+fn a_grid_multiple_survives_round_to_step_then_round_size() {
+    let mut report = String::from(
+        "\nA whole number of lots did not come back off the wire. Each lost row is a WHOLE\n\
+             LOT short on a live order - and on this venue, inside the SIGNED action hash.\n\
+             The mechanism is on px::round_size's grid witness.\n\n\
+             szDecimals   lost/2000   first n\n",
+    );
+    let mut total_lost = 0usize;
+    for d in 0..=8u32 {
+        // The step the GRID was built from — the one and only spelling of it.
+        let step = crate::instrument::properties::pow10_neg(d);
+        let mut lost = 0usize;
+        let mut first_n: Option<i64> = None;
+        for n in 1..=MULTIPLES {
+            // The REAL chain: `crates/vike-execution/src/risk.rs`'s `RiskGate` snaps through this
+            // exact call, and `crates/bridges/hyperliquid/src/execution/state.rs`'s `build_order_wire`
+            // then hands the result straight to `round_size`.
+            let v = vike_model::round_to_step(n as f64 * step, step);
+            let got = round_size(v, d);
+            assert_canonical(&got);
+            assert!(
+                fraction_len(&got) <= d as usize,
+                "szDecimals={d} n={n}: {got} has more than {d} decimal places"
+            );
+            if got != exact_multiple_wire(n, d) {
+                lost += 1;
+                if first_n.is_none() {
+                    first_n = Some(n);
+                }
+            }
+        }
+        total_lost += lost;
+        let first = first_n.map_or_else(|| "-".to_string(), |n| n.to_string());
+        report.push_str(&format!("{d:>10}   {lost:>9}   {first:>7}\n"));
+    }
+    println!("{report}");
+    assert_eq!(total_lost, 0, "{report}");
+}
+
+/// The worked example, pinned on its own so a red run names ONE number instead of a table:
+/// `5 · fl(1e-6)` is `0.0000049999999999999996`, whose shortest decimal image the `ToZero`
+/// floor read as four micro-lots — and then SIGNED — where five were ordered.
+#[test]
+fn the_worked_example_reaches_the_wire_whole() {
+    let step = crate::instrument::properties::pow10_neg(6);
+    let v = vike_model::round_to_step(5.0 * step, step);
+    assert_eq!(round_size(v, 6), "0.000005", "round_to_step gave {v}");
+}
+
+/// THE CONTROL, and it is what stops the law above from being satisfiable by "round every size
+/// up".
+///
+/// A size the caller genuinely meant mid-step — nowhere near a grid point — must STILL
+/// truncate toward zero, at the two fenced rungs as much as anywhere else. A cure that moved
+/// any of these has overshot, which is exactly what [`round_size`]'s never-oversize rule
+/// forbids; every row here passes before the fence as well as after it.
+#[test]
+fn a_genuine_mid_step_size_still_truncates() {
+    assert_eq!(round_size(0.0000059, 6), "0.000005"); // a fenced rung, mid-step
+    assert_eq!(round_size(0.00000059, 7), "0.0000005"); // the other one
+    assert_eq!(round_size(1.239, 2), "1.23");
+    assert_eq!(round_size(12.34999, 2), "12.34");
+    assert_eq!(round_size(0.999999, 3), "0.999");
+    assert_eq!(round_size(1.9, 0), "1");
+}
+
+/// ⚠ The SIGNING invariants the fence must not have moved.
+///
+/// This string is msgpacked into the L1 action hash, so a changed spelling is not REJECTED by
+/// the venue the way a Binance precision error would be — it is SIGNED WRONG. A trailing zero
+/// (`"5.000"` where `"5"` was signed) or a `-0` flips the hash, which is why a test that only
+/// checked the defect would let a signature-breaking regression through: every row below takes
+/// the WITNESS arm, the arm that is new.
+#[test]
+fn the_witness_arm_still_emits_the_canonical_signed_form() {
+    for (sz, d, want) in [
+        (5.0_f64, 3u32, "5"), // trailing zeros stripped: never "5.000"
+        (1.0, 2, "1"),
+        (100.0, 0, "100"),
+        (12.0, 1, "12"),
+        (0.5, 1, "0.5"),
+        (2.5, 2, "2.5"),
+    ] {
+        let out = round_size(sz, d);
+        assert_eq!(out, want, "size {sz} at {d} dp");
+        assert_canonical(&out);
+    }
+    // Zero and -0 collapse to the ONE canonical spelling, ahead of the witness being consulted
+    // at all — the guard that does it is the function's first statement.
+    assert_eq!(round_size(0.0, 6), "0");
+    assert_eq!(round_size(-0.0, 6), "0");
+    assert_eq!(round_size(-0.0, 0), "0");
+    assert_eq!(round_size(-1.0, 6), "0");
+}
+
+/// The witness must DECLINE for a `szDecimals` past [`MAX_GRID_WITNESS_DECIMALS`] rather than
+/// build a step text `Decimal::new` cannot hold (its scale stops at 28, so `2^31` and `u32::MAX`
+/// would panic it), and `round_size` must go on answering there exactly as it did before the
+/// fence existed.
+#[test]
+fn an_absurd_szdecimals_declines_instead_of_panicking() {
+    // `round_dp_with_strategy` returns early when the value's scale is already <= dp, so the
+    // unwitnessed path is an identity here — the same string it emitted before. The first two
+    // rows panic inside `Decimal::new` without the guard.
+    assert_eq!(round_size(1.25, 1 << 31), "1.25");
+    assert_eq!(round_size(1.25, u32::MAX), "1.25");
+    assert_eq!(round_size(1.25, MAX_GRID_WITNESS_DECIMALS + 1), "1.25");
+}
+
+/// **E22: the witness is bridge-core's, bounded at `2^52` multiples** (hyperliquid's twin declined
+/// only above `2^53`). Above the bound the size goes through its own decimal image, which for a
+/// whole number of lots is that number: `2^52 + 2` lots of 1 at `szDecimals` 0.
+#[test]
+fn a_multiple_count_above_two_to_the_52_is_read_from_its_own_image() {
+    let lots = 4_503_599_627_370_498.0_f64; // 2^52 + 2, an exact f64
+    assert_eq!(round_size(lots, 0), "4503599627370498");
+}
+
+// ---- test-only canonical-form + precision validators (pure string introspection) ----------
+
+fn fraction_len(s: &str) -> usize {
+    s.split_once('.').map_or(0, |(_, f)| f.len())
+}
+
+/// Significant figures of a CANONICAL non-integer wire string: it carries no trailing zeros, so
+/// sig figs = all digits minus leading zeros.
+fn sig_figs_nonint(s: &str) -> usize {
+    s.chars().filter(|c| c.is_ascii_digit()).collect::<String>().trim_start_matches('0').len()
+}
+
+fn assert_canonical(s: &str) {
+    assert!(!s.is_empty(), "empty wire string");
+    assert!(!s.contains(['e', 'E']), "scientific notation: {s}");
+    assert_ne!(s, "-0", "negative zero leaked");
+    assert!(!s.starts_with('+'), "leading plus: {s}");
+    assert!(!s.starts_with('.') && !s.starts_with("-."), "bare fraction: {s}");
+    if s.contains('.') {
+        assert!(!s.ends_with('0'), "trailing zero: {s}");
+        assert!(!s.ends_with('.'), "dangling decimal point: {s}");
+    }
+    assert!(s.parse::<f64>().is_ok(), "unparseable wire string: {s}");
+}
+
+// ---- clamp_price: table-driven property across magnitudes [1e-4 … 1e6], perp AND spot -------
+
+#[test]
+fn clamp_property_across_magnitudes() {
+    // bases chosen to avoid clippy::approx_constant (no PI/E/SQRT_2/… look-alikes).
+    let bases = [1.0_f64, 1.23456789, 4.5, 9.87654321, 5.5, 2.0, 7.0, 8.125];
+    for base in bases {
+        for exp in -4i32..=6 {
+            let px = base * 10f64.powi(exp);
+            if !(1e-4..=1e7).contains(&px) {
+                continue;
+            }
+            for is_spot in [false, true] {
+                let max_dec = if is_spot { 8u32 } else { 6 };
+                for sz in [0u32, 1, 2, 3, 8] {
+                    let allowed = max_dec.saturating_sub(sz);
+                    let out = clamp_price(px, sz, is_spot);
+                    assert_canonical(&out);
+                    // (1) never more than MAX_DECIMALS - szDecimals decimal places
+                    assert!(
+                        fraction_len(&out) <= allowed as usize,
+                        "px={px} sz={sz} spot={is_spot}: {out} has > {allowed} dp"
+                    );
+                    // (2) integer (always valid) OR ≤ 5 significant figures
+                    assert!(
+                        !out.contains('.') || sig_figs_nonint(&out) <= 5,
+                        "px={px} sz={sz} spot={is_spot}: {out} has > 5 sig figs"
+                    );
+                    // (3) clamping is idempotent — a value already in-grid is returned unchanged
+                    let reparsed = out.parse::<f64>().unwrap();
+                    assert_eq!(
+                        clamp_price(reparsed, sz, is_spot),
+                        out,
+                        "px={px} sz={sz} spot={is_spot}: clamp not idempotent"
+                    );
+                }
+            }
+        }
+    }
+}
+
+// ---- float_to_wire: canonical + round-trip across magnitudes -------------------------------
+
+#[test]
+fn wire_property_canonical_and_round_trips() {
+    let good = [
+        0.0_f64,
+        1.0,
+        100.0,
+        2000.0,
+        92572.0,
+        987654321.0,
+        0.00076,
+        0.5,
+        3.5,
+        -2.5,
+        0.12345678,
+        0.00000001,
+        12345.678,
+        0.1,
+        0.25,
+        64.32,
+    ];
+    for x in good {
+        let s = float_to_wire(x).expect("representable");
+        assert_canonical(&s);
+        let back = s.parse::<f64>().unwrap();
+        assert!((back - x).abs() < 1e-9, "round-trip {x} -> {s} -> {back}");
+    }
+    // Every power of ten in [1e-8 … 1e6] is exactly wire-representable and canonical.
+    for exp in -8i32..=6 {
+        let x = 10f64.powi(exp);
+        let s = float_to_wire(x).expect("power of ten is representable");
+        assert_canonical(&s);
+        let back = s.parse::<f64>().unwrap();
+        assert!((back - x).abs() < x.abs() * 1e-9 + 1e-15, "round-trip {x} -> {s} -> {back}");
+    }
+}
+
+#[test]
+fn wire_and_clamp_agree_on_clean_prices() {
+    // A price already within grid: clamp must equal the plain canonical wire form.
+    for (px, sz, spot) in [(1234.5_f64, 0u32, false), (64.32, 2, true), (2.5, 1, false)] {
+        assert_eq!(clamp_price(px, sz, spot), float_to_wire(px).unwrap());
+    }
+}
+
+#[test]
+fn pxerror_display_is_informative() {
+    assert!(format!("{}", PriceFormatError::Rounding(0.123456789)).contains("1e-12"));
+    assert!(format!("{}", PriceFormatError::NotFinite(f64::NAN)).contains("non-finite"));
+}

@@ -1,0 +1,123 @@
+//! `DatahubClient`'s market-data verbs: `market_data_subscribe`, which CONSUMES the client and hands back the
+//! raw push stream, and `market_data_update`, its request/response half for a short-lived connection.
+//!
+//! The answer types (`MarketDataSubscribedInfo`, `MarketDataUpdatedInfo`) and the symbol-refusal helper live in
+//! the parent module; `use super::*` reaches them and the parent's imports.
+
+use super::*;
+
+impl DatahubClient {
+    /// **Open a market-data push stream on this connection**, CONSUMING the client.
+    ///
+    /// On success the socket is a push stream and no positional verb may ever be sent on it again
+    /// (see [`crate::market`]'s module doc), so the client is consumed and the raw
+    /// [`TcpStream`] handed back — a reader owns it from here. The stream comes back with
+    /// `max(MARKET_DATA_READ_TIMEOUT, 3 × heartbeat_ms)` already armed as its read timeout, so no caller can
+    /// forget the deadline the heartbeat exists to serve.
+    ///
+    /// On failure the connection was **NOT** switched and `self` is returned intact, so the caller
+    /// can keep using it positionally: a server that predates the verb answers [`Response::Error`]
+    /// and keeps the connection (leg 3 of
+    /// `docs/decisions/0112-an-additive-verb-is-negotiated-by-a-feature-string-never-by-a-version-bump.md`),
+    /// and throwing the socket away on that answer would turn a clean refusal into a reconnect. A
+    /// TRANSPORT failure (a timeout, a reset) hands `self` back too, but marked unusable
+    /// (`is_usable`, through its `Deref`): its stream is no longer in step.
+    ///
+    /// It checks [`FEATURE_MARKET_DATA`] FIRST and refuses LOCALLY without sending.
+    ///
+    /// ⚠ **It also validates the SYMBOL of every spec locally, through
+    /// [`crate::market::validate_market_data_symbol`] — the same function
+    /// `crates/vike-datahub/src/market_data/hub.rs`'s `MarketDataHub::acquire` calls.** A WHOLE request is refused
+    /// rather than the offending spec, because nothing was sent and there is no per-spec channel to
+    /// report on — the per-spec split [`MarketDataRefusal`] carries is about what the SERVER answers.
+    pub fn market_data_subscribe(
+        mut self,
+        specs: Vec<MarketDataSpec>,
+    ) -> Result<(MarketDataSubscribedInfo, TcpStream), (Self, String)> {
+        if let Err(msg) = refuse_bad_symbols("market_data_subscribe", &specs) {
+            return Err((self, msg));
+        }
+        if !self.features().iter().any(|f| f == FEATURE_MARKET_DATA) {
+            let msg = format!(
+                "datahub server does not advertise `{FEATURE_MARKET_DATA}` (advertised: {:?}) — \
+                 nothing was sent. The market-data plane is capability-negotiated, not \
+                 version-gated: run `vike-cli config set flags.datahub_live true` on the server \
+                 and restart it.",
+                self.features()
+            );
+            return Err((self, msg));
+        }
+        if let Err(msg) =
+            refuse_an_unadvertised_quote_lane("market_data_subscribe", &specs, self.features())
+        {
+            return Err((self, msg));
+        }
+        // Through the one exchange, so the subscribe reply is under its idle bound like every
+        // positional verb; a failure there marks `self` unusable before it is handed back.
+        match self.exchange(&Request::MarketDataSubscribe { specs }) {
+            Ok(Response::MarketDataSubscribed { session, accepted, refused, heartbeat_ms }) => {
+                // The deadline the heartbeat serves, armed HERE so it cannot be forgotten; the
+                // server's period wins whenever it is SLOWER than this client's floor.
+                let deadline = MARKET_DATA_READ_TIMEOUT
+                    .max(Duration::from_millis(heartbeat_ms.saturating_mul(3)));
+                if let Err(e) = self.stream().set_read_timeout(Some(deadline)) {
+                    let msg = format!(
+                        "market_data_subscribe: could not arm the stream read deadline: {e}"
+                    );
+                    return Err((self, msg));
+                }
+                // A push stream is written to, never read from, by the server — clear the request
+                // write bound so a large first snapshot is not clipped by a request-shaped number.
+                let _ = self.stream().set_write_timeout(None);
+                let info = MarketDataSubscribedInfo { session, accepted, refused, heartbeat_ms };
+                Ok((info, self.conn.into_stream()))
+            }
+            Ok(Response::Error(msg)) => Err((self, msg)),
+            Ok(other) => {
+                let msg = format!(
+                    "protocol desync: expected MarketDataSubscribed, got {}",
+                    response_kind(&other)
+                );
+                Err((self, msg))
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                Err((self, msg))
+            }
+        }
+    }
+
+    /// **Change an existing session's subscription set** — the ordinary request/response half.
+    ///
+    /// ⚠ Send this on a SHORT-LIVED connection of its own, never on the stream socket
+    /// [`market_data_subscribe`](Self::market_data_subscribe) returned: that socket's server side has left its read
+    /// loop and a frame written there is never read.
+    pub fn market_data_update(
+        &mut self,
+        session: MarketDataSessionId,
+        add: Vec<MarketDataSpec>,
+        remove: Vec<MarketDataSpec>,
+    ) -> Result<MarketDataUpdatedInfo, String> {
+        // The same door as `market_data_subscribe`, over the ADD list only: `MarketDataHub::update`'s remove loop
+        // never reaches `acquire`, so a bad `remove` costs the server a map lookup, not a refusal.
+        refuse_bad_symbols("market_data_update", &add)?;
+        if !self.features().iter().any(|f| f == FEATURE_MARKET_DATA) {
+            return Err(format!(
+                "datahub server does not advertise `{FEATURE_MARKET_DATA}` (advertised: {:?}) —                  nothing was sent.",
+                self.features()
+            ));
+        }
+        refuse_an_unadvertised_quote_lane("market_data_update", &add, self.features())?;
+        let request = Request::MarketDataUpdate { session, add, remove };
+        match self.exchange_shown(&request)? {
+            Response::MarketDataUpdated { accepted, refused, released } => {
+                Ok(MarketDataUpdatedInfo { accepted, refused, released })
+            }
+            Response::Error(msg) => Err(msg),
+            other => Err(format!(
+                "protocol desync: expected MarketDataUpdated, got {}",
+                response_kind(&other)
+            )),
+        }
+    }
+}

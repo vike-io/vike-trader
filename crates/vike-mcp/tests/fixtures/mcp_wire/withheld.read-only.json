@@ -1,0 +1,105 @@
+{
+  "argv": [
+    "--profile",
+    "read-only",
+    "--addr",
+    "127.0.0.1:1",
+    "--backtest-addr",
+    "127.0.0.1:1"
+  ],
+  "case": "withheld.read-only",
+  "env": {
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 0,
+  "stderr": "",
+  "transcript": [
+    {
+      "send": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "qty": 1.0,
+            "side": 1,
+            "symbol": "BTCUSDT",
+            "venue": "sim"
+          },
+          "name": "submit_order"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 1,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "tool `submit_order` is not available: this server is running under the `read-only` tool profile. Tools served in this session: validate_strategy, discover_params, list_templates, list_indicators, profile_template, run_backtest, run_sweep, run_walk_forward, run_status, cancel_run, list_strategies, list_series, node_snapshot, strategy_status, settings_show, health_node, report, decode_order_id. Only the OPERATOR can widen this, by restarting the server with `--profile full` (and without that `--deny-tool`) in the MCP client's launch command — this server cannot widen its own scope, and asking again will not change the answer.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {
+            "kind": "bar",
+            "venue": "binance"
+          },
+          "name": "delete_series"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 2,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "tool `delete_series` is not available: this server is running under the `read-only` tool profile. Tools served in this session: validate_strategy, discover_params, list_templates, list_indicators, profile_template, run_backtest, run_sweep, run_walk_forward, run_status, cancel_run, list_strategies, list_series, node_snapshot, strategy_status, settings_show, health_node, report, decode_order_id. Only the OPERATOR can widen this, by restarting the server with `--profile full` (and without that `--deny-tool`) in the MCP client's launch command — this server cannot widen its own scope, and asking again will not change the answer.",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    },
+    {
+      "send": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+          "arguments": {},
+          "name": "no_such_tool"
+        }
+      }
+    },
+    {
+      "recv": {
+        "id": 3,
+        "jsonrpc": "2.0",
+        "result": {
+          "content": [
+            {
+              "text": "unknown tool: no_such_tool",
+              "type": "text"
+            }
+          ],
+          "isError": true
+        }
+      }
+    }
+  ],
+  "what": "a withheld tool is refused by name; no preview, no token"
+}

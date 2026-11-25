@@ -1,0 +1,36 @@
+[package]
+name = "vike-trade-ledger"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "vike trading core — the closed-trade LEDGER: a run's fills folded into closed trades the reference report's way (one lot per entry fill, first in first out, every row net of both commissions), the lots still open, and the trades-analysis statistics in all, long and short columns. The simulator books a backtest with it and the live core books a mount with the same one (decision 0271), so the two cannot disagree. It moved out of `vike-analytics` (its `closed_trades` module) whole, so the live core names no metrics or report code; `src/lib.rs`'s module doc is the contract."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier
+# `vocabulary-stacked` — one hop over the domain vocabulary (10), below `vike-analytics` (15),
+# whose report carries the ledger's block.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 12
+
+[dependencies]
+# `Fill`, `ContractValue`, `TradeClosedRow`, the one FIFO lot close (`close_lots_fifo`, `LotClose`,
+# `LOT_DUST`, the `Lot` trait), the persisted lot (`TradeClosedOpenLot`), the day (`MS_PER_DAY_F64`) and
+# `time::utc_parts`, the UTC calendar month the monthly ratios bucket by.
+vike-model = { path = "../vike-model" }
+# The compensated sum and the sample statistics (decision 0294), layer 2, `libm` only.
+vike-math = { path = "../vike-math" }
+# Every block derives both directions: it is a field of the serialized report.
+serde = { workspace = true }
+libm = { workspace = true } # `libm::pow` for the compounded monthly rate and the CAGR (decision 0032)
+
+[dev-dependencies]
+# The unit tests round-trip the blocks through JSON.
+serde_json = { workspace = true }
+# `vike_utility::libm_walk`, the shared text walk `tests/libm_platform_probe.rs` reads `src/` with
+# (decision 0074). A DEV edge with the feature, never a normal one.
+vike-utility = { path = "../vike-utility", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

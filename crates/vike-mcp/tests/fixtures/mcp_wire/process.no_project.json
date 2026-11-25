@@ -1,0 +1,14 @@
+{
+  "argv": [],
+  "case": "process.no_project",
+  "env": {},
+  "exit": 0,
+  "stderr": {
+    "<lines>": [
+      "<program>: settings: no settings directory resolved — every ceiling is the compiled-in default and every venue is capped `paper`. Set VIKE_SETTINGS_DIR, or run from a project that has one.",
+      ""
+    ]
+  },
+  "stdout": "",
+  "what": "no project at all: the server still starts, and says so on stderr"
+}

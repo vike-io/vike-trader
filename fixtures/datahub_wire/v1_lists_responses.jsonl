@@ -1,0 +1,6 @@
+{"SymbolSets":[]}
+{"SymbolSets":[{"name":"My Alts","symbols":["SOLUSDT","AVAXUSDT"],"provider":"Auto","interval":"1h","benchmark":"BTCUSDT","user":true}]}
+{"InstrumentLists":{"venues":[{"venue":"binance","refreshed_ms":1794124800000,"truncated":false,"last_error":null,"last_try_ms":1794124800000,"instruments":[]}],"operator":[{"venue":"alpaca","fetched":"2026-11-12","qualifier":"demo","instruments":[]}]}}
+{"InstrumentListsRefreshed":[{"venue":"binance","outcome":{"Ok":{"Listed":{"instruments":[],"truncated":false,"cached":false}}}},{"venue":"okx","outcome":{"Err":"catalog okx: the venue did not answer"}},{"venue":"bybit","outcome":{"Ok":"NotArmed"}}]}
+{"OperatorInstruments":{"outcomes":[{"symbol":"EURUSD","done":{"Ok":"ig: EURUSD is CS.D.EURUSD.MINI.IP (EUR/USD Mini)"}},{"symbol":"GBPUSD","done":{"Err":"ig: the read cap was spent"}}],"rows":[]}}
+{"SplitWarnings":[{"venue":"dukascopy","symbol":"NVDA.CFD","date":"2026-11-20","new_shares":10,"old_shares":1,"price_before":1400.0,"price_after":140.0}]}

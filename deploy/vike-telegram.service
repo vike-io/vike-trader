@@ -1,0 +1,87 @@
+# vike-telegram — the Telegram control channel (docs/decisions/0256), as its own unit.
+#
+# A CLIENT of the tradehub's control port, like `vike-cli trade` and `vike-mcp`: a chat line is
+# previewed by the node (`Request::Preview`) and sent on `/confirm` (`Request::Command`), and a read
+# is one `Request::Snapshot`. It holds no core, no venue session and no venue key, so starting,
+# stopping or restarting this unit touches nothing of the tradehub's, and the tradehub runs with this
+# unit stopped. `After=` below orders a shutdown (this unit stops first) and starts nothing: there is
+# deliberately no `Wants=`/`Requires=` on the tradehub, so a start of this unit never starts it.
+#
+# What it reads, every value a row of <project>/settings/db/vike.db (decision 0111), none from this
+# file: the gates `flags.tradehub_control` + `flags.telegram_control` (the second is off by default,
+# the first ON since decision 0280; with either off the process reads nothing and exits 0, and the
+# unit stays inactive), the node address
+# `config.tradehub_addr` (the tradehub's own bind on this box), the credential rows
+# VIKE_TELEGRAM_BOT_TOKEN + VIKE_TELEGRAM_ALLOWED_CHAT_IDS (+ the optional
+# VIKE_TELEGRAM_ALLOWED_USER_IDS), and the channel's own device key `owner/telegram` (role `control`,
+# a `device_key` row `vike-cli backend mint-missing` makes and grants on the tradehub's access list,
+# decision 0288).
+#
+# ⚠ That allowlist is per-CHAT, and a chat is not a person: an allowlisted GROUP authorizes every
+# member, including everyone anyone later adds, with no config change. Every accepted command names
+# its sender in the node's audit trail; to also RESTRICT by sender, set the optional
+# VIKE_TELEGRAM_ALLOWED_USER_IDS (comma-separated numeric ids, ANDed with the chat list).
+#
+# Exit 78 (`RestartPreventExitStatus=78`): the boot refused (a retired variable, an illegal row), or a
+# gate is open and the channel cannot start (no token, no
+# chat, no device key, no writable ledger, an unsound settings seal), or Telegram refused the bot token
+# for good. A restart cannot help, so systemd does not try; fix it and `systemctl restart vike-telegram`.
+#
+# The at-most-once ledger is `<settings>/state/telegram_updates.ledger` — the file the tradehub wrote
+# while the channel was one of its threads, so the mark carries over — inside the grant below. The
+# database directory is granted because SQLite writes its `-wal`/`-shm` beside the database even to
+# read it; this process writes no row.
+#
+# The stop: SIGTERM is seen between long-polls, and one `getUpdates` waits at most 20 s (35 s with
+# the agent's own bound), hence `TimeoutStopSec=45`. A kill mid-dispatch loses that one update and
+# never replays it: the mark is written before the command is acted on.
+#
+# Installed by hand, like every unit here. A deploy (`deploy/docker/vikectl`'s
+# `DEPLOY_UNITS`) restarts it AFTER the tradehub when it is running, having first booted the new
+# binary as `telegram --no-poll` on a copy of the settings (no Telegram call, no message), and
+# leaves it alone when it is not: with the channel off the process exits 0 and the unit stays down.
+[Unit]
+Description=vike-telegram — the Telegram control channel, a client of the tradehub's control port in its own process
+After=network-online.target vike-tradehub.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/vike-<unit>
+ExecStart=/srv/vike-<unit>/bin/vike-backend telegram
+ExecStartPre=/srv/vike-<unit>/bin/vike-cli config check
+Environment=VIKE_SETTINGS_DIR=/srv/vike-<unit>/settings
+MemoryMax=256M
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=78
+KillSignal=SIGTERM
+TimeoutStopSec=45
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=true
+ReadWritePaths=/srv/vike-<unit>/settings/state /srv/vike-<unit>/settings/db
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @module @reboot @swap @raw-io @debug @clock @cpu-emulation
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+UMask=0077
+
+[Install]
+WantedBy=default.target

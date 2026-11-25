@@ -1,0 +1,332 @@
+//! OFFLINE end-to-end mount test: a SCRIPTED Polymarket-shaped 0–1 feed → the PRODUCTION live core
+//! → the A-S `SpreadMaker` (the shipped `strategies/market_making/spread_maker.rs`) → the paper
+//! exchange, through the SAME
+//! [`vike_tradehub_core::build_paper_strategy_core_with`] + [`vike_tradehub_core::TickSink`] the daemon uses. No
+//! network, creds or `polymarket` feature.
+//!
+//! Proves: the maker QUOTES BOTH SIDES around the reservation price → each quote is the paper book's
+//! clock (decision 0285's amendment of 2026-11-16: a resting order fills the moment a quote reaches it,
+//! at that quote's side) → INVENTORY is managed (a dip fills the bid → long; a spike fills the ask →
+//! flat). Deterministic: the book judges a quote before the maker hears it, so the resting quote at each
+//! fill is the one the previous tick set.
+
+use crate::common;
+
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use vike_data::DataClientSink;
+use vike_log::poll::wait_until;
+use vike_marketdata::{L2Book, L2BookLevel, TickQuote};
+use vike_model::{EquitySample, Fill};
+use vike_strategy_lab::makers::spread_maker::SpreadMaker;
+use vike_tradehub_core::test_support::paper_maker::{outcome_maker, paper_maker_core_with};
+use vike_tradehub_core::{StrategyCorePaperConfig, TickSink};
+
+/// The prefix of this binary's OWN operator-HALT sentinel root (`common::no_halt`): a path it NAMES
+/// and never CREATES.
+///
+/// ⚠ **Every mount below is HALT-armed by design, so without this these tests inherit the
+/// operator's kill switch off the box.** `StrategyCorePaperConfig::default` resolves the process-wide
+/// sentinel (`<project>/settings/state/HALT`, else `<exe_dir>/HALT`); while it exists no quote
+/// rests and the tests fail as "maker never posted a two-sided quote". MEASURED on the CI box with a
+/// real file there: `scripted_ticks_drive_maker_quote_fill_and_inventory` and
+/// `equity_sample_closure_fires_while_a_position_is_open` went red. Pinned, not `set_var`:
+/// `halt_path_from_env` memoizes in a `OnceLock`.
+///
+/// ⚠ A caller must BIND the `tempfile::TempDir` that `common::no_halt` returns for the test's
+/// duration (`common::no_halt` carries why).
+const HALT_ROOT_PREFIX: &str = "vike-tradehub-core-mount-scripted-owns-this-halt-";
+
+/// [`StrategyCorePaperConfig::default`] with this binary's own sentinel pinned (what
+/// a daemon's paper mount gets, minus the inherited kill switch); bind the guard.
+fn unhalted_opts() -> (tempfile::TempDir, StrategyCorePaperConfig) {
+    let (root, halt) = common::no_halt(HALT_ROOT_PREFIX);
+    (root, StrategyCorePaperConfig { halt, ..Default::default() })
+}
+
+const VENUE: &str = "polymarket";
+const TOKEN: &str = "SCRIPT_OUTCOME_TOKEN";
+const INTERVAL_MS: i64 = 60_000;
+const QTY: f64 = 20.0;
+
+/// Far-future resolution: a positive A-S horizon and no near-resolution blackout.
+const RESOLUTION_TIMESTAMP: i64 = 3_000_000_000;
+
+/// [`wait_until`] that re-sends the SAME quote each poll, for anything on REAL wall-clock time
+/// (the `vike_core::CoreConfig::equity_sample` timer): the core re-checks armed timers only when
+/// the NEXT ingest arrives (no idle waker unless `submit_ack_timeout` is set too —
+/// `CoreThread::run`'s "OS waker thread" doc), so a silent wait never sees the fire. `ts` grows
+/// 1ms per poll, inside the synth window: no bar close, and at the price that stands (`bid`/`ask`), no
+/// extra fill.
+fn poke_until(
+    sink: &TickSink,
+    start_timestamp: i64,
+    (bid, ask): (f64, f64),
+    secs: u64,
+    mut cond: impl FnMut() -> bool,
+) -> bool {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let mut ts = start_timestamp;
+    loop {
+        if cond() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+        ts += 1;
+        quote(sink, ts, bid, ask);
+    }
+}
+
+/// One scripted 0–1 quote frame: drives the synth AND the maker's `on_quote_tick`, as the live
+/// `TickSink` forwards Polymarket's derived L1 quotes.
+fn quote(sink: &TickSink, ts: i64, bid: f64, ask: f64) {
+    sink.quote(
+        VENUE,
+        TOKEN,
+        TickQuote {
+            timestamp: ts,
+            local_timestamp: 0,
+            bid,
+            ask,
+            bid_size: 100.0,
+            ask_size: 100.0,
+            symbol: TOKEN.into(),
+        },
+    );
+}
+
+fn buys(fills: &Arc<Mutex<Vec<Fill>>>) -> Vec<Fill> {
+    fills.lock().unwrap().iter().filter(|f| f.side > 0).cloned().collect()
+}
+fn sells(fills: &Arc<Mutex<Vec<Fill>>>) -> Vec<Fill> {
+    fills.lock().unwrap().iter().filter(|f| f.side < 0).cloned().collect()
+}
+fn position(handle: &vike_core::CoreHandle) -> f64 {
+    handle.snapshot().positions.iter().find(|p| p.symbol == TOKEN).map_or(0.0, |p| p.size)
+}
+
+#[test]
+fn scripted_ticks_drive_maker_quote_fill_and_inventory() {
+    vike_log::test_init();
+
+    assert_eq!(
+        outcome_maker(SpreadMaker::from_params, Some(RESOLUTION_TIMESTAMP)).params().qty,
+        QTY
+    );
+    // The sentinel's owning temp directory, held for the whole test (see `common::no_halt`).
+    let (_halt_root, opts) = unhalted_opts();
+    let mount = paper_maker_core_with(
+        SpreadMaker::from_params,
+        VENUE,
+        TOKEN,
+        Some(RESOLUTION_TIMESTAMP),
+        opts,
+    );
+    let sink = TickSink::new(&mount.handle, VENUE, TOKEN, "1m", INTERVAL_MS);
+
+    // ---- Phase 0: settle at mid 0.50 (window 0); the maker posts a two-sided quote ----
+    quote(&sink, 1_000, 0.49, 0.51);
+    quote(&sink, 2_000, 0.49, 0.51);
+    quote(&sink, 3_000, 0.49, 0.51);
+
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            let s = mount.handle.snapshot();
+            s.orders.iter().filter(|o| o.order_type == vike_model::OrderType::Limit).count() >= 2
+        }),
+        "maker never posted a two-sided quote"
+    );
+    // BOTH sides, straddling the reservation price (~mid 0.50) — "quotes both sides".
+    let snap = mount.handle.snapshot();
+    let bid = snap
+        .orders
+        .iter()
+        .find(|o| o.side > 0 && o.order_type == vike_model::OrderType::Limit)
+        .expect("a resting BID quote");
+    let ask = snap
+        .orders
+        .iter()
+        .find(|o| o.side < 0 && o.order_type == vike_model::OrderType::Limit)
+        .expect("a resting ASK quote");
+    let (bid_price, ask_price) = (bid.price.unwrap(), ask.price.unwrap());
+    assert!(bid_price < ask_price, "bid {bid_price} must be below ask {ask_price}");
+    assert!(
+        bid_price < 0.50 && 0.50 < ask_price,
+        "quotes must straddle the 0.50 mid: {bid_price}/{ask_price}"
+    );
+    assert!(
+        (0.0..1.0).contains(&bid_price) && (0.0..1.0).contains(&ask_price),
+        "0–1 bounded prices"
+    );
+    assert!((bid.qty - QTY).abs() < 1e-9 && (ask.qty - QTY).abs() < 1e-9, "base quote size");
+
+    // ---- Phase 1: window 1 dips to 0.40 → the resting BID fills at the dip's ask (long) ----
+    quote(&sink, 61_000, 0.49, 0.51); // boundary: closes the flat window 0 (no fill); opens window 1
+    quote(&sink, 62_000, 0.39, 0.41); // mid 0.40 — the dip: the ask under the resting bid fills it
+    quote(&sink, 121_000, 0.39, 0.41); // boundary: the maker re-quoted round 0.40, nothing crosses
+
+    assert!(
+        wait_until(Duration::from_secs(10), || !buys(&mount.fills).is_empty()),
+        "the resting bid never filled"
+    );
+    let buy = buys(&mount.fills).remove(0);
+    assert!(buy.price < 0.50, "a maker BUY fills below the mid: {}", buy.price);
+    assert!((buy.size - QTY).abs() < 1e-9, "buy fill size = base qty");
+    assert!(
+        wait_until(Duration::from_secs(10), || position(&mount.handle) >= QTY - 1e-9),
+        "inventory did not go long"
+    );
+
+    // ---- Phase 2: window 2 spikes to 0.60 → the resting ASK fills at the spike's bid (flat) ----
+    quote(&sink, 122_000, 0.59, 0.61); // mid 0.60 — the spike: the bid over the resting ask fills it
+    quote(&sink, 181_000, 0.59, 0.61); // boundary: the maker re-quoted round 0.60, nothing crosses
+
+    assert!(
+        wait_until(Duration::from_secs(10), || !sells(&mount.fills).is_empty()),
+        "the resting ask never filled"
+    );
+    let sell = sells(&mount.fills).remove(0);
+    assert!(sell.price > 0.50, "a maker SELL fills above the mid: {}", sell.price);
+    assert!(sell.price > buy.price, "captured spread: sell {} > buy {}", sell.price, buy.price);
+    assert!((sell.size - QTY).abs() < 1e-9, "sell fill size = base qty");
+    // inventory managed: the offsetting ask fill brought the position back to flat.
+    assert!(
+        wait_until(Duration::from_secs(10), || position(&mount.handle).abs() < 1e-9),
+        "inventory not returned to flat"
+    );
+
+    // Grab the snapshot cell BEFORE the consuming join, then read the final snapshot from it.
+    sink.flush_bar();
+    let cell = mount.handle.snapshot_cell();
+    mount.handle.shutdown_and_join();
+    let snap = cell.load_full();
+    assert!(snap.fault.is_none(), "core faulted: {:?}", snap.fault);
+    assert!(
+        snap.portfolio.realized_pnl > 0.0,
+        "the round-trip (buy {} → sell {}) should realize a positive spread; got {}",
+        buy.price,
+        sell.price,
+        snap.portfolio.realized_pnl
+    );
+    let (nb, ns) = (buys(&mount.fills).len(), sells(&mount.fills).len());
+    println!(
+        "mount ok: {nb} buy + {ns} sell paper fill(s); buy {} / sell {}; realized {}",
+        buy.price, sell.price, snap.portfolio.realized_pnl
+    );
+}
+
+/// The L2 book lane also drives the maker (`on_order_book`, same `requote`). Separate from the fill
+/// flow so its wall-clock timestamp never perturbs the deterministic synth above.
+#[test]
+fn scripted_book_tick_also_makes_the_maker_quote() {
+    vike_log::test_init();
+    // The sentinel's owning temp directory, held for the whole test (see `common::no_halt`).
+    let (_halt_root, opts) = unhalted_opts();
+    let mount = paper_maker_core_with(
+        SpreadMaker::from_params,
+        VENUE,
+        TOKEN,
+        Some(RESOLUTION_TIMESTAMP),
+        opts,
+    );
+    let sink = TickSink::new(&mount.handle, VENUE, TOKEN, "1m", INTERVAL_MS);
+
+    let mut book = L2Book::new(0.01);
+    book.apply_snapshot(
+        1,
+        &[L2BookLevel::new(0.49, 100.0), L2BookLevel::new(0.48, 200.0)],
+        &[L2BookLevel::new(0.51, 100.0), L2BookLevel::new(0.52, 200.0)],
+    );
+    sink.book(VENUE, TOKEN, Arc::new(book));
+
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            let s = mount.handle.snapshot();
+            let bid = s
+                .orders
+                .iter()
+                .find(|o| o.side > 0 && o.order_type == vike_model::OrderType::Limit);
+            let ask = s
+                .orders
+                .iter()
+                .find(|o| o.side < 0 && o.order_type == vike_model::OrderType::Limit);
+            matches!((bid, ask), (Some(b), Some(a))
+                if b.price.zip(a.price).is_some_and(|(bp, ap)| bp < ap && bp < 0.50 && 0.50 < ap))
+        }),
+        "the L2 book lane did not produce a two-sided quote"
+    );
+    mount.handle.shutdown_and_join();
+}
+
+/// The paper mount's `StrategyCorePaperConfig::{equity_sample, on_equity_sample}` reach
+/// `CoreConfig` in the SAME production mount and FIRE: a capturing closure, the dip-and-recover
+/// sequence to open a long, then [`poke_until`] until a batch lands with a `"TOTAL"` row and a
+/// per-venue row (the shape of vike-core's own sampler test).
+#[test]
+fn equity_sample_closure_fires_while_a_position_is_open() {
+    vike_log::test_init();
+
+    let captured = Arc::new(Mutex::new(Vec::<EquitySample>::new()));
+    let cap = Arc::clone(&captured);
+    // The sentinel's owning temp directory, held for the whole test (see `common::no_halt`).
+    let (_halt_root, halt) = common::no_halt(HALT_ROOT_PREFIX);
+    let mount = paper_maker_core_with(
+        SpreadMaker::from_params,
+        VENUE,
+        TOKEN,
+        Some(RESOLUTION_TIMESTAMP),
+        StrategyCorePaperConfig {
+            equity_sample: Some(Duration::from_millis(50)),
+            on_equity_sample: Some(Box::new(move |rows: &[EquitySample]| {
+                cap.lock().unwrap().extend_from_slice(rows)
+            })),
+            halt,
+            ..Default::default()
+        },
+    );
+    let sink = TickSink::new(&mount.handle, VENUE, TOKEN, "1m", INTERVAL_MS);
+
+    // Phase 0: settle at mid 0.50 (window 0) so the maker posts a two-sided quote.
+    quote(&sink, 1_000, 0.49, 0.51);
+    quote(&sink, 2_000, 0.49, 0.51);
+    quote(&sink, 3_000, 0.49, 0.51);
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            let s = mount.handle.snapshot();
+            s.orders.iter().filter(|o| o.order_type == vike_model::OrderType::Limit).count() >= 2
+        }),
+        "maker never posted a two-sided quote"
+    );
+
+    // Phase 1: the dip fills the BID (long); an open position arms the sampler
+    // (`any_position_open`).
+    quote(&sink, 61_000, 0.49, 0.51); // boundary: closes the flat window 0 (no fill); opens window 1
+    quote(&sink, 62_000, 0.39, 0.41); // mid 0.40 — the dip fills the BID at its ask
+    quote(&sink, 121_000, 0.39, 0.41); // boundary: the maker re-quoted round 0.40, nothing crosses
+    assert!(
+        wait_until(Duration::from_secs(10), || position(&mount.handle) >= QTY - 1e-9),
+        "inventory did not go long"
+    );
+
+    // The sampler is armed now; poke the core (same resting price, no new fill) until a batch lands.
+    assert!(
+        poke_until(&sink, 121_000, (0.39, 0.41), 10, || !captured.lock().unwrap().is_empty()),
+        "equity-sample closure never fired for an open position"
+    );
+    let rows = captured.lock().unwrap().clone();
+    assert!(rows.iter().any(|r| r.venue == "TOTAL"), "batch must include a TOTAL row: {rows:?}");
+    assert!(rows.iter().any(|r| r.venue == VENUE), "batch must include a per-venue row: {rows:?}");
+
+    mount.handle.shutdown_and_join();
+}
+
+/// The verdict must not change under an engaged HALT sentinel
+/// (`common::assert_indifferent_to_an_engaged_halt_sentinel`).
+#[test]
+fn the_mount_scripted_suite_is_indifferent_to_an_engaged_halt_sentinel() {
+    common::assert_indifferent_to_an_engaged_halt_sentinel("mount_scripted::");
+}

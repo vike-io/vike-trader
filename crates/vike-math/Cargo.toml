@@ -1,0 +1,57 @@
+[package]
+name = "vike-math"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+# ⚠ PUBLISHABLE — the third crate `docs/decisions/0071-the-leaf-libraries-publish-the-product-does-not.md`
+# admits (its addendum of 2026-11-17, in `vike-utility`'s place): the published `vike-indicators` names it,
+# so every formula it shares with another crate has ONE copy here. Its publish closure is itself and
+# `libm`: no `vike-*` dependency. Read 0071's admission test before flipping this on any other crate.
+# ⚠ The same two consequences `crates/vike-marketdata/Cargo.toml` spells out: this crate leaves
+# `deny.toml`'s `private` exemption (the `FSL-1.1-ALv2` entry in that file's `allow` list covers it), and a
+# `.crate` tarball is `git ls-files` here with no redaction pass, so every tracked file must be clean
+# against `scripts/forbidden_tokens.ere` BEFORE a publish: crates.io is immutable.
+# ⚠ A function added here is a published promise (`0.x`: a minor version may break it, a patch may
+# not), and `vike-indicators` must be published AFTER the version of this crate it was built against.
+publish = true
+license.workspace = true
+repository = "https://github.com/vike-io/vike-trader"
+# The engineering description: vike trading core — EVERY pure formula that names no trading concept,
+# whatever its number of users (decision 0294): summation, statistics, the normal distribution,
+# hypothesis tests, linear algebra, minimisation, stationarity tests, time-series measures, change
+# detection, resampling, seeded random draws, regressions, rolling-window kernels, smoothing constants,
+# the GARCH(1,1) and two-state hidden Markov models. Domain maths (options, strategy metrics,
+# arbitrage, portfolio construction, the indicators) stays in its crate and calls this one. Named at
+# the module, never re-exported at the root. No `vike-*` dependency; `libm` is the only one.
+description = "Pure numeric formulas for trading and research code: compensated summation, statistics, the normal distribution, linear algebra, stationarity and change-detection tests, regressions, rolling windows, GARCH(1,1) and hidden Markov models. One dependency (libm); bit-identical on Windows and Linux."
+readme = "README.md"
+keywords = ["statistics", "linear-algebra", "time-series", "numerics", "finance"]
+categories = ["mathematics", "science", "algorithms"]
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `math` — every
+# pure formula, below the helper floor (3) and everything above it, so every crate can name it.
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+# There is none, and there can be none: 2 is the lowest declared rank in the workspace.
+[package.metadata.vike]
+layer = 2
+
+[dependencies]
+# The ONLY dependency: every logarithm, exponential, power, error function and cosine here.
+# Transcendentals come from the `libm` crate, never from `f64`'s platform-libm methods
+# (`docs/decisions/0032-transcendentals-come-from-the-libm-crate-not-the-platform.md`), and results
+# here are compared bit for bit. Workspace-pinned and already in the lockfile, so no new supply-chain
+# entry.
+libm = { workspace = true }
+
+[dev-dependencies]
+# The shared libm walk (decision 0074) for `tests/libm_platform_probe.rs`, the source scan over this
+# crate's `src/`. A DEV edge with the feature, never a normal one: `test-support` is gated
+# `#[cfg(any(test, feature = "test-support"))]`, and a normal edge would also be an UPWARD one
+# (vike-utility is 3, this crate 2), which the layer gate refuses. vike-utility names no `vike-*` crate,
+# so this edge closes no cycle; the walk's old home, vike-model (10), names this crate normally and did
+# (decision 0074's amendment of 2026-11-22). `cargo package` strips a dev-dependency carrying no version.
+vike-utility = { path = "../vike-utility", features = ["test-support"] }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

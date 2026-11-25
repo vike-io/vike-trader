@@ -1,0 +1,93 @@
+[package]
+name = "vike-mcp"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+# The PUBLIC source mirror: `{ repo }` below is rendered from it, so a private URL here would send every
+# installer to a 404. `crates/vike-ops/tests/release/packaging_gate.rs` holds it EQUAL to the mirror URL.
+repository = "https://github.com/vike-io/vike-trader"
+description = "vike trading core — the standalone stdio MCP server an agent launches: the tools, the mandatory preview gate, the --profile rings, the agent transcript and the credential fence. A sibling of vike-cli over vike-client; neither depends on the other (docs/decisions/0252)."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier
+# `engine-stacked`: one hop over `vike-client` at 30, and `vike-cli` at the same rank, so equal rank
+# refuses an edge between the two siblings (the owner's ruling of 2026-11-06).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 35
+
+[dependencies]
+# What this program shares with `vike-cli`: the verb vocabulary, the keyrings, the fold of a boot.
+# `indicators`: the indicator tools (`offline_tools.rs`) and the user's own installed at startup
+# (`resolved::install_user_indicators`); off by default in that crate.
+vike-client = { path = "../vike-client", features = ["indicators"] }
+# The boot CALL stays in each program (`crates/vike-client/CLAUDE.md`).
+vike-boot = { path = "../vike-boot" }
+# The node (`TradehubControlHandle`, `TradehubCoreHandle`), the data tools and the run tools, each hub
+# through its own client. ⚠ `vike-gatewayhub-client` is never named: decision 0252's verdict 6.
+vike-tradehub-client = { path = "../vike-tradehub-client" }
+vike-datahub-client = { path = "../vike-datahub-client" }
+# The delete tool's removal words (`vike_data::store::removal`'s `SeriesSelector`, `RemovalPlan`, `describe_id`),
+# named at their one path. Default features, already in this graph through vike-datahub-client: no package joins it.
+vike-data = { path = "../vike-data" }
+# The `report` tool's default starting capital, `vike_analytics::results::DEFAULT_REPORT_SEED` (the one seed every
+# report door folds an account from). Already in this graph through `vike-client`: no package joins it.
+vike-analytics = { path = "../vike-analytics" }
+vike-backtesthub-client = { path = "../vike-backtesthub-client" }
+vike-hub-protocol = { path = "../vike-hub-protocol" }
+vike-config = { path = "../vike-config" }           # the default addresses, the ack wait's default, `is_secret_key`
+vike-rhai = { path = "../vike-rhai" }           # the offline tools: `discover_params`, `TEMPLATES`
+vike-catalog = { path = "../vike-catalog" }         # the venue gate's `split_perp`
+vike-venues = { path = "../vike-venues" }           # the venue gate's `lane_twin`; the transcript's planted names
+vike-change-journal = { path = "../vike-change-journal" } # the transcript's `Proc`
+vike-model = { path = "../vike-model" }
+vike-buildinfo = { path = "../vike-buildinfo" }     # `--version`'s build identity
+vike-utility = { path = "../vike-utility", features = ["cli", "serde"] } # `vike_utility::cli` (decision 0155), `calendar`, `serde_fields`
+clap = { workspace = true }
+serde_json = { workspace = true }
+# The protocol (`src/rmcp_seam.rs`, `src/rmcp_wire.rs`), and the two things those files name beside it:
+# this crate's runtime is one thread, so `rt` and not the workspace's `rt-multi-thread`.
+rmcp = { workspace = true }
+tokio = { version = "1", default-features = false, features = ["rt", "sync", "macros"] }
+serde = { workspace = true }
+# Each tool's `inputSchema`, from its struct (`src/tool_args.rs`). Already in `rmcp`'s tree.
+schemars = { workspace = true }
+
+[dev-dependencies]
+# The in-process and the shipped-binary suites stand real daemons up on loopback, as `vike-cli`'s did.
+vike-backtesthub = { path = "../vike-backtesthub", features = ["test-support"] }
+# The stand-in `src/tests/research_tools.rs` hands `serve_with_stand_ins` (the shipped files compiled in the
+# dev-only strategy-lab crate). A DEV edge only; the build forced it when the library stopped naming a builder.
+vike-strategy-lab = { path = "../vike-strategy-lab" }
+vike-tradehub = { path = "../vike-tradehub" }
+vike-tradehub-client = { path = "../vike-tradehub-client", features = ["test-support"] } # `test_support::strategy_node`: a node that answers NOT NOW
+vike-tradehub-core = { path = "../vike-tradehub-core", features = ["test-support"] } # `test_support::paper_maker`: the node the hub tests stand up
+vike-log = { path = "../vike-log", features = ["test-support"] }
+vike-data = { path = "../vike-data", features = ["test-support"] }
+vike-secrets = { path = "../vike-secrets", features = ["test-support"] }
+vike-model = { path = "../vike-model", features = ["test-support"] }  # `OrderBrokerMock`
+vike-marketdata = { path = "../vike-marketdata" }  # the template gate's rising bars
+vike-indicators = { path = "../vike-indicators" }  # the indicator tools held to the registry
+tempfile = { workspace = true }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true
+
+# ─── `cargo binstall` — install the RELEASED binary instead of compiling the workspace ───────────
+#
+# The same tables as `crates/vike-cli/Cargo.toml`, which carries the argument: LINUX only.
+#
+#     cargo binstall --git https://github.com/vike-io/vike-trader vike-mcp
+#
+# ⚠ NO WINDOWS ROW since 2026-11-24: `vike-mcp.exe` is retired (the owner; MCP on Windows is
+# `vike-desktop.exe --mcp`), so no release carries the asset a Windows row would render. A Windows
+# host falls through to `compile` (`cargo install` from the clone), the answer for a platform the
+# release does not build.
+[package.metadata.binstall]
+pkg-fmt = "bin"
+bin-dir = "{ bin }{ binary-ext }"
+disabled-strategies = ["quick-install"]
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }{ archive-suffix }"

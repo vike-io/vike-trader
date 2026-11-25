@@ -1,0 +1,71 @@
+use super::*;
+use vike_model::{OrderStatus, TradingState};
+
+fn ov(order_client_id: &str, symbol: &str, status: OrderStatus) -> OrderView {
+    OrderView {
+        data_delay: None,
+        order_client_id: order_client_id.into(),
+        venue: "sim".into(),
+        account: None,
+        symbol: symbol.into(),
+        side: 1,
+        qty: 1.0,
+        order_type: vike_model::OrderType::Limit,
+        price: Some(1.0),
+        trigger_price: None,
+        status,
+        venue_order_id: None,
+        filled_qty: 0.0,
+        average_fill_price: 0.0,
+        refusal_id: None,
+        reason: None,
+        pending_price: None,
+        trail: None,
+        limit_offset: None,
+        attributes: None,
+        trail_percent: None,
+        adjust: None,
+        release: None,
+        display_quantity: None,
+    }
+}
+
+fn snap() -> CoreSnapshot {
+    let mut s = CoreSnapshot::empty("sim", "BTCUSDT");
+    s.orders = vec![
+        ov("a", "BTCUSDT", OrderStatus::Accepted).into(),
+        ov("b", "ETHUSDT", OrderStatus::Filled).into(),
+    ];
+    s.positions = vec![PositionView {
+        venue: "sim".into(),
+        symbol: "BTCUSDT".into(),
+        position_side: vike_model::events::PositionSide::Both,
+        size: 2.0,
+        average_price: 100.0,
+        unrealized: 0.0,
+        mark_source: None,
+        leverage: 0.0,
+        liquidation_price: 0.0,
+        margin_mode: vike_model::MarginMode::Cross,
+        isolated_margin: None,
+    }];
+    s.marks = vec![("sim".into(), "BTCUSDT".into(), 101.0)];
+    s.portfolio.equity_total = 1234.0;
+    s.trading_state = TradingState::Halted;
+    s
+}
+
+#[test]
+fn accessors_read_the_existing_vecs() {
+    let s = snap();
+    assert_eq!(s.orders_for("BTCUSDT").count(), 1);
+    assert_eq!(s.order("b").unwrap().symbol, "ETHUSDT");
+    assert!(s.open_order("a").is_some(), "Accepted is non-terminal");
+    assert!(s.open_order("b").is_none(), "Filled is terminal");
+    assert_eq!(s.position("sim", "BTCUSDT").unwrap().size, 2.0);
+    assert!(s.position("sim", "NOPE").is_none());
+    assert_eq!(s.last_mark("sim", "BTCUSDT"), Some(101.0));
+    assert_eq!(s.last_mark("sim", "NOPE"), None);
+    assert_eq!(s.equity(), 1234.0);
+    assert_eq!(s.trading_state(), TradingState::Halted);
+}

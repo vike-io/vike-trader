@@ -1,0 +1,8 @@
+[
+  { "PercentMakerTaker": { "maker_bps": 2.0, "taker_bps": 5.5 } },
+  { "PerShareWithFloor": { "per_share": 0.005, "min": 1.0, "max_percent": 0.5 } },
+  { "PercentOfUnderlying": { "bps": 3.0, "premium_cap_percent": 12.5 } },
+  { "ProbabilityScaled": { "taker_rate": 0.25, "maker_rate": 0.0, "maker_rebate_share": 0.25 } },
+  { "BpsWithFloor": { "bps": 0.2, "min": 2.0 } },
+  "Free"
+]

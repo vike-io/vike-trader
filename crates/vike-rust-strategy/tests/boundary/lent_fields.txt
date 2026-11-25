@@ -1,0 +1,55 @@
+Bar: 104 bytes, align 8
+Bar.timestamp: i64 @ 0
+Bar.open: f64 @ 8
+Bar.high: f64 @ 16
+Bar.low: f64 @ 24
+Bar.close: f64 @ 32
+Bar.volume: f64 @ 40
+Bar.funding: core::option::Option<f64> @ 48
+Bar.bid: core::option::Option<f64> @ 64
+Bar.ask: core::option::Option<f64> @ 80
+Bar.symbol: core::option::Option<vike_marketdata::symbol::Symbol> @ 96
+TradeClosedRow: 136 bytes, align 8
+TradeClosedRow.symbol: alloc::string::String @ 0
+TradeClosedRow.tag: alloc::string::String @ 24
+TradeClosedRow.side: i32 @ 48
+TradeClosedRow.entry_timestamp: i64 @ 56
+TradeClosedRow.entry_bar: usize @ 64
+TradeClosedRow.entry_price: f64 @ 72
+TradeClosedRow.exit_timestamp: i64 @ 80
+TradeClosedRow.exit_bar: usize @ 88
+TradeClosedRow.exit_price: f64 @ 96
+TradeClosedRow.qty: f64 @ 104
+TradeClosedRow.pnl: f64 @ 112
+TradeClosedRow.commission: f64 @ 120
+TradeClosedRow.net: f64 @ 128
+TickQuote: 56 bytes, align 8
+TickQuote.timestamp: i64 @ 0
+TickQuote.local_timestamp: i64 @ 8
+TickQuote.bid: f64 @ 16
+TickQuote.ask: f64 @ 24
+TickQuote.bid_size: f64 @ 32
+TickQuote.ask_size: f64 @ 40
+TickQuote.symbol: vike_marketdata::symbol::Symbol @ 48
+TickTrade: 48 bytes, align 8
+TickTrade.timestamp: i64 @ 0
+TickTrade.local_timestamp: i64 @ 8
+TickTrade.price: f64 @ 16
+TickTrade.size: f64 @ 24
+TickTrade.is_buyer_maker: bool @ 32
+TickTrade.symbol: vike_marketdata::symbol::Symbol @ 40
+OrderListLegAbi: 176 bytes, align 8
+OrderListLegAbi.tag: vike_rust_strategy::abi::StrAbi @ 0
+OrderListLegAbi.side: i32 @ 16
+OrderListLegAbi.qty: f64 @ 24
+OrderListLegAbi.order_type: u32 @ 32
+OrderListLegAbi.order_type_word: vike_rust_strategy::abi::StrAbi @ 40
+OrderListLegAbi.price: vike_rust_strategy::abi::OptionAbi<f64> @ 56
+OrderListLegAbi.trigger_price: vike_rust_strategy::abi::OptionAbi<f64> @ 72
+OrderListLegAbi.trail: vike_rust_strategy::abi::OptionAbi<f64> @ 88
+OrderListLegAbi.reduce_only: bool @ 104
+OrderListLegAbi.time_in_force: u32 @ 108
+OrderListLegAbi.parent: vike_rust_strategy::abi::OptionAbi<usize> @ 112
+OrderListLegAbi.contingency: vike_rust_strategy::abi::OptionAbi<u32> @ 128
+OrderListLegAbi.linked: vike_rust_strategy::abi::SliceAbi<usize> @ 136
+OrderListLegAbi.order_client_id: vike_rust_strategy::abi::OptionAbi<vike_rust_strategy::abi::StrAbi> @ 152

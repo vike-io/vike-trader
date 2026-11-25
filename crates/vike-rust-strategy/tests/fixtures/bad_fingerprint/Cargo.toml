@@ -1,0 +1,15 @@
+# See tests/fixtures/bad_abi_version/Cargo.toml for the shape/exclusion rationale this mirrors.
+# This fixture needs the CORRECT abi_version (so loader::load proceeds past that check) but a
+# WRONG fingerprint. It runs `good`'s build script, which bakes the real abi version and the
+# compatibility record the outer test hands it (that record states the same wrong fingerprint).
+[package]
+name = "bad_fingerprint"
+version = "0.0.0"
+edition = "2021"
+publish = false
+build = "../good/build.rs"
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]

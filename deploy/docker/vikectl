@@ -1,0 +1,2006 @@
+#!/usr/bin/env bash
+# vikectl — the server install, run from the app folder, nothing in /etc (decision 0260): ONE supervisor
+# (`deploy/docker/entrypoint.sh`'s `serve`) runs every daemon, each under its own unit's rules, launched
+# in one of two modes that share every step below except the launch:
+#
+#   * CONTAINER mode (the default; releases and users): one container of the release's image, run by
+#     Docker (or `podman` where there is no `docker`); `--restart unless-stopped` brings it back after a
+#     reboot.
+#   * HOST mode (`install --host`): the same supervisor on the host as the app user, from `<project>/bin`
+#     (`vike-entrypoint.sh` beside `vike-backend` and `vike-cli`), under a user unit kept IN the app
+#     folder (`<project>/bin/vike.service`, linked into the user manager with `systemctl --user link`;
+#     linger starts it at boot). The unit delegates its cgroup, so each daemon keeps its own MemoryMax=.
+#     The mode is the presence of that unit file.
+#
+#     vikectl [--project DIR] install [--host] [--inbox-writer USER]   folders; the host unit; the CI inbox
+#     vikectl [--project DIR] up | down | status | logs [log args...]
+#     vikectl [--project DIR] restart <daemon>                 one daemon, inside the running supervisor
+#     vikectl [--project DIR] run-args [IMAGE]                 the docker run arguments, one per line
+#     vikectl [--project DIR] deploy <request-dir> <tag>       pre-flight, swap, health, auto-rollback
+#     vikectl [--project DIR] deploy-inbox                     take ONE request from the CI inbox
+#     vikectl [--project DIR] rollback                         back to the image before the last deploy
+#     vikectl [--project DIR] verify-tools                     the runtime tools on disk are the release's
+#     vikectl [--project DIR] seed-reference                   lay down the strategy seed's reference if none
+#                                                              (`seeded_reference`; scripts/fetch_release_tools.sh runs it)
+#     vikectl [--project DIR] rust-toolchain PIN               install the builder's compiler PIN names, now
+#                                                              (`stage_toolchain`; scripts/fetch_release_tools.sh runs it)
+#     vikectl [--project DIR] add-sdk ARCHIVE                  add the strategy SDK snapshot a release's
+#                                                              vike-strategy-source.tar.gz holds (`add_sdk`; the same)
+#     vikectl [--project DIR] access invite|swap|revoke|list   who may tunnel in (decision 0288)
+#
+# Installed at <project>/bin/vikectl, the project is the folder above it; from anywhere else pass
+# --project. The app user runs it, and that user must reach the Docker daemon (decision 0260 names
+# what that takes on a box). A credential value is never an argument here and never printed: the probe
+# copy below replaces every key before any daemon reads it.
+#
+# ## What a deploy does (the sequence the retired root deploy helper ran, as the app user)
+#
+#   1. checks the request's SHA256SUMS (vike-backend and vike-cli must be on it);
+#   2. container mode: builds the image from the request's staged context (COPY of those bytes: 0026's
+#      identity rule) and proves the image's vike-backend is the request's, byte for byte; host mode: the
+#      request's own files are what will run. Then it ADDS the release's strategy SDK snapshot (`add_sdk`, the one
+#      install before the pre-flight: a snapshot is additive and never changes, so the new builder's probe starts on
+#      the SDKs it will start on) and lists the strategy files pinned to an SDK the box will no longer build
+#      (`sdk_pin_report`: said, never a refusal);
+#   3. PRE-FLIGHTS every daemon that runs now on the NEW build (a throwaway container, or the staged binary
+#      under `timeout` on the host), on a copy of the
+#      settings database with every key replaced, the live gates written false, every account paper and
+#      the listen addresses confined (`preflight` and `probe_copy`, per unit from `shape`), beside a copy
+#      of <project>/strategies seeded as step 5 will seed the real one
+#      (`probe_strategies`); nothing is touched until all pass. A tradehub the supervisor holds parked or done (not
+#      running, so not waited for) is pre-flighted too, for its journal only: the supervisor starts it again on the
+#      new build. A journal the new build refuses (its own
+#      `journal format version mismatch` line) is moved aside only on the owner's word for this deploy, the
+#      request's `ALLOW_JOURNAL_MOVE` file (`allow_journal_move` of the two deploy workflows), and only when the
+#      build's floor is above the stamp of the journal's newest segment; the probe then runs again on its copy
+#      moved aside. Without the word the deploy refuses here (`journal_needs_move`). Each probe's copy first takes
+#      the release's row steps (the request's `row-steps`, `run_row_steps`), so a daemon is judged on the rows
+#      it will start on, and a step that fails there refuses the deploy. When the request's `rust-toolchain.sha256`
+#      pins another rustc than `bin/rust-toolchain` reports, that toolchain is built beside it, checked against the
+#      pin's digests (`stage_toolchain`); one that does not install refuses the deploy here too. Last, the NEW build
+#      prebuilds the strategy files the tradehub mounts into the real builds directory, so they start at once after
+#      the restart (`prebuild_mounts`: bounded, content-addressed, never a refusal), and the new build's strategy
+#      sandbox opens and loads each artifact it built in the strategy jail, under the process properties the live
+#      unit gives the hubs (`load_mounts`): one that does not load refuses the deploy here;
+#   4. backs up the host files it replaces and remembers the running image;
+#   5. installs the host files (vike-cli, vike-mcp, the runtime tools of `RUNTIME_TOOLS`; a box that keeps no seed
+#      reference first takes its shipped tree as it stood, `seeded_reference`), then seeds <project>/strategies
+#      (`vike-cli init --strategies-only`): an absent shipped file is copied, one never edited takes the new version,
+#      and an edited one is left with the new version beside it as `<name>.new`;
+#   6. stops the supervisor (it stops the daemons in reverse start order), swaps a
+#      toolchain step 3 built (`swap_toolchain`) and, in host mode, the binaries in that window, copies a journal
+#      step 3 judged unreadable into var/deploy/journal.pre.<stamp>, checks the copy and renames the journal aside (`move_journal_aside`),
+#      writes the release's row steps with the new vike-cli, each recorded in the backup before it runs (no
+#      row is written while an old daemon runs), and starts the supervisor again on the new build;
+#   7. waits for every daemon that ran before to print its ready line (45 s, the tradehub's starting
+#      window up to 300 s); on any failure, a failed row step included, it puts the old image, the files, the old
+#      toolchain (`toolchain_back`) and a moved journal back, runs the undo of each row step it wrote with the old
+#      vike-cli, and starts that (the SDK snapshot stays: the older build builds the SDKs it knows). Healthy, it
+#      removes the SDK snapshots older than the window that no strategy file pins (`retire_sdks`).
+#
+# ⚠ What holds these tables (an edit here is an edit of the gate too):
+#   * `RUNTIME_TOOLS` and `IBKR_SCRIPTS`: crates/vike-ops/tests/container_deploy/deploy_tool_table_gate.rs, against
+#     scripts/fetch_release_tools.sh's TOOL_TABLE and the tracked IBKR scripts;
+#   * `DEPLOY_UNITS`, each `shape` arm's `ready` line and its `row-gate` row:
+#     crates/vike-ops/tests/container_deploy/deploy_layout_gate/helper_refresh.rs (rule 9: the roster against the
+#     tracked units, a `ready` line against its daemon's crate, a `row-gate` against a READ settings row);
+#   * every `shape` arm's probe rules, `row-gate`, `row-confine`, `paper-accounts`, `numeric-credentials` and `args`,
+#     value for value: crates/vike-ops/tests/container_deploy/deploy_layout_gate/server_container.rs's `PROBE_SHAPES`.
+set -uo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DOCKER="$(command -v docker || command -v podman || true)"
+readonly HERE DOCKER
+# The crontab starts `deploy-inbox` with no login session: host mode reaches the user manager through the
+# runtime directory, which a session would have exported.
+[ -n "${XDG_RUNTIME_DIR:-}" ] || [ ! -d "/run/user/$(id -u)" ] || export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+readonly IMAGE=localhost/vike-tradehub
+readonly NAME=vike
+readonly BOOT_TIMEOUT=12
+readonly HEALTH_TIMEOUT=45
+readonly STARTING_CAP=300
+readonly STARTING_LINE='"kind":"starting"'
+# The sum of the supervisor's stop windows (`SERVER_RULES`), plus 10 s for the container's own exit.
+readonly STOP_TIMEOUT=335
+# One cap for the container: the sum of the units' MemoryMax= (2G + 10G + 8G + 24G + 256M), in MiB. The
+# datahub's MemoryLow=5G and MemorySwapMax=0 hold for the whole container.
+readonly MEMORY=45312m
+readonly MEMORY_LOW=5g
+readonly TAG_RE='^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$'
+DEPLOY_UNITS="vike-strategy-builder.service vike-gatewayhub.service vike-datahub.service vike-backtesthub.service vike-tradehub.service vike-telegram.service"
+RUNTIME_TOOLS='
+jforex-bridge.jar|bin/jforex/jforex-bridge.jar|644
+lightgbm|bin/lightgbm/lightgbm|755
+lightgbm.PROVENANCE|bin/lightgbm/PROVENANCE|644
+vike-ml-neural-training|bin/vike-ml-neural-training/vike-ml-neural-training|755
+vike-nlp|bin/vike-nlp/vike-nlp|755
+vike-strategy-source.tar.gz|vendor/vike-strategy-source|tar
+vike-strategies.tar.gz|vendor/vike-strategies|tree
+libfcshim.so|lib/libfcshim.so|755
+'
+# A `tree` row (the shipped strategy files) has no reader to stop: it is replaced at install, and THE seed
+# (`vike-cli init --strategies-only`) then brings <project>/strategies/ up to it (step 5 of the header).
+# The IBKR gateway scripts: no release asset, the deployed tree's own files staged as `<dir>.<file>` (deploy.yml,
+# `scripts/deploy_commit.sh stage`). Replaced by a rename, backed up and put back with the binary; no IBKR gateway
+# is restarted. Held to the tracked files by the same gate.
+IBKR_SCRIPTS='
+ibkr-gateway.build-sysroot.sh|bin/ibkr-gateway/build-sysroot.sh|755
+ibkr-gateway.contain-install.sh|bin/ibkr-gateway/contain-install.sh|755
+ibkr-gateway.install.sh|bin/ibkr-gateway/install.sh|755
+ibkr-gateway.instance.sh|bin/ibkr-gateway/instance.sh|755
+ibkr-gateway.start-gateway.sh|bin/ibkr-gateway/start-gateway.sh|755
+ibkr-gateway.start-xvfb.sh|bin/ibkr-gateway/start-xvfb.sh|755
+ibkr-gateway.stop-gateway.sh|bin/ibkr-gateway/stop-gateway.sh|755
+ibkr-gateway.wait-gateway.sh|bin/ibkr-gateway/wait-gateway.sh|755
+ibkr-gateway.write-ibc-config.sh|bin/ibkr-gateway/write-ibc-config.sh|755
+ibkr-gateway.xkbcomp-shim.c|bin/ibkr-gateway/xkbcomp-shim.c|644
+ibkr-cpapi.build-sysroot.sh|bin/ibkr-cpapi/build-sysroot.sh|755
+ibkr-cpapi.login.js|bin/ibkr-cpapi/login.js|644
+ibkr-cpapi.provision-browser.sh|bin/ibkr-cpapi/provision-browser.sh|755
+ibkr-cpapi.run-login.sh|bin/ibkr-cpapi/run-login.sh|755
+ibkr-cpapi.start-gateway.sh|bin/ibkr-cpapi/start-gateway.sh|755
+vike-tool-root.sh|bin/vike-tool-root.sh|755
+'
+readonly TREE_MARKER=.release-asset
+readonly SDK_RECORD_BEGIN="#vike-fcsdk-pin-begin"
+readonly SDK_RECORD_END="#vike-fcsdk-pin-end"
+
+say() { printf '%s\n' "$*"; }
+die() {
+  printf 'vikectl: %s\n' "$*" >&2
+  exit 2
+}
+
+# The daemon each roster unit names, and what its pre-flight probe is given.
+shape() {
+  local unit="$1" field="$2" probe="${3:-}"
+  case "$unit" in
+    vike-strategy-builder.service)
+      case "$field" in
+        ready)     echo 'vike-strategy-builder: listening' ;;
+        args)      printf '%s\n' "--port" "0" "--out-dir" "$probe/strategy-builds" "--sdk-root" "$PROJECT/vendor/vike-strategy-source" ;;
+      esac ;;
+    vike-gatewayhub.service)
+      case "$field" in
+        ready)     echo 'vike-gatewayhub: serving' ;;
+        row-confine) printf '%s\n' "config.gatewayhub_addr=127.0.0.1:0" ;;
+      esac ;;
+    vike-datahub.service)
+      case "$field" in
+        ready)     echo 'vike-datahub: listening' ;;
+        row-gate)  echo flags.datahub_live ;;
+        row-confine) printf '%s\n' "config.datahub_bind_addr=127.0.0.1:0" "config.store_root=$probe/store" \
+                           "config.journal_dir=$probe/state/journal" ;;
+      esac ;;
+    vike-backtesthub.service)
+      case "$field" in
+        ready)     echo 'backtesthub --addr: listening on' ;;
+        args)      printf '%s\n' "--addr" "127.0.0.1:0" ;;
+      esac ;;
+    vike-tradehub.service)
+      case "$field" in
+        ready)     echo '"kind":"ready"' ;;
+        row-gate)  echo flags.tradehub_live ;;
+        row-confine) printf '%s\n' "config.journal_dir=$probe/state/journal" ;;
+        paper-accounts) echo 1 ;;
+        args)      printf '%s\n' "--config" "$probe/tradehub.toml" ;;
+      esac ;;
+    vike-telegram.service)
+      case "$field" in
+        ready)     echo 'vike-telegram: ready' ;;
+        numeric-credentials) printf '%s\n' VIKE_TELEGRAM_ALLOWED_CHAT_IDS VIKE_TELEGRAM_ALLOWED_USER_IDS ;;
+        args)      echo "--no-poll" ;;
+      esac ;;
+  esac
+}
+verb_of() {
+  local v="${1%.service}"
+  printf '%s\n' "${v#vike-}"
+}
+
+# ── the project ────────────────────────────────────────────────────────────────────────────────────
+PROJECT=""
+resolve_project() {
+  if [ -z "$PROJECT" ] && [ "$(basename "$HERE")" = bin ] && [ -d "$(dirname "$HERE")/settings" ]; then
+    PROJECT="$(dirname "$HERE")"
+  fi
+  [ -n "$PROJECT" ] || die "no project: pass --project <the app folder> (or run the copy in <project>/bin)"
+  case "$PROJECT" in
+    /*) ;;
+    *) die "--project must be an absolute path: '$PROJECT'" ;;
+  esac
+  # A ':' or ',' would split a docker -v argument; whitespace would split this script's own words.
+  case "$PROJECT" in
+    *[:,[:space:]]*) die "the project path may not hold ':', ',' or whitespace: '$PROJECT'" ;;
+  esac
+  PROJECT="${PROJECT%/}"
+  SETTINGS="$PROJECT/settings"
+  DB="$SETTINGS/db/vike.db"
+  VAR="$PROJECT/var/deploy"
+}
+
+need_docker() {
+  [ -n "$DOCKER" ] || die "neither docker nor podman is installed: the server install runs one container"
+  "$DOCKER" info > /dev/null 2>&1 ||
+    die "'$DOCKER info' failed: this user cannot reach the container daemon. For Docker that is membership \
+of the docker group (an administrator's act, once) or a rootless dockerd of this user's own (DOCKER_HOST); \
+decision 0260 says what each costs."
+}
+
+# A roster daemon still running as a SYSTEM unit means two copies of one daemon: refuse before starting.
+refuse_system_units() {
+  local unit
+  command -v systemctl > /dev/null 2>&1 || return 0
+  for unit in $DEPLOY_UNITS; do
+    if systemctl is-active --quiet "$unit" 2> /dev/null; then
+      die "the system unit $unit is running: stop and disable it before vikectl runs the same daemon"
+    fi
+  done
+}
+
+# One settings row's STORED value (nothing when the database holds no such row), read through the vike-cli this
+# install ships and never the `sqlite3` tool, which a box need not have (the owner, 2026-11-16): in host mode
+# `<project>/bin/vike-cli`, the one the supervisor runs; in container mode the image's own (`$2`, default the running
+# one) in a throwaway container with the settings bound read-only. `config show --changed-only` lists a row only when
+# the database holds one, as `<key>  <value>  <origin> ...`; a store it could not read says so (`SOURCE UNREADABLE`),
+# which is a failure here and never "no row". `--section all`, a spelling every build accepts (the `files` word is
+# retired after this release): an env row's first word is an env NAME, never a dotted key, so only the row matches `$1`.
+setting_row() {
+  local key="$1" image="${2:-$IMAGE:current}" out v
+  if is_host; then
+    out="$(env -i PATH=/usr/bin:/bin "HOME=${HOME:-/}" "VIKE_SETTINGS_DIR=$SETTINGS" "$PROJECT/bin/vike-cli" \
+      config show --section all --changed-only --filter "$key" 2> /dev/null)" || return 1
+  elif [ -n "$DOCKER" ]; then
+    out="$("$DOCKER" run --rm --network none --user "$(user_spec)" -v "$SETTINGS:$SETTINGS:ro" \
+      -e "VIKE_SETTINGS_DIR=$SETTINGS" --entrypoint /opt/vike/bin/vike-cli "$image" \
+      config show --section all --changed-only --filter "$key" 2> /dev/null)" || return 1
+  else
+    return 1
+  fi
+  case "$out" in *"SOURCE UNREADABLE"*) return 1 ;; esac
+  v="$(awk -v k="$key" '$1 == k { print $2; exit }' <<< "$out")"
+  v="${v#\"}"
+  printf '%s\n' "${v%\"}"
+}
+
+# The directory the datahub's store lives in: the parent of the config.store_root row, or of the project
+# default <project>/market_data/hist when there is no row. `$1`: the image whose vike-cli reads it (`setting_row`).
+store_dir() {
+  local v=""
+  if [ -f "$DB" ]; then
+    v="$(setting_row config.store_root "${1:-}")" || die "could not read config.store_root from $DB (through vike-cli)"
+  fi
+  [ -n "$v" ] || v="$PROJECT/market_data/hist"
+  case "$v" in
+    /*) ;;
+    *) die "config.store_root '$v' is not an absolute path" ;;
+  esac
+  case "$v" in
+    *[:,\\[:space:]]*) die "config.store_root '$v' holds a character a docker -v cannot carry" ;;
+  esac
+  dirname "$v"
+}
+
+# The live journal: the config.journal_dir row, its only switch (no row: no journal). Read like config.store_root.
+journal_dir() {
+  local v=""
+  [ -f "$DB" ] || return 0
+  v="$(setting_row config.journal_dir)" || die "could not read config.journal_dir from $DB (through vike-cli)"
+  v="${v%/}"
+  case "$v" in
+    '' | /*) printf '%s\n' "$v" ;;
+    *) die "config.journal_dir '$v' is not an absolute path" ;;
+  esac
+}
+
+# The format stamp of the journal's newest segment (`journal-NNNNNNNN.vjl`, the highest index): its header's bytes
+# 4..8, little-endian, after the magic `VJL1` (`crates/vike-journal/src/format.rs`'s `MAGIC`). Nothing when there is
+# no segment or the newest is not one.
+journal_stamp() {
+  local f seg=""
+  for f in "$1"/journal-*.vjl; do [ -f "$f" ] && seg="$f"; done
+  [ -n "$seg" ] && [ "$(head -c 4 "$seg")" = VJL1 ] || return 0
+  od -An -tu4 -j4 -N4 --endian=little "$seg" | tr -d ' '
+}
+
+# What a copy is checked against: the number of files under a directory and their bytes.
+tree_size() { find "$1" -type f -printf '%s\n' | awk '{ n++; b += $1 } END { printf "%.0f files, %.0f bytes\n", n, b }'; }
+
+# The union of the six units' write grants (ReadWritePaths=), each once: the datahub's logs and journal
+# are inside settings/state, the builder's builds inside user_data; `instruments` is the datahub's
+# own (the venues' fetched instrument lists, which no deploy touches); `strategies` is the backtesthub's
+# (it saves the strategy files a Studio edits, the owner's ruling of 2026-11-13). Plus the store's directory.
+rw_paths() {
+  printf '%s\n' "$SETTINGS/state" "$SETTINGS/db" "$PROJECT/user_data" "$PROJECT/bin/rust-toolchain/cargo-home" \
+    "$PROJECT/instruments" "$PROJECT/strategies"
+  store_dir "${1:-}"
+}
+
+# The container's user, so that what the daemons write in the app folder is the app user's: that user's
+# own uid under a rootful daemon; under a ROOTLESS one, uid 0, because the rootless daemon maps its
+# container root to the user who runs it and every other uid to a subordinate one (measured on the latency box,
+# Docker 29.7 rootless: a container uid 1001 was refused writing the app folder; uid 0 wrote it as the user).
+user_spec() {
+  if "$DOCKER" info -f '{{.SecurityOptions}}' 2> /dev/null | grep -q rootless; then
+    echo 0:0
+  else
+    echo "$(id -u):$(id -g)"
+  fi
+}
+
+run_args() {
+  local image="$1" p paths
+  paths="$(rw_paths "$image")" || return 1
+  printf '%s\n' -d --name "$NAME" --restart unless-stopped --network host \
+    --user "$(user_spec)" --read-only --tmpfs /tmp --cap-drop ALL \
+    --security-opt no-new-privileges --init --stop-timeout "$STOP_TIMEOUT" \
+    --memory "$MEMORY" --memory-swap "$MEMORY" --memory-reservation "$MEMORY_LOW" \
+    --log-opt max-size=50m --log-opt max-file=5 \
+    -w "$PROJECT" -e "VIKE_SETTINGS_DIR=$SETTINGS" -e "CARGO_HOME=$PROJECT/bin/rust-toolchain/cargo-home" \
+    -e "CARGO=$PROJECT/bin/rust-toolchain/bin/cargo" -e "RUSTC=$PROJECT/bin/rust-toolchain/bin/rustc" \
+    -v "$PROJECT:$PROJECT:ro"
+  while IFS= read -r p; do
+    printf '%s\n' -v "$p:$p:rw"
+  done <<< "$paths"
+  printf '%s\n' -v "$PROJECT/lib:/opt/vike/lib:ro" "$image" --server
+}
+
+# The IBKR gateways and the SOCKS tunnel run beside the supervisor, in both modes, as this user's own
+# processes outside the container and outside the host unit, so a deploy's stop leaves them running
+# (`deploy/docker/vike-sidecars`, installed beside this file; decision 0260): started before the
+# supervisor, stopped after it; `vike-sidecars restart|status` is the operator's handle on one.
+sidecars() { [ ! -f "$HERE/vike-sidecars" ] || bash "$HERE/vike-sidecars" --project "$PROJECT" "$@"; }
+
+container_exists() { "$DOCKER" container inspect "$NAME" > /dev/null 2>&1; }
+container_running() { [ "$("$DOCKER" container inspect -f '{{.State.Running}}' "$NAME" 2> /dev/null)" = true ]; }
+image_id() { "$DOCKER" image inspect -f '{{.Id}}' "$1" 2> /dev/null; }
+
+start_container() {
+  local image="$1" args=()
+  mapfile -t args < <(run_args "$image") || return 1
+  [ "${#args[@]}" -gt 0 ] || return 1
+  "$DOCKER" run "${args[@]}" > /dev/null
+}
+
+stop_container() {
+  container_exists || return 0
+  "$DOCKER" stop -t "$STOP_TIMEOUT" "$NAME" > /dev/null && "$DOCKER" rm "$NAME" > /dev/null
+}
+
+# ── the two launch modes: everything below asks these, never the runtime directly ─────────────────────
+readonly HOST_UNIT=vike.service
+is_host() { [ -f "$PROJECT/bin/$HOST_UNIT" ]; }
+
+need_runtime() {
+  if is_host; then
+    systemctl --user show-environment > /dev/null 2>&1 ||
+      die "host mode needs this user's own systemd manager (linger keeps it running from boot)"
+  else
+    need_docker
+  fi
+}
+
+sup_running() {
+  if is_host; then systemctl --user is-active --quiet "$HOST_UNIT"; else container_running; fi
+}
+
+# The supervisor's whole log since epoch $1 (no argument: all of it).
+sup_logs() {
+  if is_host; then
+    journalctl --user -u "$HOST_UNIT" -o cat ${1:+--since "@$1"} 2>&1
+  else
+    "$DOCKER" logs ${1:+--since "$1"} "$NAME" 2>&1
+  fi
+}
+
+sup_stop() {
+  if is_host; then systemctl --user stop "$HOST_UNIT"; else stop_container; fi
+}
+
+sup_start() {
+  sidecars start
+  if is_host; then
+    refresh_host_unit
+    systemctl --user start "$HOST_UNIT"
+  else
+    start_container "$1"
+  fi
+}
+
+# Host mode keeps its unit in the shape THIS vikectl writes: before every start (`up`, a deploy, a rollback) a
+# unit rendered by an older vikectl is rewritten and reloaded, so a deploy brings the unit forward with the
+# binaries and nobody re-runs `install --host` by hand. The case that needs it: `@sandbox` (decision 0273), absent
+# from a unit written before it. A refresh that fails is said and the start goes on under the old unit (the
+# strategy builder then refuses builds by name, it does not die).
+refresh_host_unit() {
+  local unit="$PROJECT/bin/$HOST_UNIT" want
+  want="$(render_host_unit)"
+  [ "$want" != "$(cat "$unit" 2> /dev/null)" ] || return 0
+  if printf '%s\n' "$want" > "$unit.writing" && mv -f "$unit.writing" "$unit" && systemctl --user daemon-reload; then
+    say "  $HOST_UNIT rewritten in the shape this vikectl writes, and reloaded"
+  else
+    say "!! could not refresh $unit; starting under the unit as it is" >&2
+  fi
+}
+
+# The host mode's user unit: the supervisor as the app user, from the app folder. The units' process-level
+# hardening that needs no namespace (no new privileges, the syscall filter, the address families) holds
+# here; the namespace half (ProtectSystem=, ReadWritePaths=, PrivateTmp=) a user manager applies only through
+# an implicit user namespace, which this unit does not take: decision 0260's cost. `@sandbox` (the Landlock calls and
+# `seccomp`) is on the allow-list because the strategy builder jails its builds with them (decision 0273) and a call
+# off the list KILLS the process; `refresh_host_unit` rewrites a unit written before it at the next start. KillMode=mixed sends SIGTERM to the supervisor ALONE,
+# so the stop stays ordered; Delegate=yes lets it give each daemon its own memory cap.
+render_host_unit() {
+  cat << EOF
+# vike, host mode (decision 0260): every daemon of the server install, from this app folder. Written by
+# vikectl install --host; linked into the user manager with systemctl --user link, never copied to /etc.
+[Unit]
+Description=vike (host mode): every daemon of the server install, from $PROJECT
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$PROJECT
+Environment=VIKE_SETTINGS_DIR=$SETTINGS
+Environment=CARGO_HOME=$PROJECT/bin/rust-toolchain/cargo-home
+Environment=CARGO=$PROJECT/bin/rust-toolchain/bin/cargo
+Environment=RUSTC=$PROJECT/bin/rust-toolchain/bin/rustc
+ExecStart=$PROJECT/bin/vike-entrypoint.sh --server --host
+KillMode=mixed
+TimeoutStopSec=$((STOP_TIMEOUT + 10))
+Restart=always
+RestartSec=5
+Delegate=yes
+UMask=0077
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete @mount @module @reboot @swap @raw-io @debug @clock @cpu-emulation
+SystemCallFilter=fchown
+SystemCallFilter=@sandbox
+
+[Install]
+WantedBy=default.target
+EOF
+}
+
+# The daemons the supervisor last reported running or about to restart, as roster unit names.
+verb_state() { awk -v v="$1" '$1 == v { print $2 }' "$SETTINGS/state/supervisor.state" 2> /dev/null; }
+running_units() {
+  local unit
+  [ -f "$SETTINGS/state/supervisor.state" ] || return 0
+  for unit in $DEPLOY_UNITS; do
+    case "$(verb_state "$(verb_of "$unit")")" in running | waiting) printf '%s\n' "$unit" ;; esac
+  done
+}
+
+# Every unit in "$@" printed its ready line in the container's log since epoch $1; the tradehub's
+# starting line pushes the window out, up to STARTING_CAP. With SKIP_PARKED=1
+# (`up` only, never a deploy) a daemon the supervisor parked waits for setup and is not waited for.
+SKIP_PARKED=0
+healthy() {
+  local since="$1"
+  shift
+  local t0 deadline cap seen=0 n logs unit missing
+  t0="$(date +%s)"
+  deadline=$((t0 + HEALTH_TIMEOUT))
+  cap=$((t0 + STARTING_CAP))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    logs="$(sup_logs "$since")"
+    missing=""
+    for unit in "$@"; do
+      [ "$SKIP_PARKED" = 0 ] || [ "$(verb_state "$(verb_of "$unit")")" != parked ] || continue
+      # A here-string, never `printf | grep -q`: under pipefail grep's early exit SIGPIPEs printf once the log passes
+      # a pipe's 64 KiB, and the 141 read as "no ready line" (measured on the CI box's first host-mode start).
+      grep -qaF -- "$(shape "$unit" ready)" <<< "$logs" || missing="$missing $unit"
+    done
+    if [ -z "$missing" ] && sup_running; then return 0; fi
+    n="$(printf '%s' "$logs" | grep -caF -- "$STARTING_LINE")"
+    if [ "${n:-0}" -gt "$seen" ]; then
+      seen="$n"
+      deadline=$(($(date +%s) + HEALTH_TIMEOUT))
+      [ "$deadline" -le "$cap" ] || deadline="$cap"
+    fi
+    sleep 2
+  done
+  say "!! not healthy in the window:${missing:- the supervisor is not running}" >&2
+  return 1
+}
+
+# ── install / up / down / restart / status / logs ───────────────────────────────────────────────────
+# Every bind source exists before docker sees it: a rootful daemon CREATES a missing one, root-owned.
+ensure_dirs() {
+  local store
+  store="$(store_dir)" || exit 2
+  mkdir -p "$SETTINGS/state" "$SETTINGS/db" "$PROJECT/user_data/strategy-builds" "$PROJECT/bin/rust-toolchain/cargo-home" \
+    "$PROJECT/instruments" "$PROJECT/strategies" "$PROJECT/lib" "$store" "$VAR/inbox" "$VAR/rollback" || die "could not create the project's folders"
+  printf '%s\n' "$store"
+}
+
+cmd_install() {
+  local writer="" store host=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --inbox-writer) writer="${2:-}"; shift 2 ;;
+      --host) host=1; shift ;;
+      *) die "install: unknown argument '$1'" ;;
+    esac
+  done
+  store="$(ensure_dirs)" || exit 2
+  say "folders ready under $PROJECT (the store's: $store)"
+  sidecars install
+  if [ "$host" = 1 ]; then
+    # The supervisor beside the binaries a deploy installs; the copy shipped beside this script seeds it.
+    if [ ! -x "$PROJECT/bin/vike-entrypoint.sh" ]; then
+      [ -f "$HERE/entrypoint.sh" ] || die "install --host: no entrypoint.sh beside $0 to install as bin/vike-entrypoint.sh"
+      install -m 755 "$HERE/entrypoint.sh" "$PROJECT/bin/vike-entrypoint.sh" || die "could not install the supervisor"
+    fi
+    render_host_unit > "$PROJECT/bin/$HOST_UNIT.writing" && mv -f "$PROJECT/bin/$HOST_UNIT.writing" "$PROJECT/bin/$HOST_UNIT" ||
+      die "could not write $PROJECT/bin/$HOST_UNIT"
+    systemctl --user link "$PROJECT/bin/$HOST_UNIT" > /dev/null && systemctl --user daemon-reload &&
+      systemctl --user enable "$HOST_UNIT" > /dev/null || die "could not link and enable $HOST_UNIT in the user manager"
+    say "host mode: $PROJECT/bin/$HOST_UNIT linked into this user's manager and enabled (linger starts it at boot)"
+  fi
+  say_address
+  [ -n "$writer" ] || return 0
+  # The CI runner's user may WRITE the inbox and nothing else of the project: an ACL its owner sets, no root.
+  setfacl -m "u:$writer:x" "$PROJECT/var" "$VAR" &&
+    setfacl -m "u:$writer:rwx" -m "d:u:$writer:rwx" -m "d:u:$(id -un):rwx" "$VAR/inbox" ||
+    die "could not grant '$writer' the inbox (setfacl)"
+  # Taken once a minute by this user's own crontab: no unit, nothing in /etc.
+  local line="* * * * * $PROJECT/bin/vikectl deploy-inbox # vike-deploy-inbox"
+  if ! crontab -l 2> /dev/null | grep -qF '# vike-deploy-inbox'; then
+    { crontab -l 2> /dev/null; printf '%s\n' "$line"; } | crontab - || die "could not add the inbox line to the crontab"
+  fi
+  say "inbox $VAR/inbox writable by $writer; taken each minute by this user's crontab"
+}
+
+cmd_up() {
+  need_runtime
+  refuse_system_units
+  if sup_running; then
+    say "the supervisor is already running"
+    return 0
+  fi
+  local since units=()
+  ensure_dirs > /dev/null || exit 2
+  since="$(date +%s)"
+  if is_host; then
+    sup_start || die "could not start $HOST_UNIT"
+  elif container_exists; then
+    sidecars start
+    "$DOCKER" start "$NAME" > /dev/null || die "could not start the container '$NAME'"
+  else
+    sup_start "$IMAGE:current" || die "could not run $IMAGE:current (deploy one first)"
+  fi
+  sleep 3
+  mapfile -t units < <(running_units)
+  SKIP_PARKED=1
+  [ "${#units[@]}" -eq 0 ] || healthy "$since" "${units[@]}" || exit 1
+  mapfile -t units < <(running_units)
+  say "up: ${units[*]:-no daemon reported running yet}"
+  print_parked
+}
+
+cmd_down() {
+  need_runtime
+  if is_host; then
+    systemctl --user stop "$HOST_UNIT" || die "systemctl --user stop $HOST_UNIT failed"
+    sidecars stop
+    say "stopped (the supervisor stopped the daemons in reverse start order); it starts again at boot while enabled"
+    return 0
+  fi
+  container_exists || { say "no container '$NAME'"; return 0; }
+  "$DOCKER" stop -t "$STOP_TIMEOUT" "$NAME" > /dev/null || die "docker stop failed"
+  sidecars stop
+  say "stopped (the supervisor stopped the daemons in reverse start order); it stays stopped across a reboot"
+}
+
+cmd_restart() {
+  local verb="${1:-}" unit found=0
+  for unit in $DEPLOY_UNITS; do [ "$(verb_of "$unit")" = "$verb" ] && found=1; done
+  [ "$found" = 1 ] || die "restart: '$verb' is not a daemon of the roster ($DEPLOY_UNITS)"
+  # Appended: the supervisor takes the file whole, so restarts asked for back to back all reach it.
+  printf '%s\n' "$verb" >> "$SETTINGS/state/supervisor.restart" || die "could not write the restart request"
+  say "asked the supervisor to restart $verb"
+}
+
+# The desktop's Server screen takes `address_line` (below, with access) and runs `vike-cli backend connect HOST
+# --server-project DIR`, which registers that PC's device key (decision 0288).
+say_address() { say "for the desktop (Data Manager > Backend > Server; the host as your PC reaches it): $(address_line)"; }
+
+cmd_status() {
+  say_address
+  if is_host; then
+    say "host mode: $(systemctl --user is-active "$HOST_UNIT" 2> /dev/null) ($PROJECT/bin/$HOST_UNIT)"
+  elif [ -n "$DOCKER" ]; then
+    "$DOCKER" ps -a --filter "name=^${NAME}\$" --format '{{.Names}} {{.Status}} {{.Image}}' 2> /dev/null
+  fi
+  cat "$SETTINGS/state/supervisor.state" 2> /dev/null || say "no supervisor state yet"
+  print_parked
+  sidecars status
+  cat "$PROJECT/bin/.built-from" 2> /dev/null || true
+}
+
+# Each PARKED daemon with the one line that says what it waits for: its own `setup needed:` line when it
+# printed one since its last start (an older one is a cause already mended), or the supervisor's line for a
+# pre-flight that refused it (no start at all), whichever came last; else the supervisor's exit line.
+print_parked() {
+  local verb state line logs
+  if grep -q ' parked ' "$SETTINGS/state/supervisor.state" 2> /dev/null; then
+    logs="$(sup_logs)"
+    while read -r verb state _; do
+      [ "$state" = parked ] || continue
+      line="$(printf '%s\n' "$logs" | awk -v s="vike-entrypoint: started $verb " -v n="vike-$verb: setup needed:" \
+        -v r="vike-entrypoint: $verb: pre-flight REFUSED" \
+        'index($0, s) { l = "" } index($0, n) { l = substr($0, index($0, n)) } index($0, r) { l = substr($0, index($0, r)) }
+         END { print l }')"
+      [ -n "$line" ] || line="$(printf '%s\n' "$logs" | grep -a "vike-entrypoint: $verb exited" | tail -n 1)"
+      say "parked $verb: ${line:-(no line found in the log)}"
+      say "  when done: vikectl restart $verb"
+    done < "$SETTINGS/state/supervisor.state"
+  fi
+}
+
+# ── deploy ─────────────────────────────────────────────────────────────────────────────────────────
+manifest_digest() {
+  awk -v n="$1" '{ f = $2; sub(/^\*/, "", f); if (f == n) { print $1; exit } }' "$2"
+}
+installed_digest() {
+  local digest sdk
+  if [ "$2" = tar ]; then
+    # The SDK root's record of the release's snapshot, `<digest> <tag> sdk-N` (`cmd_deploy` writes it once healthy):
+    # the release's for as long as that snapshot is there.
+    read -r digest _ sdk < "$1/$TREE_MARKER" 2> /dev/null && [ -n "$sdk" ] && [ -f "$1/$sdk/$SDK_MARKER" ] &&
+      printf '%s\n' "$digest"
+    return 0
+  elif [ "$2" = tree ]; then
+    awk 'NR == 1 { print $1 }' "$1/$TREE_MARKER" 2> /dev/null || true
+  else
+    sha256sum "$1" 2> /dev/null | cut -d' ' -f1 || true
+  fi
+}
+shim_matches_box_sdk() {
+  local rows want name have present=0 bad=""
+  rows="$(tail -c 65536 "$1" 2> /dev/null |
+    LC_ALL=C sed -n "/^${SDK_RECORD_BEGIN}\$/,/^${SDK_RECORD_END}\$/p" |
+    LC_ALL=C grep -E '^[0-9a-f]{64}  [A-Za-z0-9._+-]+$' || true)"
+  [ -n "$rows" ] || return 0
+  while read -r want name; do
+    [ -n "$name" ] || continue
+    [ -f "$PROJECT/lib/$name" ] || { bad="$bad $name(missing)"; continue; }
+    present=$((present + 1))
+    have="$(sha256sum "$PROJECT/lib/$name" | cut -d' ' -f1)"
+    [ "$have" = "$want" ] || bad="$bad $name(differs)"
+  done <<< "$rows"
+  [ "$present" -eq 0 ] || [ -z "$bad" ]
+}
+
+verify_request() {
+  local dir="$1" f need
+  if is_host; then need="vike-backend vike-cli SHA256SUMS context/entrypoint.sh"; else need="vike-backend vike-cli SHA256SUMS Dockerfile context"; fi
+  for f in $need; do
+    [ -e "$dir/$f" ] || die "the request has no '$f'"
+  done
+  for f in vike-backend vike-cli; do
+    [ -n "$(manifest_digest "$f" "$dir/SHA256SUMS")" ] || die "SHA256SUMS does not name $f"
+  done
+  (cd "$dir" && sha256sum -c --quiet --ignore-missing SHA256SUMS) || die "the request fails its SHA256SUMS"
+}
+
+# The probe's settings copy: the probe's database is the live one, read in one snapshot, with every key, secret venue
+# field and note replaced, the invitations dropped and every device row kept with a THROWAWAY key in place of its
+# private one (decision 0288; the Telegram channel refuses its start without its row), made by the NEW build's
+# `vike-cli backend probe-copy` and checked clean by it (`crates/vike-secrets/src/db/probe_copy.rs`'s module doc is
+# the contract), so no box needs the `sqlite3` tool for a probe copy (the owner, 2026-11-16). The copy counts only
+# when the verb answered 0 AND its file is there: a writer that exits 0 and writes nothing would start the probe on
+# the unconfigured state. `$3` is the new build: the image, or in host mode the request directory.
+# `$2` is the unit, and its shape's rules ride as flags: the TRADEHUB's copy holds no `VIKE_STRATEGY_BUILDER_KEY` at
+# all, so its build thread waits without opening a socket (`vike_strategy_builder::builder::resolve_keys` refuses
+# first) and a probe never dials the box's builder, and its accounts are all paper; the telegram's allowed ids are
+# numbers.
+probe_copy() {
+  local p="$1" unit="${2:-}" build="$3" rules=() name
+  if [ -d "$SETTINGS/state" ]; then cp -a -- "$SETTINGS/state" "$p/state" || return 1; fi
+  # The move the restart will make (`move_journal_aside`), made on the probe's own journal (its row-confine's).
+  [ "$JOURNAL_MOVE" = 0 ] || [ ! -d "$p/state/journal" ] || mv -- "$p/state/journal" "$p/state/journal.moved" || return 1
+  [ -f "$DB" ] || return 0
+  [ "$unit" != vike-tradehub.service ] || rules+=(--drop-key VIKE_STRATEGY_BUILDER_KEY)
+  [ -z "$(shape "$unit" paper-accounts)" ] || rules+=(--paper-accounts)
+  while IFS= read -r name; do
+    [ -z "$name" ] || rules+=(--numeric-key "$name")
+  done < <(shape "$unit" numeric-credentials)
+  if is_host; then
+    env -i PATH=/usr/bin:/bin "VIKE_SETTINGS_DIR=$SETTINGS" "$build/vike-cli" backend probe-copy --into "$p" \
+      "${rules[@]}" > "$p/sanitize.log" 2>&1
+  else
+    "$DOCKER" run --rm --network none --user "$(user_spec)" -v "$SETTINGS/db:$SETTINGS/db:ro" -v "$p:$p:rw" \
+      -e "VIKE_SETTINGS_DIR=$SETTINGS" --entrypoint /opt/vike/bin/vike-cli "$build" backend probe-copy --into "$p" \
+      "${rules[@]}" > "$p/sanitize.log" 2>&1
+  fi && [ -f "$p/db/vike.db" ]
+}
+
+# The NEW build's vike-cli against the probe copy: the image's in container mode, the request's on the host.
+# `$1` is the image, or in host mode the request directory. A container binds the probe's whole root, `$2`'s parent:
+# its seed writes `<root>/strategies`.
+probe_cli() {
+  local build="$1" p="$2"
+  shift 2
+  if is_host; then
+    env -i PATH=/usr/bin:/bin "VIKE_SETTINGS_DIR=$p" "$build/vike-cli" "$@"
+  else
+    "$DOCKER" run --rm --network none --user "$(user_spec)" -v "${p%/settings}:${p%/settings}:rw" -e "VIKE_SETTINGS_DIR=$p" \
+      --entrypoint /opt/vike/bin/vike-cli "$build" "$@"
+  fi
+}
+
+# The seed's reference (`vendor/vike-strategies-seeded`, `vike_paths::state_path::SEEDED_STRATEGIES_DIR`: the shipped
+# files as this box last seeded them; a copy byte-identical to its twin there was never edited) laid down at `$1`
+# when nothing is there yet: the box's own reference, else its shipped tree as it stands before this install, which
+# IS the previous shipped version (a box upgrading from a release before the reference). Neither: nothing, and the
+# seed keeps every differing file with the new version beside it. The install's seed then keeps it up to date.
+# The ONE implementation: `scripts/fetch_release_tools.sh` runs it through the `seed-reference` verb.
+readonly SEEDED_REFERENCE=vendor/vike-strategies-seeded
+seeded_reference() {
+  local from="$PROJECT/$SEEDED_REFERENCE"
+  [ ! -e "$1" ] || return 0
+  [ -d "$from" ] || from="$PROJECT/vendor/vike-strategies"
+  [ -d "$from" ] || return 0
+  rm -rf "$1.incoming" && mkdir -p "$1.incoming" && cp -a -- "$from/." "$1.incoming/" && mv "$1.incoming" "$1"
+}
+
+# The probe project's `strategies/` (`$1` is the probe's root): what the install WILL leave in <project>/strategies,
+# built beside the probe so the real folder is never written. A copy of the real folder and the seed's reference
+# (`seeded_reference`), then THE seed (the new build's `vike-cli init --strategies-only`) from the shipped tree the
+# install will hold: the request's `vike-strategies.tar.gz` when its SHA256SUMS names it (`verify_request` checked its
+# bytes), else the box's own `vendor/vike-strategies`, which the install then keeps. A box upgrading from a release
+# that shipped no strategy files thus pre-flights the files the install is about to copy in, a file never edited is
+# judged in its new version, and an edited one as it is.
+probe_strategies() {
+  local root="$1" build="$2" req="$3" shipped="$1/vendor/vike-strategies"
+  mkdir -p "$root/strategies" "$shipped" || return 1
+  [ ! -d "$PROJECT/strategies" ] || cp -a -- "$PROJECT/strategies/." "$root/strategies/" || return 1
+  seeded_reference "$root/$SEEDED_REFERENCE" || return 1
+  if [ -n "$(manifest_digest vike-strategies.tar.gz "$req/SHA256SUMS")" ] && [ -f "$req/vike-strategies.tar.gz" ]; then
+    tar -xzf "$req/vike-strategies.tar.gz" -C "$shipped" --no-same-owner || return 1
+  elif [ -d "$PROJECT/vendor/vike-strategies" ]; then
+    cp -a -- "$PROJECT/vendor/vike-strategies/." "$shipped/" || return 1
+  fi
+  probe_cli "$build" "$root/settings" init --strategies-only > "$root/seed.log" 2>&1 || { tail -3 "$root/seed.log" >&2; return 1; }
+}
+
+# Boot the NEW build as one daemon on a confined copy for BOOT_TIMEOUT: alive at the deadline and its
+# ready line printed is a pass. `$2` is the image, or in host mode the request directory, whose own binary
+# runs under `timeout`.
+#
+# The probe is laid out as a PROJECT, `<root>/settings` (the copy, `VIKE_SETTINGS_DIR`) beside `<root>/strategies`,
+# the strategy files the install will leave (`probe_strategies`; bound read-only in container mode): a daemon reads its
+# strategy files beside its settings (`crates/vike-tradehub/src/mount_factory.rs`'s `project_strategies_dir`), so the
+# tradehub judges the files it will run, and the real folder is never written. A probe builds nothing: the tradehub
+# does not wait for a build. `$3` is the request directory.
+PROBE_JOURNAL=""
+preflight() {
+  local unit="$1" image="$2" req="$3" root p verb row running args=() extra=() rows=() rc
+  PROBE_JOURNAL=""
+  verb="$(verb_of "$unit")"
+  root="$(mktemp -d "$VAR/probe.XXXXXX")" || return 1
+  chmod 700 "$root"
+  p="$root/settings"
+  if ! mkdir -m 700 "$p"; then
+    say "  pre-flight[$unit]: the probe's project could not be laid out" >&2
+    rm -rf "$root"
+    return 1
+  fi
+  if ! probe_copy "$p" "$unit" "$image"; then
+    say "  pre-flight[$unit]: the probe's settings copy could not be made clean" >&2
+    rm -rf "$root"
+    return 1
+  fi
+  if ! probe_strategies "$root" "$image" "$req"; then
+    say "  pre-flight[$unit]: the probe's strategies/ could not be laid out as the install will leave it" >&2
+    rm -rf "$root"
+    return 1
+  fi
+  mkdir -p "$p/store" "$p/strategy-builds"
+  # The release's row steps, on this copy only, before the confinement below (which a step may not undo). A copy of
+  # the kept instrument lists sits beside it while they run (`account set-symbol` checks a name against them), and
+  # goes before the daemon boots, which then sees the probe as it always did.
+  if [ "${#ROW_STEP[@]}" -gt 0 ]; then
+    if ! { [ ! -d "$PROJECT/instruments" ] || cp -a -- "$PROJECT/instruments" "$root/instruments"; } ||
+      ! run_row_steps "$ROW_CLI" "$p" "$root" > "$p/row-steps.log" 2>&1; then
+      say "  pre-flight[$unit]: the release's row steps failed on the probe's copy; the last lines:" >&2
+      tail -5 "$p/row-steps.log" >&2
+      rm -rf "$root"
+      return 1
+    fi
+    rm -rf "$root/instruments"
+  fi
+  mapfile -t rows < <(shape "$unit" row-confine "$p")
+  if [ "${#rows[@]}" -gt 0 ] && [ ! -f "$p/db/vike.db" ]; then
+    probe_cli "$image" "$p" secrets init > "$p/init.log" 2>&1 || { rm -rf "$root"; return 1; }
+  fi
+  for row in "${rows[@]}"; do
+    probe_cli "$image" "$p" config set "${row%%=*}" "${row#*=}" > /dev/null 2>&1 || { rm -rf "$root"; return 1; }
+  done
+  row="$(shape "$unit" row-gate)"
+  if [ -n "$row" ] && [ -f "$p/db/vike.db" ]; then
+    probe_cli "$image" "$p" config set "$row" false > /dev/null 2>&1 || { rm -rf "$root"; return 1; }
+  fi
+  mapfile -t args < <(shape "$unit" args "$p")
+  if is_host; then
+    timeout "$BOOT_TIMEOUT" env -i PATH=/usr/bin:/bin "VIKE_SETTINGS_DIR=$p" "$image/vike-backend" "$verb" "${args[@]}" \
+      > "$p/pre.log" 2>&1
+    rc=$?
+    running=false
+    [ "$rc" != 124 ] || running=true
+  else
+    preflight_container "$unit" "$image" "$p" "$verb" "${args[@]}"
+  fi
+  if [ "$running" = true ] && grep -qaF -- "$(shape "$unit" ready)" "$p/pre.log"; then
+    say "  pre-flight[$unit]: booted on the new build and printed its ready line"
+    rm -rf "$root"
+    return 0
+  fi
+  say "  pre-flight[$unit]: did NOT boot on the new build (alive at the deadline: $running); its last lines:" >&2
+  tail -5 "$p/pre.log" >&2
+  # The build's own words when it refused the journal (`crates/vike-journal/src/format.rs`'s `check_version`).
+  PROBE_JOURNAL="$(grep -aoE 'journal format version mismatch: got [0-9]+, this build reads [0-9]+\.\.=[0-9]+' "$p/pre.log" | head -n 1)"
+  rm -rf "$root"
+  return 1
+}
+
+# The owner's ruling of 2026-11-14: a journal the NEW build refused at the pre-flight (`PROBE_JOURNAL`) is moved aside
+# only when that build's floor is above the stamp of the journal's newest segment AND the request carries the owner's
+# word (`ALLOW_JOURNAL_MOVE`, written by `scripts/deploy_inbox.sh` from `allow_journal_move`). Without the word it
+# REFUSES, before anything is stopped. With it, the pre-flight runs again on the probe's copy moved aside.
+JOURNAL_MOVE=0
+JOURNAL_DIR=""
+journal_needs_move() {
+  local req="$1" floor newest stamp
+  floor="${PROBE_JOURNAL##*reads }"
+  newest="${floor#*..=}"
+  floor="${floor%%..=*}"
+  JOURNAL_DIR="$(journal_dir)" || exit 2
+  stamp=""
+  [ -z "$JOURNAL_DIR" ] || stamp="$(journal_stamp "$JOURNAL_DIR")"
+  if [ -z "$stamp" ] || [ "$floor" -le "$stamp" ]; then
+    say "!! the new build reads journal formats $floor..=$newest, and the newest segment of ${JOURNAL_DIR:-config.journal_dir (no row)} is format ${stamp:-unknown}: moving it aside is not the cure" >&2
+    return 1
+  fi
+  [ -f "$req/ALLOW_JOURNAL_MOVE" ] ||
+    die "REFUSED: the journal at $JOURNAL_DIR is format $stamp and the new build reads $floor..=$newest only. Deploy again with allow_journal_move=true (the owner's word for this deploy): the deploy then copies it to $VAR/journal.pre.<stamp>, checks the copy and moves it aside. Nothing was installed or restarted"
+  JOURNAL_MOVE=1
+  say "  journal: $JOURNAL_DIR is format $stamp, the new build reads $floor..=$newest; allow_journal_move is given: the restart copies it and moves it aside, and the pre-flight runs again on its copy moved aside"
+}
+
+# Inside the stop window (no daemon writes): the journal copied to var/deploy/journal.pre.<stamp>, the copy checked
+# (file count and bytes), and only then renamed aside to <journal>.moved.<stamp>, so the new build starts on an empty
+# one. `$back/journal` records the move, written before it, so a rollback can put it back (`journal_back`).
+move_journal_aside() {
+  local back="$1" stamp="$2" copy="$VAR/journal.pre.$2" want have
+  say "  journal: copying $JOURNAL_DIR to $copy"
+  cp -a -- "$JOURNAL_DIR" "$copy" || { say "!! journal: the copy failed; the journal stays where it is" >&2; return 1; }
+  want="$(tree_size "$JOURNAL_DIR")"
+  have="$(tree_size "$copy")"
+  if [ "$want" != "$have" ]; then
+    say "!! journal: the copy holds $have, the journal $want; the journal stays where it is" >&2
+    return 1
+  fi
+  say "  journal: the copy holds what the journal holds ($have)"
+  printf '%s %s\n' "$JOURNAL_DIR" "$JOURNAL_DIR.moved.$stamp" > "$back/journal" &&
+    mv -- "$JOURNAL_DIR" "$JOURNAL_DIR.moved.$stamp" ||
+    { say "!! journal: could not move $JOURNAL_DIR aside" >&2; return 1; }
+  say "  journal: moved aside to $JOURNAL_DIR.moved.$stamp; the new build starts on an empty journal"
+}
+
+# A rollback of a deploy that moved the journal: the new build's journal goes aside as <journal>.withdrawn.<now>, and
+# the moved one comes back, so the older build starts on the journal it wrote.
+journal_back() {
+  local j moved
+  read -r j moved < "$1/journal" 2> /dev/null && [ -d "$moved" ] || return 0
+  if { [ ! -e "$j" ] || mv -- "$j" "$j.withdrawn.$(date -u +%Y%m%dT%H%M%SZ)"; } && mv -- "$moved" "$j"; then
+    say "  journal: $moved moved back to $j"
+  else
+    say "!! journal: could not move $moved back to $j" >&2
+  fi
+}
+
+# ── the release's row steps (decision 0260's amendment of 2026-11-14) ────────────────────────────────────
+# The rows a new build needs are written BY the deploy, inside its stop window, with the new build's vike-cli, so
+# no row is written while an old daemon runs and refuses it. The list is DATA of the deployed tree, `deploy/row-steps`
+# (its header is the format), staged into the request as `row-steps` and named on its SHA256SUMS: one shipped
+# `vike-cli` verb per line, split on blanks and never evaluated, each optionally followed by `undo <verb>`, what a
+# rollback runs with the OLDER vike-cli. A step a healthy deploy wrote goes into the box's ledger
+# (`$VAR/row-steps.applied`, `<tag> <step>`), and a later deploy answers it `unchanged` without running it, so a row the
+# operator changed since is never written back.
+readonly ROW_STEPS=row-steps
+ROW_STEP=()
+ROW_UNDO=()
+ROW_CLI=""
+
+# Fill ROW_STEP/ROW_UNDO from the list in file `$1`.
+parse_row_steps() {
+  local line words n=-1
+  ROW_STEP=()
+  ROW_UNDO=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    read -ra words <<< "${line%$'\r'}"
+    [ "${#words[@]}" -gt 0 ] && [ "${words[0]:0:1}" != '#' ] || continue
+    if [ "${words[0]}" = undo ]; then
+      [ "$n" -ge 0 ] && [ -z "${ROW_UNDO[n]}" ] && [ "${#words[@]}" -gt 1 ] ||
+        die "$1: an undo with no step of its own above it: $line"
+      ROW_UNDO[n]="${words[*]:1}"
+    else
+      n=$((n + 1))
+      ROW_STEP[n]="${words[*]}"
+      ROW_UNDO[n]=""
+    fi
+  done < "$1"
+}
+
+# The request `$1`'s list, when it carries one; its vike-cli is what the probes run it with.
+read_row_steps() {
+  [ -f "$1/$ROW_STEPS" ] || return 0
+  [ -n "$(manifest_digest "$ROW_STEPS" "$1/SHA256SUMS")" ] || die "the request's $ROW_STEPS is not on its SHA256SUMS"
+  parse_row_steps "$1/$ROW_STEPS"
+  [ "${#ROW_STEP[@]}" -eq 0 ] || [ -x "$1/vike-cli" ] || die "the request's vike-cli is not executable, and its row steps run it"
+  ROW_CLI="$1/vike-cli"
+}
+
+# Step `$1` is in the box's ledger.
+row_step_applied() { S="$1" awk '{ $1 = ""; sub(/^ /, "") } $0 == ENVIRON["S"] { f = 1 } END { exit !f }' "$VAR/row-steps.applied" 2> /dev/null; }
+
+# vike-cli `$1` on the settings `$2` of the project `$3`, the seed's way: a clean environment, nothing on its input.
+cli_in() {
+  local cli="$1" settings="$2" root="$3"
+  shift 3
+  env -i -C "$root" PATH=/usr/bin:/bin "VIKE_SETTINGS_DIR=$settings" "$cli" "$@" < /dev/null
+}
+
+# Every step of the list not in the ledger, in order, with vike-cli `$1` on the settings `$2` of the project `$3`; with a
+# record `$4`, each step and its undo are appended to it BEFORE the step runs. Stops at the first step that fails.
+run_row_steps() {
+  local i words
+  for i in "${!ROW_STEP[@]}"; do
+    if row_step_applied "${ROW_STEP[i]}"; then
+      say "  row step unchanged (this box's ledger has it): ${ROW_STEP[i]}"
+      continue
+    fi
+    if [ -n "${4:-}" ]; then
+      { printf '%s\n' "${ROW_STEP[i]}" && { [ -z "${ROW_UNDO[i]}" ] || printf 'undo %s\n' "${ROW_UNDO[i]}"; }; } >> "$4" || return 1
+    fi
+    say "  row step: vike-cli ${ROW_STEP[i]}"
+    read -ra words <<< "${ROW_STEP[i]}"
+    cli_in "$1" "$2" "$3" "${words[@]}" || { say "!! row step failed: vike-cli ${ROW_STEP[i]}" >&2; return 1; }
+  done
+}
+
+# A rollback of the deploy whose backup is `$1`: the undo of every step its record says ran, last first, with the
+# vike-cli now in bin/ (the older build's, put back first), so those rows are in the shape that build reads; a step
+# undone leaves the ledger. A failed undo is said and the rollback goes on: the start must still be tried.
+undo_row_steps() {
+  local i words ledger="$VAR/row-steps.applied"
+  [ -s "$1/$ROW_STEPS" ] || return 0
+  parse_row_steps "$1/$ROW_STEPS"
+  for ((i = ${#ROW_STEP[@]} - 1; i >= 0; i--)); do
+    [ -n "${ROW_UNDO[i]}" ] || continue
+    say "  row step undone: vike-cli ${ROW_UNDO[i]}"
+    read -ra words <<< "${ROW_UNDO[i]}"
+    if ! cli_in "$PROJECT/bin/vike-cli" "$SETTINGS" "$PROJECT" "${words[@]}"; then
+      say "!! the undo failed: vike-cli ${ROW_UNDO[i]}; the older build may refuse that row: put it back by hand" >&2
+      continue
+    fi
+    [ ! -f "$ledger" ] || {
+      S="${ROW_STEP[i]}" awk '{ l = $0; $1 = ""; sub(/^ /, "") } $0 != ENVIRON["S"] { print l }' "$ledger" > "$ledger.writing" &&
+        mv -f "$ledger.writing" "$ledger"
+    }
+  done
+}
+
+# The container half of `preflight`: sets `running` and writes the probe's log to `$p/pre.log`.
+preflight_container() {
+  local unit="$1" image="$2" p="$3" verb="$4" name extra=()
+  shift 4
+  local args=("$@")
+  [ "$verb" != gatewayhub ] || [ ! -d "$PROJECT/lib" ] || extra=(-v "$PROJECT/lib:/opt/vike/lib:ro")
+  [ "$verb" != strategy-builder ] || extra=(-v "$PROJECT/vendor/vike-strategy-source:$PROJECT/vendor/vike-strategy-source:ro")
+  name="vike-probe-$verb-$$"
+  # The probe project's `strategies/` (`probe_strategies`), read-only.
+  "$DOCKER" run -d --name "$name" --network host --user "$(user_spec)" --read-only --tmpfs /tmp \
+    --cap-drop ALL --security-opt no-new-privileges --init -v "$p:$p:rw" "${extra[@]}" \
+    -v "${p%/settings}/strategies:${p%/settings}/strategies:ro" \
+    -e "VIKE_SETTINGS_DIR=$p" -w "$p" --entrypoint /opt/vike/bin/vike-backend "$image" "$verb" "${args[@]}" > /dev/null ||
+    { running=false; return 0; }
+  sleep "$BOOT_TIMEOUT"
+  running="$("$DOCKER" container inspect -f '{{.State.Running}}' "$name" 2> /dev/null)"
+  "$DOCKER" logs "$name" > "$p/pre.log" 2>&1
+  "$DOCKER" rm -f "$name" > /dev/null 2>&1
+}
+
+# Install every row of RUNTIME_TOOLS the request carries but the `tar` row, the strategy SDK, which `add_sdk` added
+# before the pre-flight.
+install_runtime_tools() {
+  local dir="$1" tag="$2" asset path mode dest want have
+  while IFS='|' read -r asset path mode; do
+    [ -n "$asset" ] && [ "$mode" != tar ] || continue
+    dest="$PROJECT/$path"
+    want="$(manifest_digest "$asset" "$dir/SHA256SUMS")"
+    if [ -z "$want" ] || [ ! -f "$dir/$asset" ]; then
+      say "  $asset: not in this release; $path left as it is"
+      continue
+    fi
+    have="$(installed_digest "$dest" "$mode")"
+    if [ "$have" = "$want" ]; then
+      say "  $asset: unchanged ($path)"
+      continue
+    fi
+    if [ "$asset" = libfcshim.so ] && ! shim_matches_box_sdk "$dir/$asset"; then
+      say "!! $asset: REFUSED, it was linked against ForexConnect libraries that are not the ones in $PROJECT/lib" >&2
+      continue
+    fi
+    if [ "$mode" = tree ]; then
+      rm -rf "$dest.incoming" "$dest.previous"
+      mkdir -p "$(dirname "$dest")" "$dest.incoming" &&
+        tar -xzf "$dir/$asset" -C "$dest.incoming" --no-same-owner &&
+        printf '%s %s\n' "$want" "$tag" > "$dest.incoming/$TREE_MARKER" &&
+        { [ ! -e "$dest" ] || mv "$dest" "$dest.previous"; } && mv "$dest.incoming" "$dest" ||
+        { [ -e "$dest" ] || [ ! -e "$dest.previous" ] || mv "$dest.previous" "$dest"; return 1; }
+      rm -rf "$dest.previous"
+      say "  $asset: installed ($path)"
+      continue
+    fi
+    mkdir -p "$(dirname "$dest")" && install -m "$mode" "$dir/$asset" "$dest.installing" &&
+      mv -f "$dest.installing" "$dest" || return 1
+    say "  $asset: installed ($path)"
+  done < <(printf '%s\n' "$RUNTIME_TOOLS" "$IBKR_SCRIPTS" | awk -F'|' 'NF > 1')
+  return 0
+}
+
+# ── the strategy SDK snapshots (decision 0296) ──────────────────────────────────────────────────────────────────────
+# The release's `vike-strategy-source.tar.gz` (the `tar` row of RUNTIME_TOOLS) is ONE snapshot, `sdk-N/` holding its
+# marker `sdk-N/SDK`: the strategy template's closure at the commit tagged `sdk-N` (scripts/package_strategy_source.sh).
+# The box KEEPS snapshots side by side under `vendor/vike-strategy-source` (`crates/vike-rust-strategy/src/sdk.rs`'s
+# `SDK_SOURCE_DIR`, the builder's `--sdk-root`), and a deploy ADDS one: it never replaces or swaps a tree, so the row
+# needs no stop window and a rollback has nothing to put back (the older build builds the SDKs it knows). An installed
+# snapshot never changes: it is made read-only; the same SDK again (its marker's `[source_hash]` table the same)
+# touches nothing while its files are the release's byte for byte, and REPLACES a tree whose files moved under its
+# marker (the repair `SdkMarker::verify`'s refusal names); another snapshot under a number the box holds is REFUSED
+# before anything is installed.
+# ⚠ Linux only, like this whole script: a folder moved in by one rename onto a free name, read-only by `chmod`.
+# The one implementation: scripts/fetch_release_tools.sh adds a snapshot through the `add-sdk` verb.
+readonly SDK_ASSET=vike-strategy-source.tar.gz
+readonly SDK_ROOT=vendor/vike-strategy-source
+# `sdk.rs`'s `SDK_MARKER_FILE` and `SDK_SUPPORT_WINDOW` (the owner's window: the newest SDK and the 2 before it build).
+readonly SDK_MARKER=SDK
+readonly SDK_WINDOW=2
+SDK_ADDED=""
+
+# The number marker `$1` records (`SdkMarker`'s `number`, as `SdkMarker::to_toml` writes it); nothing when none.
+sdk_marker_number() { sed -n 's/^number = \([0-9][0-9]*\)$/\1/p' "$1" 2> /dev/null | head -n 1; }
+# Marker `$1`'s `[source_hash]` table, one `kind = "hash"` line each (`SdkSourceHashes`): what says two snapshots are
+# the same SDK. Nothing when it has none.
+sdk_marker_hashes() { awk '/^\[/ { t = $0; next } t == "[source_hash]" && NF' "$1" 2> /dev/null; }
+
+# The SDKs the box holds, ascending: each `sdk-N` folder under the SDK root holding its marker (`sdk.rs`'s `installed`).
+installed_sdks() {
+  local d n
+  for d in "$PROJECT/$SDK_ROOT"/sdk-*; do
+    n="${d##*/sdk-}"
+    if [[ "$n" =~ ^(0|[1-9][0-9]*)$ ]] && [ -f "$d/$SDK_MARKER" ]; then printf '%s\n' "$n"; fi
+  done | sort -n
+}
+
+# A tree this script made read-only, removed: write access back first, so `rm` can unlink inside it.
+remove_tree() {
+  chmod -R u+w -- "$1" 2> /dev/null
+  rm -rf -- "$1"
+}
+
+# The SDK strategy file `$1` pins: `[strategy] sdk = N` in its header (`crates/vike-strategy/src/file.rs`'s format: the
+# first ```toml block of the comment lines that open the file, each line's `//`, `///` or `//!` and one space off);
+# nothing when it pins none. `crates/vike-strategy/tests/sdk_pin_reader.rs` holds it to the parser.
+# shortcut: a line reader, not a TOML parser: a pin spelled another way (a quoted or dotted key, an inline table, a
+# hex or `_` number) is not seen, so its SDK is neither listed nor kept for it; upgrade to a vike-cli verb over
+# `vike_strategy::file::scan` once one exists.
+strategy_sdk_pin() {
+  LC_ALL=C awk '
+    NR == 1 && substr($0, 1, 3) == "\357\273\277" { $0 = substr($0, 4) }
+    { line = $0; sub(/^[[:space:]]+/, "", line) }
+    line !~ /^\/\// { if (line == "") next; exit }
+    { sub(/^\/\/(\/|!)?/, "", line); sub(/^ /, "", line); t = line; gsub(/^[[:space:]]+|[[:space:]]+$/, "", t) }
+    !open { if (t == "```toml") open = 1; next }
+    t == "```" { exit }
+    { sub(/[[:space:]]*#.*$/, "", t) }
+    t ~ /^\[/ { table = t; gsub(/[[:space:]]/, "", table); next }
+    table == "[strategy]" && t ~ /^sdk[[:space:]]*=[[:space:]]*(0|[1-9][0-9]*)$/ { sub(/^[^=]*=[[:space:]]*/, "", t); print t; exit }
+  ' "$1" 2> /dev/null
+}
+
+# Every `.rs` strategy file under <project>/strategies that pins an SDK, as "N <path under the project>" lines, by
+# path. A `.rhai` file pins none: its header may not name one.
+sdk_pins() {
+  local f n
+  [ -d "$PROJECT/strategies" ] || return 0
+  while IFS= read -r -d '' f; do
+    n="$(strategy_sdk_pin "$f")"
+    [ -z "$n" ] || printf '%s %s\n' "$n" "${f#"$PROJECT"/}"
+  done < <(find "$PROJECT/strategies" -type f -name '*.rs' -print0 | sort -z)
+}
+
+# The SDKs this box builds once SDK `$1` is its newest, in words: the window clause of `sdk.rs`'s `usable`. Its
+# boundary clause is the builder's: a file pinned inside the window to an SDK cut with another boundary is NOT RUNNING
+# with that reason at its build, and this script does not name it.
+sdk_window_words() {
+  if [ "$1" -gt "$SDK_WINDOW" ]; then
+    printf 'SDK %s to %s\n' "$(($1 - SDK_WINDOW))" "$1"
+  else
+    printf 'SDK 0 to %s\n' "$1"
+  fi
+}
+
+# Add the snapshot release asset `$1` holds (its bytes verified by the caller) under the SDK root, say what was done,
+# and set SDK_ADDED to its number. Refuses (`die`) an archive that is not ONE snapshot holding its marker, and another
+# snapshot under a number the box holds; touches nothing for an SDK the box holds already.
+add_sdk() {
+  local archive="$1" root="$PROJECT/$SDK_ROOT" stage name n want have
+  # A folder no release laid down (a hand-maintained checkout, say) is left alone, as the tree row always left it.
+  if [ -e "$root" ] && [ ! -e "$root/$TREE_MARKER" ] && [ ! -e "$root/SOURCE_GIT_SHA" ] && [ -z "$(installed_sdks)" ]; then
+    say "!! $SDK_ASSET: $root is not a tree a release put there; left alone"
+    return 0
+  fi
+  mkdir -p "$root" || die "could not create $root: nothing was installed or restarted"
+  # What a killed run left: a snapshot half unpacked or half removed, never one of `sdk-*`.
+  for stage in "$root"/.sdk-incoming.* "$root"/.sdk-retiring.*; do
+    [ ! -e "$stage" ] || remove_tree "$stage"
+  done
+  stage="$(mktemp -d "$root/.sdk-incoming.XXXXXX")" || die "could not stage beside $root: nothing was installed or restarted"
+  if ! tar -xzf "$archive" -C "$stage" --no-same-owner; then
+    remove_tree "$stage"
+    die "$SDK_ASSET did not unpack: nothing was installed or restarted"
+  fi
+  name="$(ls -A "$stage")"
+  n="${name#sdk-}"
+  want="$(sdk_marker_hashes "$stage/$name/$SDK_MARKER")"
+  if ! [[ "$name" =~ ^sdk-(0|[1-9][0-9]*)$ ]] || [ "$(sdk_marker_number "$stage/$name/$SDK_MARKER")" != "$n" ] ||
+    [ -z "$want" ]; then
+    remove_tree "$stage"
+    die "REFUSED: $SDK_ASSET is not ONE strategy SDK snapshot (sdk-N/ holding its marker sdk-N/$SDK_MARKER, which \
+records N): a release cut before the versioned SDK (decision 0296)? Nothing was installed or restarted"
+  fi
+  if [ -e "$root/$name" ]; then
+    have="$(sdk_marker_hashes "$root/$name/$SDK_MARKER")"
+    if [ -z "$have" ] || [ "$have" != "$want" ]; then
+      remove_tree "$stage"
+      die "REFUSED: $root/$name already holds SDK $n with other source hashes (${have:-no marker}; the release's: \
+$want), and an installed SDK never changes. A tag sdk-$n that moved? Cut a new number. Nothing was installed or \
+restarted"
+    fi
+    # The same SDK, so its FILES are held to the release's copy of them, byte for byte (one tag packs to one archive;
+    # the marker's own text is judged above, by its source hashes): an equal tree is not touched, not even an mtime;
+    # one whose files moved under its marker (a hand edit, a disk fault, a partial copy) is what the builder refuses
+    # at every start (`SdkMarker::verify`), so it is REPLACED.
+    if diff -rq -x "$SDK_MARKER" "$root/$name" "$stage/$name" > /dev/null 2>&1; then
+      remove_tree "$stage"
+      say "  $SDK_ASSET: sdk-$n unchanged (the box holds it, the release's copy byte for byte): nothing touched"
+    else
+      say "!! $SDK_ASSET: sdk-$n on this box is not the release's copy of it (files moved under its marker): replacing it" >&2
+      move_in_snapshot "$stage/$name" "$root/$name" ||
+        { remove_tree "$stage"; die "could not replace sdk-$n in $root: nothing was installed or restarted"; }
+      remove_tree "$stage"
+      say "  $SDK_ASSET: sdk-$n repaired, the release's copy in its place, read-only"
+    fi
+  else
+    move_in_snapshot "$stage/$name" "$root/$name" ||
+      { remove_tree "$stage"; die "could not add sdk-$n to $root: nothing was installed or restarted"; }
+    remove_tree "$stage"
+    say "  $SDK_ASSET: sdk-$n added to $root, read-only"
+  fi
+  SDK_ADDED="$n"
+}
+
+# The staged snapshot `$1` moved in as `$2`, read-only: its files first, its own folder last (a folder moved to another
+# parent must be writable: rename(2) rewrites its `..`). A folder already at `$2` goes aside as `.sdk-retiring.N`
+# first, comes back if the move fails, and is removed after it, as `retire_sdks` removes one.
+move_in_snapshot() {
+  local from="$1" to="$2" aside=""
+  chmod -R a-w "$from" && chmod u+w "$from" || return 1
+  if [ -e "$to" ]; then
+    aside="$(dirname "$to")/.sdk-retiring.${to##*/sdk-}"
+    chmod u+w "$to" && mv -T "$to" "$aside" || return 1
+  fi
+  if ! mv -T "$from" "$to"; then
+    [ -z "$aside" ] || mv -T "$aside" "$to"
+    return 1
+  fi
+  [ -z "$aside" ] || remove_tree "$aside"
+  chmod a-w "$to" || say "!! ${to##*/}: its own folder could not be made read-only (the files inside are)" >&2
+}
+
+# Before the restart: the strategy files pinned to an SDK the box will not build once its newest is in, each named.
+# Said, never a refusal: the owner's rule is never to defer a deploy (decision 0296, verdict 6).
+sdk_pin_report() {
+  local newest pins n f
+  newest="$(installed_sdks | tail -n 1)"
+  [ -n "$newest" ] || return 0
+  pins="$(sdk_pins | awk -v newest="$newest" -v w="$SDK_WINDOW" '$1 + w < newest')"
+  if [ -z "$pins" ]; then
+    say "  strategy SDK: no strategy file pins an SDK outside $(sdk_window_words "$newest")"
+    return 0
+  fi
+  say "!! strategy SDK: these files pin an SDK outside $(sdk_window_words "$newest"), what this box builds: NOT RUNNING \
+after this deploy until moved (vike-cli strategy migrate <FILE> --to $newest). The deploy goes on." >&2
+  while read -r n f; do say "!!   $f pins SDK $n" >&2; done <<< "$pins"
+}
+
+# Retention, once the new build is healthy (the owner's window of at least 2 SDK releases, decision 0296 verdict 5):
+# the newest SDK on the box and the SDK_WINDOW before it stay; an older snapshot is removed, unless a strategy file
+# pins it, which keeps it and names the file. A removed SDK's builds go with it, `user_data/strategy-builds/sdk-N/`
+# (its artifacts and its `work-*` targets, GBs each): the builder prunes only inside the SDKs it serves, so nothing
+# else would. It never blocks, and it removes nothing but those two whole `sdk-N/` folders of an SDK nothing pins.
+retire_sdks() {
+  local root="$PROJECT/$SDK_ROOT" builds="$PROJECT/user_data/strategy-builds" newest n pins pinned
+  newest="$(installed_sdks | tail -n 1)"
+  [ -n "$newest" ] || return 0
+  pins="$(sdk_pins)"
+  for n in $(installed_sdks); do
+    [ $((n + SDK_WINDOW)) -lt "$newest" ] || continue
+    pinned="$(awk -v n="$n" '$1 == n { print "!!   " $2 " pins it" }' <<< "$pins")"
+    if [ -n "$pinned" ]; then
+      say "!! sdk-$n: kept, though outside $(sdk_window_words "$newest"): strategy files pin it, NOT RUNNING until \
+moved (vike-cli strategy migrate <FILE> --to $newest)" >&2
+      say "$pinned" >&2
+      continue
+    fi
+    if chmod u+w "$root/sdk-$n" && mv -T "$root/sdk-$n" "$root/.sdk-retiring.$n"; then
+      remove_tree "$root/.sdk-retiring.$n"
+      [ ! -e "$builds/sdk-$n" ] || remove_tree "$builds/sdk-$n"
+      say "  sdk-$n: removed with its builds, outside $(sdk_window_words "$newest") and pinned by no strategy file"
+    else
+      say "!! sdk-$n: could not be removed; it stays" >&2
+    fi
+  done
+}
+
+# ── the prebuild of the mounted strategy files (the owner, 2026-11-19: "for live - do in advance") ───────────────────
+# Before the restart, on the NEW build, while the old tradehub still runs: its builder in one-shot mode
+# (`--prebuild-mounts`, `crates/vike-strategy-builder/src/prebuild.rs`) builds every `.rs` file the active daemon
+# profile mounts on an account not stored inactive (paper, demo and live), reading the settings database read-only,
+# into the REAL `user_data/strategy-builds`. After the restart those mounts find their artifacts and start at once
+# instead of waiting while they build. The builds are content-addressed (`sdk-N/<folder>/<sha256>.so`): a file built
+# already is a cache hit and is not written, and a new SDK or folder is a path no old daemon mapped; nothing is pruned.
+# NEVER a refusal: each file is one line, and a failure, a missing builder or the budget running out leaves that mount
+# to build when it mounts, as before. The whole step is bounded by PREBUILD_TIMEOUT. Skipped where the box runs no
+# builder (no SDK snapshot or no compiler), keeps no settings database, or this deploy swaps the compiler (the
+# artifacts would be the old compiler's).
+readonly PREBUILD_TIMEOUT=120
+prebuild_mounts() {
+  local build="$1" tc="$PROJECT/$TOOLCHAIN" name out rc=0 waited=0 args=()
+  if [ "$TOOLCHAIN_STAGED" = 1 ]; then
+    say "  prebuild: skipped, this deploy swaps the compiler; the mounted files build after the restart"
+    return 0
+  fi
+  if [ -z "$(installed_sdks)" ] || [ ! -x "$tc/bin/cargo" ] || [ ! -f "$DB" ]; then
+    say "  prebuild: nothing to do (no SDK snapshot, no compiler in $TOOLCHAIN or no settings database)"
+    return 0
+  fi
+  args=(strategy-builder --sdk-root "$PROJECT/$SDK_ROOT" --out-dir "$PROJECT/user_data/strategy-builds"
+    --prebuild-mounts "$PROJECT/strategies")
+  if is_host; then
+    out="$(timeout "$PREBUILD_TIMEOUT" env -i PATH=/usr/bin:/bin "VIKE_SETTINGS_DIR=$SETTINGS" \
+      "CARGO_HOME=$tc/cargo-home" "CARGO=$tc/bin/cargo" "RUSTC=$tc/bin/rustc" "$build/vike-backend" "${args[@]}" 2>&1)"
+    rc=$?
+  else
+    name="vike-prebuild-$$"
+    if ! "$DOCKER" run -d --name "$name" --network host --user "$(user_spec)" --read-only --tmpfs /tmp \
+      --cap-drop ALL --security-opt no-new-privileges --init -w "$PROJECT" -v "$PROJECT:$PROJECT:ro" \
+      -v "$PROJECT/user_data/strategy-builds:$PROJECT/user_data/strategy-builds:rw" \
+      -v "$tc/cargo-home:$tc/cargo-home:rw" -e "VIKE_SETTINGS_DIR=$SETTINGS" -e "CARGO_HOME=$tc/cargo-home" \
+      -e "CARGO=$tc/bin/cargo" -e "RUSTC=$tc/bin/rustc" --entrypoint /opt/vike/bin/vike-backend "$build" "${args[@]}" \
+      > /dev/null 2>&1; then
+      say "!! prebuild: the new build's builder did not start; the mounted files build after the restart" >&2
+      "$DOCKER" rm -f "$name" > /dev/null 2>&1
+      return 0
+    fi
+    while [ "$waited" -lt "$PREBUILD_TIMEOUT" ] &&
+      [ "$("$DOCKER" container inspect -f '{{.State.Running}}' "$name" 2> /dev/null)" = true ]; do
+      sleep 1
+      waited=$((waited + 1))
+    done
+    [ "$waited" -lt "$PREBUILD_TIMEOUT" ] || rc=124
+    out="$("$DOCKER" logs "$name" 2>&1)"
+    "$DOCKER" rm -f "$name" > /dev/null 2>&1
+  fi
+  [ -z "$out" ] || printf '%s\n' "$out" | sed 's/^/  /'
+  # The builder's line for a file it built (`crates/vike-strategy-builder/src/prebuild.rs`'s `build_all`), as
+  # `<artifact> <file>` for `load_mounts`.
+  mapfile -t PREBUILT < <(sed -n 's#^vike-strategy-builder: prebuild \(.*\): built \(sdk-[^ /]*/[^ /]*/[^ /]*\.so\)$#\2 \1#p' <<< "$out")
+  if [ "$rc" = 124 ]; then
+    say "!! prebuild: stopped at its ${PREBUILD_TIMEOUT} s budget; a mounted file not named built above builds after the restart" >&2
+  elif [ "$rc" != 0 ]; then
+    say "!! prebuild: the builder ended with status $rc; the mounted files not named built above build after the restart" >&2
+  fi
+  return 0
+}
+
+# ── the load of each prebuilt artifact in the strategy jail (2026-11-24) ─────────────────────────────────────────────
+# A probe tradehub starts no strategy process (its copy holds no builder key: `probe_copy`), so a jail or a loader the
+# new build breaks under the live unit passed every probe and showed only after the restart (2026-11-24: the host
+# unit's `RestrictSUIDSGID=yes` answers every `openat2` ENOSYS, and the sandbox's artifact walk used it). So each
+# artifact the prebuild built (`PREBUILT`) is opened and loaded by the NEW build's `strategy-sandbox live-load`
+# (`crates/vike-strategy-sandbox/src/live.rs`'s module doc), started as a hub starts it (an empty environment, working
+# directory `/`, `vike_sandbox::spawn_strategy_process`), under the process properties the hubs will run under: in host
+# mode a transient service of the user manager carrying `unit_properties`, in container mode a throwaway container with
+# the server container's security options (`run_args`). Each is bounded by BOOT_TIMEOUT, builds nothing, reads no
+# setting and loads the file without calling it. One that does not load REFUSES the deploy, nothing installed or
+# restarted. Nothing prebuilt, nothing loaded: that mount is judged when it mounts, as before.
+PREBUILT=()
+load_mounts() {
+  local build="$1" builds="$PROJECT/user_data/strategy-builds" line artifact file out rc failed=0 props=()
+  if [ "${#PREBUILT[@]}" -eq 0 ]; then
+    say "  load: nothing to load (the prebuild built no artifact)"
+    return 0
+  fi
+  ! is_host || mapfile -t props < <(unit_properties)
+  for line in "${PREBUILT[@]}"; do
+    artifact="${line%% *}"
+    file="${line#* }"
+    if is_host; then
+      out="$(timeout "$((BOOT_TIMEOUT + 5))" systemd-run --user --wait --pipe --quiet --collect "${props[@]}" \
+        -p "RuntimeMaxSec=$BOOT_TIMEOUT" -p TimeoutStopSec=1 -- \
+        env -i -C / "$build/vike-backend" strategy-sandbox live-load "$builds" "$artifact" < /dev/null 2>&1)"
+    else
+      out="$(timeout "$((BOOT_TIMEOUT + 5))" "$DOCKER" run --rm --network none --user "$(user_spec)" --read-only \
+        --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges --init -w / -v "$builds:$builds:ro" \
+        --entrypoint /opt/vike/bin/vike-backend "$build" strategy-sandbox live-load "$builds" "$artifact" < /dev/null 2>&1)"
+    fi
+    rc=$?
+    if [ "$rc" = 0 ]; then
+      say "  load[$file]: $artifact opened and loaded in the strategy jail on the new build"
+    else
+      say "!! load[$file]: $artifact did NOT load in the strategy jail on the new build (status $rc); its last lines:" >&2
+      tail -5 <<< "$out" >&2
+      failed=1
+    fi
+  done
+  return "$failed"
+}
+
+# The host unit's process properties, as `systemd-run` arguments (`-p` and the line): every `[Service]` line of
+# `render_host_unit` (the unit `sup_start` brings the restart under, so every daemon and each strategy process it
+# spawns inherits these) but those that say what runs, where, with what environment and how it stops and restarts. A
+# line added to the unit is carried here unnamed.
+unit_properties() {
+  render_host_unit | awk '/^\[/ { s = ($0 == "[Service]"); next }
+    s && /=/ && !/^(Type|ExecStart|WorkingDirectory|Environment|Restart|RestartSec|TimeoutStopSec)=/ { print "-p"; print }'
+}
+
+# ── the strategy builder's compiler (`bin/rust-toolchain`, the CARGO/RUSTC of `run_args` and `render_host_unit`) ────────
+# The pinned MINIMAL toolchain: rustc, cargo and rust-std for x86_64 Linux, about 0.6 GB unpacked. Its pin is
+# `deploy/rust-toolchain.sha256`, staged into a request as `rust-toolchain.sha256`: the three archives of
+# `rust-toolchain.toml`'s channel by name, each with its digest. They come from static.rust-lang.org and are installed
+# only after `sha256sum -c` passes against the pin, never against a file the same server sends. A builder on another
+# rustc than the release's builds what the loader refuses, and the strategy crates refuse an older one outright.
+# ⚠ A deploy builds the new one BESIDE (`.incoming`) and swaps it in while the supervisor is STOPPED, because the
+# builder's jail (Landlock) holds the directory it found at its start: a toolchain replaced under a running builder is
+# one it may no longer read (`cargo build: Permission denied (os error 13)`, deploy 4 of 2026-11-17, until the builder
+# was restarted). The old one stays beside as `.previous` for a rollback; `cargo-home` (cargo's registry cache, a
+# writable data folder) moves with the swap. The ONE implementation: scripts/fetch_release_tools.sh runs it through the
+# `rust-toolchain` verb.
+readonly TOOLCHAIN=bin/rust-toolchain
+readonly TOOLCHAIN_PIN=rust-toolchain.sha256
+readonly TOOLCHAIN_TARGET=x86_64-unknown-linux-gnu
+# The deployed release's pin, kept for `verify-tools`.
+readonly TOOLCHAIN_PIN_KEPT=bin/.rust-toolchain-pin
+TOOLCHAIN_STAGED=0
+TOOLCHAIN_WAS=""
+TOOLCHAIN_TO=""
+
+# The rustc release pin `$1` names (its `rustc-<version>-<target>.tar.xz` line); nothing when it names none.
+pin_version() {
+  sed -nE "s/^[0-9a-f]{64} [ *]rustc-([0-9][0-9.]*)-$TOOLCHAIN_TARGET\.tar\.xz\$/\1/p" "$1" 2> /dev/null | head -n 1
+}
+# The release the rustc of toolchain `$1` reports; nothing when there is none.
+toolchain_version() { "$1/bin/rustc" -Vv 2> /dev/null | sed -n 's/^release: //p'; }
+
+# The toolchain of release `$3` built at `$1/toolchain` from the pin `$2`: each archive's digest is the pin's line for it.
+build_toolchain() {
+  local work="$1" pin="$2" version="$3" c a sha
+  : > "$work/SUMS" || return 1
+  for c in rustc cargo rust-std; do
+    a="$c-$version-$TOOLCHAIN_TARGET.tar.xz"
+    sha="$(manifest_digest "$a" "$pin")"
+    [ -n "$sha" ] || { say "!! rust-toolchain: $pin names no $a" >&2; return 1; }
+    printf '%s  %s\n' "$sha" "$a" >> "$work/SUMS" && curl -sSfL -o "$work/$a" "https://static.rust-lang.org/dist/$a" ||
+      { say "!! rust-toolchain: $a did not download" >&2; return 1; }
+  done
+  (cd "$work" && sha256sum -c --quiet SUMS) || { say "!! rust-toolchain: an archive is not the one its pin names" >&2; return 1; }
+  for c in rustc cargo rust-std; do
+    mkdir "$work/$c" && tar -xJf "$work/$c-$version-$TOOLCHAIN_TARGET.tar.xz" -C "$work/$c" --strip-components=1 &&
+      bash "$work/$c/install.sh" --prefix="$work/toolchain" --disable-ldconfig > /dev/null ||
+      { say "!! rust-toolchain: $c did not install" >&2; return 1; }
+  done
+  [ "$(toolchain_version "$work/toolchain")" = "$version" ] ||
+    { say "!! rust-toolchain: the installed rustc does not report release $version" >&2; return 1; }
+}
+
+# The toolchain pin `$1` names, built at `bin/rust-toolchain.incoming`; the live one is not touched.
+stage_toolchain() {
+  local pin="$1" version work rc
+  version="$(pin_version "$pin")"
+  [ -n "$version" ] || { say "!! rust-toolchain: $pin names no rustc archive for $TOOLCHAIN_TARGET" >&2; return 1; }
+  mkdir -p "$PROJECT/bin" && work="$(mktemp -d "$PROJECT/bin/.rust-toolchain.XXXXXX")" || return 1
+  build_toolchain "$work" "$pin" "$version" && rm -rf "$PROJECT/$TOOLCHAIN.incoming" &&
+    mv "$work/toolchain" "$PROJECT/$TOOLCHAIN.incoming"
+  rc=$?
+  rm -rf "$work"
+  return "$rc"
+}
+
+# The staged toolchain in, the live one aside as `.previous`, its cargo home carried over.
+swap_toolchain() {
+  local d="$PROJECT/$TOOLCHAIN"
+  rm -rf "$d.previous" && { [ ! -e "$d" ] || mv "$d" "$d.previous"; } && mv "$d.incoming" "$d" &&
+    { [ ! -d "$d.previous/cargo-home" ] || mv "$d.previous/cargo-home" "$d/cargo-home"; }
+}
+
+# A rollback of the deploy whose backup `$1` records a toolchain swap (`$1/rust-toolchain`): the one set aside comes back,
+# with the cargo home.
+toolchain_back() {
+  local d="$PROJECT/$TOOLCHAIN"
+  [ -f "$1/rust-toolchain" ] && [ -d "$d.previous" ] || return 0
+  if { [ ! -d "$d/cargo-home" ] || [ -e "$d.previous/cargo-home" ] || mv "$d/cargo-home" "$d.previous/cargo-home"; } &&
+    rm -rf "$d.withdrawn" && { [ ! -e "$d" ] || mv "$d" "$d.withdrawn"; } && mv "$d.previous" "$d"; then
+    rm -rf "$d.withdrawn"
+    say "  rust-toolchain: rustc $(toolchain_version "$d") put back"
+  else
+    say "!! rust-toolchain: could not put $d.previous back at $d" >&2
+  fi
+}
+
+# The request `$1`'s pin against the box's rustc: another release is built beside for the stop window.
+toolchain_step() {
+  local pin="$1/$TOOLCHAIN_PIN"
+  [ -f "$pin" ] || { say "  $TOOLCHAIN_PIN: not in this release; $TOOLCHAIN left as it is"; return 0; }
+  [ -n "$(manifest_digest "$TOOLCHAIN_PIN" "$1/SHA256SUMS")" ] || die "the request's $TOOLCHAIN_PIN is not on its SHA256SUMS"
+  TOOLCHAIN_TO="$(pin_version "$pin")"
+  TOOLCHAIN_WAS="$(toolchain_version "$PROJECT/$TOOLCHAIN")"
+  if [ -n "$TOOLCHAIN_TO" ] && [ "$TOOLCHAIN_WAS" = "$TOOLCHAIN_TO" ]; then
+    say "  rust-toolchain: unchanged (rustc $TOOLCHAIN_TO, the pin's)"
+    return 0
+  fi
+  say "  rust-toolchain: the box has rustc ${TOOLCHAIN_WAS:-none}, the pin is ${TOOLCHAIN_TO:-unreadable}: building it beside"
+  stage_toolchain "$pin" || return 1
+  TOOLCHAIN_STAGED=1
+  say "  rust-toolchain: rustc $TOOLCHAIN_TO staged beside $TOOLCHAIN, swapped while the supervisor is stopped"
+}
+
+# By hand: the toolchain pin `$1` names, built and swapped in at once, the old one removed.
+cmd_rust_toolchain() {
+  local pin="${1:-}" d="$PROJECT/$TOOLCHAIN"
+  [ -f "$pin" ] || die "rust-toolchain: '$pin' is no pin file (deploy/$TOOLCHAIN_PIN)"
+  stage_toolchain "$pin" && swap_toolchain || die "rust-toolchain: nothing was installed (above)"
+  rm -rf "$d.previous"
+  say ">> installed rustc $(toolchain_version "$d") (minimal: rustc, cargo, rust-std) at $d"
+  say "   a strategy builder running now keeps the old directory in its jail and builds nothing until it restarts: vikectl restart strategy-builder"
+}
+
+# The host files a deploy replaces and a rollback puts back. The host mode's own two (the multicall and the
+# supervisor) are on the list in both modes: a container install simply has none to save.
+readonly HOST_FILES="bin/vike-cli bin/vike-mcp lib/libfcshim.so bin/vike-backend bin/vike-entrypoint.sh"
+restore_host_files() {
+  local back="$1" f
+  for f in $HOST_FILES; do
+    [ -f "$back/$(basename "$f")" ] || continue
+    install -m 755 "$back/$(basename "$f")" "$PROJECT/$f.restoring" && mv -f "$PROJECT/$f.restoring" "$PROJECT/$f"
+  done
+  local asset path mode
+  while IFS='|' read -r asset path mode; do
+    [ -f "$back/ibkr/$path" ] || continue
+    install -m "$mode" "$back/ibkr/$path" "$PROJECT/$path.restoring" && mv -f "$PROJECT/$path.restoring" "$PROJECT/$path"
+  done < <(printf '%s\n' "$IBKR_SCRIPTS" | awk -F'|' 'NF > 1')
+}
+
+cmd_deploy() {
+  local dir="${1:-}" tag="${2:-}" new_id prev_id prev_tag stamp back unit units=() since sha
+  [ -d "$dir" ] || die "deploy: '$dir' is not a request directory"
+  [[ "$tag" =~ $TAG_RE ]] || die "deploy: '$tag' is not a release tag (v<major>.<minor>.<patch>)"
+  need_runtime
+  refuse_system_units
+  ensure_dirs > /dev/null || exit 2
+  say "== checksum =="
+  verify_request "$dir"
+  read_row_steps "$dir"
+  sha="$(manifest_digest vike-backend "$dir/SHA256SUMS")"
+  local build="$dir"
+  if is_host; then
+    new_id=host
+    say "== host mode: the request's own vike-backend (sha256 $sha) is what will run =="
+  else
+    say "== image =="
+    "$DOCKER" build -q -t "$IMAGE:$tag" -f "$dir/Dockerfile" "$dir/context" > /dev/null || die "the image did not build"
+    [ "$("$DOCKER" run --rm --network none --entrypoint sha256sum "$IMAGE:$tag" /opt/vike/bin/vike-backend | cut -d' ' -f1)" = "$sha" ] ||
+      die "the image's vike-backend is not the request's (sha256 $sha)"
+    new_id="$(image_id "$IMAGE:$tag")"
+    build="$IMAGE:$tag"
+    say "  $IMAGE:$tag = $new_id, its vike-backend is the release's"
+  fi
+  if sup_running; then
+    mapfile -t units < <(running_units)
+  else
+    for unit in $DEPLOY_UNITS; do
+      case "$unit" in
+        vike-telegram.service) ;;
+        vike-strategy-builder.service) [ -d "$PROJECT/vendor/vike-strategy-source" ] && units+=("$unit") ;;
+        *) units+=("$unit") ;;
+      esac
+    done
+  fi
+  say "== strategy SDK (added before the pre-flight, so the new builder's probe starts on what it will start on) =="
+  if [ -n "$(manifest_digest "$SDK_ASSET" "$dir/SHA256SUMS")" ] && [ -f "$dir/$SDK_ASSET" ]; then
+    add_sdk "$dir/$SDK_ASSET"
+  else
+    say "  $SDK_ASSET: not in this release; $SDK_ROOT left as it is"
+  fi
+  say "== pre-flight (nothing installed yet): ${units[*]} =="
+  sdk_pin_report
+  [ ! -f "$dir/ALLOW_JOURNAL_MOVE" ] || say "  allow_journal_move: given for this deploy"
+  [ "${#ROW_STEP[@]}" -eq 0 ] || say "  row steps: ${#ROW_STEP[@]} in the release's list, each probe's copy takes those this box has not"
+  for unit in "${units[@]}"; do
+    preflight "$unit" "$build" "$dir" && continue
+    [ -n "$PROBE_JOURNAL" ] && journal_needs_move "$dir" || die "pre-flight failed for $unit: nothing was installed or restarted"
+    preflight "$unit" "$build" "$dir" || die "pre-flight failed for $unit on its journal moved aside: nothing was installed or restarted"
+  done
+  # A tradehub the supervisor holds parked or done is started again on the new build with the supervisor, so its
+  # journal is judged too, by the same probe on a copy: a journal the new build refuses is refused, or moved on the
+  # owner's word, exactly as a running one's. Any other failure of its probe is said, and the deploy goes on as it did:
+  # it was not running, and it is not waited for.
+  unit=vike-tradehub.service
+  if sup_running && [[ " ${units[*]} " != *" $unit "* ]] && [ "$JOURNAL_MOVE" = 0 ]; then
+    say "  pre-flight[$unit]: not running before the deploy: its journal is judged, it is not waited for"
+    if ! preflight "$unit" "$build" "$dir"; then
+      if [ -z "$PROBE_JOURNAL" ]; then
+        say "  pre-flight[$unit]: not a journal refusal; it was not running, so the deploy goes on"
+      elif journal_needs_move "$dir"; then
+        preflight "$unit" "$build" "$dir" ||
+          say "  pre-flight[$unit]: still fails on its journal moved aside; it was not running, so the deploy goes on"
+      else
+        say "  pre-flight[$unit]: it was not running, so the deploy goes on"
+      fi
+    fi
+  fi
+  say "== toolchain =="
+  toolchain_step "$dir" || die "the pinned toolchain did not install: nothing was installed or restarted"
+  say "== prebuild (the mounted strategy files, on the new build, before the restart; never a refusal) =="
+  prebuild_mounts "$build"
+  say "== load (each prebuilt artifact, in the strategy jail under the live unit's process properties) =="
+  load_mounts "$build" ||
+    die "a mounted strategy file's new artifact did not load in the strategy jail: nothing was installed or restarted"
+  say "== backup =="
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  back="$VAR/rollback/$stamp"
+  mkdir -p "$back" || die "could not create $back"
+  if is_host; then
+    prev_id=host
+  else
+    prev_id="$( { "$DOCKER" container inspect -f '{{.Image}}' "$NAME" 2> /dev/null; } || image_id "$IMAGE:current")"
+  fi
+  prev_tag="$(awk 'NR == 1 { print $1 }' "$PROJECT/bin/.built-from" 2> /dev/null)"
+  printf '%s %s %s\n' "${prev_id:-none}" "${prev_tag:-none}" "${units[*]}" > "$back/image"
+  for unit in $HOST_FILES; do
+    [ -f "$PROJECT/$unit" ] && cp -a "$PROJECT/$unit" "$back/"
+  done
+  while IFS='|' read -r _ unit _; do
+    [ ! -f "$PROJECT/$unit" ] || { mkdir -p "$back/ibkr/${unit%/*}" && cp -a "$PROJECT/$unit" "$back/ibkr/$unit"; } ||
+      die "could not back up $unit into $back: nothing was installed"
+  done < <(printf '%s\n' "$IBKR_SCRIPTS" | awk -F'|' 'NF > 1')
+  ln -sfn "$back" "$VAR/rollback/last"
+  say "  previous build ${prev_id:-none} (${prev_tag:-none}); host files saved in $back"
+  say "== install =="
+  install -m 755 "$dir/vike-cli" "$PROJECT/bin/vike-cli.installing" && mv -f "$PROJECT/bin/vike-cli.installing" "$PROJECT/bin/vike-cli" ||
+    die "could not install vike-cli"
+  if [ -f "$dir/vike-mcp" ] && [ -n "$(manifest_digest vike-mcp "$dir/SHA256SUMS")" ]; then
+    install -m 755 "$dir/vike-mcp" "$PROJECT/bin/vike-mcp.installing" && mv -f "$PROJECT/bin/vike-mcp.installing" "$PROJECT/bin/vike-mcp"
+  fi
+  # Before the shipped tree is replaced: with no seed reference yet, the tree as it stands is the previous version.
+  seeded_reference "$PROJECT/$SEEDED_REFERENCE" ||
+    say "!! the seed's reference could not be laid down: every shipped file that differs gets its new version beside it" >&2
+  install_runtime_tools "$dir" "$tag" || { restore_host_files "$back"; die "a runtime tool did not install: host files restored"; }
+  # THE seed (step 5 of the header), by the vike-cli just installed, on the host in both modes (a container's
+  # project mount is read-only). Said on failure, never fatal.
+  env -i -C "$PROJECT" PATH=/usr/bin:/bin "VIKE_SETTINGS_DIR=$SETTINGS" "$PROJECT/bin/vike-cli" init --strategies-only ||
+    say "!! the shipped strategy files were not all copied into $PROJECT/strategies (above); the deploy goes on" >&2
+  if is_host; then
+    # Staged beside, moved in only while the supervisor is stopped: a daemon it restarts in between must
+    # not start the new build beside old ones.
+    install -m 755 "$dir/vike-backend" "$PROJECT/bin/vike-backend.incoming" &&
+      install -m 755 "$dir/context/entrypoint.sh" "$PROJECT/bin/vike-entrypoint.sh.incoming" ||
+      { restore_host_files "$back"; die "could not stage the new vike-backend and supervisor"; }
+  fi
+  say "== restart =="
+  since="$(date +%s)"
+  sup_stop || { restore_host_files "$back"; die "the old supervisor would not stop"; }
+  if is_host; then
+    mv -f "$PROJECT/bin/vike-backend.incoming" "$PROJECT/bin/vike-backend" &&
+      mv -f "$PROJECT/bin/vike-entrypoint.sh.incoming" "$PROJECT/bin/vike-entrypoint.sh" || die "could not move the new build in"
+  else
+    "$DOCKER" tag "$new_id" "$IMAGE:current" || die "could not tag $IMAGE:current"
+  fi
+  # The record first, so a rollback finds the swap even when it stopped half way.
+  if [ "$TOOLCHAIN_STAGED" = 1 ]; then
+    if ! { printf '%s %s\n' "${TOOLCHAIN_WAS:-none}" "$TOOLCHAIN_TO" > "$back/rust-toolchain" && swap_toolchain; }; then
+      say "!! $tag is NOT started: rustc $TOOLCHAIN_TO could not be swapped in; rolling back to ${prev_id:-nothing}" >&2
+      rollback_to "$back" "$tag"
+      exit 1
+    fi
+    say "  rust-toolchain: rustc $TOOLCHAIN_TO swapped in (rustc ${TOOLCHAIN_WAS:-none} kept beside for a rollback)"
+  fi
+  if [ "$JOURNAL_MOVE" = 1 ] && ! move_journal_aside "$back" "$stamp"; then
+    say "!! $tag is NOT started: its journal could not be moved aside; rolling back to ${prev_id:-nothing}" >&2
+    rollback_to "$back" "$tag"
+    exit 1
+  fi
+  # The last act before the start: every daemon is stopped, and the vike-cli in bin/ is the new build's.
+  if [ "${#ROW_STEP[@]}" -gt 0 ]; then
+    say "== rows (the release's row steps, recorded in $back/$ROW_STEPS) =="
+    if ! run_row_steps "$PROJECT/bin/vike-cli" "$SETTINGS" "$PROJECT" "$back/$ROW_STEPS"; then
+      say "!! $tag is NOT started: a row step failed; rolling back to ${prev_id:-nothing}" >&2
+      rollback_to "$back" "$tag"
+      exit 1
+    fi
+  fi
+  if sup_start "$IMAGE:current" && healthy "$since" "${units[@]}"; then
+    [ ! -s "$back/$ROW_STEPS" ] || T="$tag" awk '$1 != "undo" { print ENVIRON["T"], $0 }' "$back/$ROW_STEPS" >> "$VAR/row-steps.applied" ||
+      say "!! the row steps ran but could not be added to $VAR/row-steps.applied: the next deploy runs them again" >&2
+    write_built_from "$tag $sha image=$new_id restarted=$(printf '%s,' "${units[@]}")"
+    cp -f "$dir/SHA256SUMS" "$PROJECT/bin/.release-manifest"
+    if [ -f "$dir/$TOOLCHAIN_PIN" ]; then cp -f "$dir/$TOOLCHAIN_PIN" "$PROJECT/$TOOLCHAIN_PIN_KEPT"; else rm -f "$PROJECT/$TOOLCHAIN_PIN_KEPT"; fi
+    if [ -f "$dir/vikectl" ]; then install -m 755 "$dir/vikectl" "$PROJECT/bin/vikectl.installing" && mv -f "$PROJECT/bin/vikectl.installing" "$PROJECT/bin/vikectl"; fi
+    if [ -f "$dir/vike-sidecars" ]; then install -m 755 "$dir/vike-sidecars" "$PROJECT/bin/vike-sidecars.installing" && mv -f "$PROJECT/bin/vike-sidecars.installing" "$PROJECT/bin/vike-sidecars"; fi
+    # The SDK root's record of the release's snapshot (`installed_digest`), then retention.
+    [ -z "$SDK_ADDED" ] || printf '%s %s sdk-%s\n' "$(manifest_digest "$SDK_ASSET" "$dir/SHA256SUMS")" "$tag" "$SDK_ADDED" \
+      > "$PROJECT/$SDK_ROOT/$TREE_MARKER" || say "!! could not record sdk-$SDK_ADDED in $SDK_ROOT/$TREE_MARKER" >&2
+    retire_sdks
+    say "== OK: $tag deployed and healthy: ${units[*]} =="
+    return 0
+  fi
+  say "!! $tag is NOT healthy: rolling back to ${prev_id:-nothing}" >&2
+  rollback_to "$back" "$tag"
+  exit 1
+}
+
+# `bin/.built-from`, the box's one-line record of what runs, read by FIELD (`cmd_deploy`'s `prev_tag`, `cmd_rollback`,
+# `scripts/deploy_commit.sh`'s `box_commit`): written to a temporary beside it and renamed, because `>` truncates at
+# open and a failed write would leave it EMPTY, which the next reader takes for a blank field. A rename within
+# `bin/` is atomic, so a failure keeps the previous line and says so. Never fatal: the deploy it records has happened.
+write_built_from() {
+  local tmp="$PROJECT/bin/.built-from.new"
+  if printf '%s\n' "$1" > "$tmp" && mv -f "$tmp" "$PROJECT/bin/.built-from"; then return 0; fi
+  rm -f "$tmp"
+  say "!! could not write $PROJECT/bin/.built-from: it still holds the previous line, which no longer describes this box" >&2
+}
+
+rollback_to() {
+  local back="$1" from="${2:-}" prev_id prev_tag units since
+  read -r prev_id prev_tag units < "$back/image" || die "no rollback record in $back"
+  sup_stop
+  toolchain_back "$back"
+  restore_host_files "$back"
+  journal_back "$back"
+  undo_row_steps "$back"
+  if ! is_host; then
+    [ "$prev_id" != none ] || die "there is no previous image to start: the container stays stopped"
+    "$DOCKER" tag "$prev_id" "$IMAGE:current" || die "could not tag $IMAGE:current back to $prev_id"
+  fi
+  since="$(date +%s)"
+  # shellcheck disable=SC2086 # the unit list is space-separated unit names
+  if sup_start "$IMAGE:current" && healthy "$since" $units; then
+    write_built_from "rolled-back-from:${from:-?} $prev_tag image=$prev_id"
+    say "== rolled back: $prev_tag ($prev_id) is running and healthy =="
+    return 0
+  fi
+  die "the ROLLBACK is not healthy either: look at 'vikectl logs' now"
+}
+
+cmd_rollback() {
+  need_runtime
+  [ -e "$VAR/rollback/last/image" ] || die "no deploy to roll back"
+  rollback_to "$(readlink -f "$VAR/rollback/last")" "$(awk 'NR == 1 { print $1 }' "$PROJECT/bin/.built-from" 2> /dev/null)"
+}
+
+# Every take, refusal and failure is also one line in `$VAR/deploy-inbox.log`: the crontab runs this each
+# minute with nowhere else to say why a request was not taken, and the CI half prints that log's tail when its
+# wait runs out (the CI box's first inbox deploy, 2026-11-08: a request this user could not write sat untaken, in
+# silence, for the whole 18 minutes).
+inbox_log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$VAR/deploy-inbox.log" 2> /dev/null; }
+# Answer request `$1` with status `$2` and reason `$3`: in our log always, and in its RESULT and deploy.log
+# when its directory takes a write, so the CI reads why instead of timing out.
+inbox_answer() {
+  local req="$1" rc="$2" why="$3"
+  inbox_log "$(basename "$req"): $why (RESULT $rc)"
+  { say "$why" >> "$req/deploy.log" && printf '%s\n' "$rc" > "$req/RESULT"; } 2> /dev/null ||
+    inbox_log "$(basename "$req"): its RESULT could not be written either: $(id -un) may not write $req"
+}
+
+# Take ONE request the CI dropped in the inbox (`scripts/deploy_inbox.sh` writes it, REQUEST last),
+# copy it out of the writer's reach before checking anything, deploy it, and leave RESULT and the log.
+cmd_deploy_inbox() {
+  local inbox="$VAR/inbox" r reqs=() req tag staging rc
+  [ -d "$inbox" ] || return 0
+  exec 8> "$VAR/inbox.lock"
+  flock -n 8 || return 0
+  for r in "$inbox"/*/REQUEST; do [ -f "$r" ] && reqs+=("$r"); done
+  [ "${#reqs[@]}" -gt 0 ] || return 0
+  if [ "${#reqs[@]}" -gt 1 ]; then
+    for r in "${reqs[@]}"; do
+      mv -f "$r" "$(dirname "$r")/REFUSED" 2> /dev/null
+      inbox_answer "$(dirname "$r")" 2 "refused: more than one request in the inbox"
+    done
+    return 2
+  fi
+  r="${reqs[0]}"
+  req="$(dirname "$r")"
+  tag="$(head -n 1 "$r")"
+  if ! mv -f "$r" "$req/TAKEN" 2> /dev/null; then
+    inbox_answer "$req" 2 "cannot take the request: $(id -un) may not write $req (the writer must leave it \
+group-writable: under the inbox's ACL the group bits are the mask); submit it again once the writer is fixed"
+    return 2
+  fi
+  inbox_log "$(basename "$req"): taken"
+  if ! [[ "$tag" =~ $TAG_RE ]] || [ "$(basename "$req")" != "$tag" ]; then
+    inbox_answer "$req" 2 "refused: the request's tag '$tag' is not a release tag, or not its directory's name"
+    return 2
+  fi
+  staging="$(mktemp -d "$VAR/staging.XXXXXX")" || { inbox_answer "$req" 2 "no private staging directory in $VAR"; return 2; }
+  chmod 700 "$staging"
+  if ! cp -a "$req/." "$staging/"; then
+    rm -rf "$staging"
+    inbox_answer "$req" 2 "could not copy the request out of the writer's reach"
+    return 2
+  fi
+  (cmd_deploy "$staging" "$tag") > "$req/deploy.log" 2>&1
+  rc=$?
+  inbox_log "$(basename "$req"): deployed, status $rc"
+  # What the workflows' `verify-tools` and `status` steps asked the root helper, asked here: the deploy stands
+  # either way, and drifted tools turn the run red (3) as that step did.
+  if [ "$rc" = 0 ]; then
+    { say "== verify-tools =="; (cmd_verify_tools) || rc=3; say "== status =="; (cmd_status); } >> "$req/deploy.log" 2>&1
+  fi
+  printf '%s\n' "$rc" > "$req/RESULT"
+  rm -rf "$staging"
+  return "$rc"
+}
+
+cmd_verify_tools() {
+  local manifest="$PROJECT/bin/.release-manifest" asset path mode want have drift=0
+  [ -f "$manifest" ] || die "no release manifest at $manifest: nothing was deployed here"
+  while IFS='|' read -r asset path mode; do
+    [ -n "$asset" ] || continue
+    want="$(manifest_digest "$asset" "$manifest")"
+    [ -n "$want" ] || { say "  $asset: not in the deployed release"; continue; }
+    have="$(installed_digest "$PROJECT/$path" "$mode")"
+    if [ "$have" = "$want" ]; then say "  $asset: the release's"; else say "!! $asset: DRIFT ($path)"; drift=1; fi
+  done < <(printf '%s\n' "$RUNTIME_TOOLS" "$IBKR_SCRIPTS" | awk -F'|' 'NF > 1')
+  if [ -f "$PROJECT/$TOOLCHAIN_PIN_KEPT" ]; then
+    want="$(pin_version "$PROJECT/$TOOLCHAIN_PIN_KEPT")"
+    have="$(toolchain_version "$PROJECT/$TOOLCHAIN")"
+    if [ -n "$want" ] && [ "$have" = "$want" ]; then
+      say "  rust-toolchain: rustc $have, the pin's"
+    else
+      say "!! rust-toolchain: DRIFT (rustc ${have:-none} in $TOOLCHAIN, the pin is ${want:-unreadable})"
+      drift=1
+    fi
+  else
+    say "  rust-toolchain: no pin in the deployed release"
+  fi
+  return "$drift"
+}
+
+# ── access (decision 0288 item 7) ──────────────────────────────────────────────────────────────────
+# A person with no shell here reaches the hubs through ONE tunnel-only line in this user's authorized_keys: it
+# forwards the tradehub's, the datahub's and the backtesthub's loopback ports and nothing else. `permitopen` matches
+# the host the client ASKS for, literally, and the app asks for `localhost`; it limits `-L` alone. With NO
+# `permitlisten` sshd lets the line `-R`-listen on any free port (a guest could squat a hub's port while it restarts),
+# so the one port listed is 1, which the app user cannot bind: every TCP `-R` is refused (measured on OpenSSH 9.6p1).
+# ⚠ A Unix-socket `-R` is NOT refused by any per-key option (sshd's `remote_open_match`: "XXX add ACLs for
+# streamlocal"): only sshd_config's `AllowStreamLocalForwarding local` refuses it, the owner's ruling (decision 0288,
+# amended). Who may do what once through is the access list's (`vike-cli access`); these lines only open the tunnel.
+readonly ACCESS_FORWARDS='restrict,port-forwarding,permitopen="localhost:7879",permitopen="localhost:7878",permitopen="localhost:7880",permitlisten="localhost:1"'
+readonly ACCESS_ED25519_BLOB='AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]{43}'
+readonly ACCESS_SSH_KEY_RE="^ssh-ed25519 $ACCESS_ED25519_BLOB\$"
+# The server's own ed25519 host key: the invitation carries its base64 blob, and the guest pins it in known_hosts.
+readonly ACCESS_HOST_KEY=/etc/ssh/ssh_host_ed25519_key.pub
+readonly ACCESS_NAME_RE='^[a-z0-9][a-z0-9_-]{0,31}$'
+
+# The address a client of this server types, `user@host:project`: not a secret.
+address_line() { printf '%s@%s:%s\n' "$(id -un)" "$(hostname -f 2> /dev/null || hostname)" "$PROJECT"; }
+
+access_cli() {
+  [ -x "$PROJECT/bin/vike-cli" ] || die "access: no $PROJECT/bin/vike-cli (deploy a release first)"
+  env -i -C "$PROJECT" PATH=/usr/bin:/bin "VIKE_SETTINGS_DIR=$SETTINGS" "$PROJECT/bin/vike-cli" access "$@"
+}
+
+# Take every line of `$1` ending in ` $2` out; every other line comes through byte for byte, or nothing changes.
+access_lines_out() {
+  local keys="$1" tag="$2" tmp gone gone_bytes
+  [ -f "$keys" ] || { say "no $keys: no ssh line to remove"; return 0; }
+  [ ! -L "$keys" ] || die "access: $keys is a symbolic link; remove the line tagged $tag by hand"
+  gone="$(grep -a -c -- " $tag\$" "$keys")"
+  [ "$gone" -gt 0 ] || { say "no ssh line tagged $tag in $keys"; return 0; }
+  gone_bytes="$(grep -a -- " $tag\$" "$keys" | wc -c)"
+  tmp="$keys.vike-access.$$"
+  grep -a -v -- " $tag\$" "$keys" > "$tmp"
+  [ "$?" -le 1 ] || { rm -f "$tmp"; die "access: could not read $keys"; }
+  if [ "$(grep -a -c '' "$tmp")" -ne "$(($(grep -a -c '' "$keys") - gone))" ] ||
+    [ "$(wc -c < "$tmp")" -ne "$(($(wc -c < "$keys") - gone_bytes))" ]; then
+    rm -f "$tmp"
+    die "access: the other lines of $keys would not stay byte for byte; nothing was changed"
+  fi
+  chmod 600 "$tmp" && mv -f "$tmp" "$keys" || { rm -f "$tmp"; die "access: could not rewrite $keys"; }
+  say "removed $gone ssh line(s) tagged $tag from $keys (an open session lives until it drops)"
+}
+
+# Append ONE line to `$1`, the file made 0600 in a 0700 folder; a last line with no newline is ended first.
+access_line_in() {
+  local keys="$1" line="$2"
+  [ ! -L "$keys" ] || die "access: $keys is a symbolic link; nothing was added"
+  mkdir -p "$(dirname "$keys")" && chmod 700 "$(dirname "$keys")" || die "access: could not make $(dirname "$keys")"
+  if [ -s "$keys" ] && [ -n "$(tail -c 1 "$keys")" ]; then printf '\n' >> "$keys" || die "access: could not write $keys"; fi
+  printf '%s\n' "$line" >> "$keys" && chmod 600 "$keys" || die "access: could not write $keys"
+}
+
+cmd_access() {
+  local act="${1:-}" keys lock
+  keys="${HOME:?}/.ssh/authorized_keys"
+  shift || true
+  mkdir -p "$(dirname "$keys")" && chmod 700 "$(dirname "$keys")" || die "access: could not make $(dirname "$keys")"
+  # Two swaps at once must not lose each other's line: every rewrite of the file holds this lock.
+  lock="$(dirname "$keys")/.vike-access.lock"
+  exec 9>> "$lock" && flock -x 9 || die "access: could not lock $lock"
+  case "$act" in
+    invite) access_invite "$keys" "$@" ;;
+    swap) access_swap "$keys" "$@" ;;
+    revoke) access_revoke "$keys" "$@" ;;
+    list)
+      access_cli ls || die "access list: the access list could not be read"
+      [ ! -f "$keys" ] || grep -a -o -- ' vike-access[a-z-]*:[a-z0-9/_-]*$' "$keys" | sed 's/^ /ssh line /' || true
+      ;;
+    *) die "access: invite PERSON --role R | swap ID | revoke PERSON[/DEVICE] | list" ;;
+  esac
+}
+
+# The guest's line refuses every TCP `-R`, but only sshd refuses a Unix-socket one: `AllowStreamLocalForwarding local`
+# in /etc/ssh/sshd_config (decision 0288, amended). READ-ONLY, and on stderr: `sshd -T` must load the host keys, so as
+# the app user it usually cannot answer, and then the check is said in words. The invite goes on either way, and
+# vikectl never edits sshd_config.
+access_stream_local_check() {
+  local sshd effective
+  sshd="$(command -v sshd || echo /usr/sbin/sshd)"
+  effective="$("$sshd" -T 2> /dev/null | awk '$1 == "allowstreamlocalforwarding" { print $2 }' || true)"
+  local check="check it with: sudo sshd -T | grep allowstreamlocalforwarding (it must say local)"
+  case "$effective" in
+    local) ;;
+    '') say "!! could not read sshd's effective AllowStreamLocalForwarding (sshd -T needs root): the guest's line refuses TCP -R, and only sshd refuses a Unix-socket -R; $check" >&2 ;;
+    *) say "!! sshd allows Unix-socket forwarding here (AllowStreamLocalForwarding $effective): a guest could make a socket at any path this user may write. Add 'AllowStreamLocalForwarding local' to /etc/ssh/sshd_config, reload ssh, and $check" >&2 ;;
+  esac
+}
+
+# A one-time tunnel-only ssh key (15 minutes, and its forced command is the swap), the invitation's row, and ONE
+# invitation text printed once, six fields:
+# `vike-invite-1 <user@host:/project> <id> <secret> <host key blob> <base64 of the one-time private key>`.
+access_invite() {
+  local keys="$1" person="${2:-}" role="${4:-}" pair minted id secret expiry blob hostkey
+  [ "${3:-}" = --role ] && [ -n "$role" ] || die "access invite: PERSON --role observe|control|admin"
+  [[ "$person" =~ $ACCESS_NAME_RE ]] || die "access invite: '$person' is not a person's name"
+  # Before anything is minted: an invitation without the host key would make the guest trust its first contact.
+  hostkey="$(cut -d' ' -f2 "$ACCESS_HOST_KEY" 2> /dev/null)"
+  [[ "$hostkey" =~ ^$ACCESS_ED25519_BLOB$ ]] ||
+    die "access invite: no ed25519 host key in $ACCESS_HOST_KEY to pin; nothing was minted"
+  access_stream_local_check
+  [ -t 1 ] && say "!! the invitation below is a secret: give it to $person alone; it is printed once" >&2
+  pair="$(mktemp -d)" || die "access invite: no private temporary folder"
+  chmod 700 "$pair" || { rm -rf "$pair"; die "access invite: could not make $pair private"; }
+  ssh-keygen -q -t ed25519 -N '' -C '' -f "$pair/key" > /dev/null || { rm -rf "$pair"; die "access invite: ssh-keygen failed"; }
+  # The row first: a key line never exists for an invitation the list does not hold.
+  if ! minted="$(access_cli invite "$person" --role "$role")"; then
+    rm -rf "$pair"
+    die "access invite: no invitation was minted, and no ssh line was added"
+  fi
+  read -r id secret <<< "$minted"
+  [[ "$id" =~ ^[0-9a-f]{8}$ && "$secret" =~ ^[0-9a-f]{64}$ ]] || { rm -rf "$pair"; die "access invite: vike-cli answered no invitation"; }
+  expiry="$(date -d '+15 minutes' +%Y%m%d%H%M)"
+  access_line_in "$keys" "$ACCESS_FORWARDS,expiry-time=\"$expiry\",command=\"$PROJECT/bin/vikectl --project $PROJECT access swap $id\" $(cut -d' ' -f1,2 "$pair/key.pub") vike-access-invite:$id"
+  blob="$(base64 -w0 "$pair/key")" || { rm -rf "$pair"; access_lines_out "$keys" "vike-access-invite:$id"; die "access invite: could not read the one-time key"; }
+  rm -rf "$pair"
+  printf 'vike-invite-1 %s %s %s %s %s\n' "$(address_line)" "$id" "$secret" "$hostkey" "$blob"
+}
+
+# Run as the one-time line's forced command (whatever the client asked), or by hand: the guest's own line in,
+# the one-time line out.
+access_swap() {
+  local keys="$1" id="${2:-}" owed who key
+  [[ "$id" =~ ^[0-9a-f]{8}$ ]] || die "access swap: ID is the invitation's 8 hex characters"
+  owed="$(access_cli swap "$id")" || die "access swap: invitation $id owes no line (above)"
+  who="${owed%% *}"
+  key="${owed#* }"
+  [[ "$who" == */* && "${who%%/*}" =~ $ACCESS_NAME_RE && "${who#*/}" =~ $ACCESS_NAME_RE && "$key" =~ $ACCESS_SSH_KEY_RE ]] ||
+    die "access swap: vike-cli answered no line"
+  # Tagged by DEVICE, so revoking one device takes its line and no other.
+  access_line_in "$keys" "$ACCESS_FORWARDS,command=\"/bin/false\" $key vike-access:$who"
+  access_lines_out "$keys" "vike-access-invite:$id"
+  say "swapped: $who's own ssh key opens the tunnel from now on"
+}
+
+# The access list revokes (PERSON: every live device; PERSON/DEVICE: that one) and answers which ssh lines vike added
+# for them: each `vike ssh line: TAG` (an invitation's one-time line, a swapped device's own line) is removed here,
+# every other byte staying; each `own ssh login: PERSON/DEVICE` is a device granted over a shell, whose ssh line vike
+# never added and so never edits (`access_own_login` names it).
+access_revoke() {
+  local keys="$1" who="${2:-}" said line tag
+  [[ "${who%%/*}" =~ $ACCESS_NAME_RE ]] || die "access revoke: PERSON or PERSON/DEVICE"
+  said="$(access_cli revoke "$who")" || die "access revoke: the access list was not changed; no ssh line was touched"
+  while IFS= read -r line; do
+    case "$line" in
+      'vike ssh line: '*)
+        tag="${line#vike ssh line: }"
+        [[ "$tag" =~ ^vike-access(-invite)?:[a-z0-9/_-]+$ ]] || die "access revoke: vike-cli named no ssh line ($line)"
+        # A tag with no line left (expired and swapped invitations) is no news.
+        if [ -f "$keys" ] && grep -a -q -- " $tag\$" "$keys"; then access_lines_out "$keys" "$tag"; fi
+        ;;
+      'own ssh login: '*) access_own_login "$keys" "${line#own ssh login: }" ;;
+      *) say "$line" ;;
+    esac
+  done <<< "$said"
+}
+
+# A device granted over a shell (`backend connect --server-project`, `vike-cli access add`): its ssh key is a line vike
+# did not add, and which line is not known here (sshd tells a login nothing of its key). Nothing is edited: every line
+# vike did not add is named by its fingerprint, each with the command that removes it, for the owner to choose.
+access_own_login() {
+  local keys="$1" who="$2" line print fingerprint blank='^[[:space:]]*(#|$)' vikes=' vike-access(-invite)?:[a-z0-9/_-]+$'
+  say "!! $who was granted over a shell, not by an invitation: vike added no ssh line for it and changed none."
+  say "!! The ssh key it logs in with STILL OPENS A SHELL on this server (vike.db, every venue key) until its line is"
+  say "!! removed. The lines of $keys that vike did not add, one of which is likely $who's:"
+  [ -f "$keys" ] || { say "!!   none: there is no $keys"; return 0; }
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ $blank || "$line" =~ $vikes ]] && continue
+    print="$(printf '%s\n' "$line" | ssh-keygen -l -f - 2> /dev/null)" || continue
+    fingerprint="$(cut -d' ' -f2 <<< "$print")"
+    say "!!   $print"
+    say "!!     to remove it: k='$keys'; while IFS= read -r l || [ -n \"\$l\" ]; do printf '%s\\n' \"\$l\" | ssh-keygen -l -f - 2>/dev/null | grep -q -F ' $fingerprint ' || printf '%s\\n' \"\$l\"; done < \"\$k\" > \"\$k.new\" && chmod 600 \"\$k.new\" && mv \"\$k.new\" \"\$k\""
+  done < "$keys"
+}
+
+main() {
+  if [ "${1:-}" = --project ]; then
+    PROJECT="${2:-}"
+    shift 2 || die "--project needs a directory"
+  fi
+  local cmd="${1:-}"
+  shift || true
+  resolve_project
+  case "$cmd" in
+    install) cmd_install "$@" ;;
+    up) cmd_up ;;
+    down) cmd_down ;;
+    restart) cmd_restart "$@" ;;
+    status) cmd_status ;;
+    logs) need_runtime; if is_host; then journalctl --user -u "$HOST_UNIT" "$@"; else "$DOCKER" logs "$@" "$NAME"; fi ;;
+    run-args) run_args "${1:-$IMAGE:current}" ;;
+    deploy) cmd_deploy "$@" ;;
+    deploy-inbox) cmd_deploy_inbox ;;
+    rollback) cmd_rollback ;;
+    verify-tools) cmd_verify_tools ;;
+    seed-reference) seeded_reference "$PROJECT/$SEEDED_REFERENCE" ;;
+    rust-toolchain) cmd_rust_toolchain "$@" ;;
+    add-sdk) [ -f "${1:-}" ] || die "add-sdk: ARCHIVE is a release's $SDK_ASSET, its bytes verified"; add_sdk "$1" ;;
+    access) cmd_access "$@" ;;
+    *) sed -n '2,16p' "${BASH_SOURCE[0]}"; exit 2 ;;
+  esac
+}
+
+main "$@"

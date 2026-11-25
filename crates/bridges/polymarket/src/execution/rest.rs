@@ -1,0 +1,1030 @@
+//! Polymarket CLOB order submit/cancel over the L2-authenticated REST, through the geo-routing
+//! proxy.
+//!
+//! Order PLACEMENT is geo-restricted (blocked from some regions); every call here rides the
+//! proxy-aware agent from [`crate::transport`] — the SOCKS resolution (`venue.polymarket.socks_proxy` /
+//! `venue.polymarket.proxy_*`, DECLARED by the composition root — decision 0095, this crate reads
+//! no environment and opens no store), the agents and the keyless
+//! `get_json` were re-homed THERE for the feeds/exec seam (split-plane Phase 5), because the feed
+//! pumps dial through the same tunnel and must compile without this module. The L2 HMAC signs the
+//! EXACT body string sent. See `crate::transport`'s module doc for the resolution rules and
+//! [`crate::transport::declare_egress`].
+//!
+//! ## The client-side rate-budget mirror
+//! This module is also the ONE place every CLOB order/cancel round-trip passes through, so it owns
+//! the wiring of [`crate::transport::ratelimit::budget`] — the per-signer mirror of the venue's dual order/cancel
+//! token buckets. That limiter entered **warning mode 2026-07-24 with enforcement roughly two weeks
+//! out**, i.e. now; the hazard it flagged is that `DELETE /cancel-all` debits **1 up front plus 1
+//! per order actually canceled**, which can drive the cancel bucket NEGATIVE and lock out *every*
+//! subsequent cancel — a maker stuck with live quotes resting into a resolving market.
+//!
+//! Four capabilities, all resolved here:
+//! 1. [`gate_submit`] consults the mirror BEFORE a submit costs a token. **Observe-only by
+//!    default** — it counts ([`rate_gate_would_block_count`]) and logs the would-block but still
+//!    sends, so the mirror can never itself become a new liveness hazard before it is proven
+//!    against the real headers. `venue.polymarket.rate_gate` = `1` ([`rate_gate_enforced`]) turns
+//!    it into a real local refusal, which the exec thread maps to an `OrderRejected` naming the
+//!    reason.
+//! 2. The cancel-token reserve floor holds routine ladder churn back so an emergency flatten is
+//!    never rate-limit-locked. **This is the ARMED, LIVE path**: [`gate_cancel_shared`] is called
+//!    from [`crate::execution`]'s `ExecutionClientActorCommand::Cancel` arm — the door every SINGLE core cancel comes
+//!    through — and it consults [`RateBudget::routine_cancel_decision`] for a
+//!    [`OrderCancelIntent::Routine`] cancel and for nothing else. A shed cancel is reported as a
+//!    NON-terminal `OrderCancelRejected` (the order is still resting; nothing vanishes) and the
+//!    caller re-offers it. [`plan_cancels`] applies the SAME invariant to a whole id list, on the
+//!    batch door beside it (`ExecutionClientActorCommand::CancelBatch`).
+//! 3. [`plan_cancels`] also picks **targeted** over `cancel-all` whenever the `1 + n` debit could
+//!    overshoot: targeted spends to exactly zero and stops, `cancel-all` can go negative.
+//!    [`cancel_all_orders`] is therefore only ever reached through a plan that proved it safe.
+//! 4. [`log_rate_signal`] — the pre-existing `Poly-RateLimit-*` header tap on every signed
+//!    response — now also folds the venue-authoritative `remaining` back into the mirror
+//!    ([`RateBudget::reconcile`]), so an imperfect local model can never drift more permissive than
+//!    the server for longer than one round-trip.
+//!
+//! ⚠ **What is armed.** Both halves now are, and the second one arrived late for a reason worth
+//! keeping: the reserve floor (capability 2) reaches production through the per-order door above,
+//! so the cancel bucket is no longer a write-only counter and `DEFAULT_RESERVE_FRACTION` governs real
+//! behaviour on the venue wired to a REAL mainnet account — tune it as a live risk parameter. The
+//! BULK arm (capability 3) was unreachable DESIGN for as long as the shared `ExecutionClient` seam
+//! shredded a batch before any venue code ran: `ExecutionClientActor::cancel_batch_with_intent` fanned out
+//! into `n` per-id `ExecutionClientActorCommand::Cancel`s, so nothing in `crates/` could call [`cancel_orders`] or
+//! [`cancel_all_orders`] and the `1 + n` overshoot their guards exist for could not occur either.
+//! `ExecutionClientActorCommand::CancelBatch` (delivered because [`crate::execution`] declares
+//! `ExecutionClientActor::with_bulk_cancel`) carries the batch whole to the exec thread, which hands it to
+//! [`cancel_orders`] — so the strategy choice and the reserve now both apply to a batch.
+//!
+//! ⚠ **Two residuals the bulk arm carries, declared rather than designed away.** `DELETE
+//! /cancel-all` is ACCOUNT-wide while [`CancelScope::WholeBook`] can only be asserted from this
+//! process's in-memory registry, and its `1 + N` debit counts the orders the VENUE cancelled, not
+//! the `n` we named — so a stale resting order from a previous process is both cancelled and
+//! under-debited by the mirror. The over-debit direction is corrected by the venue's own
+//! `remaining` headers within one round-trip ([`RateBudget::reconcile`]); the cancel is not
+//! reversible, which is why the bulk arm is reached only when the batch names the whole known book.
+//!
+//! ⚠ The intent itself is NOT this crate's to define — it is `vike_model::OrderCancelIntent`, on the
+//! shared `ExecutionClient` seam (`cancel_with_intent`), because it originates in `vike_core`'s
+//! runtime where a flatten is distinguishable from a requote. Its DEFAULT is
+//! [`OrderCancelIntent::Unspecified`], which this venue treats exactly as a flatten: an operator's DOM
+//! click, a tradehub ticket or any caller that did not classify is never held back.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+use crate::transport::agent;
+
+use crate::config::PolymarketConfig;
+use crate::refusals::PolymarketReadRefusal;
+use crate::transport::ratelimit::budget::{
+    CancelDecision, CancelStrategy, RateBudget, RateLimitSignal, SubmitDecision, Tier,
+};
+use crate::transport::sign::l2::l2_auth_headers;
+// The cancel classification is the SHARED `ExecutionClient` seam's, not this crate's: it has to
+// reach here from `vike_core`'s runtime through `ExecutionClient::cancel_with_intent`, so a local
+// copy would be a second name for the one fact that matters. This module's own enum was deleted
+// when the seam landed — no re-export was left behind (the workspace's no-shim-on-a-move rule).
+use vike_bridge_core::transport::reply::{
+    RestReplyGatewayFirst, RestReplyNote, RestReplySpec, RestReplyWord, classify_rest_reply,
+};
+use vike_bridge_core::transport::{E_TIMEOUT_AMBIGUOUS, VenueApiError};
+use vike_model::OrderCancelIntent;
+use vike_model::time::clock::now_secs;
+use vike_venues::venue_fields::RATE_GATE;
+
+/// POST `/order` request body: the signed order object wrapped with owner (L2 api key) + orderType.
+/// `deferExec:false` matches the official SDK wire (createSendOrderPayload).
+pub fn submit_body(
+    order_obj: serde_json::Value,
+    api_key: &str,
+    order_type: &str,
+) -> serde_json::Value {
+    serde_json::json!({ "deferExec": false, "order": order_obj, "owner": api_key, "orderType": order_type })
+}
+
+/// `DELETE /order` request body (the SDK cancels via DELETE, not a POST to `/cancel`).
+pub fn cancel_body(order_id: &str) -> serde_json::Value {
+    serde_json::json!({ "orderID": order_id })
+}
+
+/// A write's failure that provably never left this host (a local gate, the signing, the body): code `0`,
+/// which a submit may reject and a cancel answers NOT SENT.
+fn not_sent(msg: String) -> VenueApiError {
+    VenueApiError { code: 0, msg }
+}
+
+/// Read a `DELETE /order` / `DELETE /cancel-all` reply. The CLOB answers HTTP 200 with
+/// `{"canceled":[ids],"not_canceled":{id: reason}}` even when it did NOT cancel an order (already
+/// matched, already canceled, unknown id), so a 200 alone is not a cancel. `Some(reason)` iff
+/// `not_canceled` names `order_id`.
+pub(crate) fn not_canceled_reason(response: &serde_json::Value, order_id: &str) -> Option<String> {
+    let reason = response.get("not_canceled")?.get(order_id)?;
+    let text = match reason.as_str() {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => "order not canceled".to_string(),
+    };
+    Some(format!("not canceled: {text}"))
+}
+
+/// Whether a cancel reply's `canceled` list names `order_id` (a hex hash, so case-insensitive).
+fn canceled_names(response: &serde_json::Value, order_id: &str) -> bool {
+    response.get("canceled").and_then(|c| c.as_array()).is_some_and(|ids| {
+        ids.iter().any(|id| id.as_str().is_some_and(|id| id.eq_ignore_ascii_case(order_id)))
+    })
+}
+
+/// What a `DELETE /cancel-all` 200 says of `order_id`: `None` only when its `canceled` list names it. The request
+/// names no order and the CLOB lists what it cancelled, so an order it does not name was not cancelled by this call:
+/// it had just MATCHED (its fill on the way) or was not resting, and a terminal cancel would read a filled order
+/// CANCELED for good. The refusal is non-terminal; the order's own events end it.
+pub(crate) fn cancel_all_refusal(response: &serde_json::Value, order_id: &str) -> Option<String> {
+    if canceled_names(response, order_id) {
+        return None;
+    }
+    Some(not_canceled_reason(response, order_id).unwrap_or_else(|| CANCEL_ALL_SILENT.to_string()))
+}
+
+/// [`cancel_all_refusal`]'s words for an order a `cancel-all` reply names neither way.
+pub(crate) const CANCEL_ALL_SILENT: &str = "not canceled: the venue's cancel-all did not name this order (it may \
+                                            have just filled); its final state follows";
+
+/// Why one order's cancel did not end in a cancel ([`check_cancel_reply`]; the `cancel-all` arm of [`cancel_orders`]):
+/// decision 0303's outcomes, each in its words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancelFailure {
+    /// The CLOB answered no (`not_canceled` names the order, a 4xx, a 429): a NON-terminal `OrderCancelRejected` in
+    /// these words; the order, if live, stays live.
+    Refused(String),
+    /// It provably never left this host (the signing, the body, a dial or TLS refused before the write): the exec
+    /// thread answers `order.not_sent`; the order, if live, stays live.
+    NotSent(String),
+    /// The CLOB may have cancelled it, or it may have just matched (decision 0303's OUTCOME UNKNOWN): a 200 naming the
+    /// order in NEITHER list, or a reply lost after the write (a timeout, a reset, a 3xx, a 5xx, a 2xx that does not
+    /// parse: [`POST_REPLY`]). The exec thread answers `order.outcome_unknown` and reads the order back by its id;
+    /// nothing sends the cancel again.
+    OutcomeUnknown(String),
+}
+
+impl std::fmt::Display for CancelFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            CancelFailure::Refused(words)
+            | CancelFailure::NotSent(words)
+            | CancelFailure::OutcomeUnknown(words) => words,
+        })
+    }
+}
+
+/// A failed cancel call by its error's TYPE (decision 0301), never its words: a definite pre-send failure is NOT SENT,
+/// one that may have landed OUTCOME UNKNOWN, any other the CLOB's refusal.
+impl From<VenueApiError> for CancelFailure {
+    fn from(e: VenueApiError) -> Self {
+        use vike_utility::errors::FailureOutcome;
+        match e.kind().failure_outcome() {
+            FailureOutcome::NotSent => CancelFailure::NotSent(e.msg),
+            FailureOutcome::OutcomeUnknown => CancelFailure::OutcomeUnknown(e.msg),
+            FailureOutcome::NotNow | FailureOutcome::Refused => CancelFailure::Refused(e.msg),
+        }
+    }
+}
+
+/// The words of a 200 naming the order in neither list ([`CancelFailure::OutcomeUnknown`]).
+const CANCEL_SILENT: &str =
+    "the venue's cancel reply named this order neither canceled nor not canceled";
+
+/// A cancel round-trip's result read for the one order it named: `Ok` only when the 200's `canceled` list names
+/// `order_id`; `not_canceled` naming it ([`not_canceled_reason`]) is [`CancelFailure::Refused`]; a 200 naming it in
+/// neither list is [`CancelFailure::OutcomeUnknown`], never a cancel; a failed call is its error's outcome.
+fn check_cancel_reply(
+    reply: Result<serde_json::Value, VenueApiError>,
+    order_id: &str,
+) -> Result<serde_json::Value, CancelFailure> {
+    let body = reply?;
+    if let Some(reason) = not_canceled_reason(&body, order_id) {
+        return Err(CancelFailure::Refused(reason));
+    }
+    if canceled_names(&body, order_id) {
+        Ok(body)
+    } else {
+        Err(CancelFailure::OutcomeUnknown(CANCEL_SILENT.to_string()))
+    }
+}
+
+// --- the client-side rate-budget mirror (see the module doc's fourth section) -------------------
+
+// The clock [`crate::transport::ratelimit::budget`] ever sees is `vike_model::now_ms` — the wall clock,
+// read in exactly two places below. Every decision fn takes `now_ms` as a parameter (the mirror
+// calls no `Instant::now()` internally), which is what makes the whole budget layer testable with
+// an injected clock.
+
+/// The process-wide mirror of the venue's dual buckets.
+///
+/// The venue meters **per signer**, and a process starts exactly one Polymarket signer (one
+/// account `PRIVATE_KEY`, resolved once in [`crate::adapter::live_runtime_for_account`]), so one shared
+/// mirror is the right granularity rather than an approximation. It starts at [`Tier::Standard`] —
+/// the LOWEST documented rate, i.e. the conservative assumption — and every response carrying
+/// `Poly-RateLimit-*` headers snaps it to the venue's own numbers (see [`fold_rate_signal`]), so a
+/// higher-tier signer is corrected upward within one round-trip instead of being modelled by a
+/// guess at start.
+///
+/// A poisoned lock is recovered from rather than propagated: a panic while holding this mutex must
+/// not take the order path down with it, and the worst case is a mirror one decision stale.
+fn budget() -> &'static Mutex<RateBudget> {
+    static BUDGET: OnceLock<Mutex<RateBudget>> = OnceLock::new();
+    BUDGET.get_or_init(|| Mutex::new(RateBudget::new(Tier::Standard, vike_model::now_ms())))
+}
+
+/// Run `f` against the shared mirror with a freshly-read clock.
+fn with_budget<T>(f: impl FnOnce(&mut RateBudget, i64) -> T) -> T {
+    let mut guard = budget().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    f(&mut guard, vike_model::now_ms())
+}
+
+/// How many submits the local gate has flagged as over budget — counted in BOTH modes, so the
+/// observe-only default produces the evidence for turning enforcement on.
+static WOULD_BLOCK: AtomicU64 = AtomicU64::new(0);
+
+/// Submits the local gate found over budget since process start (see `gate_submit`). In the
+/// default observe-only mode every one of these still went to the wire.
+pub fn rate_gate_would_block_count() -> u64 {
+    WOULD_BLOCK.load(Ordering::Relaxed)
+}
+
+/// Whether the local submit gate REFUSES (rather than merely observing): `venue.polymarket.rate_gate`
+/// read typed (`VenueSettings::get_bool`, its declared `ExactOne` grammar: the trimmed exact `1`, so an
+/// annotated `1 # …` is not on), from the venue's settings — the rows the composition root loaded from
+/// the settings database (decision 0095: no environment layer, and since its Task 7 no credential-map
+/// fold). Default OFF.
+///
+/// Kept opt-in on purpose: the venue is still inside its grace window, the per-tier rates in
+/// [`crate::transport::ratelimit::budget`] are documented figures rather than live-verified ones, and a
+/// local model that refuses orders it should have sent is a WORSE failure than the 429 it is trying
+/// to avoid. Turn it on once [`rate_gate_would_block_count`] and the reconciled header numbers agree.
+///
+/// Read ONCE, at the start, and carried on `PolymarketLiveConfig::rate_gate` into the exec thread —
+/// a submit consults the value its start resolved, never configuration.
+pub fn rate_gate_enforced(settings: &vike_secrets::venue_setting::VenueSettings) -> bool {
+    settings.get_bool(vike_secrets::venue_setting::SettingTier::Any, &RATE_GATE) == Some(true)
+}
+
+/// Turn one mirror verdict into the submit path's action.
+///
+/// OBSERVE-ONLY unless `enforced`: a dry order bucket is counted and logged, and the order STILL
+/// goes to the wire — with `POLY_RATE_GATE` unset this function can only ever return `Ok`, so the
+/// submit path is byte-identical to before the mirror existed. Under the opt-in it returns the
+/// refusal string the exec thread turns into an `OrderRejected` (no order silently vanishes).
+fn submit_gate_action(decision: SubmitDecision, enforced: bool) -> Result<(), String> {
+    match decision {
+        SubmitDecision::Allow => Ok(()),
+        SubmitDecision::Throttle { retry_ms } => {
+            WOULD_BLOCK.fetch_add(1, Ordering::Relaxed);
+            if enforced {
+                Err(format!(
+                    "local rate budget: polymarket order bucket is dry, retry in {retry_ms}ms"
+                ))
+            } else {
+                tracing::warn!(
+                    venue = "polymarket",
+                    retry_ms,
+                    would_block = WOULD_BLOCK.load(Ordering::Relaxed),
+                    "submit is over the LOCAL rate budget — observing only (`vike-cli config set \
+                     venue.polymarket.rate_gate 1` refuses locally instead of paying the venue's \
+                     429)"
+                );
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Consult the shared mirror before a submit costs an order token (see [`submit_gate_action`]).
+fn gate_submit(enforce: bool) -> Result<(), String> {
+    let decision = with_budget(|b, now| b.submit_decision(now));
+    submit_gate_action(decision, enforce)
+}
+
+/// Debit one order token. Called BEFORE the wire call, because the venue charges on receipt: a
+/// request that dies in transit over-debits us by one, which is the conservative direction, and the
+/// next response's headers reconcile it away.
+fn note_submit() {
+    with_budget(|b, now| b.on_submit(now));
+}
+
+/// Debit one cancel token, for the single-order cancel path.
+fn note_cancel() {
+    with_budget(|b, now| b.on_cancel(now));
+}
+
+/// Whether ONE cancel of `intent` may fire against `budget` right now, or must be shed to protect
+/// the flatten reserve. The PURE half of the reserve invariant — no I/O, no globals, injected clock
+/// — so the whole contract is testable without touching the process-wide mirror.
+///
+/// ⚠ **A cancel the reserve may not shed does not even LOOK at the budget.** Only
+/// [`OrderCancelIntent::may_be_shed`] (i.e. [`OrderCancelIntent::Routine`]) consults
+/// [`RateBudget::routine_cancel_decision`]; [`OrderCancelIntent::Unspecified`] and
+/// [`OrderCancelIntent::RiskOff`] return `Ok` having read nothing and debited nothing, which is what
+/// makes an unclassified cancel byte-identical to this venue's behaviour before the intent existed.
+///
+/// `Err` is the SHED, carrying the operator-facing reason: the caller must turn it into a
+/// NON-terminal `OrderCancelRejected` and leave the order live (a shed cancel that vanished would
+/// be worse than the rate-limit it avoids — the order is still resting at the venue).
+///
+/// ⚠ **This one ENFORCES, while the sibling submit gate is observe-only behind `POLY_RATE_GATE` —
+/// deliberately, and the asymmetry is the argument.** A wrongly-refused SUBMIT is a trade that did
+/// not happen and cannot be recovered, which is why that gate counts rather than blocks until the
+/// per-tier rates are live-verified. A wrongly-shed ROUTINE cancel costs one quote left resting for
+/// one refill window, is reported to the strategy, and is re-offered on its next tick — while the
+/// failure it prevents is a signer with no cancel tokens and live quotes in a resolving market.
+/// The mirror also self-corrects upward from the venue's own `remaining` headers within one
+/// round-trip ([`RateBudget::reconcile`]), so an under-modelled tier cannot shed for long.
+pub fn gate_cancel(
+    budget: &mut RateBudget,
+    intent: OrderCancelIntent,
+    now_ms: i64,
+) -> Result<(), String> {
+    if !intent.may_be_shed() {
+        return Ok(());
+    }
+    match budget.routine_cancel_decision(now_ms) {
+        CancelDecision::Allow => Ok(()),
+        CancelDecision::Defer { retry_ms } => Err(format!(
+            "routine cancel shed to protect the flatten reserve (retry in {retry_ms}ms)"
+        )),
+    }
+}
+
+/// [`gate_cancel`] against the process-wide mirror, with a freshly-read clock — the live door's
+/// entry point. Runs on the venue exec thread, the ONLY thread that debits the cancel bucket, so
+/// the decision and the debit that follows it cannot interleave with another cancel's.
+pub fn gate_cancel_shared(intent: OrderCancelIntent) -> Result<(), String> {
+    with_budget(|b, now| gate_cancel(b, intent, now))
+}
+
+/// What the id list handed to [`cancel_orders`] represents.
+///
+/// Load-bearing, not decoration: `DELETE /cancel-all` is **account-wide**, so taking it for a
+/// SUBSET would cancel resting orders the caller never named. The bulk arm is therefore eligible
+/// only for [`CancelScope::WholeBook`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelScope {
+    /// The ids ARE this signer's complete resting book, so one `cancel-all` is equivalent to
+    /// cancelling them one by one.
+    ///
+    /// ⚠ **The caller ASSERTS this, and the strongest assertion available in-tree is narrower than
+    /// the account.** [`crate::execution`]'s bulk-cancel arm asserts it from
+    /// `OrderVenueIdTracker::covers_all_live` — every order THIS PROCESS believes is resting — which
+    /// is exact for what this process placed (one start per venue, one exec thread, one registry)
+    /// and blind to an order a PREVIOUS process left resting or another client placed on the same
+    /// signer. `cancel-all` cancels those too. That residual is accepted rather than closed
+    /// because the alternative reading is worse: a strategy's declared flatten leaving orphaned
+    /// quotes resting on the same signer is the situation reconcile's `OrphanLocalOrder` exists to
+    /// complain about, and the bulk arm is only ever reached when the caller asked to pull the
+    /// whole book anyway. A SUBSET request never reaches it — see [`CancelScope::Subset`].
+    WholeBook,
+    /// A subset of the resting book — the plan stays targeted no matter how much budget is free.
+    Subset,
+}
+
+/// The pure plan one [`cancel_orders`] pass resolves to under the current budget. No I/O, so the
+/// whole reserve + strategy contract is testable directly with an injected clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CancelPlan {
+    /// One bulk `cancel-all`, or targeted one-by-one.
+    pub strategy: CancelStrategy,
+    /// How many of the requested ids this pass sends.
+    pub send: usize,
+    /// How many the reserve floor held back (always `0` for [`OrderCancelIntent::RiskOff`]).
+    pub deferred: usize,
+    /// Milliseconds until the deferred remainder is affordable again; `0` when nothing deferred.
+    pub retry_ms: i64,
+}
+
+/// How many single-token routine cancels the budget can afford right now without breaching the
+/// reserve, and the refill ETA if it ran out before `want`.
+///
+/// Simulates on a CLONE of the budget — `routine_cancel_decision` reads a running balance, so the
+/// only faithful way to count `want` of them ahead of time is to actually walk them. Nothing here
+/// debits the real mirror; [`cancel_orders`] does that per call it genuinely makes.
+fn routine_affordable(budget: &RateBudget, want: usize, now_ms: i64) -> (usize, i64) {
+    let mut sim = budget.clone();
+    let mut affordable = 0usize;
+    while affordable < want {
+        match sim.routine_cancel_decision(now_ms) {
+            CancelDecision::Allow => {
+                sim.on_cancel(now_ms);
+                affordable += 1;
+            }
+            CancelDecision::Defer { retry_ms } => return (affordable, retry_ms),
+        }
+    }
+    (affordable, 0)
+}
+
+/// Decide how to cancel `n_resting` orders under the current budget — capabilities 2 and 3 of the
+/// module doc, in one pure function.
+///
+/// `cancel-all` is the cheapest wire round-trip but debits `1 + n`, which can drive the bucket
+/// negative and lock out every future cancel; it is chosen only when BOTH guards clear it: the
+/// venue-level one ([`RateBudget::cancel_strategy`], "the debit cannot go below zero") and — for
+/// [`OrderCancelIntent::Routine`] — the reserve invariant ("and it cannot eat the flatten reserve
+/// either"). Otherwise the plan is targeted, which spends to exactly zero and stops.
+///
+/// A routine pass that cannot afford every id sends what it can and reports the rest as
+/// `deferred`; the caller re-offers them after `retry_ms`. A pass the reserve may not shed
+/// ([`OrderCancelIntent::RiskOff`] AND the flatten-safe [`OrderCancelIntent::Unspecified`] default) never
+/// defers anything.
+pub fn plan_cancels(
+    budget: &RateBudget,
+    n_resting: usize,
+    scope: CancelScope,
+    intent: OrderCancelIntent,
+    now_ms: i64,
+) -> CancelPlan {
+    if n_resting == 0 {
+        return CancelPlan {
+            strategy: CancelStrategy::Targeted,
+            send: 0,
+            deferred: 0,
+            retry_ms: 0,
+        };
+    }
+    // `cancel-all` costs `1 + n` tokens, so affordability is always measured against `n + 1` —
+    // i.e. the bulk arm needs strictly MORE affordable tokens than there are ids.
+    let bulk_cost = n_resting + 1;
+    // `may_be_shed` rather than a `match`: it is the ONE authority for which intents the reserve
+    // may hold back, and an arm-by-arm copy here is exactly how `Unspecified` would drift from
+    // "flatten-safe" to "routine" the day a fourth intent is added.
+    let (affordable, retry_ms) = if intent.may_be_shed() {
+        routine_affordable(budget, bulk_cost, now_ms)
+    } else {
+        (bulk_cost, 0)
+    };
+    let venue_safe_bulk = scope == CancelScope::WholeBook
+        && budget.clone().cancel_strategy(n_resting, now_ms) == CancelStrategy::CancelAll;
+    if venue_safe_bulk && affordable > n_resting {
+        return CancelPlan {
+            strategy: CancelStrategy::CancelAll,
+            send: n_resting,
+            deferred: 0,
+            retry_ms: 0,
+        };
+    }
+    let send = affordable.min(n_resting);
+    let deferred = n_resting - send;
+    CancelPlan {
+        strategy: CancelStrategy::Targeted,
+        send,
+        deferred,
+        retry_ms: if deferred > 0 { retry_ms } else { 0 },
+    }
+}
+
+/// The outcome of one [`cancel_orders`] pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CancelBatch {
+    /// The plan this pass executed.
+    pub plan: CancelPlan,
+    /// `(order_id, why)` for every cancel that FAILED. The bulk arm reports its single failure
+    /// under the id `"*"`, since one call covers every resting order.
+    pub errors: Vec<(String, CancelFailure)>,
+    /// Ids the reserve floor held back — re-offer them after [`CancelPlan::retry_ms`].
+    pub deferred: Vec<String>,
+}
+
+/// The relayer's two plaintext headers (deposit-wallet / `POLY_1271` accounts), built once.
+fn relayer_headers(relayer_key: &str, relayer_address: &str) -> Vec<(String, String)> {
+    vec![
+        ("RELAYER_API_KEY".to_string(), relayer_key.to_string()),
+        ("RELAYER_API_KEY_ADDRESS".to_string(), relayer_address.to_string()),
+    ]
+}
+
+/// Cancel a set of resting orders under the budget: [`plan_cancels`] chooses the strategy and how
+/// many to send, this executes it and debits the mirror for exactly what went out.
+///
+/// `relayer` is `Some((key, address))` for a deposit-wallet (`POLY_1271`) account, `None` for a
+/// bare EOA — the same split [`cancel_order`] / [`cancel_order_relayer`] make.
+pub fn cancel_orders(
+    base: &str,
+    creds: &PolymarketConfig,
+    order_ids: &[String],
+    scope: CancelScope,
+    intent: OrderCancelIntent,
+    relayer: Option<(&str, &str)>,
+) -> CancelBatch {
+    let extra = relayer.map(|(k, a)| relayer_headers(k, a)).unwrap_or_default();
+    let plan = with_budget(|b, now| plan_cancels(b, order_ids.len(), scope, intent, now));
+    let mut errors = Vec::new();
+    match plan.strategy {
+        CancelStrategy::CancelAll => {
+            with_budget(|b, now| b.on_cancel_all(order_ids.len(), now));
+            match cancel_all_orders(base, creds, relayer) {
+                Err(e) => errors.push(("*".to_string(), e.into())),
+                // HTTP 200 does not mean every id was canceled: only an id `canceled` names was.
+                Ok(body) => {
+                    for id in order_ids {
+                        if let Some(reason) = cancel_all_refusal(&body, id) {
+                            errors.push((id.clone(), CancelFailure::Refused(reason)));
+                        }
+                    }
+                }
+            }
+        }
+        CancelStrategy::Targeted => {
+            for id in order_ids.iter().take(plan.send) {
+                note_cancel();
+                let reply = del_signed(base, "/order", creds, &cancel_body(id), &extra);
+                if let Err(e) = check_cancel_reply(reply, id) {
+                    errors.push((id.clone(), e));
+                }
+            }
+        }
+    }
+    if plan.deferred > 0 {
+        tracing::warn!(
+            venue = "polymarket",
+            sent = plan.send,
+            deferred = plan.deferred,
+            retry_ms = plan.retry_ms,
+            "routine cancel churn shed to protect the flatten reserve"
+        );
+    }
+    CancelBatch { plan, errors, deferred: order_ids.iter().skip(plan.send).cloned().collect() }
+}
+
+/// `DELETE /cancel-all` — the venue's account-wide bulk cancel, signed with an EMPTY body (the L2
+/// HMAC covers method + path + `""`, the same shape [`get_signed`] uses).
+///
+/// ⚠ Two reasons never to call this directly from a strategy: it is **account-wide** (it does not
+/// take an id list), and its debit is `1 + N` for the N orders the venue actually cancels, which is
+/// the exact over-debit that can drive the cancel bucket negative and lock out every subsequent
+/// cancel. Go through [`cancel_orders`], whose [`plan_cancels`] only reaches this arm once both
+/// guards have cleared it.
+///
+/// ⚠ NOT live-verified from this workspace: the path is the one [`crate::transport::ratelimit::budget`]'s module doc
+/// names (and the SDK's bulk-cancel route), but nothing in-tree has issued it against the real CLOB
+/// yet. It is now REACHABLE — [`crate::execution`]'s `ExecutionClientActorCommand::CancelBatch` arm routes a
+/// whole-book batch through [`cancel_orders`], whose [`plan_cancels`] can choose this arm — so the
+/// owed live round-trip is now a live-money one, and the first flatten that takes this branch is
+/// the verification. Watch the returned body and the `Poly-RateLimit-*` headers on it.
+///
+/// Private: [`cancel_orders`] is the only door to it (it was a public, crate-root re-exported door
+/// that skipped the plan and the debit).
+fn cancel_all_orders(
+    base: &str,
+    creds: &PolymarketConfig,
+    relayer: Option<(&str, &str)>,
+) -> Result<serde_json::Value, VenueApiError> {
+    let extra = relayer.map(|(k, a)| relayer_headers(k, a)).unwrap_or_default();
+    del_signed_payload(base, "/cancel-all", creds, String::new(), &extra)
+}
+
+/// Fold a parsed `Poly-RateLimit-*` signal into `budget`; returns whether anything was applied.
+///
+/// The server is always the source of truth — this is what keeps an imperfect local model from
+/// drifting more permissive than reality for longer than one round-trip. A non-actionable signal
+/// (a response carrying no rate headers at all, the overwhelmingly common case) leaves the mirror
+/// untouched rather than pretending a missing header meant zero.
+fn fold_rate_signal(budget: &mut RateBudget, sig: &RateLimitSignal, now_ms: i64) -> bool {
+    if !sig.is_actionable() {
+        return false;
+    }
+    budget.reconcile(sig, now_ms);
+    true
+}
+
+/// Inspect a CLOB response's `Poly-RateLimit-*` headers: reconcile the client-side mirror to the
+/// venue-authoritative numbers, and emit a WARN during the venue's per-signer rate-limit grace
+/// window (warning mode 2026-07-24; enforcement ~2026-08 — PM deep-dive finding #2). No behavior or
+/// return change to the caller; the mirror and its reserve invariant live in [`crate::transport::ratelimit::budget`],
+/// and this remains the ONE tap that reads the live signal.
+fn log_rate_signal(headers: &ureq::http::HeaderMap) {
+    let sig = crate::transport::ratelimit::budget::parse_headers(
+        headers.iter().filter_map(|(name, value)| Some((name.as_str(), value.to_str().ok()?))),
+    );
+    with_budget(|b, now| fold_rate_signal(b, &sig, now));
+    if sig.warning {
+        tracing::warn!(
+            venue = "polymarket",
+            raw = ?sig.raw_warning,
+            order_remaining = ?sig.order_remaining,
+            cancel_remaining = ?sig.cancel_remaining,
+            reset_secs = ?sig.reset_secs,
+            "per-signer rate-limit WARNING header present (grace window; enforcement imminent) — \
+             mirror your buckets and prefer targeted cancels over cancel-all"
+        );
+    }
+}
+
+/// L2-signed `DELETE` with a JSON body (+ optional relayer headers). ureq 3.x's typed `.delete()`
+/// can't carry a body, so build the request explicitly and run it.
+fn del_signed(
+    base: &str,
+    path: &str,
+    creds: &PolymarketConfig,
+    body: &serde_json::Value,
+    extra: &[(String, String)],
+) -> Result<serde_json::Value, VenueApiError> {
+    del_signed_payload(
+        base,
+        path,
+        creds,
+        serde_json::to_string(body).map_err(|e| not_sent(e.to_string()))?,
+        extra,
+    )
+}
+
+/// [`del_signed`] over an already-serialized payload — the L2 HMAC signs the EXACT body string
+/// sent, so the two must never re-serialize independently. Split out for the bodyless bulk cancel
+/// ([`cancel_all_orders`] signs `""`, the shape [`get_signed`] uses).
+///
+/// A cancel is a WRITE ([`POST_REPLY`]): a reply lost after the request may have been written is OUTCOME UNKNOWN
+/// (`E_TIMEOUT_AMBIGUOUS`), never a refusal, and only a failure provably before the write is NOT SENT (code `0`).
+fn del_signed_payload(
+    base: &str,
+    path: &str,
+    creds: &PolymarketConfig,
+    payload: String,
+    extra: &[(String, String)],
+) -> Result<serde_json::Value, VenueApiError> {
+    let mut headers = l2_auth_headers(creds, now_secs(), "DELETE", path, &payload)
+        .map_err(|e| not_sent(e.to_string()))?;
+    headers.extend_from_slice(extra);
+    let mut b = ureq::http::Request::builder()
+        .method("DELETE")
+        .uri(format!("{base}{path}"))
+        .header("Content-Type", "application/json");
+    for (k, v) in &headers {
+        b = b.header(k.as_str(), v.as_str());
+    }
+    let req = b.body(payload).map_err(|e| not_sent(e.to_string()))?;
+    let sent = agent().run(req);
+    if let Ok(response) = &sent {
+        log_rate_signal(response.headers());
+    }
+    classify_rest_reply(sent, true, &POST_REPLY, &sent_values(&headers), |_| {})
+}
+
+/// The values a signed call carried (the `POLY_*` headers, a relayer key), which no error text may hand back
+/// (`vike_bridge_core::transport::redact_sent_values`).
+fn sent_values<'a>(headers: impl IntoIterator<Item = &'a (String, String)>) -> Vec<&'a str> {
+    headers.into_iter().map(|(_, value)| value.as_str()).collect()
+}
+
+fn post_signed(
+    base: &str,
+    path: &str,
+    creds: &PolymarketConfig,
+    body: &serde_json::Value,
+) -> Result<serde_json::Value, VenueApiError> {
+    post_signed_extra(base, path, creds, body, &[])
+}
+
+/// Like [`post_signed`] but appends extra plaintext headers (the deposit-wallet/relayer flow sends
+/// `RELAYER_API_KEY` / `RELAYER_API_KEY_ADDRESS` alongside the L2 HMAC — see the SDK's secureClob).
+fn post_signed_extra(
+    base: &str,
+    path: &str,
+    creds: &PolymarketConfig,
+    body: &serde_json::Value,
+    extra: &[(String, String)],
+) -> Result<serde_json::Value, VenueApiError> {
+    let payload = serde_json::to_string(body).map_err(|e| not_sent(e.to_string()))?;
+    let headers = l2_auth_headers(creds, now_secs(), "POST", path, &payload)
+        .map_err(|e| not_sent(e.to_string()))?;
+    let ag = agent();
+    let mut req = ag.post(&format!("{base}{path}")).header("Content-Type", "application/json");
+    for (k, v) in &headers {
+        req = req.header(k, v);
+    }
+    for (k, v) in extra {
+        req = req.header(k.as_str(), v.as_str());
+    }
+    let sent = req.send(payload.as_bytes());
+    if let Ok(response) = &sent {
+        log_rate_signal(response.headers());
+    }
+    let mut open = false;
+    let reply = classify_rest_reply(
+        sent,
+        true,
+        &POST_REPLY,
+        &sent_values(headers.iter().chain(extra)),
+        |note| {
+            if let RestReplyNote::Refused { body: Some(body), .. } = note {
+                open = leaves_the_order_open(body);
+            }
+        },
+    );
+    reply.map_err(|e| if open { VenueApiError { code: E_TIMEOUT_AMBIGUOUS, ..e } } else { e })
+}
+
+/// **The CLOB's words that leave an order POST open**, read off a refusal's `error` sentence into the error's type
+/// (decision 0301's edge: this venue's error body carries no code, so its words are read ONCE, here). Both come as a
+/// 400, which reads as the CLOB's refusal otherwise (docs.polymarket.com `resources/error-codes`):
+/// - "context canceled": the CLOB answers any message containing it as a 400 "regardless of the original status code"
+///   (the status code reference), so the insert may have committed before the server's request context ended;
+/// - "order match delayed due to market conditions" (the order-processing errors): an insert whose status is
+///   `delayed` is an accept ("treat it as a pending order", `trading/place-orders`), so these words are no "no".
+///
+/// The order is then read back by its derived id, as after a lost reply. The samples are the documented sentences,
+/// pinned in `rest_tests.rs`'s `the_words_that_leave_an_order_post_open`; no live reply has been captured (no order of
+/// this bridge has run against the venue).
+fn leaves_the_order_open(body: &serde_json::Value) -> bool {
+    body.get("error").and_then(serde_json::Value::as_str).is_some_and(|sentence| {
+        sentence.contains("context canceled") || sentence.contains("order match delayed")
+    })
+}
+
+/// A signed order write's reply rules (`vike_bridge_core::transport::reply`): the order POST's, and a cancel's
+/// `DELETE` ([`del_signed_payload`]), whose lost reply is OUTCOME UNKNOWN too (decision 0303). The error body carries
+/// no numeric code; a 5xx leaves the outcome unknown (owner ruling B-1: the CLOB's `{"error": …}` sentence is no verdict), and so do
+/// a send failure after the write (`vike_bridge_core::transport::classify_send_error`), a body that fails to read after
+/// the headers arrived, and a 2xx the venue sent but we cannot parse (it ANSWERED, and we cannot say what). **A 3xx is
+/// unknown too (owner ruling B-3)**: the signed agent follows no redirect (`crate::transport::agent_for`), so the 3xx is
+/// the answer and no verdict on the order. Unknown is the error's code (`E_TIMEOUT_AMBIGUOUS`), which the exec thread
+/// asks through `ErrorKind::must_requery`, never its words ([`clob_words`]).
+///
+/// **The one 5xx that IS a verdict** carries the one typed `code` the CLOB documents (`ErrorResponse.code`,
+/// docs.polymarket.com `trading/matching-engine`): `post_only_mode`, a 503 in the window after a matching-engine
+/// restart in which only post-only orders and cancels are taken (this bridge sends no post-only order). It is the
+/// CLOB's refusal, NOT NOW (the status is the code), at once, where it used to wait as unknown for the core's watchdog.
+/// The untyped 503 "Trading is currently disabled" and 500 "order timed out" stay unknown.
+const POST_REPLY: RestReplySpec = RestReplySpec {
+    code: None,
+    no_verdict_on_5xx: &[],
+    gateway_first: RestReplyGatewayFirst::Never,
+    server_error_on_write_unknown: true,
+    redirect_on_write_unknown: true,
+    words: Some(clob_words),
+    unknown_body_head: u64::MAX,
+    plain_text_errors: false,
+    verdict_on_5xx: &[("code", "post_only_mode")],
+};
+
+/// The reply rules of every other signed CLOB call (the dead-man beat's `POST`, a read's `GET`), each sent to the engine
+/// as a READ, so no answer is drawn as "outcome unknown": a beat is answered by the next beat, and a read changes
+/// nothing. The words are [`clob_words`].
+const DEFINITE_REPLY: RestReplySpec = RestReplySpec {
+    code: None,
+    no_verdict_on_5xx: &[],
+    gateway_first: RestReplyGatewayFirst::Never,
+    server_error_on_write_unknown: false,
+    redirect_on_write_unknown: false,
+    words: Some(clob_words),
+    unknown_body_head: 0,
+    plain_text_errors: false,
+    verdict_on_5xx: &[],
+};
+
+/// The words of each verdict of every signed CLOB call: a transport failure is `network: …`, a non-2xx
+/// `polymarket {status}: {summary}`, a body that is not JSON `bad json ({status}): {error}: {summary}` whatever its
+/// status. The summary is the engine's `vike_bridge_core::transport::body_summary`: the CLOB's `{"error": …}`
+/// sentence, else the body's size, since a proxy page can echo the `POLY_*` headers.
+fn clob_words(word: &RestReplyWord<'_>) -> String {
+    match word {
+        RestReplyWord::SendFailed(e) | RestReplyWord::BodyUnread(e) => {
+            format!("network: {}", vike_bridge_core::transport::send_error_text(e))
+        }
+        RestReplyWord::BadJson { status, error, summary }
+        | RestReplyWord::Refused { status, summary, not_json: Some(error) } => {
+            format!("bad json ({status}): {error}: {summary}")
+        }
+        RestReplyWord::Refused { status, summary, not_json: None }
+        | RestReplyWord::Redirect { status, summary }
+        | RestReplyWord::Gateway { status, summary } => format!("polymarket {status}: {summary}"),
+    }
+}
+
+/// L2-signed POST returning the RAW `(http_status, parsed_body)` WITHOUT collapsing a non-2xx into
+/// an `Err` — the dead-man heartbeat ([`crate::execution::heartbeat`]) must READ a `400 {"error":"Invalid
+/// Heartbeat ID","heartbeat_id":"<correct>"}` body to resync, which [`post_signed`] cannot expose.
+/// Network and JSON-decode failures are still `Err`. Signs the EXACT body string sent (the L2
+/// contract), over the same proxy-aware [`agent`] every signed CLOB call uses.
+pub(crate) fn post_signed_raw(
+    base: &str,
+    path: &str,
+    creds: &PolymarketConfig,
+    body: &serde_json::Value,
+) -> Result<(u16, serde_json::Value), String> {
+    let payload = serde_json::to_string(body).map_err(|e| e.to_string())?;
+    let headers =
+        l2_auth_headers(creds, now_secs(), "POST", path, &payload).map_err(|e| e.to_string())?;
+    let ag = agent();
+    let mut req = ag.post(&format!("{base}{path}")).header("Content-Type", "application/json");
+    for (k, v) in &headers {
+        req = req.header(k, v);
+    }
+    let sent = req.send(payload.as_bytes());
+    if let Ok(response) = &sent {
+        log_rate_signal(response.headers());
+    }
+    // A send failure has no status, and the engine refuses it below.
+    let status = sent.as_ref().map_or(0, |response| response.status().as_u16());
+    // The engine's refusal note hands over a non-2xx JSON body, which the beat reads (its 400 resync) and words its
+    // error from, so it leaves here redacted of what the request carried, as the engine's own words are, BEFORE any
+    // summary can cut a value short. A body that no longer parses once redacted leaves as the engine's words.
+    let credentials = sent_values(&headers);
+    let mut refused = None;
+    let reply = classify_rest_reply(sent, false, &DEFINITE_REPLY, &credentials, |note| {
+        if let RestReplyNote::Refused { body: Some(body), .. } = note {
+            let redacted =
+                vike_bridge_core::transport::redact_sent_values(&body.to_string(), &credentials);
+            refused = serde_json::from_str::<serde_json::Value>(&redacted).ok();
+        }
+    });
+    match (reply, refused) {
+        (Ok(v), _) | (Err(_), Some(v)) => Ok((status, v)),
+        (Err(e), None) => Err(e.msg),
+    }
+}
+
+/// Submit a signed order (`order_type` = "GTC"|"FOK"|"GTD"). Returns the CLOB response.
+///
+/// Passes the local rate budget first (`gate_submit` — observe-only unless `enforce_rate_gate` (the
+/// start's [`rate_gate_enforced`]), so with the flag off this is byte-identical to a bare
+/// `post_signed`), then debits one order token BEFORE the wire call, because the venue charges on
+/// receipt.
+///
+/// # Errors
+/// A [`VenueApiError`] whose `kind().must_requery()` says the order may be live at the CLOB
+/// ([`POST_REPLY`]); any other failure never reached it, or the CLOB refused it.
+pub fn submit_order(
+    base: &str,
+    creds: &PolymarketConfig,
+    order_obj: serde_json::Value,
+    order_type: &str,
+    enforce_rate_gate: bool,
+) -> Result<serde_json::Value, VenueApiError> {
+    gate_submit(enforce_rate_gate).map_err(not_sent)?;
+    note_submit();
+    post_signed(base, "/order", creds, &submit_body(order_obj, creds.api_key.expose(), order_type))
+}
+
+/// Submit a signed order via the deposit-wallet / relayer (gasless) flow: the standard L2 HMAC PLUS
+/// the two plaintext relayer headers. Used when the account's funder is a Polymarket deposit wallet
+/// (signatureType POLY_1271) — its orders route through the relayer.
+///
+/// Same local rate-budget gate + debit as [`submit_order`] — observe-only unless
+/// `enforce_rate_gate` (the start's [`rate_gate_enforced`]).
+pub fn submit_order_relayer(
+    base: &str,
+    creds: &PolymarketConfig,
+    order_obj: serde_json::Value,
+    order_type: &str,
+    relayer_key: &str,
+    relayer_address: &str,
+    enforce_rate_gate: bool,
+) -> Result<serde_json::Value, VenueApiError> {
+    gate_submit(enforce_rate_gate).map_err(not_sent)?;
+    note_submit();
+    let body = submit_body(order_obj, creds.api_key.expose(), order_type);
+    let extra = relayer_headers(relayer_key, relayer_address);
+    post_signed_extra(base, "/order", creds, &body, &extra)
+}
+
+/// Cancel a resting order by its CLOB order id (`DELETE /order`).
+///
+/// **Fires unconditionally and debits** — this is the WIRE primitive, and it deliberately makes no
+/// shedding decision of its own. The reserve floor is consulted ONE step above it, by
+/// [`gate_cancel_shared`] at [`crate::execution`]'s `ExecutionClientActorCommand::Cancel` arm, which calls this
+/// function only once the intent has cleared: an [`OrderCancelIntent::Routine`] cancel can be held back
+/// there, while [`OrderCancelIntent::Unspecified`] (the flatten-safe default) and
+/// [`OrderCancelIntent::RiskOff`] always reach here — being able to cancel then is exactly what the
+/// reserve is held back FOR, and a 429 on a cancel beats not trying.
+///
+/// The split is deliberate: gating INSIDE this function would have to decide-and-debit in one
+/// place with no way to report the shed to the caller, and the caller is the one that owes the
+/// order a non-terminal `OrderCancelRejected`.
+pub fn cancel_order(
+    base: &str,
+    creds: &PolymarketConfig,
+    order_id: &str,
+) -> Result<serde_json::Value, CancelFailure> {
+    note_cancel();
+    check_cancel_reply(del_signed(base, "/order", creds, &cancel_body(order_id), &[]), order_id)
+}
+
+/// Cancel via the deposit-wallet / relayer flow (adds the relayer headers). Same unconditional
+/// fire-and-debit contract as [`cancel_order`].
+pub fn cancel_order_relayer(
+    base: &str,
+    creds: &PolymarketConfig,
+    order_id: &str,
+    relayer_key: &str,
+    relayer_address: &str,
+) -> Result<serde_json::Value, CancelFailure> {
+    note_cancel();
+    let extra = relayer_headers(relayer_key, relayer_address);
+    check_cancel_reply(del_signed(base, "/order", creds, &cancel_body(order_id), &extra), order_id)
+}
+
+// --- A3 resync: L2-authenticated history reads -------------------------------------------------
+
+fn trades_query(limit: u32) -> String {
+    format!("limit={limit}")
+}
+fn orders_query(limit: u32) -> String {
+    format!("limit={limit}")
+}
+
+/// L2-signed proxy-aware GET (the DELETE/POST twins already exist). Signs the method+path with an
+/// empty body per the CLOB L2 scheme. Used for the audit-A3 resync history reads.
+pub fn get_signed(
+    base: &str,
+    path: &str,
+    query: &str,
+    creds: &PolymarketConfig,
+) -> Result<serde_json::Value, String> {
+    get_signed_within(base, path, query, creds, crate::transport::REST_TIMEOUT)
+}
+
+/// [`get_signed`] under an explicit ceiling, for a read that runs ON the exec thread in front of an
+/// order and so must not hold it for the order path's whole [`crate::transport::REST_TIMEOUT`].
+pub(crate) fn get_signed_within(
+    base: &str,
+    path: &str,
+    query: &str,
+    creds: &PolymarketConfig,
+    timeout: std::time::Duration,
+) -> Result<serde_json::Value, String> {
+    let headers = l2_auth_headers(creds, now_secs(), "GET", path, "").map_err(|e| e.to_string())?;
+    let url =
+        if query.is_empty() { format!("{base}{path}") } else { format!("{base}{path}?{query}") };
+    let ag = crate::transport::agent_with_timeout(timeout);
+    let mut req = ag.get(&url);
+    for (k, v) in &headers {
+        req = req.header(k, v);
+    }
+    // A refusal's code is its status ([`DEFINITE_REPLY`] names no envelope), and only a refusal's code can be 410.
+    classify_rest_reply(req.call(), false, &DEFINITE_REPLY, &sent_values(&headers), |_| {}).map_err(
+        |e| {
+            if e.code == 410 {
+                // Measured on Data API v1, whose routes answer exactly this.
+                PolymarketReadRefusal::Retired { path: path.to_string() }.to_string()
+            } else {
+                e.msg
+            }
+        },
+    )
+}
+
+/// Recent account trades for the A3 replay (`GET /data/trades`).
+pub fn get_trades(
+    base: &str,
+    creds: &PolymarketConfig,
+    limit: u32,
+) -> Result<serde_json::Value, String> {
+    get_signed(base, "/data/trades", &trades_query(limit), creds)
+}
+
+/// Recent account orders for the A3 replay (`GET /data/orders`).
+pub fn get_orders(
+    base: &str,
+    creds: &PolymarketConfig,
+    limit: u32,
+) -> Result<serde_json::Value, String> {
+    get_signed(base, "/data/orders", &orders_query(limit), creds)
+}
+
+/// One order by its CLOB id (`GET /data/order/<id>`, the py-clob-client `GET_ORDER` path): the
+/// status re-query of an UNKNOWN submit, under the caller's ceiling (the exec thread's is short). The
+/// id is the deterministic EIP-712 order hash (`derive_order_id`), so no order client id is needed.
+/// ⚠ The "not found" answer shape (HTTP status / body) is NOT verified offline; see
+/// [`found_order`], which reads anything but a row naming the id as "not known yet".
+pub(crate) fn get_order(
+    base: &str,
+    creds: &PolymarketConfig,
+    order_id: &str,
+    timeout: std::time::Duration,
+) -> Result<serde_json::Value, String> {
+    get_signed_within(base, &format!("/data/order/{order_id}"), "", creds, timeout)
+}
+
+/// An order row a `GET /data/order/<id>` reply NAMES: its venue id and its `status`, upper-cased
+/// (`""` when the row carries none).
+pub(crate) struct FoundOrder {
+    pub id: String,
+    pub status: String,
+}
+
+/// The order a `GET /data/order/<id>` reply NAMES, iff some row's `id` equals `order_id`
+/// (case-insensitive hex). ⚠ The wrapper shape is NOT verified live, so the row is taken from the
+/// reply itself, from its `data` or `order` member, each either the object or the first element of
+/// an array (and the reply itself may be that array). Anything else (null, `{}`, an error object,
+/// a different id) is `None`: the confirm treats that as "unknown yet", never as a rejection.
+pub(crate) fn found_order(reply: &serde_json::Value, order_id: &str) -> Option<FoundOrder> {
+    [Some(reply), reply.get("data"), reply.get("order")]
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_array().map_or(Some(v), |rows| rows.first()))
+        .find_map(|row| {
+            let id = row.get("id")?.as_str()?;
+            id.eq_ignore_ascii_case(order_id).then(|| FoundOrder {
+                id: id.to_string(),
+                status: row.get("status").and_then(|s| s.as_str()).unwrap_or("").to_uppercase(),
+            })
+        })
+}
+
+#[path = "rest_tests.rs"]
+#[cfg(test)]
+mod rest_tests;

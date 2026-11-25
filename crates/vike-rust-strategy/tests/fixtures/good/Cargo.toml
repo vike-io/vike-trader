@@ -1,0 +1,14 @@
+# See tests/fixtures/bad_abi_version/Cargo.toml for the shape/exclusion rationale this mirrors.
+# A fully well-formed fixture: every export correct, proving loader::load's happy path actually
+# succeeds — without it, every test in load_refusals.rs would be a refusal and none would prove the
+# loader can load anything at all.
+[package]
+name = "good"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[workspace]

@@ -1,0 +1,26 @@
+{
+  "full": {
+    "rows": 7147999,
+    "after_band_tte": 785619,
+    "after_theta": 681403,
+    "entries": 12858,
+    "after_resolution_join": 12639,
+    "win_rate": 0.3678297333649814,
+    "avg_ask": 0.27913836402451664,
+    "total_pnl": 942.1224539783196,
+    "pnl_per_trade": 0.07454090149365611,
+    "sum_edge": 2086.7335722708176
+  },
+  "sample": {
+    "rows": 10973,
+    "after_band_tte": 1046,
+    "after_theta": 907,
+    "entries": 27,
+    "after_resolution_join": 27,
+    "win_rate": 0.4444444444444444,
+    "avg_ask": 0.2794430029610369,
+    "total_pnl": 4.072967414295504,
+    "pnl_per_trade": 0.15085064497390754,
+    "sum_edge": 4.415028041702424
+  }
+}

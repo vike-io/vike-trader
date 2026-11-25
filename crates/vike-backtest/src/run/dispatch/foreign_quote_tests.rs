@@ -1,0 +1,534 @@
+//! A backtest books ONE cash pool in ONE currency (decision 0183, item 13). A series quoted in the
+//! pool's own currency is booked exactly; a series whose symbol NAME says another quote is refused in
+//! words, never run with its yen or pounds booked as dollars, unless the profile names that quote's
+//! conversion pair (decision 0243 phase 2: `crate::run::data_plan::conversion`'s tests book through one).
+//!
+//! The pool's currency is `engine.account_currency` (absent = the dollar). The figures are the decision's:
+//! USDJPY, 100,000 units, closed 0.10 higher, is 10,000 JPY, which is 10,000 / 150.10 = 66.62 USD
+//! (a dollar ledger would book 10,000 "USD"); EURGBP, 100,000 units at 0.85, is 85,000 GBP, which is
+//! 114,750 USD at 1.35 (a dollar ledger would book 85,000). The run books the first, in its own
+//! currency, and never produces the second: that needs a rate series, so it stays refused.
+
+use super::*;
+use crate::run::KeptRows;
+use vike_marketdata::test_support::{flat_bar_zero_volume, quote};
+use vike_store::HistoryStoreDataFusion;
+
+const VENUE: &str = "oanda";
+
+/// The TOML of a buy-and-hold profile over `symbols` (the first is the strategy's), with
+/// `engine_extra` lines appended under `[engine]` after `cash`.
+fn toml_over(symbols: &[&str], kind: &str, cash: f64, engine_extra: &str) -> String {
+    let listed = symbols.iter().map(|s| format!("\"{s}\"")).collect::<Vec<_>>().join(", ");
+    format!(
+        r#"
+[data]
+venue = "{VENUE}"
+symbols = [{listed}]
+kind = "{kind}"
+interval = "1d"
+from = "0"
+to = "100000"
+
+[engine]
+cash = {cash:?}
+{engine_extra}
+
+[strategy]
+file = "trend/buy_hold.rs"
+[strategy.params]
+size = 100000.0
+symbol = "{first}"
+"#,
+        first = symbols[0]
+    )
+}
+
+fn profile_over(symbols: &[&str], kind: &str, cash: f64, engine_extra: &str) -> ProfileBacktest {
+    ProfileBacktest::from_toml_str(&toml_over(symbols, kind, cash, engine_extra))
+        .unwrap()
+        .with_stand_in(vike_strategy_lab::stand_in)
+}
+
+/// The dollar profile every refusal test starts from (`engine.account_currency` absent).
+fn profile(symbol: &str, kind: &str) -> ProfileBacktest {
+    profile_over(&[symbol], kind, 1_000_000.0, "")
+}
+
+/// A profile on the ledger `currency`, over one symbol.
+fn profile_in(symbol: &str, kind: &str, cash: f64, currency: &str) -> ProfileBacktest {
+    profile_over(&[symbol], kind, cash, &format!("account_currency = \"{currency}\""))
+}
+
+/// A store holding `symbol` as three daily bars and three quotes: the first at `px`, the second (where
+/// `buy_hold`'s order fills, one step after it is placed) also at `px`, the last 0.10 above, so 100,000
+/// units are bought at `px` and marked at `px + 0.10` on either lane. The quotes have no spread, so the
+/// buy fills at `px` and the mark is `px + 0.10` exactly. The directory is returned beside it: it must
+/// outlive the store.
+fn store_with(symbol: &str, px: f64) -> (tempfile::TempDir, Arc<HistoryStoreDataFusion>) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(HistoryStoreDataFusion::open(dir.path()).unwrap());
+    let bars = vec![
+        flat_bar_zero_volume(0, px),
+        flat_bar_zero_volume(1000, px),
+        flat_bar_zero_volume(2000, px + 0.10),
+    ];
+    store.append_bars(VENUE, symbol, "1d", &bars, None).unwrap();
+    let quotes = vec![quote(0, px, px), quote(1000, px, px), quote(2000, px + 0.10, px + 0.10)];
+    store.append_quotes(VENUE, symbol, &quotes, None).unwrap();
+    (dir, store)
+}
+
+/// Run `profile` over `symbol` seeded at `px` and hand back the refusal sentence.
+fn refusal_of(profile: &ProfileBacktest, symbol: &str, px: f64) -> String {
+    let (_dir, store) = store_with(symbol, px);
+    match run_backtest(profile, store) {
+        Err(HarnessError::Data(m)) => m,
+        Err(other) => panic!("{symbol}: expected a data refusal, got {other:?}"),
+        Ok(r) => panic!(
+            "{symbol}: the run was NOT refused and booked its quote currency as the ledger's \
+             (final equity {})",
+            r.final_equity
+        ),
+    }
+}
+
+fn refusal(symbol: &str, px: f64, kind: &str) -> String {
+    refusal_of(&profile(symbol, kind), symbol, px)
+}
+
+#[test]
+fn a_yen_quoted_bar_series_is_refused_on_the_dollar_ledger_in_words() {
+    let m = refusal("USDJPY", 150.0, "bar");
+    assert!(m.contains("USDJPY (JPY)"), "names the symbol and its currency: {m}");
+    assert!(m.contains("USD ledger"), "and the ledger it would be booked in: {m}");
+    assert!(m.contains("absent, which means USD"), "and that the key is what to set: {m}");
+    assert!(m.contains("engine.account_currency = \"JPY\""), "and the way out that works: {m}");
+}
+
+/// ⚠ **The rate that is missing is named.** EURGBP in dollars needs GBP/USD; the run does not carry
+/// it, so it is refused, and the sentence says which series is absent.
+#[test]
+fn a_pound_quoted_tick_series_is_refused_on_the_dollar_ledger_naming_the_missing_rate() {
+    let m = refusal("EURGBP", 0.85, "tick");
+    assert!(m.contains("EURGBP (GBP)"), "{m}");
+    assert!(m.contains("GBP/USD conversion-rate series"), "the missing rate by name: {m}");
+    assert!(m.contains("engine.conversion.GBP = \"<series>\""), "and the key that names it: {m}");
+    assert!(m.contains("engine.account_currency = \"GBP\""), "{m}");
+}
+
+/// A dollar-quoted series is untouched: the run proceeds and books exactly as before.
+#[test]
+fn a_dollar_quoted_series_runs_as_before() {
+    for kind in ["bar", "tick"] {
+        let (_dir, store) = store_with("EURUSD", 1.08);
+        let result = run_backtest(&profile("EURUSD", kind), store)
+            .unwrap_or_else(|e| panic!("EURUSD/{kind} must still run: {e:?}"));
+        assert_ne!(result.final_equity, 1_000_000.0, "{kind}: buy_hold traded");
+    }
+}
+
+/// ⚠ **THE GOLDEN.** USDJPY, 100,000 units bought at 150.00 and marked at 150.10, on a ledger that
+/// IS yen: the pool moves by exactly 10,000 JPY, the figure the decision gives. Nothing converts.
+#[test]
+fn a_yen_ledger_books_a_usdjpy_bar_run_in_yen() {
+    let cash = 100_000_000.0;
+    let (_dir, store) = store_with("USDJPY", 150.0);
+    let result = run_backtest(&profile_in("USDJPY", "bar", cash, "JPY"), store)
+        .expect("a yen-quoted symbol on a yen ledger runs");
+    let pnl = result.final_equity - cash;
+    assert!((pnl - 10_000.0).abs() < 1e-6, "100,000 units * 0.10 = 10,000 JPY, booked {pnl}");
+    // The figure the refusal exists to protect, taken from what the ENGINE booked rather than from a
+    // literal: the same yen, read as dollars at the closing 150.10, are 66.62. A dollar ledger would
+    // have printed `pnl` itself, a hundred and fifty times too many.
+    let as_dollars = pnl / 150.10;
+    assert!((as_dollars - 66.62).abs() < 0.005, "{as_dollars}");
+}
+
+/// The tick lane takes the same ledger from the same key and books the same 10,000 yen: the order
+/// placed on the first quote fills at the second (150.00, no spread) and is marked at the third.
+#[test]
+fn a_yen_ledger_books_a_usdjpy_tick_run_in_yen() {
+    let cash = 100_000_000.0;
+    let (_dir, store) = store_with("USDJPY", 150.0);
+    let result = run_backtest(&profile_in("USDJPY", "tick", cash, "JPY"), store)
+        .expect("a yen-quoted symbol on a yen ledger runs on the tick lane too");
+    let pnl = result.final_equity - cash;
+    assert!((pnl - 10_000.0).abs() < 1e-6, "100,000 units * 0.10 = 10,000 JPY, booked {pnl}");
+}
+
+/// ⚠ **EURGBP on a pound ledger: 100,000 units at 0.85 is 85,000 GBP.** The shared-cash gate admits an
+/// order exactly when the pool can fund its notional IN THE POOL'S UNIT, so 86,000 admits it and 84,000
+/// refuses it: a dollar reading (114,750 at 1.35) would have admitted neither. The admitted run then
+/// earns 10,000 GBP on a 0.10 move.
+#[test]
+fn a_pound_ledger_books_eurgbp_notional_and_pnl_in_pounds() {
+    let (_dir, store) = store_with("EURGBP", 0.85);
+    let funded =
+        profile_over(&["EURGBP"], "bar", 86_000.0, "account_currency = \"GBP\"\ncash_gate = true");
+    let result = run_backtest(&funded, store.clone()).expect("a pound ledger takes EURGBP");
+    assert!(
+        (result.final_equity - 96_000.0).abs() < 1e-6,
+        "86,000 cash funds the 85,000 GBP notional and earns 10,000 GBP: {}",
+        result.final_equity
+    );
+
+    let short =
+        profile_over(&["EURGBP"], "bar", 84_000.0, "account_currency = \"GBP\"\ncash_gate = true");
+    let result = run_backtest(&short, store).expect("a pound ledger takes EURGBP");
+    assert_eq!(result.final_equity, 84_000.0, "84,000 GBP cannot fund an 85,000 GBP notional");
+}
+
+/// The ledger is typed by a person: any case, surrounding space, and the same run.
+#[test]
+fn a_ledger_currency_is_read_in_any_case() {
+    let cash = 100_000_000.0;
+    for typed in ["jpy", " Jpy "] {
+        let (_dir, store) = store_with("USDJPY", 150.0);
+        let result = run_backtest(&profile_in("USDJPY", "bar", cash, typed), store)
+            .unwrap_or_else(|e| panic!("{typed:?}: {e:?}"));
+        assert!((result.final_equity - cash - 10_000.0).abs() < 1e-6, "{typed:?}");
+    }
+}
+
+/// ⚠ **A yen ledger takes only yen.** A dollar-quoted symbol on it is refused (it would be booked as
+/// yen), and so is a name that states no fiat quote (`BTCUSDT`): "does not say" is dollars only on the
+/// dollar ledger.
+#[test]
+fn a_yen_ledger_refuses_a_symbol_that_is_not_quoted_in_yen() {
+    let m = refusal_of(&profile_in("EURUSD", "bar", 100_000_000.0, "JPY"), "EURUSD", 1.08);
+    assert!(m.contains("EURUSD (USD)"), "{m}");
+    assert!(m.contains("JPY ledger"), "{m}");
+    assert!(m.contains("USD/JPY conversion-rate series"), "{m}");
+
+    // On this FX broker (oanda) a name that states no fiat quote is of an UNKNOWN currency (flag IG-1), refused on
+    // every ledger; the crypto convention's "no fiat quote" is a crypto venue's (`refuse_foreign_quoted_symbols`).
+    let m = refusal_of(&profile_in("BTCUSDT", "bar", 100_000_000.0, "JPY"), "BTCUSDT", 60_000.0);
+    assert!(m.contains("BTCUSDT (unknown quote currency)"), "{m}");
+    assert!(m.contains("JPY ledger"), "{m}");
+    let m = refuse_foreign_quoted_symbols(["BTCUSDT"], Some("JPY")).expect_err("a yen ledger");
+    assert!(m.message().contains("BTCUSDT (no fiat quote)"), "{}", m.message());
+}
+
+/// ⚠ **One run, one currency.** Symbols quoted in different currencies share a pool only through a rate
+/// series per currency: with none named they are refused whichever ledger is named, and the sentence
+/// says to name a pair per currency, or to split the run.
+#[test]
+fn symbols_quoted_in_different_currencies_stay_refused_whichever_ledger() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(HistoryStoreDataFusion::open(dir.path()).unwrap());
+    for currency in [None, Some("JPY"), Some("GBP")] {
+        let extra = currency.map(|c| format!("account_currency = \"{c}\"")).unwrap_or_default();
+        let p = profile_over(&["USDJPY", "EURGBP"], "bar", 1_000_000.0, &extra);
+        let m = match run_backtest(&p, store.clone()) {
+            Err(HarnessError::Data(m)) => m,
+            other => panic!("{currency:?}: expected a data refusal, got {other:?}"),
+        };
+        assert!(m.contains("different currencies"), "{currency:?}: {m}");
+        // ...and the way out a conversion pair per currency opens (decision 0243 phase 2), splitting second.
+        assert!(m.contains("engine.conversion.<QUOTE>"), "{currency:?}: {m}");
+        assert!(m.contains("split them into separate runs"), "{currency:?}: {m}");
+    }
+}
+
+/// Crosses that share a quote share a ledger: the guard admits them together on that currency and on
+/// no other, and an IG epic and a venue-separated spelling read the same.
+#[test]
+fn symbols_that_share_a_quote_share_a_ledger() {
+    let yen = ["USDJPY", "EUR_JPY", "CS.D.GBPJPY.CFD.IP"];
+    assert!(refuse_foreign_quoted_symbols(yen, Some("JPY")).is_ok());
+    assert!(refuse_foreign_quoted_symbols(yen, Some("jpy")).is_ok());
+    assert!(refuse_foreign_quoted_symbols(yen, None).is_err());
+    assert!(refuse_foreign_quoted_symbols(yen, Some("GBP")).is_err());
+    assert!(refuse_foreign_quoted_symbols(["EURUSD", "BTCUSDT", "AAPL"], None).is_ok());
+}
+
+/// A currency the build does not know is a VALIDATION error at profile load, naming the key, for a
+/// typo, a coin, a stablecoin and the empty string alike; and the guard says the same if a caller
+/// bypasses the load.
+#[test]
+fn an_unknown_ledger_currency_is_refused_at_load() {
+    for bad in ["JPYY", "BTC", "USDT", "", "  "] {
+        let toml = toml_over(&["USDJPY"], "bar", 1000.0, &format!("account_currency = {bad:?}"));
+        match ProfileBacktest::from_toml_str(&toml) {
+            Err(HarnessError::Validation(m)) => {
+                let m = m.to_string();
+                assert!(m.contains("engine.account_currency"), "{bad:?}: {m}");
+            }
+            other => panic!("{bad:?}: expected a validation refusal, got {other:?}"),
+        }
+        assert!(matches!(
+            refuse_foreign_quoted_symbols(["USDJPY"], Some(bad)),
+            Err(HarnessError::Validation(_))
+        ));
+    }
+}
+
+/// The walk-forward door hands the harness bars it already holds: it is refused the same way on the
+/// dollar ledger, and admitted on the yen one.
+#[test]
+fn bars_a_caller_already_holds_follow_the_ledger_too() {
+    let (_dir, store) = store_with("USDJPY", 150.0);
+    let store: Arc<dyn HistoryStore + Send + Sync> = store;
+    let bars = || {
+        vec![(
+            "USDJPY".to_string(),
+            vec![
+                flat_bar_zero_volume(0, 150.0),
+                flat_bar_zero_volume(1000, 150.0),
+                flat_bar_zero_volume(2000, 150.10),
+            ],
+        )]
+    };
+    let err = run_backtest_over_bars(
+        &profile("USDJPY", "bar"),
+        &store,
+        bars(),
+        &[],
+        &[],
+        &Arc::default(),
+    )
+    .expect_err("a yen-quoted window is refused on the dollar ledger");
+    assert!(matches!(&err, HarnessError::Data(m) if m.contains("USDJPY (JPY)")), "{err:?}");
+
+    let cash = 100_000_000.0;
+    let yen = profile_in("USDJPY", "bar", cash, "JPY");
+    let ok = run_backtest_over_bars(&yen, &store, bars(), &[], &[], &Arc::default())
+        .expect("a yen ledger takes the same window");
+    assert!((ok.final_equity - cash - 10_000.0).abs() < 1e-6, "{}", ok.final_equity);
+}
+
+/// The ledger label rides the realism stamp so a report can print it.
+#[test]
+fn the_stamp_carries_the_resolved_ledger() {
+    use crate::run::report::realism_stamp;
+    use vike_analytics::realism::ACCOUNT_CURRENCY_KEY;
+
+    let dollar = realism_stamp(&profile("EURUSD", "bar"));
+    assert_eq!(dollar.get(ACCOUNT_CURRENCY_KEY), Some("USD"));
+    assert_eq!(dollar.off_dollar_ledger(), None);
+    let yen = realism_stamp(&profile_in("USDJPY", "bar", 1_000_000.0, " jpy "));
+    assert_eq!(yen.get(ACCOUNT_CURRENCY_KEY), Some("JPY"), "resolved, not the text typed");
+    assert_eq!(yen.off_dollar_ledger(), Some("JPY"));
+}
+
+/// ⚠ **An ABSENT key and an explicit `"USD"` are the SAME run**, bit for bit, on both lanes — the
+/// byte-identity claim for every dollar profile, asserted over the whole `TradingRecord` (its
+/// `Debug` prints every `f64` in its shortest round-tripping form) rather than over one number that
+/// "moved off 1,000,000".
+#[test]
+fn an_absent_ledger_and_an_explicit_dollar_ledger_give_the_identical_result() {
+    for kind in ["bar", "tick"] {
+        let run = |extra: &str| {
+            let (_dir, store) = store_with("EURUSD", 1.08);
+            run_backtest(&profile_over(&["EURUSD"], kind, 1_000_000.0, extra), store)
+                .unwrap_or_else(|e| panic!("EURUSD/{kind}: {e:?}"))
+        };
+        let (absent, stated, lower) =
+            (run(""), run("account_currency = \"USD\""), run("account_currency = \" usd \""));
+        assert_ne!(absent.final_equity, 1_000_000.0, "{kind}: buy_hold traded");
+        assert_eq!(format!("{absent:?}"), format!("{stated:?}"), "{kind}: absent == \"USD\"");
+        assert_eq!(format!("{absent:?}"), format!("{lower:?}"), "{kind}: absent == \" usd \"");
+    }
+}
+
+/// The ledger a refusal SUGGESTS must itself be accepted: a way out that is also refused sends the
+/// user round in a circle. `[EURGBP, BTCUSDT]` is the case that used to do it (it suggested a GBP
+/// ledger, which then refused `BTCUSDT` as "no fiat quote"); every refused set below either names a
+/// ledger the guard then ACCEPTS or names none.
+#[test]
+fn a_suggested_ledger_is_one_the_guard_accepts() {
+    fn suggested(m: &str) -> Option<String> {
+        let at = m.find("engine.account_currency = \"")? + "engine.account_currency = \"".len();
+        m[at..].split('"').next().map(str::to_string)
+    }
+    let cases: [(&[&str], Option<&str>); 7] = [
+        (&["USDJPY"], None),
+        (&["EURGBP", "BTCUSDT"], None),
+        (&["USDJPY", "EURGBP"], None),
+        (&["USDJPY", "EURJPY"], None),
+        (&["BTCUSDT"], Some("JPY")),
+        (&["EURUSD"], Some("JPY")),
+        (&["BTCEUR", "ETHEUR"], None),
+    ];
+    for (symbols, ledger) in cases {
+        let Err(HarnessError::Data(m)) =
+            refuse_foreign_quoted_symbols(symbols.iter().copied(), ledger)
+        else {
+            panic!("{symbols:?} on {ledger:?} must be refused");
+        };
+        if let Some(next) = suggested(&m) {
+            assert!(
+                refuse_foreign_quoted_symbols(symbols.iter().copied(), Some(next.as_str())).is_ok(),
+                "{symbols:?} on {ledger:?} suggests {next:?}, which is refused too: {m}"
+            );
+        }
+    }
+    // The exact case: no GBP suggestion for a set a GBP ledger would refuse.
+    let Err(HarnessError::Data(m)) = refuse_foreign_quoted_symbols(["EURGBP", "BTCUSDT"], None)
+    else {
+        panic!("refused")
+    };
+    assert!(!m.contains("engine.account_currency = \"GBP\""), "{m}");
+    assert!(m.contains("No single ledger currency"), "{m}");
+}
+
+/// A door with NO profile (the Studio's picker) is not sent to a key it cannot set:
+/// the sentence says the door has no ledger field and names the profile run that works, and it never
+/// tells the user to "leave engine.account_currency out".
+#[test]
+fn a_door_with_no_profile_names_the_profile_run_not_a_key_it_cannot_set() {
+    let none = KeptRows::default();
+    let Err(HarnessError::Data(m)) = refuse_foreign_quoted_picks([(VENUE, "USDJPY")], &none) else {
+        panic!("a yen-quoted pick is refused")
+    };
+    assert!(m.contains("USDJPY (JPY)") && m.contains("no ledger field"), "{m}");
+    assert!(m.contains("--profile") && m.contains("--set engine.account_currency=JPY"), "{m}");
+    assert!(!m.contains("engine.account_currency is absent"), "{m}");
+    assert!(
+        refuse_foreign_quoted_picks([(VENUE, "EURUSD"), ("binance", "BTCUSDT")], &none).is_ok(),
+        "a dollar pick runs"
+    );
+    let Err(HarnessError::Data(mixed)) =
+        refuse_foreign_quoted_picks([(VENUE, "USDJPY"), (VENUE, "EURGBP")], &none)
+    else {
+        panic!("a mixed pick is refused")
+    };
+    assert!(mixed.contains("different currencies") && mixed.contains("no ledger field"), "{mixed}");
+}
+
+/// A kept row of `symbol` on [`VENUE`] quoted in `quote`, its `contract` as given.
+fn kept_row(symbol: &str, quote: &str, contract: vike_model::Contract) -> vike_model::Instrument {
+    vike_model::Instrument::new(VENUE, symbol, "X", quote, contract)
+}
+
+fn a_contract() -> vike_model::Contract {
+    vike_model::Contract::Fx(vike_model::ContractFx::default())
+}
+
+/// A CFD on an underlying of `kind`: a share's or an index's user name is `<base>.CFD` (decision 0290).
+fn a_cfd(kind: vike_model::ContractCfdUnderlying) -> vike_model::Contract {
+    vike_model::Contract::Cfd(vike_model::ContractCfd {
+        underlying_kind: kind,
+        underlying: None,
+        product: vike_model::ContractCfdProduct::Cfd,
+        expiry: vike_model::ContractCfdExpiry::Unknown,
+        margin_rate: None,
+        swap_long: None,
+        swap_short: None,
+    })
+}
+
+/// **The KEPT row's quote decides where the run holds one** (`ProfileBacktest::kept`): an index whose name states
+/// no fiat quote but whose row says euros is refused on the dollar ledger, in the words a name that says euros
+/// gets. The index CFD's store name is its user name, `GER30.CFD` (decision 0290), whatever the venue calls it.
+/// **IG-1:** the same broker's name with no row is of an UNKNOWN currency, refused on every ledger and never booked at
+/// par (it ran as dollars before the owner's ruling of 2026-11-16).
+#[test]
+fn a_kept_rows_quote_is_the_ledger_guards_answer() {
+    let series = [(VENUE.to_string(), "GER30.CFD".to_string())];
+    let mut held = profile("GER30.CFD", "bar");
+    let index = vike_model::ContractCfdUnderlying::Index;
+    let row = vike_model::Instrument::new(VENUE, "DE30_EUR", "GER30", "EUR", a_cfd(index));
+    held.kept = KeptRows::of(&vike_catalog::spelled(vec![row]), &series);
+    let m = refusal_of(&held, "GER30.CFD", 1.08);
+    assert!(m.contains("GER30.CFD (EUR)") && m.contains("USD ledger"), "{m}");
+    let Err(HarnessError::Data(m)) =
+        refuse_off_ledger_series(&profile("GER30.CFD", "bar"), [(VENUE, "GER30.CFD")])
+    else {
+        panic!("no row: a broker's name that states no currency is refused")
+    };
+    assert!(
+        m.contains("GER30.CFD (unknown quote currency)") && m.contains("instrument list"),
+        "{m}"
+    );
+    assert!(!m.contains("engine.conversion"), "no pair books an unknown currency: {m}");
+    let ig = [("ig", "DE40.CFD")];
+    assert!(
+        refuse_off_ledger_series(&profile("GER30.CFD", "bar"), ig).is_err(),
+        "IG's DAX, no row"
+    );
+}
+
+/// A series no kept row covers keeps its name's answers and the run's data warnings name it; a run no door
+/// handed the lists warns nothing.
+#[test]
+fn a_series_with_no_kept_row_is_named_in_the_runs_warnings() {
+    let series = [(VENUE.to_string(), "EURUSD".to_string())];
+    let mut held = profile("EURUSD", "bar");
+    held.kept = KeptRows::of(
+        &vike_catalog::spelled(vec![kept_row("USDJPY", "JPY", a_contract())]),
+        &series,
+    );
+    let (_dir, store) = store_with("EURUSD", 1.08);
+    let result = run_backtest(&held, store).expect("EURUSD runs on its name's quote");
+    assert!(
+        result
+            .data_warnings
+            .iter()
+            .any(|w| w.contains("no kept instrument row for EURUSD on oanda")),
+        "{:?}",
+        result.data_warnings
+    );
+    let (_dir, store) = store_with("EURUSD", 1.08);
+    let plain = run_backtest(&profile("EURUSD", "bar"), store).unwrap();
+    assert!(
+        plain.data_warnings.iter().all(|w| !w.contains("kept instrument row")),
+        "{:?}",
+        plain.data_warnings
+    );
+}
+
+/// **What a sandboxed child is answered reads as the parent read it**: the child asks its parent for the kept rows
+/// (`crates/vike-backtesthub/src/strategy_sandbox/relay.rs`), and `KeptRows::of` over the same rows is the parent's
+/// rows, lists and warning again, so the child's run reads every name and fact the parent's would. The rows are each series' (by
+/// its store name, decision 0290) and every row of a session venue; another venue's rest stays out of them, and
+/// every row is in the lists a typed name is read against.
+#[test]
+fn the_kept_rows_a_child_is_handed_read_as_the_parents() {
+    let all = vike_catalog::spelled(vec![
+        vike_model::Instrument::new("binance", "BTCUSDT", "BTC", "USDT", a_contract()),
+        vike_model::Instrument::new("binance", "ETHUSDT", "ETH", "USDT", a_contract()),
+        vike_model::Instrument::new("fxcm", "EUR/USD", "EUR", "USD", a_contract()),
+        vike_model::Instrument::new("fxcm", "USD/JPY", "USD", "JPY", a_contract()),
+    ]);
+    let series: Vec<(String, String)> =
+        [("binance", "BTCUSDT"), ("fxcm", "EURUSD"), ("okx", "BTC-USD-SWAP")]
+            .iter()
+            .map(|(v, s)| (v.to_string(), s.to_string()))
+            .collect();
+    let parent = KeptRows::of(&all, &series);
+    let symbols: Vec<&str> = parent.rows.iter().map(|r| r.raw_symbol.as_str()).collect();
+    assert_eq!(symbols, ["BTCUSDT", "EUR/USD", "USD/JPY"]);
+    assert_eq!(parent.warnings.len(), 1);
+    assert!(parent.warnings[0].contains("BTC-USD-SWAP on okx"), "{:?}", parent.warnings);
+    assert_eq!(KeptRows::of(&all, &series), parent);
+    assert_eq!(parent.lists.as_deref(), Some(&all));
+    assert_eq!(parent.store_name("fxcm", "eurusd").as_deref(), Ok("EURUSD"));
+    assert_eq!(parent.fiat_quote("fxcm", "EURUSD"), Some(vike_model::FiatQuote::Code("USD")));
+    assert_eq!(parent.fiat_quote("binance", "BTCUSDT"), None);
+}
+
+/// **A Dukascopy share CFD's stored series reads its kept row** (`vike_catalog::kept_row_of_store_name`): the store
+/// files `AAPL.US/USD` (a row stating no base, as dukascopy's list writes it) under its user name `AAPL.CFD`
+/// (decision 0290), and the run finds the row by that name, so no warning names the series and its quote is the
+/// row's.
+#[test]
+fn a_dukascopy_share_cfds_stored_name_finds_its_kept_row() {
+    let share = a_cfd(vike_model::ContractCfdUnderlying::Share);
+    let all = vike_catalog::spelled(vec![vike_model::Instrument::new(
+        "dukascopy",
+        "AAPL.US/USD",
+        "",
+        "USD",
+        share,
+    )]);
+    let series = [("dukascopy".to_string(), "AAPL.CFD".to_string())];
+    let kept = KeptRows::of(&all, &series);
+    assert!(kept.warnings.is_empty(), "{:?}", kept.warnings);
+    assert_eq!(
+        kept.row("dukascopy", "AAPL.CFD").map(|r| r.raw_symbol.as_str()),
+        Some("AAPL.US/USD")
+    );
+    assert_eq!(kept.fiat_quote("dukascopy", "AAPL.CFD"), Some(vike_model::FiatQuote::Code("USD")));
+}

@@ -1,0 +1,23 @@
+{
+  "argv": [],
+  "case": "boot.removed_env",
+  "env": {
+    "VIKE_MAX_ORDER_NOTIONAL": "1",
+    "VIKE_SETTINGS_DIR": "<scratch>/settings"
+  },
+  "exit": 1,
+  "stderr": {
+    "<lines>": [
+      "<program>: VIKE_MAX_ORDER_NOTIONAL=1 is set, but VIKE_MAX_ORDER_NOTIONAL is NO LONGER READ — removed in Phase 5 (settings unification), because an order-size ceiling any exported variable can raise is not a ceiling.",
+      "Set it instead:",
+      "",
+      "    vike-cli config set policy.max_notional_per_order 1",
+      "",
+      "then unset VIKE_MAX_ORDER_NOTIONAL.",
+      "",
+      ""
+    ]
+  },
+  "stdout": "",
+  "what": "a removed variable refuses the start, naming what replaced it"
+}

@@ -1,0 +1,8 @@
+{
+  "symbol": "BTCUSDT",
+  "venue": "bybit",
+  "interval": "1m",
+  "tick_size": 0.5,
+  "static_round_trip_fee_rate": 0.25,
+  "account_round_trip_fee_rate": null
+}

@@ -1,0 +1,31 @@
+[package]
+name = "vike-news"
+version.workspace = true
+edition = "2024"
+rust-version.workspace = true
+publish = false # never to crates.io — also exempts it from deny.toml license checks
+description = "The News window: the filterable headline list and reader pane over the datahub poll's headlines, its per-window view state, the topic classifier and the bundled source icons. egui without eframe/wgpu, so it builds and tests on CI."
+
+# The declared ARCHITECTURE LAYER (crates/vike-ops/tests/architecture/layer_gate.rs). Tier `ui-widget` — an egui widget / engine crate (no eframe/wgpu).
+# Every NORMAL (non-dev) vike-* dependency of this crate must declare a STRICTLY LOWER layer.
+[package.metadata.vike]
+layer = 75
+
+[dependencies]
+# The headlines (`tool_feeds::NewsItem`) and the ONE datahub poll's link and health the window records
+# its interest on and colours its footer by (`tool_feeds::poll`, behind `tool-feeds-poll`).
+vike-datahub-client = { path = "../vike-datahub-client", features = ["tool-feeds-poll"] }
+# The design system: tokens, text roles, icons and the `news` value group.
+vike-ui-theme = { path = "../vike-ui-theme" }
+# The instrument catalog Follow chart reads the focused chart's asset through (`follow.rs`).
+vike-catalog = { path = "../vike-catalog" }
+egui = { workspace = true }
+chrono = { workspace = true } # the "{n}m ago" words and the reader's local date
+
+[dev-dependencies]
+# The catalog rows the Follow chart tests list (`Instrument`, `Contract`).
+vike-model = { path = "../vike-model" }
+
+# Workspace lint policy (root manifest): forbids `unsafe_code`.
+[lints]
+workspace = true

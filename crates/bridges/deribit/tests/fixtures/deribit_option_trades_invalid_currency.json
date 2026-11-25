@@ -1,0 +1,1 @@
+{"usOut":1794859016945094,"usIn":1794859016943195,"usDiff":1899,"testnet":false,"jsonrpc":"2.0","error":{"message":"Invalid params","data":{"reason":"invalid currency","param":"currency"},"code":-32602}}

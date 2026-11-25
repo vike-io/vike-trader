@@ -1,0 +1,811 @@
+use super::day;
+use super::store::STORE_ACTIONS;
+use super::{
+    DataManagerActivityLogPlane, DataManagerGapCut, DataManagerProviderPlane,
+    DataManagerSymbolSetMemberCut, GAP_SEGMENTS, LOG_SEGMENTS, MEMBER_SEGMENTS, PROVIDER_SEGMENTS,
+    STALE_SORTS, backfillable, feed_cell, fetch_dot, fmt_series_dt, gapped_series_keys, legend,
+    log_plane, member_cell, member_is_stale, member_keys, member_series, provider_names_a_venue,
+    span_label, stale_series_keys, suggest_symbols, symbol_set_groups, symbol_set_load_form,
+    warning_legend,
+};
+use crate::ui::caption::test_shapes::{pass, raw};
+use crate::ui::windows::WindowView;
+use vike_data::SeriesCoverage;
+use vike_data::datasets::SymbolSet;
+use vike_data_manager::{
+    DataManagerInventoryGapMap, DataManagerInventorySeriesKey, DataManagerInventorySortColumn,
+    DataManagerInventorySymbol, stale_cutoff_ms,
+};
+use vike_data_manager::{DataManagerInventorySeries, DataManagerInventoryVenue};
+use vike_datahub_client::tool_feeds::poll::DatahubPollHealth;
+use vike_model::StoreKindId;
+use vike_tradehub_client::wire::{AccountDirectoryVenueWire, AccountDirectoryWire};
+use vike_ui_theme::appearance::ThemeAppearance;
+use vike_ui_theme::components::segmented::ThemeSegment;
+use vike_ui_theme::components::{ThemeStatus, ThemeTokens};
+use vike_ui_theme::painted::{context_with, texts};
+use vike_ui_theme::type_scale::ThemeTextRole;
+
+/// One day in epoch-ms — every timestamp below is built from it so the arithmetic in the
+/// assertions is readable rather than a wall of thirteen-digit literals.
+const DAY: i64 = 86_400_000;
+
+/// A one-venue tree: `binance` with two symbols, each carrying one series whose `last_timestamp` is
+/// the caller's. `first_timestamp` is pinned at day 0 so the tree-wide window is the caller's to set
+/// through the LATEST row.
+fn tree(rows: &[(&str, &str, Option<&str>, i64)]) -> Vec<DataManagerInventoryVenue> {
+    let symbols: Vec<DataManagerInventorySymbol> = rows
+        .iter()
+        .map(|(symbol, kind, interval, last_day)| DataManagerInventorySymbol {
+            symbol: (*symbol).to_string(),
+            grouped: false,
+            series: vec![DataManagerInventorySeries {
+                kind: kind.parse().unwrap(),
+                interval: interval.map(str::to_string),
+                source: None,
+                coverage: SeriesCoverage {
+                    first_timestamp: 0,
+                    last_timestamp: last_day * DAY,
+                    ..Default::default()
+                },
+            }],
+            total: Default::default(),
+        })
+        .collect();
+    vec![DataManagerInventoryVenue {
+        venue: "binance".to_string(),
+        symbols,
+        total: Default::default(),
+    }]
+}
+
+/// One planted row for [`member_tree`]: venue, symbol, grouped, kind, interval, last-day index.
+///
+/// ⚠ A `type` rather than the tuple spelled at the parameter: `clippy::type_complexity` counts
+/// six components as too many to read at a call site, and `-D warnings` makes that a build
+/// failure rather than advice. The sibling `DataManagerSymbolSetMember` alias exists for the same lint one screen
+/// up — this one was written as a bare tuple and the lane was the first thing to say so.
+type MemberRow<'a> = (&'a str, &'a str, bool, &'a str, Option<&'a str>, i64);
+
+/// A MULTI-venue tree for the member-symbol derivations: one row per SERIES, as
+/// `(venue, symbol, grouped, kind, interval, last_day)`, folded into venue → symbol nodes in
+/// the order given.
+///
+/// ⚠ `tree` above cannot serve these and the reason is the whole point of the tests below: it
+/// builds exactly ONE venue, always named `binance`, with one series per symbol and
+/// `grouped: false` on every node — and the provider scoping, the `Auto` span and the
+fn member_tree(rows: &[MemberRow<'_>]) -> Vec<DataManagerInventoryVenue> {
+    let mut venues: Vec<DataManagerInventoryVenue> = Vec::new();
+    for (venue, symbol, grouped, kind, interval, last_day) in rows {
+        let series = DataManagerInventorySeries {
+            kind: kind.parse().unwrap(),
+            interval: interval.map(str::to_string),
+            source: None,
+            coverage: SeriesCoverage {
+                first_timestamp: 0,
+                last_timestamp: last_day * DAY,
+                ..Default::default()
+            },
+        };
+        // ⚠ Indices, not `iter_mut().find()`: the borrow that a `find` holds over the match
+        // scrutinee extends into the `None` arm that wants to push, which NLL rejects. A
+        // `position` returns a plain `usize` and holds nothing.
+        let vi = match venues.iter().position(|v| v.venue == *venue) {
+            Some(i) => i,
+            None => {
+                venues.push(DataManagerInventoryVenue {
+                    venue: (*venue).to_string(),
+                    symbols: Vec::new(),
+                    total: Default::default(),
+                });
+                venues.len() - 1
+            }
+        };
+        let v = &mut venues[vi];
+        // Keyed on (label, GROUPED) exactly as `build_inventory_tree` keys it — a grouped node and a
+        // per-symbol one may share a label and are different instruments.
+        let si = match v.symbols.iter().position(|s| s.symbol == *symbol && s.grouped == *grouped) {
+            Some(i) => i,
+            None => {
+                v.symbols.push(DataManagerInventorySymbol {
+                    symbol: (*symbol).to_string(),
+                    grouped: *grouped,
+                    series: Vec::new(),
+                    total: Default::default(),
+                });
+                v.symbols.len() - 1
+            }
+        };
+        v.symbols[si].series.push(series);
+    }
+    venues
+}
+
+fn key(symbol: &str, kind: &str, interval: Option<&str>) -> DataManagerInventorySeriesKey {
+    DataManagerInventorySeriesKey {
+        venue: "binance".to_string(),
+        symbol: symbol.to_string(),
+        kind: kind.parse().unwrap(),
+        interval: interval.map(str::to_string),
+        grouped: false,
+        source: None,
+    }
+}
+
+fn dataset() -> SymbolSet {
+    SymbolSet {
+        name: "Majors".to_string(),
+        provider: "binance".to_string(),
+        interval: "5m".to_string(),
+        benchmark: "BTCUSDT".to_string(),
+        symbols: vec!["BTCUSDT".to_string(), "ETHUSDT".to_string()],
+        user: true,
+    }
+}
+
+#[test]
+fn series_dt_renders_utc_and_dashes_the_empty_sentinel() {
+    assert_eq!(fmt_series_dt(1_700_000_000_000), "2023-11-14 22:13");
+    // The "no coverage" sentinel and anything before the epoch stay an em-dash.
+    assert_eq!(fmt_series_dt(0), "—");
+    assert_eq!(fmt_series_dt(-1), "—");
+}
+
+#[test]
+fn load_form_copies_the_symbol_set_into_the_editor_and_clears_the_symbol_pick() {
+    let mut tv =
+        WindowView { symbol_set_symbol_selection: Some("STALE".to_string()), ..Default::default() };
+    symbol_set_load_form(&mut tv, &dataset());
+    assert_eq!(tv.symbol_set_selection.as_deref(), Some("Majors"));
+    assert_eq!(tv.symbol_set_name, "Majors");
+    assert_eq!(tv.symbol_set_provider, "binance");
+    assert_eq!(tv.symbol_set_interval, "5m");
+    assert_eq!(tv.symbol_set_benchmark, "BTCUSDT");
+    // Symbols land in the multiline editor as the comma-joined text the tab edits.
+    assert_eq!(tv.symbol_set_symbols_text, "BTCUSDT, ETHUSDT");
+    // A previous tab's symbol pick must NOT survive a DataSet switch (it would "Test" a
+    // symbol that is not in the newly-loaded set).
+    assert_eq!(tv.symbol_set_symbol_selection, None);
+}
+
+// ===== The action strips' pure folds =====
+
+#[test]
+fn stale_keys_are_the_series_lagging_more_than_a_third_of_the_window() {
+    // A 100-day window, so the 35% threshold falls at 35 days behind the newest row: a series
+    // whose last row is at day 64 is 36 days behind and stale, one at day 66 is 34 and is not.
+    // The window is passed EXPLICITLY rather than through `global_span`, which reads each
+    // venue's rollup — the fixture leaves those at their defaults because the fold under test
+    // walks the series rows and never looks at a rollup.
+    let t = tree(&[
+        ("BTCUSDT", "bar", Some("1m"), 100),
+        ("ETHUSDT", "trade", None, 64),
+        ("SOLUSDT", "bar", Some("1h"), 66),
+    ]);
+    let stale = stale_series_keys(&t, 0, 100 * DAY);
+    assert_eq!(stale, vec![key("ETHUSDT", "trade", None)]);
+    // The predicate is the shared crate's, so the two cannot disagree about a row.
+    assert!(vike_data_manager::is_stale(64 * DAY, 0, 100 * DAY));
+    assert!(!vike_data_manager::is_stale(66 * DAY, 0, 100 * DAY));
+}
+
+#[test]
+fn a_zero_width_window_makes_nothing_stale() {
+    // An empty or single-instant tree: `global_span` answers `(0, 0)` and `is_stale` refuses a
+    // window whose end is not after its start, so the screen must offer to update NOTHING
+    // rather than every row it can see.
+    let t = tree(&[("BTCUSDT", "bar", Some("1m"), 100)]);
+    assert!(stale_series_keys(&t, 0, 0).is_empty());
+    assert_eq!(stale_cutoff_ms(0, 0), None);
+}
+
+#[test]
+fn the_stale_cutoff_is_the_thirty_five_percent_point_of_the_window() {
+    // 100 days wide ⇒ the cut-off sits 35 days before the newest row. This is the date the
+    // strip prints, so it has to be the same arithmetic `is_stale` applies.
+    assert_eq!(stale_cutoff_ms(0, 100 * DAY), Some(65 * DAY));
+    // ...and a row exactly ON the cut-off is NOT stale (`is_stale` is a strict `>`), which is
+    // why the legend says "before" rather than "on or before".
+    assert!(!vike_data_manager::is_stale(65 * DAY, 0, 100 * DAY));
+}
+
+#[test]
+fn gapped_keys_skip_a_series_that_was_fetched_and_found_whole() {
+    // ⚠ The distinction this test exists for: `DataManagerInventoryGapMap` holds an entry for every series whose
+    // gaps were FETCHED, so a whole series sits in the map with an EMPTY list. Counting the
+    // map's length — which the rail badge does deliberately, for cost — would put that series
+    // on a screen whose whole claim is that every row on it has a hole.
+    let t = tree(&[
+        ("BTCUSDT", "bar", Some("1m"), 100),
+        ("ETHUSDT", "trade", None, 100),
+        ("SOLUSDT", "quote", None, 100),
+    ]);
+    let mut gaps = DataManagerInventoryGapMap::new();
+    gaps.insert(key("BTCUSDT", "bar", Some("1m")), vec![(10 * DAY, 12 * DAY)]);
+    gaps.insert(key("ETHUSDT", "trade", None), Vec::new());
+    // SOLUSDT is absent from the map entirely — never fetched, treated as gap-free.
+    assert_eq!(gaps.len(), 2, "the map itself holds two entries");
+    assert_eq!(gapped_series_keys(&t, &gaps), vec![key("BTCUSDT", "bar", Some("1m"))]);
+}
+
+#[test]
+fn backfillable_is_bar_with_an_interval_and_carries_no_venue_term() {
+    // Mirrors `crate::data::backfill::plan::plan_backfill_jobs`' ONE client-side gate. A bar series
+    // with no interval cannot be requested at any resolution, so it is a skip like the rest.
+    let keys = [
+        key("BTCUSDT", "bar", Some("1m")),
+        key("ETHUSDT", "bar", None),
+        key("SOLUSDT", "trade", None),
+        key("XRPUSDT", "quote", None),
+    ];
+    assert_eq!(backfillable(&keys), 1);
+    // ⚠ And the property the design mock's hover text would break: the venue is NOT part of
+    // the gate. An off-roster venue is still planned and sent, so the server's own refusal
+    // names the server's supported set — see `backfillable`'s doc.
+    let off_roster = [DataManagerInventorySeriesKey {
+        venue: "a-venue-this-build-never-heard-of".to_string(),
+        symbol: "BTCUSDT".to_string(),
+        kind: StoreKindId::Bar,
+        interval: Some("1m".to_string()),
+        grouped: false,
+        source: None,
+    }];
+    assert_eq!(backfillable(&off_roster), 1);
+}
+
+#[test]
+fn span_label_states_the_window_or_says_it_has_none() {
+    assert_eq!(span_label(0, 10 * DAY), "1970-01-01 → 1970-01-11 · 10 d");
+    // A zero-width or inverted window prints no dates at all rather than a one-day span that
+    // was never measured.
+    assert_eq!(span_label(0, 0), "no span yet");
+    assert_eq!(span_label(10 * DAY, 0), "no span yet");
+}
+
+#[test]
+fn log_plane_classifies_both_of_todays_producers_as_feeds() {
+    // These are the EXACT two shapes written today — this module's Refresh, and
+    // `crates/vike-desktop/src/app_ui/tool_pane.rs`'s `data_delete` drain. If either ever reads as
+    // something else, the log's default `Feeds` segment silently stops showing the only lines
+    // that exist.
+    assert_eq!(log_plane("17:42:06  Refreshed · 14 series"), DataManagerActivityLogPlane::Feeds);
+    assert_eq!(log_plane("17:05:12  Stopped BTCUSDT@1m"), DataManagerActivityLogPlane::Feeds);
+}
+
+#[test]
+fn log_plane_routes_the_store_and_backfill_vocabulary() {
+    assert_eq!(
+        log_plane("17:37:55  bybit 1m bar — 4,320 rows appended"),
+        DataManagerActivityLogPlane::Backfill
+    );
+    assert_eq!(log_plane("17:36:02  okx rollup refreshed"), DataManagerActivityLogPlane::Store);
+    assert_eq!(log_plane("16:51:44  gap sweep — 7 series"), DataManagerActivityLogPlane::Store);
+    // ⚠ Precedence, stated as a test rather than only in prose: a backfill line routinely
+    // names the store it wrote into, and "what did this do" is the more specific question.
+    assert_eq!(
+        log_plane("17:19:55  backfill wrote to the store"),
+        DataManagerActivityLogPlane::Backfill
+    );
+}
+
+/// Every segmented control offers each of its values once, gives each a hover text, and opens on
+/// its leftmost segment — the value a screen falls back to when egui evicts its temp memory. The
+/// segment carries its value, so the index arrays and `as usize` casts this replaced are gone.
+#[test]
+fn every_segment_roster_offers_each_value_once_and_leads_with_the_default() {
+    fn check<T: PartialEq + Copy + std::fmt::Debug>(
+        name: &str,
+        segments: &[ThemeSegment<'_, T>],
+        lead: T,
+        all: &[T],
+    ) {
+        assert_eq!(segments[0].value, lead, "{name}: a fresh screen opens on the leftmost segment");
+        assert_eq!(segments.len(), all.len(), "{name}");
+        for v in all {
+            assert_eq!(segments.iter().filter(|s| s.value == *v).count(), 1, "{name}: {v:?}");
+        }
+        assert!(segments.iter().all(|s| !s.why.is_empty()), "{name}: a segment without a hover");
+    }
+    check(
+        "gap",
+        &GAP_SEGMENTS,
+        DataManagerGapCut::default(),
+        &[DataManagerGapCut::PerSeries, DataManagerGapCut::CrossKind],
+    );
+    check(
+        "member",
+        &MEMBER_SEGMENTS,
+        DataManagerSymbolSetMemberCut::default(),
+        &[DataManagerSymbolSetMemberCut::AllMembers, DataManagerSymbolSetMemberCut::StaleOnly],
+    );
+    check(
+        "provider",
+        &PROVIDER_SEGMENTS,
+        DataManagerProviderPlane::default(),
+        &[
+            DataManagerProviderPlane::Historical,
+            DataManagerProviderPlane::Event,
+            DataManagerProviderPlane::Streaming,
+        ],
+    );
+    check(
+        "log",
+        &LOG_SEGMENTS,
+        None,
+        &[
+            None,
+            Some(DataManagerActivityLogPlane::Feeds),
+            Some(DataManagerActivityLogPlane::Backfill),
+            Some(DataManagerActivityLogPlane::Store),
+        ],
+    );
+    assert_eq!(MEMBER_SEGMENTS[0].label, "all members");
+    assert_eq!(MEMBER_SEGMENTS[1].label, "stale only");
+}
+
+/// A Providers > Event dot is the health the poll set, never a reading of the line: a feed not
+/// asked yet is muted (not a fault), a refusal is red whatever its words, and a stale or warming
+/// feed is neither green nor red.
+#[test]
+fn a_fetch_dot_is_the_health_the_poll_set() {
+    let colour = |s: ThemeStatus| s.color();
+    assert_eq!(fetch_dot(DatahubPollHealth::Unasked), colour(ThemeStatus::Muted));
+    assert_eq!(fetch_dot(DatahubPollHealth::Reconnecting), colour(ThemeStatus::Muted));
+    assert_eq!(fetch_dot(DatahubPollHealth::Live), colour(ThemeStatus::Ok));
+    assert_eq!(fetch_dot(DatahubPollHealth::Stale), colour(ThemeStatus::Warning));
+    assert_eq!(fetch_dot(DatahubPollHealth::Warming), colour(ThemeStatus::Info));
+    assert_eq!(fetch_dot(DatahubPollHealth::Unavailable), colour(ThemeStatus::Error));
+}
+
+/// One Cached-feeds cell: the key is split into venue, symbol and interval, the bar count is
+/// grouped, and the bounds are UTC. With no directory the Source column is the feed's venue KEY,
+/// never a spelling invented here.
+#[test]
+fn feed_cells_split_the_key_and_format_the_bounds() {
+    let feed = ("binance:BTCUSDT@1m".to_string(), 1_440, 1_700_000_000_000, 0);
+    let row: Vec<String> = (0..6).map(|c| feed_cell(&feed, c, None)).collect();
+    assert_eq!(row, ["BTCUSDT", "1m", "1,440", "2023-11-14 22:13", "—", "binance"]);
+}
+
+fn titled(pairs: &[(&str, &str)]) -> AccountDirectoryWire {
+    AccountDirectoryWire {
+        venues: pairs
+            .iter()
+            .map(|(name, title)| AccountDirectoryVenueWire {
+                name: (*name).to_string(),
+                title: Some((*title).to_string()),
+            })
+            .collect(),
+        accounts: vec![],
+    }
+}
+
+/// I15(b) of the Trade window plan: a feed's Source is ITS OWN venue (the `venue:` prefix of its
+/// key), spelled as the settings database spells it. The
+/// column read "Binance" for every feed, an okx one included.
+#[test]
+fn a_feeds_source_is_its_own_venue_spelled_by_the_directory() {
+    let okx = ("okx:BTC-USDT@5m".to_string(), 1, 0, 0);
+    let dir = titled(&[("okx", "OKX")]);
+    assert_eq!(feed_cell(&okx, 0, Some(&dir)), "BTC-USDT", "the venue is the Source column's");
+    assert_eq!(feed_cell(&okx, 1, Some(&dir)), "5m");
+    assert_eq!(feed_cell(&okx, 5, Some(&dir)), "OKX");
+    assert_eq!(feed_cell(&okx, 5, None), "okx", "no directory: the key");
+}
+
+/// I15(a): the DataSet tree's groups are the providers the sets actually name, sorted, each
+/// spelled as the settings database spells it (else its key) — never a venue list in code. `Auto`
+/// is the form's sentinel, not a venue, so it heads no group; "All" and "My symbol sets" stay.
+#[test]
+fn the_symbol_set_groups_are_the_providers_the_sets_name_spelled_by_the_directory() {
+    let set = |name: &str, provider: &str, user: bool| SymbolSet {
+        name: name.into(),
+        symbols: vec![],
+        provider: provider.into(),
+        interval: "1m".into(),
+        benchmark: String::new(),
+        user,
+    };
+    let sets = vec![
+        set("FX", "dukascopy", false),
+        set("Mine", "Auto", true),
+        set("Crypto", "binance", false),
+        set("Alts", "binance", true),
+    ];
+    let dir = titled(&[("binance", "Binance")]);
+    let groups = symbol_set_groups(&sets, Some(&dir));
+    let labels: Vec<&str> = groups.iter().map(|g| g.label.as_str()).collect();
+    assert_eq!(labels, ["All", "Binance", "dukascopy", "My symbol sets"]);
+    let members = |label: &str| -> Vec<&str> {
+        let g = groups.iter().find(|g| g.label == label).expect("a group");
+        sets.iter().filter(|d| g.has(d)).map(|d| d.name.as_str()).collect()
+    };
+    assert_eq!(members("All"), ["FX", "Mine", "Crypto", "Alts"]);
+    assert_eq!(members("Binance"), ["Crypto", "Alts"]);
+    assert_eq!(members("dukascopy"), ["FX"]);
+    assert_eq!(members("My symbol sets"), ["Mine", "Alts"]);
+    let bare: Vec<String> = symbol_set_groups(&sets, None).into_iter().map(|g| g.label).collect();
+    assert_eq!(bare, ["All", "binance", "dukascopy", "My symbol sets"], "no directory: the keys");
+}
+
+// ===== The DataSet member-symbol derivations =====
+//
+// ⚠ These had NO tests while they were block-local inside the `DataSets` arm — the
+// `#[cfg(test)]` module cannot reach a block-local item — and closing that is what the move to
+// module scope was for. Each test below pins a claim that previously lived only in a doc
+// comment.
+
+#[test]
+fn provider_names_a_venue_refuses_only_the_sentinel_and_the_blank() {
+    assert!(provider_names_a_venue("binance"));
+    assert!(provider_names_a_venue("dukascopy"));
+    // `Auto` is what the form's dropdown OPENS on, so it is the common case, not the odd one.
+    assert!(!provider_names_a_venue("Auto"));
+    assert!(!provider_names_a_venue("AUTO"), "the sentinel is case-blind");
+    assert!(!provider_names_a_venue(""));
+    assert!(!provider_names_a_venue("  \t "), "whitespace is blank");
+    // ⚠ The sentinel is refused as a WHOLE value, never as a substring — a venue whose name
+    // merely begins with those four letters is a venue.
+    assert!(provider_names_a_venue("autotrader"));
+}
+
+/// **Ask the AI suggests from the kept instrument lists, never from a compiled one**: the prompt's
+/// count and drawer word pick rows the catalog lists, on the form's provider when it names a venue,
+/// each symbol once; an empty catalog suggests nothing.
+#[test]
+fn the_suggester_reads_the_kept_lists_and_nothing_else() {
+    use vike_catalog::Catalog;
+    use vike_model::{Contract, Instrument};
+    let spot = |venue: &str, symbol: &str| {
+        Instrument::new(venue, symbol, "AAA", "BBB", Contract::CryptoSpot)
+    };
+    let catalog = Catalog::from_instruments(vec![
+        spot("venue-a", "ONEPAIR"),
+        Instrument::new("venue-a", "AN-INDEX", "AN", "IDX", Contract::Index),
+        spot("venue-a", "TWOPAIR"),
+        spot("venue-b", "ONEPAIR"),
+        spot("venue-b", "THREEPAIR"),
+    ]);
+    assert_eq!(
+        suggest_symbols("3 crypto", &catalog, "Auto"),
+        ["ONEPAIR", "TWOPAIR", "THREEPAIR"],
+        "every venue under Auto, each symbol once, crypto only"
+    );
+    assert_eq!(suggest_symbols("top 1", &catalog, "venue-b"), ["ONEPAIR"], "the count");
+    assert_eq!(
+        suggest_symbols("crypto", &catalog, "venue-b"),
+        ["ONEPAIR", "THREEPAIR"],
+        "the provider"
+    );
+    assert!(suggest_symbols("10 stocks", &catalog, "Auto").is_empty(), "the drawer word");
+    assert!(
+        suggest_symbols("10 crypto", &Catalog::from_instruments(Vec::new()), "Auto").is_empty(),
+        "no list loaded, nothing suggested"
+    );
+}
+
+#[test]
+fn an_unstored_member_is_not_stale_because_it_has_no_last_timestamp_to_judge() {
+    // The same 100-day window the sibling stale tests use: 35% puts the cut-off at day 65.
+    let behind = vec![(key("DOGEUSDT", "bar", Some("1m")), 40 * DAY)];
+    let fresh = vec![(key("BTCUSDT", "bar", Some("1m")), 100 * DAY)];
+    assert!(member_is_stale(&behind, 0, 100 * DAY));
+    assert!(!member_is_stale(&fresh, 0, 100 * DAY));
+    // ⚠ THE CLAIM the `· not stored` row marker and the strip's legend both rest on: a member
+    // the store holds NOTHING for is not stale. There is no `last_timestamp` to judge, and "never
+    // fetched" is a different condition from "fallen behind" — conflating them would make
+    // `stale only` quietly mean two things. An `any` over an empty slice is `false` by
+    // construction, so this test exists for the OTHER direction: a future "treat unstored as
+    // maximally stale" edit has to argue with something rather than reading as a fix.
+    assert!(!member_is_stale(&[], 0, 100 * DAY));
+    // ...and it stays false with no window at all, so an empty tree cannot make every member
+    // on every DataSet stale at once.
+    assert!(!member_is_stale(&[], 0, 0));
+}
+
+#[test]
+fn a_member_is_stale_when_any_one_of_its_series_is() {
+    // `any`, not `all`: a symbol whose 1m bars are current but whose trade tape stopped months
+    // ago IS behind, and the screen must not hide it because one series of several is fresh.
+    let mixed = vec![
+        (key("ETHUSDT", "bar", Some("1m")), 100 * DAY),
+        (key("ETHUSDT", "trade", None), 20 * DAY),
+    ];
+    assert!(member_is_stale(&mixed, 0, 100 * DAY));
+}
+
+#[test]
+fn member_series_matches_case_insensitively_in_both_directions() {
+    let t = member_tree(&[
+        ("binance", "btcusdt", false, "bar", Some("1m"), 100),
+        ("bybit", "BTCUSDT", false, "bar", Some("1m"), 40),
+    ]);
+    // ⚠ `datasets::parse_symbols` UPPER-CASES whatever the operator typed, while the store's
+    // spelling is the store's. Match either side exactly and a venue that writes `btcusdt`
+    // reads as "not stored" on this screen while holding a year of bars.
+    assert_eq!(member_series(&t, "binance", "BTCUSDT").len(), 1);
+    assert_eq!(member_series(&t, "bybit", "btcusdt").len(), 1);
+    // The PROVIDER is compared the same way, and trimmed — the field is free text on a form.
+    assert_eq!(member_series(&t, "  BINANCE ", "BTCUSDT").len(), 1);
+}
+
+#[test]
+fn auto_spans_every_venue_while_a_named_provider_refuses_the_others() {
+    let t = member_tree(&[
+        ("binance", "BTCUSDT", false, "bar", Some("1m"), 100),
+        ("bybit", "BTCUSDT", false, "bar", Some("1m"), 40),
+        ("okx", "ETHUSDT", false, "bar", Some("1m"), 40),
+    ]);
+    // `Auto` is what the form opens on and it means "wherever this lives", so it spans venues.
+    let spanned = member_series(&t, "Auto", "BTCUSDT");
+    let venues: Vec<&str> = spanned.iter().map(|(k, _)| k.venue.as_str()).collect();
+    assert_eq!(venues, vec!["binance", "bybit"]);
+    // An empty provider is the same sentinel by another spelling: a set naming no venue cannot
+    // scope to one.
+    assert_eq!(member_series(&t, "", "BTCUSDT").len(), 2);
+    // ⚠ A named provider refuses the other venues' rows OUTRIGHT. The member reads as "not
+    // stored" at that venue even though the symbol exists elsewhere — which is what the set
+    // declared, and what makes the synthesized backfill key below the right answer for it.
+    assert!(member_series(&t, "okx", "BTCUSDT").is_empty());
+}
+
+#[test]
+fn a_grouped_node_is_never_matched_as_a_member_symbol() {
+    // ⚠ A GROUPED node's `symbol` field holds the GROUP NAME, not a symbol
+    // (`vike_data_manager::DataManagerInventorySymbol::grouped`'s own doc). A member called `MAJORS` must
+    // therefore NOT pick up a grouped node of the same name: it would be judged stale on this
+    // screen and queued for backfill under a name no venue trades. `crate::data::data_manager`
+    // records the same class of bug from the load side, which is why the skip is pinned here
+    // rather than resting on a comment.
+    let t = member_tree(&[
+        ("binance", "MAJORS", true, "bar", Some("1m"), 10),
+        ("binance", "MAJORS", false, "bar", Some("1m"), 100),
+    ]);
+    let hit = member_series(&t, "binance", "MAJORS");
+    assert_eq!(hit.len(), 1, "only the per-symbol node may match");
+    // ...and it is the PER-SYMBOL one. The grouped node's day-10 row would have flipped this
+    // member to stale against a 100-day window, so the skip is load-bearing, not tidiness.
+    assert_eq!(hit[0].1, 100 * DAY);
+    assert!(!member_is_stale(&hit, 0, 100 * DAY));
+    // With ONLY the grouped node present, the member resolves to nothing at all — and then
+    // reads as `· not stored`, which is the honest answer: no venue holds `MAJORS`.
+    let grouped_only = member_tree(&[("binance", "MAJORS", true, "bar", Some("1m"), 10)]);
+    assert!(member_series(&grouped_only, "binance", "MAJORS").is_empty());
+}
+
+#[test]
+fn member_keys_prefer_the_stored_series_over_the_sets_declaration() {
+    // BRANCH 1. Real keys carry the venue, kind and interval the store actually holds, and are
+    // what `crate::data::backfill::plan::plan_backfill_jobs` can look gap ranges up for — a
+    // synthesized key would instead re-fetch a default lookback over data already on disk.
+    let stored = vec![
+        (key("BTCUSDT", "bar", Some("1m")), 100 * DAY),
+        (key("BTCUSDT", "trade", None), 100 * DAY),
+    ];
+    let keys = member_keys(&stored, "binance", "5m", "BTCUSDT");
+    assert_eq!(keys, vec![key("BTCUSDT", "bar", Some("1m")), key("BTCUSDT", "trade", None)]);
+    // ⚠ BOTH are returned, the non-`bar` one included: the PLANNER counts that one as a skip
+    // and the button's hover reports it, so a kind this window cannot fetch is surfaced rather
+    // than silently dropped here.
+    assert_eq!(backfillable(&keys), 1);
+    // The set's own interval is NOT imposed on a stored series — `5m` appears nowhere.
+    assert!(keys.iter().all(|k| k.interval.as_deref() != Some("5m")));
+}
+
+#[test]
+fn an_unstored_member_synthesizes_one_bar_key_from_the_sets_own_declaration() {
+    // BRANCH 2 — the case the Has-gaps and Stale strips never meet, because they queue rows
+    // that are in the store by construction. A DataSet is a WISHLIST, and its most useful day
+    // is the one where none of its symbols has been fetched yet.
+    let keys = member_keys(&[], "binance", "5m", "SOLUSDT");
+    assert_eq!(keys, vec![key("SOLUSDT", "bar", Some("5m"))]);
+    // `bar` is not a guess: it is the only kind an INTERVAL can mean, and it is exactly what
+    // the downstream gate asks for.
+    assert_eq!(backfillable(&keys), 1);
+    // Both fields are trimmed on the way in, so a padded form value still makes a clean key.
+    assert_eq!(member_keys(&[], " binance ", " 5m ", "SOLUSDT"), keys);
+    // ⚠ NO client-side venue roster, here either: an off-roster venue still produces a key, is
+    // still sent, and is answered by the SERVER's refusal naming the server's own set. That is
+    // the property `backfillable`'s doc argues for and the design mock's hover text broke.
+    let off_roster = member_keys(&[], "a-venue-this-build-never-heard-of", "1m", "BTCUSDT");
+    assert_eq!(off_roster.len(), 1);
+    assert_eq!(backfillable(&off_roster), 1);
+}
+
+#[test]
+fn auto_or_a_blank_interval_synthesizes_nothing_and_the_member_counts_as_a_skip() {
+    // BRANCH 3. ⚠ `Auto` is a UI sentinel, not a venue: a key carrying it would reach the
+    // datahub as a venue nobody has, and the refusal coming back would read as "the server
+    // cannot do this" when the truth is that this window sent a non-name. The button withholds
+    // the key and its disabled hover names both form fields instead.
+    assert!(member_keys(&[], "Auto", "5m", "BTCUSDT").is_empty());
+    assert!(member_keys(&[], "auto", "5m", "BTCUSDT").is_empty());
+    assert!(member_keys(&[], "", "5m", "BTCUSDT").is_empty());
+    assert!(member_keys(&[], "   ", "5m", "BTCUSDT").is_empty());
+    // An absent interval names no bar, so a real venue is not sufficient on its own.
+    assert!(member_keys(&[], "binance", "", "BTCUSDT").is_empty());
+    assert!(member_keys(&[], "binance", "  ", "BTCUSDT").is_empty());
+    // ⚠ ...and the branch ORDER, which is the part a reader could get backwards: a STORED
+    // series is still returned under `Auto` with no interval at all, because the store supplies
+    // the venue and the resolution the set declined to name. Only the SYNTHESIS needs them.
+    let stored = vec![(key("BTCUSDT", "bar", Some("1m")), 100 * DAY)];
+    assert_eq!(
+        member_keys(&stored, "Auto", "", "BTCUSDT"),
+        vec![key("BTCUSDT", "bar", Some("1m"))]
+    );
+}
+
+#[test]
+fn the_stale_sort_presets_point_the_way_their_labels_claim() {
+    // ⚠ `cmp_flat_row` compares `cov.last_timestamp` for `Updated` and `cov.rows` for `Rows`, so
+    // "oldest first" is ASCENDING and "most rows first" is DESCENDING. Either direction
+    // inverted produces a screen that is precisely backwards and looks fine.
+    let (label, sort) = (STALE_SORTS[0].label, STALE_SORTS[0].value.expect("a preset"));
+    assert_eq!(label, "oldest first");
+    assert_eq!(sort.column, DataManagerInventorySortColumn::Updated);
+    assert!(sort.ascending, "oldest first means the smallest last_timestamp leads");
+    let (label, sort) = (STALE_SORTS[1].label, STALE_SORTS[1].value.expect("a preset"));
+    assert_eq!(label, "most rows first");
+    assert_eq!(sort.column, DataManagerInventorySortColumn::Rows);
+    assert!(!sort.ascending, "most rows first means the largest row count leads");
+}
+
+/// One member-list cell: the symbol, or why it is marked. The old list's `· stale` / `· not stored`
+/// suffixes are now a column of their own. The order is the old list's: stale wins over empty.
+#[test]
+fn member_cells_name_the_symbol_and_why_it_is_marked() {
+    let behind: Vec<(DataManagerInventorySeriesKey, i64)> =
+        vec![(key("DOGEUSDT", "bar", Some("1m")), 40 * DAY)];
+    let stale = ("DOGEUSDT".to_string(), behind);
+    let unstored = ("SOLUSDT".to_string(), Vec::new());
+    let fresh = ("BTCUSDT".to_string(), vec![(key("BTCUSDT", "bar", Some("1m")), 100 * DAY)]);
+    let w = (0, 100 * DAY);
+    assert_eq!(member_cell(&stale, 0, w.0, w.1), "DOGEUSDT");
+    assert_eq!(member_cell(&stale, 1, w.0, w.1), "stale");
+    assert_eq!(member_cell(&unstored, 1, w.0, w.1), "not stored");
+    assert_eq!(member_cell(&fresh, 1, w.0, w.1), "");
+}
+
+/// `legend` and `warning_legend` are the one dim note of the Data window AND the Stored window's
+/// inspector (`stored.rs` drew its own `insp_note`/`insp_warning` copies until 2026-11-01): the
+/// Caption role in `text_tertiary`, the warning one led by `icons::WARNING` and a space. Red on a mutant
+/// that changes the role or the colour of either, or drops the icon.
+#[test]
+fn a_legend_is_a_dim_caption_and_a_warning_legend_leads_with_the_warning_icon() {
+    let context = context_with(&ThemeAppearance::default());
+    let shapes = pass(&context, raw(), |ui| {
+        legend(ui, "plain words");
+        warning_legend(ui, "read me first");
+    });
+    let t = ThemeTokens::of(&context);
+    let (size, dim) = (t.font(ThemeTextRole::Caption).size, t.theme.text_tertiary);
+    let icon = vike_ui_theme::icons::WARNING.rich().text().to_string();
+    let painted = texts(&shapes);
+    assert!(painted.contains(&("plain words".to_string(), size, dim)), "{painted:?}");
+    assert!(painted.contains(&(format!("{icon} read me first"), size, dim)), "{painted:?}");
+}
+
+/// `day` refuses to render the sentinel an empty tree used to produce.
+///
+/// ⚠ This is the reason `global_span` was fixed rather than worked around here. Before it
+/// returned `(0, 0)` for an empty tree it returned `(i64::MAX, i64::MIN)`, and By venue is the
+/// first caller that RENDERS the window as a date — `i64::MAX` epoch-ms is a date about 292
+/// million years out.
+#[test]
+fn an_empty_window_renders_as_a_dash_not_a_sentinel_date() {
+    assert_eq!(day(0), "—");
+    assert_eq!(day(-1), "—");
+    assert_ne!(day(1_700_000_000_000), "—");
+}
+
+/// The empty tree's window is `(0, 0)`, which is what the doc has always claimed.
+#[test]
+fn global_span_of_an_empty_tree_is_zero_width() {
+    assert_eq!(vike_data_manager::global_span(&[]), (0, 0));
+}
+
+/// Every dead Store action carries a REASON, and the reason is a sentence rather than the label
+/// said twice. A blank or echoing hover text is the failure this table exists to prevent.
+#[test]
+fn every_disabled_store_action_explains_itself() {
+    for (label, why) in STORE_ACTIONS {
+        assert!(why.len() > 40, "{label} has no real reason on it");
+        assert!(why.ends_with('.'), "{label}'s reason is not a sentence");
+        assert_ne!(label, why);
+    }
+}
+
+// -----------------------------------------------------------------------------------------------
+// The credential-store reads a Data window holds between frames (`DataManagerCredentialReads`).
+// -----------------------------------------------------------------------------------------------
+
+/// A credential read the tests count: `reads` is the seam the store would be opened through.
+fn counted_read(reads: &std::cell::Cell<usize>) -> super::DataManagerCredentialRead {
+    reads.set(reads.get() + 1);
+    super::DataManagerCredentialRead { grids: vike_account_manager::AccountManagerGrids::unread() }
+}
+
+/// **The store is read once per visit to a credential destination, never per frame**: a hundred
+/// frames on Gateway are one read; leaving drops it (and reads nothing), and coming back reads again.
+#[test]
+fn the_credential_store_is_read_once_per_visit_not_per_frame() {
+    use super::rail::DataManagerDestination as D;
+    let reads = std::cell::Cell::new(0);
+    let mut held = super::DataManagerCredentialReads::default();
+    for frame in 0..100 {
+        let (_, fresh) = held.read(D::Gateway, 0, || counted_read(&reads));
+        assert_eq!(fresh, frame == 0, "frame {frame}: only the arrival reads");
+    }
+    assert_eq!(reads.get(), 1, "a hundred frames on Gateway are ONE store read");
+
+    // Instruments renders the same read: moving to it keeps the one held.
+    let (_, fresh) = held.read(D::Instruments, 0, || counted_read(&reads));
+    assert!(!fresh);
+    assert_eq!(reads.get(), 1);
+
+    // A destination that renders no credential reads nothing and gets the UNREAD grid…
+    let (read, fresh) = held.read(D::AllSeries, 0, || counted_read(&reads));
+    assert!(!fresh && !read.grids.health().is_readable());
+    assert_eq!(reads.get(), 1);
+    // …and leaving dropped what was held, so the next visit reads afresh.
+    let (_, fresh) = held.read(D::Gateway, 0, || counted_read(&reads));
+    assert!(fresh);
+    assert_eq!(reads.get(), 2);
+}
+
+/// A credential write by THIS app (the editor's write count moved) or the Gateway Refresh reads
+/// again on the next frame, once; nothing else does.
+#[test]
+fn an_own_write_or_a_refresh_reads_the_store_again_once() {
+    use super::rail::DataManagerDestination as D;
+    let reads = std::cell::Cell::new(0);
+    let mut held = super::DataManagerCredentialReads::default();
+    held.read(D::Gateway, 7, || counted_read(&reads));
+    held.read(D::Gateway, 7, || counted_read(&reads));
+    assert_eq!(reads.get(), 1);
+
+    let (_, fresh) = held.read(D::Gateway, 8, || counted_read(&reads));
+    assert!(fresh, "a Save or Remove here moved the write count: read again");
+    held.read(D::Gateway, 8, || counted_read(&reads));
+    assert_eq!(reads.get(), 2, "once per write, not per frame after it");
+
+    held.refresh = true;
+    let (_, fresh) = held.read(D::Gateway, 8, || counted_read(&reads));
+    assert!(fresh, "the Refresh reads again");
+    held.read(D::Gateway, 8, || counted_read(&reads));
+    assert_eq!(reads.get(), 3, "the Refresh is spent by the read it asked for");
+}
+
+/// **A store that exists and cannot be read stays UNREADABLE while it is held**, never an empty
+/// "no credentials": the grid keeps the read's own verdict on every frame that reuses it.
+#[test]
+fn an_unreadable_store_is_held_as_unreadable_never_as_no_credentials() {
+    use super::rail::DataManagerDestination as D;
+    use std::collections::HashMap;
+    use vike_secrets::account_credentials::CredentialRegistry;
+    use vike_secrets::account_directory::AccountDirectory;
+    use vike_secrets::{AccountKeys, AccountRows};
+    let unreadable = || {
+        let denied = "permission denied";
+        let dir = AccountDirectory::read(
+            Err::<AccountRows, _>(denied),
+            Err::<Option<std::collections::BTreeMap<i64, AccountKeys>>, _>(denied),
+            Err::<CredentialRegistry, _>(denied),
+        );
+        let grids =
+            vike_account_manager::AccountManagerGrids::from_directory(&dir, &HashMap::new());
+        super::DataManagerCredentialRead { grids }
+    };
+    let mut held = super::DataManagerCredentialReads::default();
+    for _ in 0..3 {
+        let (read, _) = held.read(D::Gateway, 0, unreadable);
+        match read.grids.health() {
+            vike_secrets::credentials::StoreHealth::Unreadable(why) => {
+                assert!(why.contains("permission denied"), "{why}");
+            }
+            vike_secrets::credentials::StoreHealth::Readable => {
+                panic!("an unreadable store must stay unreadable, never read as empty")
+            }
+        }
+    }
+}

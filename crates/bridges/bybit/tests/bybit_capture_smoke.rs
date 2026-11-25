@@ -1,0 +1,266 @@
+//! LIVE sanitized-fixture CAPTURE arm (testing-arch plan §5, PR 5b) — bybit V5 linear-perp
+//! private-WS twin of `binance_capture_smoke.rs`:
+//!
+//!     VIKE_CAPTURE_FIXTURES=1 cargo test -p vike-bybit --test integration -- bybit_capture_smoke:: \
+//!         --ignored --nocapture
+//!
+//! Triple-gated: `#[ignore]` + demo creds in the workspace `.env` + the EXACT env string
+//! `VIKE_CAPTURE_FIXTURES=1` — a plain `--ignored` run without the env var self-skips, so the
+//! committed fixture files can never be rewritten by accident.
+//!
+//! The ladder (all REAL demo orders, position left flat): open the private WS
+//! (`execution`/`order`/`wallet` topics) with a raw-frame tap → rest a LIMIT ~10% below mark
+//! (order topic `New`) → cancel it (`Cancelled`) → MARKET BUY min qty (execution topic `Trade`) →
+//! MARKET SELL reduce-only (flatten). Frames are classified by what the REAL `map_bybit_perp`
+//! decodes them to, sanitized via `vike_bridge_core::capture`, and written to
+//! `tests/fixtures/captured/<kind>.json` with a provenance stamp — consumed by the CI'd
+//! `offline/captured_wire_replay.rs` and the conformance harness's captured-template sourcing (plan 5c).
+
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use serde_json::{Value, json};
+use vike_bridge_core::capture::FrameCapture;
+use vike_bridge_core::rest::VenueRest;
+use vike_bridge_core::transport::json::RestTransportJson;
+use vike_bridge_core::websocket_session::user::run_user;
+use vike_bybit::execution::event_mapper::map_bybit_perp;
+use vike_bybit::execution::rest::{
+    PATH_INSTRUMENTS, VenueRestBybit, parse_bybit_perp_instruments, seed_endpoints,
+};
+use vike_bybit::execution::user_data::open_bybit_user_data_websocket;
+use vike_bybit::signer::BybitV5Signer;
+use vike_bybit::transport::client::rest_transport;
+use vike_model::events::Event;
+use vike_model::now_ms;
+use vike_venues::reconnect::ReconnectBackoff;
+
+use vike_model::AccountTier;
+use vike_model::accounts::account_keys::AccountLabel;
+use vike_secrets::credentials::api_credentials;
+
+/// The linear perpetual's USER name (decision 0290): what the mapper, the orders and the reconcile client name, signed
+/// as its kept row's `BTCUSDT` in `linear` (`vike_bybit::history::kept_list_for_tests` holds the row).
+const SYMBOL: &str = "BTCUSDT.P";
+
+/// Classify one RAW frame by what the real mapper decodes it to — same kind vocabulary as the
+/// binance capture smoke (`ws_accepted`/`ws_fill`/`ws_fill_partial`/`ws_canceled`/`ws_account_state`).
+fn kind_of(frame: &Value) -> Option<&'static str> {
+    let events = map_bybit_perp(frame, "bybit", SYMBOL);
+    for event in &events {
+        match event {
+            Event::OrderAccepted(_) => return Some("ws_accepted"),
+            Event::OrderCanceled(_) => return Some("ws_canceled"),
+            Event::OrderFilled(_) => return Some("ws_fill"),
+            Event::OrderPartiallyFilled(_) => return Some("ws_fill_partial"),
+            Event::AccountState(_) => return Some("ws_account_state"),
+            _ => {}
+        }
+    }
+    None // op acks / order-topic Filled echoes (map to []) — not fixture material
+}
+
+#[test]
+#[ignore = "network + demo creds + VIKE_CAPTURE_FIXTURES=1 — rewrites committed fixtures (see module doc)"]
+fn bybit_capture_lifecycle_fixtures() {
+    vike_log::test_init();
+    vike_bybit::history::kept_list_for_tests();
+    if std::env::var("VIKE_CAPTURE_FIXTURES").as_deref() != Ok("1") {
+        tracing::warn!(target: "vike_bybit", "SKIP: VIKE_CAPTURE_FIXTURES != \"1\"");
+        return;
+    }
+    let directory = vike_secrets::smoke_directory();
+    let account = directory.credentials_for("bybit", &AccountLabel::Default, AccountTier::Demo);
+    let Some(creds) = api_credentials(&account, "bybit") else {
+        tracing::warn!(target: "vike_bybit", "SKIP: BYBIT_DEMO creds absent");
+        return;
+    };
+
+    // The demo hosts, from the release seed's rows.
+    let demo = seed_endpoints(AccountTier::Demo);
+    // --- REST client (instruments + mark), the exec-client-smoke setup ---
+    let transport =
+        rest_transport().with_rate_gate(vike_bybit::transport::ratelimit::rest_rate_gate());
+    let info = transport
+        .signed(
+            &demo.rest,
+            PATH_INSTRUMENTS,
+            "GET",
+            &[("category", json!("linear")), ("symbol", json!("BTCUSDT"))],
+            &BybitV5Signer::new(&creds, now_ms),
+        )
+        .expect("instruments-info");
+    let instrument = parse_bybit_perp_instruments(&info)["BTCUSDT"].clone();
+    let rest = VenueRestBybit {
+        category: vike_bybit::history::Category::Linear,
+        signer: BybitV5Signer::new(&creds, now_ms),
+        transport: rest_transport()
+            .with_rate_gate(vike_bybit::transport::ratelimit::rest_rate_gate()),
+        base_url: demo.rest.clone(),
+        mainnet: false,
+        symbol: "BTCUSDT".to_string(),
+        properties: instrument.properties,
+        leverage: 2.0,
+    };
+    let mark = rest.last_price().expect("last_price");
+
+    // --- the raw-frame tap: REAL open + REAL pump, decode routed through a capturing tee ---
+    let raw_frames: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (api_key, api_secret) = (creds.api_key.expose().clone(), creds.api_secret.expose().clone());
+    let (frames_t, stop_t, websocket_url) =
+        (Arc::clone(&raw_frames), Arc::clone(&stop), demo.ws.clone());
+    let pump = std::thread::Builder::new()
+        .name("bybit-capture-tap".into())
+        .spawn(move || {
+            let websocket_gate = vike_bybit::transport::ratelimit::websocket_rate_gate();
+            let ping =
+                |ws: &mut vike_bridge_core::websocket::WebsocketSessionUserStreamTungstenite| {
+                    let _ = ws.send_text(&vike_bybit::transport::ws_auth::ping_frame());
+                };
+            run_user(
+                || {
+                    open_bybit_user_data_websocket(
+                        &websocket_url,
+                        &api_key,
+                        &api_secret,
+                        now_ms,
+                        &["execution", "order", "wallet"],
+                        &stop_t,
+                        &websocket_gate,
+                    )
+                },
+                |frame| {
+                    frames_t.lock().unwrap().push(frame.clone());
+                    Vec::new() // capture-only tap: nothing to emit
+                },
+                |_| true,
+                &stop_t,
+                Duration::from_secs(1),
+                ReconnectBackoff::new(Duration::from_secs(1), Duration::from_secs(30)),
+                Some((Duration::from_secs(20), Box::new(ping))),
+                || {},
+                None, // no silent-stall watchdog
+                None,
+            )
+        })
+        .expect("spawn capture tap");
+    std::thread::sleep(Duration::from_secs(4)); // auth+subscribe settle (exec-smoke idiom)
+
+    // Poll the tap until a frame for `order_client_id` decodes to `want`, bounded.
+    let saw = |order_client_id: &str, want: &str, secs: u64| -> bool {
+        let deadline = Instant::now() + Duration::from_secs(secs);
+        while Instant::now() < deadline {
+            for f in raw_frames.lock().unwrap().iter() {
+                for event in map_bybit_perp(f, "bybit", SYMBOL) {
+                    let (c, k) = match &event {
+                        Event::OrderAccepted(x) => (x.order_client_id.clone(), "Accepted"),
+                        Event::OrderCanceled(x) => (x.order_client_id.clone(), "Canceled"),
+                        Event::OrderFilled(x) => (x.order_client_id.clone(), "Filled"),
+                        Event::OrderRejected(x) => {
+                            panic!("{} REJECTED: {}", x.order_client_id, x.reason)
+                        }
+                        _ => continue,
+                    };
+                    if c == order_client_id && k == want {
+                        return true;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(150));
+        }
+        false
+    };
+
+    // --- 1) LIMIT ~10% below mark rests → order-topic New; 2) cancel → Cancelled ---
+    let round =
+        |p: f64| (p / instrument.properties.tick_size).round() * instrument.properties.tick_size;
+    let px = round(mark * 0.90);
+    let rest_qty =
+        f64::max(instrument.properties.min_qty, (instrument.properties.min_notional * 1.4) / px);
+    let rest_qty =
+        (rest_qty / instrument.properties.step_size).ceil() * instrument.properties.step_size;
+    let order_client_id_rest = format!("vtrcapR{}", now_ms() % 100_000_000);
+    let req: vike_model::OrderRequest = serde_json::from_value(json!({
+        "order_client_id": order_client_id_rest, "venue": "bybit", "symbol": SYMBOL,
+        "side": 1, "qty": rest_qty, "order_type": "limit", "price": px, "ts": now_ms()
+    }))
+    .unwrap();
+    rest.submit_order(&req);
+    assert!(
+        saw(&order_client_id_rest, "Accepted", 15),
+        "{order_client_id_rest} never New on the WS"
+    );
+    rest.cancel_order(&order_client_id_rest).expect("cancel");
+    assert!(
+        saw(&order_client_id_rest, "Canceled", 15),
+        "{order_client_id_rest} never Cancelled on the WS"
+    );
+
+    // --- 3) MARKET BUY min qty → execution Trade (terminal); 4) MARKET SELL reduce-only ---
+    let qty =
+        f64::max(instrument.properties.min_qty, (instrument.properties.min_notional * 1.4) / mark);
+    let qty = (qty / instrument.properties.step_size).ceil() * instrument.properties.step_size;
+    let order_client_id_buy = format!("vtrcapB{}", now_ms() % 100_000_000);
+    let req: vike_model::OrderRequest = serde_json::from_value(json!({
+        "order_client_id": order_client_id_buy, "venue": "bybit", "symbol": SYMBOL,
+        "side": 1, "qty": qty, "order_type": "market", "ts": now_ms()
+    }))
+    .unwrap();
+    rest.submit_order(&req);
+    assert!(
+        saw(&order_client_id_buy, "Filled", 30),
+        "{order_client_id_buy} never Filled on the WS"
+    );
+
+    let order_client_id_sell = format!("vtrcapS{}", now_ms() % 100_000_000);
+    let req: vike_model::OrderRequest = serde_json::from_value(json!({
+        "order_client_id": order_client_id_sell, "venue": "bybit", "symbol": SYMBOL,
+        "side": -1, "qty": qty, "order_type": "market", "reduce_only": true, "ts": now_ms()
+    }))
+    .unwrap();
+    rest.submit_order(&req);
+    assert!(
+        saw(&order_client_id_sell, "Filled", 30),
+        "{order_client_id_sell} never Filled on the WS (flatten leg)"
+    );
+
+    // reconcile-confirm flat before writing anything (leave-flat etiquette)
+    std::thread::sleep(Duration::from_secs(2));
+    // ...through the production reconcile client (`vike_bybit::reconcile`), none read as flat
+    let base: f64 = vike_bybit::recon_client(&creds, SYMBOL, &demo.rest)
+        .expect("bybit recon_client is always Some")
+        .fetch_position_status_reports()
+        .expect("reconcile after")
+        .iter()
+        .map(|p| p.qty)
+        .sum();
+    assert!(base.abs() < instrument.properties.step_size * 1.5, "round trip must flatten: {base}");
+
+    // --- teardown the tap, then sanitize + write in emission order ---
+    stop.store(true, Ordering::Relaxed);
+    pump.join().expect("tap thread").expect("tap pump auth-clean");
+
+    let mut cap = FrameCapture::new(
+        "bybit",
+        format!(
+            "bybit V5 linear DEMO ({}) — bybit_capture_smoke ladder: rest-LIMIT/cancel + \
+             market round-trip (reduce-only flatten), real demo orders, position left flat",
+            demo.ws
+        ),
+    );
+    for f in raw_frames.lock().unwrap().iter() {
+        if let Some(kind) = kind_of(f) {
+            cap.capture(kind, f);
+        }
+    }
+    for kind in ["ws_accepted", "ws_fill", "ws_canceled"] {
+        assert!(cap.count(kind) > 0, "capture ladder must yield at least one {kind} frame");
+    }
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/captured");
+    let written = cap.write_all(&dir, now_ms()).expect("write fixtures");
+    for p in &written {
+        tracing::info!(target: "vike_bybit", "captured fixture written: {}", p.display());
+    }
+}

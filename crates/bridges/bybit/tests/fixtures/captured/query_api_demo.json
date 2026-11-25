@@ -1,0 +1,74 @@
+{
+  "_provenance": {
+    "captured_at_utc": "2026-11-22T21:04:30Z",
+    "frame_count": 1,
+    "kind": "query_api_demo",
+    "redacted_paths": [
+      "/result/apiKey",
+      "/result/parentUid",
+      "/result/secret",
+      "/result/userID"
+    ],
+    "sanitizer": "vike-bridge-core::capture v1",
+    "source": "bybit V5 DEMO (https://api-demo.bybit.com) — bybit_key_permissions_capture: one signed GET /v5/user/query-api, read-only; beside REDACT_KEYS the smoke blanked result's [\"id\", \"note\", \"ips\", \"inviterID\", \"affiliateID\", \"rsaPublicKey\", \"kycRegion\"]",
+    "venue": "bybit"
+  },
+  "frames": [
+    {
+      "result": {
+        "affiliateID": 0,
+        "apiKey": "[redacted:apikey]",
+        "createdAt": "2026-06-11T05:42:47Z",
+        "deadlineDay": 51,
+        "expiredAt": "2027-01-13T03:49:51Z",
+        "id": "[redacted:id]",
+        "inviterID": 0,
+        "ips": "[redacted:ips]",
+        "isMaster": false,
+        "kycLevel": "LEVEL_DEFAULT",
+        "kycRegion": "[redacted:kycregion]",
+        "mktMakerLevel": "0",
+        "note": "[redacted:note]",
+        "parentUid": "[redacted:parentuid]",
+        "permissions": {
+          "Affiliate": [],
+          "BlockTrade": [],
+          "ContractTrade": [
+            "Order",
+            "Position"
+          ],
+          "CopyTrading": [],
+          "Derivatives": [
+            "DerivativesTrade"
+          ],
+          "Exchange": [
+            "ExchangeHistory"
+          ],
+          "NFT": [],
+          "Options": [
+            "OptionsTrade"
+          ],
+          "Spot": [
+            "SpotTrade"
+          ],
+          "Wallet": [
+            "AccountTransfer",
+            "SubMemberTransferList"
+          ]
+        },
+        "readOnly": 0,
+        "rsaPublicKey": "[redacted:rsapublickey]",
+        "secret": "[redacted:secret]",
+        "type": 1,
+        "unified": 0,
+        "userID": 0,
+        "uta": 1,
+        "vipLevel": "No VIP"
+      },
+      "retCode": 0,
+      "retExtInfo": {},
+      "retMsg": "",
+      "time": 1795381470544
+    }
+  ]
+}

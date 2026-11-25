@@ -1,0 +1,5 @@
+# The adapter of SDK 3 (decision 0296's step 6; `crates/vike-rust-strategy/src/sdk.rs`'s `SdkAdapter`): a file pinned
+# to SDK 3 builds against this host's boundary through `face.rs` beside this file. The boundary below is the tag
+# sdk-3's tree as this vike's walk hashes it (its tokens), the hash SDK 3's own marker records.
+number = 3
+boundary_hash = "d87770334269b643"

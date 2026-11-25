@@ -1,0 +1,998 @@
+//! **The Account window, read off a real frame at the widths and pixel densities a desktop has.**
+//!
+//! The window was captured on a 2560-wide screen against the live node (v0.1.86) and four things
+//! were wrong that no test could see, because every earlier test ran on egui's 10,000-point default
+//! canvas, where nothing is ever cut:
+//!
+//! 1. the equity table listed `binance`, `bybit` and `hyperliquid` twice with nothing to tell the two
+//!    accounts of a venue apart, so a LIVE account read like a demo one (a safety defect);
+//! 2. numbers (`1006910.45`) and venue names (`hyperliquid`) were cut to `1006910…` / `hyperliq…` in
+//!    fixed-width cells, and nothing compared a text's width to its cell's;
+//! 3. a working order read `SELL 0.0010 stop ACCEPTED`, with no venue, symbol or order client id;
+//! 4. the tables took the left quarter of the window however wide it was.
+//!
+//! Each test below renders `account_tool_content` over a fixture shaped like that run (seventeen
+//! equity rows, duplicates of a venue among them, seven-digit equities, six working orders over two
+//! venues) at three widths and two densities, and reads the painted text: a `Shape::Text`'s galley
+//! says whether it was elided (`Galley::elided`), what it says and where it sits.
+//!
+//! ⚠ Rows are told apart by their VERTICAL position (a band of text on one line), never by index into
+//! a flat list of strings, so a cell that moves to another row fails the test that owns it.
+
+use egui::epaint::Shape;
+use egui::{Color32, Pos2, Rect, vec2};
+use vike_account_window::AccountWindowTab;
+use vike_app_core::ui::windows::WindowView;
+use vike_app_core::ui::windows::account_tool_content;
+use vike_execution::{BalanceMode, CoreSnapshot, OrderView, PositionView, PriceSource, VenueBlock};
+use vike_model::accounts::account_keys::{parse_wire_account, route_key_of};
+use vike_model::events::PositionSide;
+use vike_model::{AccountTier, MarginMode, OrderStatus, OrderType, TradingState};
+use vike_ui_theme::appearance::{self, ThemeAppearance};
+use vike_ui_theme::components::{ThemeTokens, chip};
+use vike_ui_theme::value::account;
+
+use crate::tool_context::{DENSITIES, Owned, WIDTHS, at_every_size};
+
+/// The word the Trade window draws for an account whose tier the node did not say.
+const TIER_UNKNOWN: &str = "MODE ?";
+/// What an unlabelled account is called (the Trade window's picker calls it the same).
+const MAIN: &str = "main";
+
+/// One equity row of the fixture: the account a venue block names, its tier and its figures.
+struct Account {
+    venue: &'static str,
+    label: Option<&'static str>,
+    tier: Option<AccountTier>,
+    equity: f64,
+    unrealized_pnl: f64,
+    fees: f64,
+    funding: f64,
+    missing: u32,
+}
+
+const fn make_account(
+    venue: &'static str,
+    label: Option<&'static str>,
+    tier: Option<AccountTier>,
+    equity: f64,
+) -> Account {
+    Account { venue, label, tier, equity, unrealized_pnl: 0.0, fees: 0.0, funding: 0.0, missing: 0 }
+}
+
+/// The capture's seventeen rows, shaped like it: venues one account each, then second accounts of
+/// binance (the perp lane), oanda, ig, bybit and hyperliquid. The two LIVE accounts are the rows a
+/// trader must never read as demo; `aster` is a node that did not say its tier.
+///
+/// ⚠ It names twelve of the roster's fourteen venues, on purpose: a file that names all (or all but
+/// one) is taken by `crates/vike-ops/tests/venues/new_venue_gate.rs` for a per-venue table and must
+/// then carry a scaffold marker; this fixture is not one. Keep two venues out of it.
+fn fixture() -> Vec<Account> {
+    let (d, l, p) = (Some(AccountTier::Demo), Some(AccountTier::Live), Some(AccountTier::Paper));
+    vec![
+        Account { fees: 0.3589, ..make_account("binance", None, d, 4984.44) },
+        Account { fees: 0.0710, ..make_account("okx", None, d, 4999.53) },
+        Account {
+            unrealized_pnl: -0.3178,
+            fees: 0.0073,
+            funding: -0.0010,
+            ..make_account("hyperliquid", None, d, 978.37)
+        },
+        make_account("aster", None, None, 0.0),
+        Account { fees: 0.0100, ..make_account("deribit", None, d, 999.98) },
+        make_account("alpaca", None, p, 49686.02),
+        Account { fees: 0.1200, ..make_account("ctrader", None, d, 19997.13) },
+        make_account("ig", None, d, 19976.59),
+        make_account("oanda", None, d, 100000.00),
+        Account { missing: 2, ..make_account("ibkr", None, d, 1006910.45) },
+        make_account("polymarket", None, l, 1000.00),
+        make_account("oanda", Some("SUB"), d, 1000.00),
+        make_account("ig", Some("SUB"), d, 10000.00),
+        Account {
+            unrealized_pnl: -1.2792,
+            fees: 2.6112,
+            ..make_account("binance", Some("PERP"), d, 4990.70)
+        },
+        Account { fees: 0.9520, ..make_account("bybit", None, d, 124856.78) },
+        make_account("bybit", Some("LIVE"), l, 1.00),
+        make_account("hyperliquid", Some("LIVE"), l, 8.80),
+    ]
+}
+
+fn venue_block(a: &Account) -> VenueBlock {
+    let label = a.label.map(|l| parse_wire_account(l).expect("a fixture label parses"));
+    VenueBlock {
+        account_code: None,
+        order_client_id_shape: None,
+        venue: a.venue.to_string(),
+        route_key: label.as_ref().map_or_else(|| a.venue.to_string(), |l| route_key_of(a.venue, l)),
+        account: label,
+        symbol: String::new(),
+        extra_symbols: Default::default(),
+        tier: a.tier,
+        balance: 0.0,
+        realized_pnl: 0.0,
+        fees_paid: a.fees,
+        funding_paid: a.funding,
+        balance_mode: BalanceMode::Delta,
+        contract_values: Default::default(),
+        contract_value_default: vike_model::ContractValue::default(),
+        admits_symbols: false,
+        quote_rates: Vec::new(),
+        quote_rates_in: Default::default(),
+        ledger_currency: Default::default(),
+        currency_assumed: false,
+        colliding_fills_refused: 0,
+        fees_unconverted: 0,
+        fees_at_stale_rate: 0,
+        equity: a.equity,
+        unrealized: a.unrealized_pnl,
+        missing_prices: a.missing,
+        margin_used: 0.0,
+        free_buying_power: 0.0,
+        margin_ratio: 0.0,
+        fee_schedule: None,
+        trading_state: TradingState::Active,
+        positions: Vec::new(),
+    }
+}
+
+/// One working order of the fixture.
+struct Work {
+    venue: &'static str,
+    label: Option<&'static str>,
+    symbol: &'static str,
+    side: i32,
+    qty: f64,
+    kind: OrderType,
+    status: OrderStatus,
+}
+
+/// Six orders over two venues; the second and fifth are the long words a real node sends
+/// (`stop_limit`, `PARTIALLY_FILLED`) that the old fixed cells cut.
+fn orders() -> Vec<Work> {
+    let o = |venue, label, symbol, side, qty, kind, status| Work {
+        venue,
+        label,
+        symbol,
+        side,
+        qty,
+        kind,
+        status,
+    };
+    vec![
+        o("bybit", Some("LIVE"), "BTCUSDT", -1, 0.0010, OrderType::Stop, OrderStatus::Canceled),
+        o("bybit", Some("LIVE"), "BTCUSDT", -1, 0.0010, OrderType::Stop, OrderStatus::Accepted),
+        o("bybit", None, "ETHUSDT", 1, 0.0100, OrderType::StopLimit, OrderStatus::PartiallyFilled),
+        o("hyperliquid", Some("LIVE"), "BTC", -1, 0.0010, OrderType::Market, OrderStatus::Filled),
+        o("hyperliquid", None, "ETH", 1, 0.0250, OrderType::Limit, OrderStatus::Accepted),
+        // Under four decimals: `{:.4}` drew it `0.0000`.
+        o("hyperliquid", None, "BTC", -1, 0.00002, OrderType::TakeProfit, OrderStatus::Accepted),
+    ]
+}
+
+/// The order client id of fixture order `i`: a long, unique, venue-bearing id.
+fn order_client_id(i: usize, o: &Work) -> String {
+    format!("vike-20261024-{i:04}-{}", o.venue)
+}
+
+fn order_view(i: usize, o: &Work) -> OrderView {
+    OrderView {
+        order_client_id: order_client_id(i, o),
+        venue: o.venue.to_string(),
+        account: o.label.map(|l| parse_wire_account(l).expect("a fixture label parses")),
+        symbol: o.symbol.to_string(),
+        side: o.side,
+        qty: o.qty,
+        order_type: o.kind.clone(),
+        price: None,
+        trigger_price: None,
+        status: o.status,
+        venue_order_id: None,
+        filled_qty: 0.0,
+        average_fill_price: 0.0,
+        data_delay: None,
+        refusal_id: None,
+        reason: None,
+        pending_price: None,
+        trail: None,
+        limit_offset: None,
+        attributes: None,
+        trail_percent: None,
+        adjust: None,
+        release: None,
+        display_quantity: None,
+    }
+}
+
+pub(crate) fn snapshot() -> CoreSnapshot {
+    let mut snapshot = CoreSnapshot::empty("binance", "BTCUSDT");
+    snapshot.portfolio.venues = fixture().iter().map(venue_block).collect();
+    snapshot.portfolio.equity_total = 1_350_390.12;
+    snapshot.portfolio.missing_prices_total = 2;
+    snapshot.orders =
+        orders().iter().enumerate().map(|(i, o)| std::sync::Arc::new(order_view(i, o))).collect();
+    snapshot
+}
+
+/// One run of painted text: what it says, where it sits, and whether the layout cut it short.
+#[derive(Clone, Debug)]
+struct Txt {
+    text: String,
+    rect: Rect,
+    elided: bool,
+}
+
+/// One painted rectangle: where, the fill, the stroke's colour.
+#[derive(Clone, Copy, Debug)]
+struct Painted {
+    rect: Rect,
+    fill: Color32,
+    edge: Color32,
+}
+
+/// One frame of the window at one width and density, read as lines of text.
+struct Frame {
+    width: f32,
+    /// Lines of text, top to bottom; each line's texts left to right. The Accounts tab, the default.
+    lines: Vec<Vec<Txt>>,
+    /// The same window's lines with its Orders tab picked (empty where a test read one pass).
+    orders: Vec<Vec<Txt>>,
+    boxes: Vec<Painted>,
+    tokens: ThemeTokens,
+}
+
+/// Texts on one line sit within a few points of each other (a chip's centre against a number's);
+/// two lines are a row (18 points) apart.
+const SAME_LINE: f32 = 6.0;
+
+/// One pass of the window at `time` seconds with `events` delivered, and the shapes it painted.
+fn run_pass(
+    context: &egui::Context,
+    owned: &Owned,
+    tv: &mut WindowView,
+    (width, ppp): (f32, f32),
+    (time, events): (f64, Vec<egui::Event>),
+) -> Vec<Shape> {
+    let mut raw = egui::RawInput {
+        screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(width, 1600.0))),
+        time: Some(time),
+        events,
+        ..Default::default()
+    };
+    raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(ppp);
+    let mut full = context.run_ui(raw, |ui| account_tool_content(ui, &owned.context(), tv));
+    full.textures_delta.clear();
+    vike_ui_theme::painted::flatten(std::mem::take(&mut full.shapes))
+}
+
+fn render(width: f32, ppp: f32) -> Frame {
+    frame_of(&Owned::new(snapshot()), width, ppp)
+}
+
+/// The window over `owned`'s snapshot, read as [`render`] reads the fixture's.
+fn frame_of(owned: &Owned, width: f32, ppp: f32) -> Frame {
+    let context = egui::Context::default();
+    appearance::install(&context, &ThemeAppearance::default());
+    let mut tv = WindowView::default();
+    // Pass 0 lets the bundled fonts land (they apply on the NEXT pass); 1 and 2 are the layout, and
+    // the last is the one read.
+    let mut shapes = Vec::new();
+    for pass in 0..3u32 {
+        let at = (f64::from(pass) / 60.0, Vec::new());
+        shapes = run_pass(&context, owned, &mut tv, (width, ppp), at);
+    }
+    let mut frame = read(&shapes, width, &context);
+    // The Orders tab, picked as a click picks it, laid out over two more passes.
+    tv.account.tab = AccountWindowTab::Orders;
+    for pass in 3..5u32 {
+        let at = (f64::from(pass) / 60.0, Vec::new());
+        shapes = run_pass(&context, owned, &mut tv, (width, ppp), at);
+    }
+    frame.orders = read(&shapes, width, &context).lines;
+    frame
+}
+
+/// The painted `shapes` as lines of text and boxes.
+fn read(shapes: &[Shape], width: f32, context: &egui::Context) -> Frame {
+    let mut texts = Vec::new();
+    let mut boxes = Vec::new();
+    for s in shapes {
+        match s {
+            Shape::Text(t) => texts.push(Txt {
+                text: t.galley.text().to_string(),
+                rect: t.galley.rect.translate(t.pos.to_vec2()),
+                elided: t.galley.elided,
+            }),
+            Shape::Rect(r) => {
+                boxes.push(Painted { rect: r.rect, fill: r.fill, edge: r.stroke.color });
+            }
+            _ => {}
+        }
+    }
+    texts.sort_by(|a, b| a.rect.center().y.total_cmp(&b.rect.center().y));
+    let mut lines: Vec<Vec<Txt>> = Vec::new();
+    for t in texts {
+        match lines.last_mut() {
+            Some(l) if (t.rect.center().y - l[l.len() - 1].rect.center().y).abs() < SAME_LINE => {
+                l.push(t);
+            }
+            _ => lines.push(vec![t]),
+        }
+    }
+    for l in &mut lines {
+        l.sort_by(|a, b| a.rect.left().total_cmp(&b.rect.left()));
+    }
+    Frame { width, lines, orders: Vec::new(), boxes, tokens: ThemeTokens::of(context) }
+}
+
+impl Frame {
+    fn line_with(&self, words: &[&str]) -> usize {
+        self.lines
+            .iter()
+            .position(|l| words.iter().all(|w| l.iter().any(|t| t.text == *w)))
+            .unwrap_or_else(|| panic!("no line of text holds {words:?}: {:#?}", self.lines))
+    }
+
+    /// The Accounts table's header line, and the lines of its rows (one per equity row): the rest of
+    /// the Accounts tab.
+    fn account_rows(&self) -> (&[Txt], &[Vec<Txt>]) {
+        let head = self.line_with(&["Venue", "Equity"]);
+        (&self.lines[head], &self.lines[head + 1..])
+    }
+
+    /// The lines of the working-orders rows: the Orders tab's lines below its tab row.
+    fn order_rows(&self) -> &[Vec<Txt>] {
+        let at = self
+            .orders
+            .iter()
+            .position(|l| l.iter().any(|t| t.text.starts_with("Orders (")))
+            .expect("the Orders tab is painted");
+        &self.orders[at + 1..]
+    }
+
+    /// The painted rectangles on `line`'s row: a chip is one.
+    fn boxes_on(&self, line: &[Txt]) -> Vec<Painted> {
+        let y = line.iter().map(|t| t.rect.center().y).sum::<f32>() / line.len() as f32;
+        self.boxes
+            .iter()
+            .copied()
+            .filter(|b| (b.rect.center().y - y).abs() < SAME_LINE && b.rect.width() < 120.0)
+            .collect()
+    }
+}
+
+/// Every (width, density) the tests read, with its frame.
+fn frames() -> Vec<Frame> {
+    at_every_size(render)
+}
+
+fn tier_word(tier: Option<AccountTier>) -> &'static str {
+    tier.map_or(TIER_UNKNOWN, chip::tier_label)
+}
+
+fn count(line: &[Txt], text: &str) -> usize {
+    line.iter().filter(|t| t.text == text).count()
+}
+
+/// Panic with every failure at once: which row, at which width and density, missed what.
+fn all_ok(what: &str, failures: Vec<String>) {
+    assert!(failures.is_empty(), "{what}:\n{}", failures.join("\n"));
+}
+
+/// ⚠ **Every equity row says WHICH ACCOUNT and WHICH TIER it is** (defect 1), in words, on its own
+/// line, at every width and density: two `bybit` rows are told apart by their label, and the tier
+/// is a LIVE / DEMO / PAPER word, or `MODE ?` where the node did not say (never PAPER).
+#[test]
+fn every_equity_row_names_its_account_and_its_tier() {
+    let mut failures = Vec::new();
+    for f in frames() {
+        let (_, rows) = f.account_rows();
+        if rows.len() != fixture().len() {
+            failures.push(format!(
+                "{}: {} equity lines, not {}",
+                f.width,
+                rows.len(),
+                fixture().len()
+            ));
+            continue;
+        }
+        for (a, line) in fixture().iter().zip(rows) {
+            // The words the row must carry. A LIVE account NAMED `LIVE` carries the word twice, once
+            // as its name and once as its tier: counted, so one cannot stand in for the other.
+            let want = [
+                a.venue.to_string(),
+                a.label.unwrap_or(MAIN).to_string(),
+                tier_word(a.tier).to_string(),
+                format!("{:.2}", a.equity),
+            ];
+            for w in &want {
+                let needed = want.iter().filter(|x| *x == w).count();
+                if count(line, w) < needed {
+                    failures.push(format!(
+                        "{}w: the {} {:?} row has no {w:?} (x{needed}): {:?}",
+                        f.width,
+                        a.venue,
+                        a.label,
+                        line.iter().map(|t| t.text.as_str()).collect::<Vec<_>>()
+                    ));
+                }
+            }
+        }
+    }
+    all_ok("an equity row must name its account and tier", failures);
+}
+
+/// ⚠ **A LIVE row is drawn differently from a demo one**, by the theme's own tier chip (LIVE filled
+/// in the accent, DEMO outlined in the info blue, owner rulings of 2026-10-03 and 2026-10-05), and a
+/// tier the node did not say is never drawn as LIVE's fill.
+#[test]
+fn a_live_row_is_drawn_differently_from_a_demo_row() {
+    let mut failures = Vec::new();
+    for f in frames() {
+        let (_, rows) = f.account_rows();
+        if rows.len() != fixture().len() {
+            failures.push(format!(
+                "{}: {} equity lines, not {}",
+                f.width,
+                rows.len(),
+                fixture().len()
+            ));
+            continue;
+        }
+        let (live_fill, ..) = chip::tier_colours(AccountTier::Live, &f.tokens);
+        let (_, demo_edge, _) = chip::tier_colours(AccountTier::Demo, &f.tokens);
+        assert_ne!(live_fill, Color32::TRANSPARENT, "LIVE is a filled chip");
+        for (a, line) in fixture().iter().zip(rows) {
+            let boxes = f.boxes_on(line);
+            let filled_live = boxes.iter().any(|b| b.fill == live_fill);
+            let outlined_demo =
+                boxes.iter().any(|b| b.fill == Color32::TRANSPARENT && b.edge == demo_edge.color);
+            let bad = match a.tier {
+                Some(AccountTier::Live) => (!filled_live).then_some("no filled LIVE chip"),
+                Some(AccountTier::Demo) => {
+                    (!outlined_demo || filled_live).then_some("not an outlined DEMO chip")
+                }
+                // PAPER, and a tier the node did not say: anything but LIVE's fill.
+                _ => filled_live.then_some("wears LIVE's fill"),
+            };
+            if let Some(why) = bad {
+                failures.push(format!("{}w {} {:?}: {why}: {boxes:?}", f.width, a.venue, a.label));
+            }
+        }
+    }
+    all_ok("a LIVE row must look unlike a demo row", failures);
+}
+
+/// **No number or name is cut** (defect 2): at 1200 and 2560 no text of the equity rows, the
+/// header or the order rows is elided, and no two texts of one row overlap. The equity table never
+/// cuts at ANY width (its columns are sized from what they hold). An order's client id may be cut
+/// below that, to its row's room, and then carries its whole text on hover.
+#[test]
+fn no_text_of_the_tables_is_elided() {
+    let mut failures = Vec::new();
+    for f in frames() {
+        let (head, rows) = f.account_rows();
+        let wide = f.width >= 1200.0;
+        let mut checked: Vec<(&str, &[Txt])> = vec![("header", head)];
+        checked.extend(rows.iter().map(|l| ("equity row", l.as_slice())));
+        if wide {
+            checked.extend(f.order_rows().iter().map(|l| ("order row", l.as_slice())));
+        }
+        for (what, line) in checked {
+            for t in line.iter().filter(|t| t.elided) {
+                failures.push(format!("{}w {what}: {:?} is elided", f.width, t.text));
+            }
+            for pair in line.windows(2) {
+                if pair[0].rect.right() > pair[1].rect.left() + 0.5 {
+                    failures.push(format!(
+                        "{}w {what}: {:?} overlaps {:?}",
+                        f.width, pair[0].text, pair[1].text
+                    ));
+                }
+            }
+        }
+    }
+    all_ok("the tables must not cut or collide text", failures);
+}
+
+/// ⚠ **Every working order names its venue, its symbol and its order client id** (defect 3), and a
+/// labelled account's order names the account too; its quantity reads whole, however small. Six rows
+/// over two venues, in the order sent.
+#[test]
+fn every_working_order_names_its_venue_symbol_and_order_client_id() {
+    let mut failures = Vec::new();
+    for f in frames() {
+        let rows = f.order_rows();
+        if rows.len() != orders().len() {
+            failures.push(format!(
+                "{}: {} order lines, not {}",
+                f.width,
+                rows.len(),
+                orders().len()
+            ));
+            continue;
+        }
+        for (i, (o, line)) in orders().iter().zip(rows).enumerate() {
+            let has = |p: &dyn Fn(&str) -> bool| line.iter().any(|t| p(&t.text));
+            let who = format!("{}w order {i} ({} {})", f.width, o.venue, o.symbol);
+            if !has(&|s| s.contains(o.venue)) {
+                failures.push(format!("{who}: no venue"));
+            }
+            if let Some(label) = o.label
+                && !has(&|s| s.contains(label))
+            {
+                failures.push(format!("{who}: no account {label:?}"));
+            }
+            if !has(&|s| s == o.symbol) {
+                failures.push(format!("{who}: no symbol"));
+            }
+            if !has(&|s| s == order_client_id(i, o)) {
+                failures.push(format!("{who}: no order client id"));
+            }
+            // The quantity in the workspace's one text form of a number, so a tiny one is not `0.0000`.
+            let qty = vike_utility::number_text::format_number(o.qty);
+            if !has(&|s| s == qty) {
+                failures.push(format!("{who}: no quantity {qty:?}"));
+            }
+            // The words that were always there stay, whole (`stop_limit`, `PARTIALLY_FILLED`).
+            for word in [o.status.as_str(), o.kind.as_str()] {
+                if !has(&|s| s == word) {
+                    failures.push(format!("{who}: no {word:?}"));
+                }
+            }
+        }
+    }
+    all_ok("an order row must say what it is", failures);
+}
+
+/// **The tables use the window's width up to the content cap, not its left quarter** (defect 4):
+/// the table's right edge (the Funding header's) reaches most of `min(window, MAX_WIDTH)`, and nothing
+/// of the equity table is painted past the cap.
+#[test]
+fn the_tables_use_the_available_width_up_to_the_cap() {
+    let mut failures = Vec::new();
+    for f in frames() {
+        let (head, rows) = f.account_rows();
+        let left = head.iter().map(|t| t.rect.left()).fold(f32::INFINITY, f32::min);
+        let cap = (f.width - left).min(account::MAX_WIDTH);
+        let funding = head.iter().find(|t| t.text == "Funding").expect("a Funding header");
+        let used = funding.rect.right() - left;
+        if used < 0.7 * cap {
+            failures.push(format!(
+                "{}w: the table ends {used:.0} points in, under 70% of its {cap:.0} points",
+                f.width
+            ));
+        }
+        let farthest =
+            rows.iter().flatten().chain(head).map(|t| t.rect.right() - left).fold(0.0, f32::max);
+        if farthest > cap + 1.0 {
+            failures.push(format!(
+                "{}w: text is painted {farthest:.0} points in, past the cap {cap:.0}",
+                f.width
+            ));
+        }
+    }
+    all_ok("the tables must fill the window up to the cap", failures);
+}
+
+/// **A column is one column**: the four numbers of every row end where their header ends, and the
+/// tier chips and the balance-mode tags of all rows start at one x. A cell that took only the room
+/// its content used (a LIVE chip is narrower than a DEMO one) would slide every cell after it, and
+/// the numbers would no longer sit under their headers.
+#[test]
+fn every_row_lines_up_under_its_headers() {
+    const SLACK: f32 = 1.5;
+    let mut failures = Vec::new();
+    for f in frames() {
+        let (head, rows) = f.account_rows();
+        let ends: Vec<f32> = ["Equity", "uPnL", "Fees", "Funding"]
+            .iter()
+            .map(|h| head.iter().find(|t| t.text == *h).expect("a numeric header").rect.right())
+            .collect();
+        let (mut chips, mut modes) = (Vec::new(), Vec::new());
+        for (a, line) in fixture().iter().zip(rows) {
+            let numbers: Vec<f32> = line
+                .iter()
+                .filter(|t| t.text.parse::<f64>().is_ok())
+                .map(|t| t.rect.right())
+                .collect();
+            if numbers.len() != ends.len() {
+                failures.push(format!(
+                    "{}w {}: {} numbers, not 4",
+                    f.width,
+                    a.venue,
+                    numbers.len()
+                ));
+                continue;
+            }
+            for (n, e) in numbers.iter().zip(&ends) {
+                if (n - e).abs() > SLACK {
+                    failures.push(format!(
+                        "{}w {} {:?}: a number ends at {n:.0}, its header at {e:.0}",
+                        f.width, a.venue, a.label
+                    ));
+                }
+            }
+            // The chip is the LAST text that says the tier (an account may be NAMED `LIVE`).
+            chips.extend(line.iter().rev().find(|t| t.text == tier_word(a.tier)));
+            modes.extend(line.iter().find(|t| t.text == "\u{0394}"));
+        }
+        for (what, xs) in [("tier chips", &chips), ("mode tags", &modes)] {
+            let lefts: Vec<f32> = xs.iter().map(|t| t.rect.left()).collect();
+            let (lo, hi) =
+                lefts.iter().fold((f32::MAX, f32::MIN), |(lo, hi), x| (lo.min(*x), hi.max(*x)));
+            if lefts.len() != fixture().len() || hi - lo > SLACK {
+                failures.push(format!(
+                    "{}w: the {what} start between {lo:.0} and {hi:.0} ({} of {})",
+                    f.width,
+                    lefts.len(),
+                    fixture().len()
+                ));
+            }
+        }
+    }
+    all_ok("the Accounts table's columns must line up", failures);
+}
+
+/// A position of `venue`: priced by the last trade, or (`unpriced`) by no source at all.
+fn position(venue: &str, symbol: &str, unpriced: bool) -> PositionView {
+    PositionView {
+        venue: venue.into(),
+        symbol: symbol.into(),
+        position_side: PositionSide::Both,
+        size: 1.0,
+        average_price: 100.0,
+        unrealized: 0.0,
+        mark_source: (!unpriced).then_some(PriceSource::LastTrade),
+        leverage: 0.0,
+        liquidation_price: 0.0,
+        margin_mode: MarginMode::Cross,
+        isolated_margin: None,
+    }
+}
+
+/// The texts that appear when the pointer rests on the unpriced badge of equity row `row` for over
+/// half a second (egui's tooltip delay), and were not there before.
+fn tooltip_of(owned: &Owned, row: usize, (width, ppp): (f32, f32)) -> Vec<String> {
+    let context = egui::Context::default();
+    appearance::install(&context, &ThemeAppearance::default());
+    let mut tv = WindowView::default();
+    // 0.3 s a pass: the pointer lands on pass 3 and has been still for 0.6 s by pass 5.
+    let mut pass = |n: u32, events: Vec<egui::Event>| {
+        run_pass(&context, owned, &mut tv, (width, ppp), (f64::from(n) * 0.3, events))
+    };
+    let mut shapes = Vec::new();
+    for n in 0..3 {
+        shapes = pass(n, Vec::new());
+    }
+    let before = read(&shapes, width, &context);
+    // The row's last word is its Link badge; the unpriced badge is the one before it.
+    let badge = before.account_rows().1[row].iter().rev().nth(1).expect("the row paints its badge");
+    let _ = pass(3, vec![egui::Event::PointerMoved(badge.rect.center())]);
+    for n in 4..7 {
+        shapes = pass(n, Vec::new());
+    }
+    let mut then: Vec<String> = before.lines.iter().flatten().map(|t| t.text.clone()).collect();
+    let mut new = Vec::new();
+    for s in &shapes {
+        if let Shape::Text(t) = s {
+            let text = t.galley.text().to_string();
+            match then.iter().position(|x| *x == text) {
+                Some(i) => {
+                    then.swap_remove(i);
+                }
+                None => new.push(text),
+            }
+        }
+    }
+    new
+}
+
+/// ⚠ **An unpriced badge lists the positions of ITS OWN account and no other's.** A node that runs a
+/// demo and a LIVE bybit lists two blocks named `bybit`; the badge's hover text found the block BY
+/// VENUE NAME, so the second row's tooltip named the first one's positions, a LIVE account's under a
+/// demo row and the reverse. Six accounts over three venues, each with its own unpriced symbols and
+/// a priced one that must not be listed, are hovered at every width and density.
+#[test]
+fn an_unpriced_badge_lists_its_own_accounts_positions_and_no_other() {
+    // (venue, account label, the symbols no source prices).
+    let cases: [(&str, Option<&str>, &[&str]); 6] = [
+        ("binance", None, &["ADAUSDT"]),
+        ("binance", Some("PERP"), &["SHIBUSDT", "XRPUSDT"]),
+        ("bybit", None, &["DOGEUSDT", "PEPEUSDT"]),
+        ("bybit", Some("LIVE"), &["WIFUSDT"]),
+        ("hyperliquid", None, &["kPEPE"]),
+        ("hyperliquid", Some("LIVE"), &["kBONK", "kFLOKI"]),
+    ];
+    let row_of = |venue: &str, label: Option<&str>| {
+        fixture()
+            .iter()
+            .position(|a| a.venue == venue && a.label == label)
+            .expect("the fixture holds the account")
+    };
+    let mut owned = Owned::new(snapshot());
+    for (venue, label, symbols) in cases {
+        let block = &mut owned.snapshot.portfolio.venues[row_of(venue, label)];
+        block.missing_prices = u32::try_from(symbols.len()).expect("a few symbols");
+        block.positions = std::iter::once(position(venue, "BTCUSDT", false))
+            .chain(symbols.iter().map(|s| position(venue, s, true)))
+            .collect();
+    }
+    let mut failures = Vec::new();
+    for width in WIDTHS {
+        for ppp in DENSITIES {
+            for (venue, label, symbols) in cases {
+                let said = tooltip_of(&owned, row_of(venue, label), (width, ppp));
+                let want = symbols.join(", ");
+                let others = cases
+                    .iter()
+                    .filter(|c| (c.0, c.1) != (venue, label))
+                    .flat_map(|c| c.2.iter().copied())
+                    .chain(std::iter::once("BTCUSDT"));
+                let leaked: Vec<&str> =
+                    others.filter(|s| said.iter().any(|t| t.contains(*s))).collect();
+                if !said.contains(&want) || !leaked.is_empty() {
+                    failures.push(format!(
+                        "{width}w x{ppp} {venue} {label:?}: wanted {want:?}, hovering it painted \
+                         {said:?} (names {leaked:?} of other accounts or a priced position)"
+                    ));
+                }
+            }
+        }
+    }
+    all_ok("an unpriced badge must list its own account's positions", failures);
+}
+
+/// ⚠ **A conversion rate is drawn, and a stale one under a position says so** (decision 0183): the Account
+/// window lists the rates behind an account's figures under the Accounts table, in the one wording every
+/// surface uses, whole at every width and density. A node with no such account draws no rates section at all
+/// (every other test of this file runs over that fixture and finds the rows where they always were).
+#[test]
+fn a_stale_conversion_rate_is_drawn_whole_and_a_plain_node_draws_none() {
+    use vike_execution::QuoteRateView;
+
+    let plain = frame_of(&Owned::new(snapshot()), 1200.0, 1.0);
+    assert!(
+        plain.lines.iter().flatten().all(|t| t.text != "Conversion rates"),
+        "no foreign-quoted account, no section"
+    );
+
+    let mut owned = Owned::new(snapshot());
+    let at = fixture().iter().position(|a| a.venue == "oanda" && a.label.is_none()).expect("oanda");
+    let block = &mut owned.snapshot.portfolio.venues[at];
+    block.quote_rates_in = "USD".into();
+    block.quote_rates = vec![
+        QuoteRateView {
+            currency: "JPY".into(),
+            rate: 1.0 / 150.0,
+            as_of_ms: 1,
+            stale: true,
+            held: true,
+        },
+        QuoteRateView {
+            currency: "GBP".into(),
+            rate: 1.35,
+            as_of_ms: 2,
+            stale: false,
+            held: false,
+        },
+    ];
+    let mut failures = Vec::new();
+    for width in WIDTHS {
+        for ppp in DENSITIES {
+            let f = frame_of(&owned, width, ppp);
+            let texts: Vec<&Txt> = f.lines.iter().flatten().collect();
+            for want in [
+                "Conversion rates",
+                "1 JPY = 0.006667 USD STALE (an open position is valued at it)",
+                "1 GBP = 1.350000 USD",
+            ] {
+                match texts.iter().find(|t| t.text == want) {
+                    None => failures.push(format!("{width}w x{ppp}: {want:?} is not painted")),
+                    Some(t) if t.elided => failures.push(format!("{width}w x{ppp}: {want:?} cut")),
+                    Some(_) => {}
+                }
+            }
+            // the section sits in the Accounts tab, below its table, and the Orders tab has none
+            let title = f.line_with(&["Conversion rates"]);
+            if title < f.line_with(&["Venue", "Equity"]) {
+                failures.push(format!("{width}w x{ppp}: the rates are not below the table"));
+            }
+            if f.orders.iter().flatten().any(|t| t.text == "Conversion rates") {
+                failures.push(format!("{width}w x{ppp}: the Orders tab draws the rates"));
+            }
+        }
+    }
+    all_ok("a conversion rate must be drawn whole", failures);
+}
+
+/// **The orders the node EMULATES are listed once, below the orders, each with its kind** (decision 0275), whole at
+/// every size; a node that emulates none paints no such section.
+#[test]
+fn the_emulated_orders_are_listed_below_the_orders_with_their_kind() {
+    let titled =
+        |f: &Frame| f.orders.iter().flatten().any(|t| t.text.starts_with("Emulated by the node"));
+    assert!(!titled(&render(WIDTHS[1], 1.0)), "no section for a node that emulates none");
+    let mut snapshot = CoreSnapshot::empty("bybit", "BTCUSDT");
+    snapshot.emulated_orders = vec![vike_execution::OrderEmulationView {
+        id: "ice-1".into(),
+        venue: "bybit".into(),
+        account: None,
+        symbol: "BTCUSDT".into(),
+        side: 1,
+        qty: 0.5,
+        kind: "iceberg",
+        reduce_only: false,
+        trigger: None,
+        price: Some(60_000.0),
+        trail: None,
+        peg: None,
+        display_quantity: Some(0.1),
+        filled: 0.0,
+        average_price: 0.0,
+        child: Some("ice-1-1".into()),
+        waiting: None,
+        rearms: 0,
+        held: false,
+    }];
+    let owned = Owned::new(snapshot);
+    let mut failures = Vec::new();
+    for width in WIDTHS {
+        for ppp in DENSITIES {
+            let f = frame_of(&owned, width, ppp);
+            let at = |want: &dyn Fn(&Txt) -> bool| f.orders.iter().position(|l| l.iter().any(want));
+            let orders = at(&|t| t.text.starts_with("Orders ("));
+            let title = at(&|t| t.text == "Emulated by the node (1)");
+            let row = f.orders.iter().position(|l| {
+                ["iceberg", "BTCUSDT", "BUY"]
+                    .iter()
+                    .all(|w| l.iter().any(|t| t.text == *w && !t.elided))
+            });
+            match (orders, title, row) {
+                (Some(o), Some(t), Some(r)) if o < t && t < r => {}
+                other => {
+                    failures.push(format!("{width}w x{ppp}: (orders, title, row) = {other:?}"))
+                }
+            }
+        }
+    }
+    all_ok("an emulated order is listed whole with its kind", failures);
+}
+
+/// **The sections are TABS** (the owner, 2026-11-16), in the owner's order left to right (top layers,
+/// wave 3): `Accounts (n)`, `Positions (n)`, `Orders (n)`, `Strategies (n)`, `History`, on one row, each count the rows
+/// its tab draws, whole at every size; Accounts shows first, and one tab shows at a time.
+#[test]
+fn the_sections_are_tabs_that_count_what_they_draw() {
+    let words = [
+        format!("Accounts ({})", fixture().len()),
+        "Positions (0)".to_string(),
+        format!("Orders ({})", orders().len()),
+        "Strategies (0)".to_string(),
+        "History".to_string(),
+    ];
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
+    let first_order = order_client_id(0, &orders()[0]);
+    let mut failures = Vec::new();
+    for f in frames() {
+        let row = &f.lines[f.line_with(&words)];
+        for t in row.iter().filter(|t| t.elided) {
+            failures.push(format!("{}w: the tab {:?} is cut", f.width, t.text));
+        }
+        let at: Vec<usize> = words
+            .iter()
+            .map(|w| row.iter().position(|t| t.text == *w).expect("the tab is on the row"))
+            .collect();
+        if !at.windows(2).all(|p| p[0] < p[1]) {
+            failures.push(format!("{}w: the tabs are not in the owner's order: {at:?}", f.width));
+        }
+        if f.lines.iter().flatten().any(|t| t.text == first_order) {
+            failures.push(format!("{}w: the Accounts tab draws an order", f.width));
+        }
+        if f.orders.iter().flatten().any(|t| t.text == "Equity") {
+            failures.push(format!("{}w: the Orders tab draws the Accounts table", f.width));
+        }
+    }
+    all_ok("the Account window's sections are tabs", failures);
+}
+
+/// The window over `owned` with `tab` picked, read as [`render`] reads its default tab.
+fn lines_on(owned: &Owned, tab: AccountWindowTab, (width, ppp): (f32, f32)) -> Vec<Vec<Txt>> {
+    let context = egui::Context::default();
+    appearance::install(&context, &ThemeAppearance::default());
+    let mut tv = WindowView::default();
+    tv.account.tab = tab;
+    let mut shapes = Vec::new();
+    for pass in 0..3u32 {
+        shapes =
+            run_pass(&context, owned, &mut tv, (width, ppp), (f64::from(pass) / 60.0, Vec::new()));
+    }
+    read(&shapes, width, &context).lines
+}
+
+/// ⚠ **The Positions tab lists every account's open positions, each under its own account, whole**
+/// (top layers wave 3): five positions on four accounts, two of them `bybit`, are five rows that each
+/// name their venue, account and symbol; the tab counts them; no text is cut or overlaps another at any
+/// width and density; and every number ends where its header ends. A flat row is not listed.
+#[test]
+fn the_positions_tab_lists_every_accounts_positions_whole_under_its_headers() {
+    let at = |venue: &str, label: Option<&str>| {
+        fixture()
+            .iter()
+            .position(|a| a.venue == venue && a.label == label)
+            .expect("the fixture holds the account")
+    };
+    // (venue, account label, symbol, size), in the fixture's block order (the rows' order): the second
+    // bybit row is flat.
+    let held: [(&str, Option<&str>, &str, f64); 6] = [
+        ("ibkr", None, "AAPL", 300.0),
+        ("ibkr", None, "MSFT", -12.0),
+        ("bybit", None, "BTCUSDT", 0.5),
+        ("bybit", None, "ETHUSDT", 0.0),
+        ("bybit", Some("LIVE"), "ETHUSDT", -2.25),
+        ("hyperliquid", Some("LIVE"), "kPEPE", 1_250_000.0),
+    ];
+    let mut owned = Owned::new(snapshot());
+    for (venue, label, symbol, size) in held {
+        let mut p = position(venue, symbol, false);
+        p.size = size;
+        p.average_price = 1_006_910.45;
+        p.unrealized = -1_279.2;
+        owned.snapshot.portfolio.venues[at(venue, label)].positions.push(p);
+    }
+    let open: Vec<_> = held.iter().filter(|h| h.3 != 0.0).collect();
+    let mut failures = Vec::new();
+    for width in WIDTHS {
+        for ppp in DENSITIES {
+            let lines = lines_on(&owned, AccountWindowTab::Positions, (width, ppp));
+            let who = format!("{width}w x{ppp}");
+            let tab = format!("Positions ({})", open.len());
+            if !lines.iter().flatten().any(|t| t.text == tab) {
+                failures.push(format!("{who}: no {tab:?} tab"));
+            }
+            let Some(head) = lines
+                .iter()
+                .position(|l| ["Venue", "Symbol", "uPnL"].iter().all(|w| count(l, w) > 0))
+            else {
+                failures.push(format!("{who}: no Positions header"));
+                continue;
+            };
+            let rows = &lines[head + 1..];
+            if rows.len() != open.len() {
+                failures.push(format!("{who}: {} rows, not {}", rows.len(), open.len()));
+                continue;
+            }
+            let ends: Vec<f32> = ["Size", "Avg price", "uPnL"]
+                .iter()
+                .map(|h| lines[head].iter().find(|t| t.text == *h).map_or(0.0, |t| t.rect.right()))
+                .collect();
+            for ((venue, label, symbol, _), line) in open.iter().zip(rows) {
+                for word in [*venue, label.unwrap_or(MAIN), *symbol] {
+                    if count(line, word) == 0 {
+                        failures.push(format!("{who} {venue} {symbol}: no {word:?}"));
+                    }
+                }
+                for t in line.iter().filter(|t| t.elided) {
+                    failures.push(format!("{who} {venue} {symbol}: {:?} is cut", t.text));
+                }
+                for pair in line.windows(2) {
+                    if pair[0].rect.right() > pair[1].rect.left() + 0.5 {
+                        failures
+                            .push(format!("{who}: {:?} overlaps {:?}", pair[0].text, pair[1].text));
+                    }
+                }
+                let numbers: Vec<f32> =
+                    line.iter().rev().take(3).map(|t| t.rect.right()).collect::<Vec<_>>();
+                for (n, e) in numbers.iter().rev().zip(&ends) {
+                    if (n - e).abs() > 1.5 {
+                        failures.push(format!(
+                            "{who} {symbol}: a number ends at {n:.0}, its header at {e:.0}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    all_ok("the Positions tab must list every account's positions whole", failures);
+}

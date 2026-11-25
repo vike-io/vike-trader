@@ -1,0 +1,784 @@
+//! ORDER RESTORE at the reconcile pass: after a restart, the orders a previous session left
+//! resting go back into the engine registry, and the mounts that own them hear what became of them.
+//!
+//! The hook is [`CoreThread::restore_orders_at_pass`], called once per pass from
+//! `crates/vike-core/src/runtime/reconcile.rs`'s `reconcile_reports`, AFTER the pass's engine is
+//! resolved and BEFORE `reconcile_compute` diffs the venue's reports against the registry, so an
+//! order adopted here is a known local order to that diff and raises no `UnknownOrder`.
+//!
+//! # What it reads
+//!
+//! - [`CoreThread::restored_orders`], the orders the ownership file remembers for a MOUNTED slot,
+//!   and the order client ids of [`CoreThread::pending_owners`], the ones whose mount is not mounted yet.
+//! - This pass's open-order and fill reports, as the fold received them in
+//!   [`ReconcileReports`]. A FAILED fetch never reaches this code: in
+//!   `crates/vike-tradehub-core/src/reconcile_manager/manager.rs`'s `run_pass_at` the `fetch_mass_status` error arm
+//!   `continue`s and sends no command,
+//!   so every pass seen here is a successful fetch and the planner's "the venue reports nothing"
+//!   reading of an empty list is sound. No per-pass state is needed for that.
+//!
+//! The verdicts are `vike_execution::recon::plan_restore`'s, whose module doc holds every rule; this file
+//! only supplies its scope and applies its plan.
+//!
+//! # The translation step (a venue whose reports do not echo our order client id)
+//!
+//! Hyperliquid names an order on the wire by `keccak(order client id)`, and a restart empties the bridge's
+//! cloid registry, so its reports carry a hash this crate cannot invert and cannot compute (vike-core
+//! sits below the bridge, and the bridge may not read the ownership file). The core therefore asks
+//! the pass's client, per restored entry, `ExecutionClient::wire_id_for(order client id)`; for the entries that
+//! answer `Some`, it rewrites THIS pass's order and fill reports in place (wire id back to order client id, and
+//! the venue-native symbol back to the entry's unified symbol) before planning, and the same
+//! rewritten vectors go on to `reconcile_compute`, so the existing `MissingFill` path books a fill
+//! under the real order client id and `mount_for_order_client_id` finds its mount. A client with the default `None` makes
+//! the map empty and the pass reads exactly as it did. After the adoption the client is told
+//! `(order client id, unified symbol, the report's venue order id)` through `ExecutionClient::adopt_restored`,
+//! so its own wire state (the Hyperliquid cloid registry, its order client id -> asset map and the order's
+//! `oid`) matches what the session that placed the order would hold.
+//!
+//! **The venue-order-id join** (the order twin of the planner's fill join): a venue whose rows carry
+//! no order client id of ours (fxcm's Orders table, IG's working orders) lists a resting order as
+//! `order_client_id: None` after a restart of BOTH daemons, since the bridge that named it died too.
+//! After the wire translation, `vike_execution::recon::name_by_venue_order_id` names such a row in place
+//! by the venue order id the ownership line learned at the acknowledgement (same symbol, one ref per
+//! id), so the planner adopts it, the diff reads it as ours, and the client is taught the order WITH
+//! that id, which is what lets the bridge name it from then on. ⚠ It runs only where this venue's
+//! restore is open (`CoreConfig::restore_venue_gate`): fxcm's and IG's rows of
+//! `crates/vike-venues/src/venue_restore.rs` stay `Never` until a demo smoke proves the round trip. ⚠ Only restored entries are translated here, and only on a pass that has some.
+//! A later pass reads what the client reports: Hyperliquid's own `ReconcileClientHyperliquid::with_cloids`
+//! names a row it knows by our order client id, and a cloid it does not know stays the venue's hash.
+//!
+//! # The scope of a pass
+//!
+//! One pass reads one (venue, account). The scope's venue is the pass's venue; its account is the
+//! engine's account LABEL TEXT (`label_of_route_key` of the pass's route key: `None` for the venue's
+//! default account) and its symbols are the symbols the engine of this route serves (`symbol` plus
+//! `extra_symbols`), never every mount's. That is the same spelling `OrderOwnerEntry::account` was
+//! written in at mint (`CoreThread::minted_facts`: the mount's label text, `None` for the default
+//! account), which is what lets the planner compare the two with `==`. An entry for another account,
+//! another venue, a symbol this engine does not serve or without venue and symbol facts is not
+//! judged: it stays for a later pass.
+//!
+//! # A symbol the client was not told about is HELD (decision 0174)
+//!
+//! The venue's silence about an order is only an answer for a symbol the pass's client FETCHED. The
+//! engine serves its mounted symbol, its declared legs and the symbols admitted on demand
+//! (decision 0173), but a reconcile client reads an admitted symbol only after it was told the engine
+//! admitted it, and it may not have been (the lease could not answer the symbol's facts at boot, or the
+//! gatewayhub restarted alone and its new daemon knows nothing). So when the pass carries a list
+//! (`ReconcileReports::admitted_symbols`), an ON-DEMAND symbol of the engine that is not on it is
+//! taken out of the scope: its restored orders are neither adopted from a report that cannot list
+//! them nor declared gone, they stay in `restored_orders` and in the file, and ONE note per order
+//! (`CoreThread::restore_held`, an edge set) says so; the first pass whose client has been told judges
+//! them. A report that does list the order still adopts it, and a terminal one still proves it
+//! closed. The mounted symbol and a declared leg are judged either way, and a pass with no list
+//! (`None`: a client that keeps none, a journal written before the field) judges the engine's symbols
+//! as it always did. The list is journaled with the pass, so a replay takes the same verdicts. The
+//! pass's DIFF reads the same set (`CoreThread::unread_symbols`): its two local-side sweeps skip the
+//! local orders and positions of a symbol the client was not told about (`vike_execution::recon::diff_scoped`),
+//! so no `OrphanLocalOrder` or `OrphanLocalPosition` row is held for what the client could not have seen.
+//!
+//! # Silence is UNPROVEN, and an order is gone only on proof (the audit's G2 and G3)
+//!
+//! The venue not listing a restored order proves nothing on its own: a page the read did not cover,
+//! a kind it does not list, a fill row that names its order by an id the entry did not know. So an
+//! absent entry is returned by the planner as UNPROVEN, not gone: it is neither adopted nor told
+//! to a mount, it stays in `restored_orders` and in the file, and ONE note per order
+//! (`CoreThread::restore_unproven`) says so. A later pass resolves it by:
+//!
+//! - a report that lists it (ADOPT) or reports it closed (GONE: a terminal report is proof);
+//! - a fill of it, matched by its order client id OR by the venue order id the ownership file learned at the
+//!   acknowledgement (`OrderOwnerRecord::VenueId`, `OrderOwnerEntry::venue_order_id`, same symbol): FILLED
+//!   WHILE DOWN, so the strategy is never told "cancelled" about an order that traded;
+//! - or [`RESTORE_QUIET_PASSES`] QUIET passes: passes in which it was in scope and absent, whose
+//!   fill window opened at or after the first such pass (`ReconcileReports::since`), so the
+//!   lookback in which a fill could have shown has gone by that many times. The core counts them
+//!   (`restore_refs`, `hold_unproven`) and the planner reads the count (`quiet_passes`). A bounded
+//!   window is read as no shorter than [`RESTORE_MIN_QUIET_SPAN_MS`] (ten minutes of wall clock), so
+//!   a one-millisecond `reconcile_lookback_ms` cannot make three passes seconds apart a proof.
+//!
+//! What this still cannot see (residuals, named in `docs/ops/reconcile-on-restart.md`): a read the
+//! venue truncated or paged away (the quiet passes then retire the order after about the lookback,
+//! an hour by default), and a fill older than the lookback (invisible to every pass).
+//!
+//! **The KIND twin of the symbol rule.** An entry whose recorded kind is a TRIGGER kind (stop,
+//! stop-limit, take-profit) is declared gone by silence only when the pass's client claims to list
+//! trigger orders (`ReconcileReports::lists_trigger_orders`, from `ReconcileClient::lists_trigger_orders`,
+//! default `false`): the venue may keep a stop where the client does not look, so without the claim
+//! the entry stays UNPROVEN for good (until a report, a fill or the time-to-live resolves it). An
+//! entry that records NO kind (a line written before the field) may be a stop, so it is judged as a
+//! trigger kind: an old plain limit on a client that does not claim stays held until the file's
+//! thirty-day time-to-live. The claim is journaled with the pass.
+//!
+//! # What each verdict does
+//!
+//! - **ADOPT** (the order client id is still resting at the venue). The report goes into the engine registry
+//!   through `Engine::reregister_orders` (insert-only, no event, no journal record), with
+//!   the limit price, the trigger price, the `reduce_only` flag and the lifetime the entry carries (a
+//!   venue report carries no flag and no lifetime, and states a price or a trigger only where its
+//!   bridge reads one, which then stands: the remembered one fills only a price the report left
+//!   unset): they come from the entry's `own` line in the ownership
+//!   file, written at the mint, and from the JOURNAL for a line that lacks them (decision 0127
+//!   amends decision 0120's verdict 8), so a box with NO journal restores them too, the
+//!   order's `order_client_id_venue` row is set for a non-primary engine, the pass's fill rows inside the report's
+//!   filled quantity are marked as folded (`Engine::mark_adopted_fills`: the report's figure already holds
+//!   them, and a venue's later replay of one must not add it again), and the owning mount is sent a
+//!   synthetic tagged `OrderAccepted` through the ONE lane real order events use: it is pushed on
+//!   the engine's `order_events` buffer, which `dispatch_applied_fills` delivers right after the
+//!   command, so the tag stamp, the per-mount routing and the `on_order_event` call are exactly a
+//!   real event's. It is a liveness confirmation (a restored `SpreadMaker` side stays unverified
+//!   until a tagged non-terminal event or a fill arrives) and nothing else: it reaches neither the
+//!   journal nor the account/registry fold. The entry leaves `restored_orders`, and only AFTER the
+//!   registry holds the order.
+//! - **GONE** (the venue reports it closed, or it stayed absent for the quiet passes above, and no
+//!   fill in the window). The
+//!   mount is sent a synthetic `Canceled { reason: RESTORE_GONE_REASON }` through the same lane,
+//!   which retires the restored tag (`retire_tag_for_order_client_id`) and stamps it on the event; the
+//!   ownership entry is forgotten in the file at once (`OrderOwnerRecord::Forget`; the linger prune
+//!   writes a harmless second one) and leaves `restored_orders`.
+//! - **FILLED WHILE DOWN** (a fill report in the window, by order client id or venue order id, or the venue
+//!   reports it filled). Neither
+//!   adopted nor gone: the pass's existing `MissingFill` path owns the fill. The entry leaves
+//!   `restored_orders` so a later pass cannot count it again; the file entry, `order_client_id_mount` and the
+//!   tag stay, and the ordinary terminal path or the time-to-live retires them. The hook RETURNS the
+//!   order client ids it spent this way, and the pass books their fills at once when they are stamped
+//!   after the restored journal's last record and before the account's first venue link start (decisions
+//!   0043 and 0120, amended twice on 2026-11-20: `crates/vike-core/src/runtime/reconcile.rs`'s
+//!   `book_own_fills_filled_while_down` holds the limits). It also remembers them
+//!   (`CoreThread::restore_spent_filled`), and a later pass books such an order's fill whatever its stamp, on
+//!   a venue whose stream and history share the trade id (the shutdown seam, the owner's "yes" of 2026-11-22).
+//!
+//! # A mount that is not mounted yet
+//!
+//! An entry in `pending_owners` belongs to a mount id no slot carries. It is judged like the others,
+//! with two differences, both signed by the owner: an ADOPTED order goes into the registry (so the
+//! diff does not call it external) and nobody is told, and a GONE order is only forgotten (file and
+//! pending table, plus the note) because there is no mount to tell. The pending entry of an adopted
+//! order stays, so that when a mount of that id lands it binds the order's tag and ownership as
+//! always, and the NEXT pass confirms the order to the new mount (it is then in `restored_orders`
+//! and already in the registry: delivered, not counted again). A pending entry that filled while
+//! down is left alone and uncounted: removing it would lose the bind, and counting it each pass
+//! would repeat.
+//!
+//! The pseudo mount `crate::order_owners::PROTECTIVE_STOP_MOUNT` holds an OPERATOR's resting order
+//! (the control door, the GUI Trade window, a bracket ticket) that the boot restore filed there: a
+//! protective stop or a plain limit. No mount ever binds it, and the pass adopts it silently like
+//! any pending entry, so it is a known local order (cancellable by order client id, visible in the order table).
+//! Unlike the other pending entries it LEAVES `pending_owners` at its adoption, so a settled book
+//! keeps the cheap early return below. Only a `demo` or `live` engine adopts one (decision 0192
+//! verdict 6, amended by the owner on 2026-11-01; an adopted order is reachable by every
+//! registry-driven cancel, as before the restart): the boot files only such a book's order, and the
+//! pass releases the entries of a `paper` engine, and a stop's on a client that lists no trigger
+//! orders (`release_operator_stops`; a released entry the pass's report lists TERMINAL is over, and
+//! its line is forgotten in the file).
+//!
+//! An ADOPTED operator's order that later ENDS (canceled, filled or expired, seen by the engine) has
+//! its line forgotten at once, by the registry's verdict and not by a mount's event buffer: see
+//! `crates/vike-core/src/runtime/strategy_drive/order_events.rs`'s `forget_ended_operator_stops`.
+//!
+//! # Cost
+//!
+//! Pass cadence, never the per-message fold. A pass for a venue with nothing restored, with the venue
+//! gate off or with the operator switch on costs two emptiness checks and a function-pointer call.
+//! With entries, one pass builds one ref per entry and the plan; the mount delivery then walks the
+//! tag registry once per event (`tag_for_order_client_id` scans it), which is a restart-time cost bounded by
+//! the orders a previous session left resting.
+
+use super::*;
+use crate::order_owners::PROTECTIVE_STOP_MOUNT;
+use std::collections::HashMap;
+use vike_execution::execution_engine::OrderEventOut;
+use vike_execution::recon::{
+    RESTORE_GONE_REASON, RESTORE_MIN_QUIET_SPAN_MS, RESTORE_QUIET_PASSES, RestorePlan,
+    RestoreScope, RestoredOrderRef, name_by_venue_order_id, plan_restore,
+};
+use vike_model::accounts::account_keys::label_of_route_key;
+use vike_model::{FillReport, OrderEvent, OrderEventKind, OrderStatusReport};
+
+/// What one applied plan did, for the counters and the note.
+#[derive(Default)]
+struct Applied {
+    /// Orders newly written into the registry.
+    adopted: u64,
+    /// Mount deliveries queued: a mount told its restored order is alive.
+    confirmed: u64,
+    /// GONE verdicts.
+    gone: u64,
+    /// Of those, the ones whose mount is not mounted (nobody told).
+    gone_unmounted: u64,
+    /// FILLED-WHILE-DOWN entries newly counted.
+    filled: u64,
+    /// The order client ids this pass acted on.
+    touched: Vec<String>,
+}
+
+/// What a pass says about how far its reports' SILENCE can be trusted, besides the reports: the
+/// parts of `ReconcileReports` the restore reads.
+pub(super) struct ReconcilePassFacts<'a> {
+    /// `ReconcileReports::since`: where the pass's fill window opened (ms; `0` = unbounded).
+    pub(super) since: i64,
+    /// `ReconcileReports::admitted_symbols`: the on-demand symbols the pass's client was told about
+    /// (`None`: it keeps no list).
+    pub(super) admitted: Option<&'a [String]>,
+    /// `ReconcileReports::lists_trigger_orders`: the client claims its open-order read lists the
+    /// venue's trigger kinds.
+    pub(super) lists_trigger_orders: bool,
+}
+
+impl<C: ExecutionClient> CoreThread<C> {
+    /// The symbols engine `index` admitted on demand that this pass's client was NOT told about
+    /// (`admitted`: `ReconcileReports::admitted_symbols`): it did not fetch them, so the venue's silence
+    /// about them is not an answer (see "The scope of a pass"). Empty unless the pass carries a list.
+    /// The restore planner and the pass's diff (`vike_execution::recon::diff_scoped`) read the SAME set.
+    pub(super) fn unread_symbols(&self, index: usize, admitted: Option<&[String]>) -> Vec<String> {
+        admitted.map_or_else(Vec::new, |told| {
+            let e = self.engine(index);
+            e.extra_symbols
+                .iter()
+                .filter(|s| {
+                    e.gate.limits.grid_by_symbol.get(s.as_str()).is_some_and(|g| g.on_demand)
+                        && !told.contains(s)
+                })
+                .cloned()
+                .collect()
+        })
+    }
+
+    /// The restore hook of one reconcile pass; the module doc is the contract. `index` is the pass's
+    /// engine, `venue` the exchange it read and `account_key` the route key of its account (the
+    /// venue itself for a venue's sole account). Returns the order client ids of a MOUNTED slot it
+    /// judged FILLED WHILE DOWN this pass (`Self::restore_filled`).
+    pub(super) fn restore_orders_at_pass(
+        &mut self,
+        index: usize,
+        venue: &str,
+        account_key: &str,
+        orders: &mut [OrderStatusReport],
+        fills: &mut [FillReport],
+        facts: ReconcilePassFacts<'_>,
+    ) -> Vec<String> {
+        if self.config.restore_orders_off {
+            return Vec::new();
+        }
+        let pending = self.pending_owners.values().any(|p| !p.order_client_ids.is_empty());
+        if self.restored_orders.is_empty() && !pending {
+            return Vec::new();
+        }
+        if !(self.config.restore_venue_gate)(venue) {
+            return Vec::new();
+        }
+        // An engine whose key is not a legal account of this venue cannot be named in a scope.
+        let Some(label) = label_of_route_key(venue, account_key) else {
+            return Vec::new();
+        };
+        let unread = self.unread_symbols(index, facts.admitted);
+        let scope = {
+            let e = self.engine(index);
+            RestoreScope {
+                venue: venue.to_string(),
+                account: label.text().map(str::to_string),
+                symbols: std::iter::once(e.symbol.clone())
+                    .chain(e.extra_symbols.iter().cloned())
+                    .filter(|s| !unread.contains(s))
+                    .collect(),
+                lists_trigger_orders: facts.lists_trigger_orders,
+            }
+        };
+        self.release_operator_stops(index, venue, &scope, orders);
+        let refs = self.restore_refs(facts.since);
+        // The translation step (decision 0121): a client whose reports name an order by a function
+        // of its order client id rewrites this pass's reports back to the order client id BEFORE the planner reads them,
+        // and the caller's diff reads the same rewritten rows.
+        let wire = self.wire_ids_of_refs(index, &scope, &refs);
+        if !wire.is_empty() {
+            translate_wire_ids(&wire, orders, fills);
+        }
+        // A report that names no order client id (fxcm, IG after a restart of both daemons) is named by the venue order id the
+        // ownership line learned, in place, so the plan adopts it and the diff reads it as ours.
+        name_by_venue_order_id(&scope, &refs, orders);
+        let plan = plan_restore(&scope, &refs, orders, fills);
+        self.hold_unread(venue, account_key, &scope, &unread, &refs, &plan);
+        self.hold_unproven(venue, account_key, &plan);
+        self.apply_restore_plan(index, venue, account_key, &plan, fills)
+    }
+
+    /// Say, once per order, which restored orders this pass could not prove gone (the module doc,
+    /// "Silence is UNPROVEN"), and keep the count that turns enough quiet passes into a proof. They
+    /// stay in `restored_orders` and in the file and no mount is told. [`CoreThread::restore_unproven`]
+    /// remembers each: the first pass that finds one absent inserts it (and the note names it), every
+    /// later one stores the quiet count the planner was handed (`restore_refs` computed it, this pass
+    /// included when its fill window opened after the first); an order client id a pass resolves (adopted, gone,
+    /// filled) leaves it, so a later hold is announced again.
+    fn hold_unproven(&mut self, venue: &str, account_key: &str, plan: &RestorePlan) {
+        let resolved = plan
+            .adopt
+            .iter()
+            .filter_map(|r| r.order_client_id.as_deref())
+            .chain(plan.gone.iter().map(|r| r.order_client_id.as_str()))
+            .chain(plan.filled_while_down.iter().map(String::as_str));
+        for order_client_id in resolved {
+            self.restore_unproven.remove(order_client_id);
+        }
+        let now = self.config.clock.now_ms();
+        let mut fresh: Vec<String> = Vec::new();
+        for r in &plan.unproven {
+            match self.restore_unproven.get_mut(&r.order_client_id) {
+                Some(held) => held.quiet = r.quiet_passes,
+                None => {
+                    self.restore_unproven.insert(
+                        r.order_client_id.clone(),
+                        RestoreUnprovenOrder { first_ms: now, quiet: 0 },
+                    );
+                    fresh.push(r.order_client_id.clone());
+                }
+            }
+        }
+        if fresh.is_empty() {
+            return;
+        }
+        let note = format!(
+            "RESTORE {venue} [account {account_key}]: UNPROVEN {} order(s) the venue's report does \
+             not list, and silence alone proves nothing: not adopted, not declared gone, no mount \
+             told, kept in the ownership file until the venue reports them closed, a fill of them \
+             appears (by order client id or venue order id), or they stay absent for {RESTORE_QUIET_PASSES} \
+             quiet passes (a trigger order only where the client lists trigger orders): {}",
+            fresh.len(),
+            super::boot_restore::sample(&fresh),
+        );
+        tracing::warn!(target: "vike_core::reconcile", "{note}");
+        self.note(note);
+    }
+
+    /// An operator's order (an entry of the pseudo mount) is adopted by a pass only for a `demo` or
+    /// `live` engine (decision 0192 verdict 6, amended by the owner on 2026-11-01), and a STOP only
+    /// where its client lists trigger orders: a client that does not can neither prove such a stop
+    /// still rests nor find it again, so an entry nobody can judge is not kept waiting (a limit it
+    /// lists like every client, so a limit stays). The boot files only a `demo` or `live` book's order
+    /// of an open venue (`merge_journal_owners`), but the ownership file can outlive a tier change and
+    /// the claim is the pass's, so the pass asks again. The entries of THIS pass's (venue, account)
+    /// are released from memory otherwise (the file keeps its line until its time-to-live), with ONE
+    /// note. The exception is an entry the pass's own report lists in a TERMINAL state: the venue says
+    /// it is over (a terminal report is proof, as for any restored order), so nothing remains to wait
+    /// for and the file forgets its line, with a note of its own.
+    fn release_operator_stops(
+        &mut self,
+        index: usize,
+        venue: &str,
+        scope: &RestoreScope,
+        orders: &[OrderStatusReport],
+    ) {
+        let paper = self.engine(index).tier == vike_model::AccountTier::Paper;
+        let why = if paper {
+            "an operator's order is adopted on a demo or live engine only"
+        } else if !scope.lists_trigger_orders {
+            "this venue's client does not list trigger orders"
+        } else {
+            return;
+        };
+        let Some(p) = self.pending_owners.get_mut(PROTECTIVE_STOP_MOUNT) else { return };
+        let mut released: Vec<String> = Vec::new();
+        p.order_client_ids.retain(|o| {
+            // on a venue book only a trigger kind goes (a line with no kind may be one)
+            let judged = paper || o.order_type.as_ref().is_none_or(|k| k.is_trigger());
+            let ours = judged
+                && o.venue.as_deref() == Some(scope.venue.as_str())
+                && o.account == scope.account;
+            if ours {
+                released.push(o.order_client_id.clone());
+            }
+            !ours
+        });
+        if p.order_client_ids.is_empty() && p.ledger.is_none() {
+            self.pending_owners.remove(PROTECTIVE_STOP_MOUNT);
+        }
+        for order_client_id in &released {
+            self.restore_unproven.remove(order_client_id);
+        }
+        let (ended, released): (Vec<String>, Vec<String>) = released.into_iter().partition(|c| {
+            let c = c.as_str();
+            orders.iter().any(|o| o.order_client_id.as_deref() == Some(c) && o.status.is_terminal())
+        });
+        if !ended.is_empty() {
+            for order_client_id in &ended {
+                self.record_owner(crate::order_owners::OrderOwnerRecord::Forget {
+                    order_client_id: order_client_id.clone(),
+                });
+            }
+            let note = format!(
+                "RESTORE {venue}: {} operator order(s) the venue reports ended, forgotten: {}",
+                ended.len(),
+                super::boot_restore::sample(&ended),
+            );
+            tracing::warn!(target: "vike_core::reconcile", "{note}");
+            self.note(note);
+        }
+        if !released.is_empty() {
+            let note = format!(
+                "RESTORE {venue}: {} operator order(s) NOT adopted ({why}): {}",
+                released.len(),
+                super::boot_restore::sample(&released),
+            );
+            tracing::warn!(target: "vike_core::reconcile", "{note}");
+            self.note(note);
+        }
+    }
+
+    /// An adopted operator's stop leaves the pseudo mount's pending entries: no mount will ever bind
+    /// it (the reason the other pending entries stay), and a permanent tenant would keep every later
+    /// pass off the cheap early return of [`Self::restore_orders_at_pass`].
+    fn spend_operator_stop(&mut self, order_client_id: &str) {
+        let Some(p) = self.pending_owners.get_mut(PROTECTIVE_STOP_MOUNT) else { return };
+        let before = p.order_client_ids.len();
+        p.order_client_ids.retain(|o| o.order_client_id != order_client_id);
+        let adopted = p.order_client_ids.len() < before;
+        if p.order_client_ids.is_empty() && p.ledger.is_none() {
+            self.pending_owners.remove(PROTECTIVE_STOP_MOUNT);
+        }
+        if adopted {
+            // no mount owns it, so its cancel must forget the file's line itself
+            self.operator_stops.insert(order_client_id.to_string());
+        }
+    }
+
+    /// Say, once per order, which restored orders this pass could not judge because their symbol was
+    /// not read: an admitted symbol whose facts the lease could not answer, or a gatewayhub that
+    /// restarted and has not been told yet. They stay in `restored_orders` (and in the file), so the
+    /// first pass whose client has been told judges them. An order client id that is no longer held (adopted,
+    /// gone, or its symbol read again) leaves the edge set, so a later hold is announced again.
+    fn hold_unread(
+        &mut self,
+        venue: &str,
+        account_key: &str,
+        scope: &RestoreScope,
+        unread: &[String],
+        refs: &[RestoredOrderRef],
+        plan: &RestorePlan,
+    ) {
+        let spent = |order_client_id: &str| {
+            plan.adopt.iter().any(|r| r.order_client_id.as_deref() == Some(order_client_id))
+                || plan.gone.iter().any(|r| r.order_client_id == order_client_id)
+                || plan.filled_while_down.iter().any(|c| c == order_client_id)
+        };
+        let mut held: Vec<String> = refs
+            .iter()
+            .filter(|r| {
+                r.venue.as_deref().is_none_or(|v| v == scope.venue)
+                    && (r.account.is_none() || r.account == scope.account)
+                    && r.symbol.as_ref().is_some_and(|s| unread.contains(s))
+                    && !spent(&r.order_client_id)
+            })
+            .map(|r| r.order_client_id.clone())
+            .collect();
+        held.sort_unstable();
+        held.dedup();
+        self.restore_held.retain(|c| held.contains(c));
+        let fresh: Vec<String> =
+            held.into_iter().filter(|c| self.restore_held.insert(c.clone())).collect();
+        if fresh.is_empty() {
+            return;
+        }
+        let note = format!(
+            "RESTORE {venue} [account {account_key}]: HELD {} order(s) on admitted symbol(s) {} the \
+             reconcile client was not told about: not adopted, not declared gone, judged by the \
+             first pass whose client has been told: {}",
+            fresh.len(),
+            unread.join(", "),
+            super::boot_restore::sample(&fresh),
+        );
+        tracing::warn!(target: "vike_core::reconcile", "{note}");
+        self.note(note);
+    }
+
+    /// `wire id -> (order client id, unified symbol)` of the restored entries this pass may judge, for a client
+    /// whose [`ExecutionClient::wire_id_for`] names them. Empty for every client with the default
+    /// (`None`), so a venue that echoes our order client id pays one trait call per entry and nothing else.
+    /// Applicability is the planner's own: a ref of another venue or account is not this pass's.
+    fn wire_ids_of_refs(
+        &self,
+        index: usize,
+        scope: &RestoreScope,
+        refs: &[RestoredOrderRef],
+    ) -> HashMap<String, (String, Option<String>)> {
+        let client = &self.engine(index).client;
+        refs.iter()
+            .filter(|r| {
+                r.venue.as_deref().is_none_or(|v| v == scope.venue)
+                    && (r.account.is_none() || r.account == scope.account)
+            })
+            .filter_map(|r| {
+                let wire = client.wire_id_for(&r.order_client_id)?;
+                Some((wire, (r.order_client_id.clone(), r.symbol.clone())))
+            })
+            .collect()
+    }
+
+    /// One planner ref per restored entry: the mounted ones first, then the pending ones (an entry
+    /// of a mount id no slot carries yet), each order client id once. A ref carries the kind and the venue id
+    /// the ownership file learned, and the quiet passes counted for it: the passes before this one,
+    /// plus this one if its fill window (`since`) opened at or after the first pass that found the
+    /// order absent (`since <= 0` is an unbounded window, which covers every fill there ever was).
+    /// A bounded window is READ as no shorter than [`RESTORE_MIN_QUIET_SPAN_MS`] (ten minutes): a
+    /// tiny `reconcile_lookback_ms` must not turn three passes seconds apart into a proof, so the
+    /// pass counts only once that span has gone by since the first silence.
+    fn restore_refs(&self, since: i64) -> Vec<RestoredOrderRef> {
+        let reach = match since {
+            ..=0 => i64::MAX,
+            _ => since.min(self.config.clock.now_ms() - RESTORE_MIN_QUIET_SPAN_MS),
+        };
+        let to_ref = |o: &crate::order_owners::OrderOwnerEntry| RestoredOrderRef {
+            order_client_id: o.order_client_id.clone(),
+            venue: o.venue.clone(),
+            symbol: o.symbol.clone(),
+            account: o.account.clone(),
+            order_type: o.order_type.clone(),
+            venue_order_id: o.venue_order_id.clone(),
+            quiet_passes: self
+                .restore_unproven
+                .get(&o.order_client_id)
+                .map_or(0, |u| u.quiet + u32::from(reach >= u.first_ms)),
+        };
+        let mut refs: Vec<RestoredOrderRef> = self.restored_orders.values().map(to_ref).collect();
+        for p in self.pending_owners.values() {
+            refs.extend(
+                p.order_client_ids
+                    .iter()
+                    .filter(|o| !self.restored_orders.contains_key(&o.order_client_id))
+                    .map(to_ref),
+            );
+        }
+        refs
+    }
+
+    /// Apply `plan`; see the module doc for each verdict. Returns what [`Self::restore_filled`] spent.
+    fn apply_restore_plan(
+        &mut self,
+        index: usize,
+        venue: &str,
+        account_key: &str,
+        plan: &RestorePlan,
+        fills: &[FillReport],
+    ) -> Vec<String> {
+        let mut done = Applied::default();
+        self.restore_adopt(index, plan, fills, &mut done);
+        self.restore_gone(index, plan, &mut done);
+        let filled = self.restore_filled(plan, &mut done);
+
+        self.restore_counters.restored_orders_adopted += done.adopted;
+        self.restore_counters.restored_orders_gone += done.gone;
+        self.restore_counters.restored_orders_filled_while_down += done.filled;
+        if done.adopted + done.confirmed + done.gone + done.filled == 0 {
+            return filled; // a repeat pass: every verdict was already applied
+        }
+        done.touched.sort_unstable();
+        done.touched.dedup();
+        self.note(format!(
+            "RESTORE {venue} [account {account_key}]: adopted {} (mounts told {}), gone {} \
+             ({} of unmounted mounts, no mount told), filled while down {}: {}",
+            done.adopted,
+            done.confirmed,
+            done.gone,
+            done.gone_unmounted,
+            done.filled,
+            super::boot_restore::sample(&done.touched),
+        ));
+        filled
+    }
+
+    /// ADOPT: registry write, engine row, and the owning mount's liveness confirmation.
+    fn restore_adopt(
+        &mut self,
+        index: usize,
+        plan: &RestorePlan,
+        fills: &[FillReport],
+        done: &mut Applied,
+    ) {
+        if plan.adopt.is_empty() {
+            return;
+        }
+        let fresh: Vec<OrderStatusReport> = plan
+            .adopt
+            .iter()
+            .filter(|r| {
+                r.order_client_id
+                    .as_deref()
+                    .is_some_and(|c| !self.engine(index).registry.contains_key(c))
+            })
+            .cloned()
+            .collect();
+        // Tell the client BEFORE the registry write, so the first WS event or fill of a restored
+        // order it receives already resolves (a client with no restart-lost state ignores this).
+        let announced: Vec<vike_execution::RestoredOrder> =
+            fresh.iter().filter_map(vike_execution::RestoredOrder::of_report).collect();
+        if !announced.is_empty() {
+            self.engine_mut(index).client.adopt_restored(&announced);
+        }
+        // The REMEMBERED terms of each adopted order (the ownership line, else the journal:
+        // decision 0127, closing decision 0120's verdict 8): a venue report carries no `reduce_only`
+        // flag and no lifetime, and a limit or trigger price only where its bridge reads one, so the
+        // rebuilt registry entry could rest at no price, a stop would forget that it is a reduce-only
+        // one at its level, and an amend that sends the lifetime would re-place it as `GTC`. A price
+        // the report stated stands (the venue's own); the memory fills one it left unset.
+        // Read before the entries are spent below;
+        // the venue still decides that the order exists, the memory only says where it rested and what
+        // it was. A lifetime nothing remembers stays `lifetime_unknown`, which refuses such an amend.
+        let terms: Vec<crate::order_owners::OrderOwnerEntry> = announced
+            .iter()
+            .filter_map(|vike_execution::RestoredOrder { order_client_id, .. }| {
+                self.restored_orders
+                    .get(order_client_id)
+                    .or_else(|| {
+                        self.pending_owners
+                            .values()
+                            .flat_map(|p| p.order_client_ids.iter())
+                            .find(|o| o.order_client_id == *order_client_id)
+                    })
+                    .cloned()
+            })
+            .collect();
+        done.adopted = self.engine_mut(index).reregister_orders(&fresh) as u64;
+        self.engine_mut(index).mark_adopted_fills(&fresh, fills);
+        for entry in terms {
+            if let Some(order) = self.engine_mut(index).registry.get_mut(&entry.order_client_id) {
+                if order.request.price.is_none() {
+                    order.request.price = entry.price;
+                }
+                if order.request.trigger_price.is_none() {
+                    order.request.trigger_price = entry.trigger_price;
+                }
+                order.request.reduce_only |= entry.reduce_only;
+                if let Some(lifetime) = entry.time_in_force {
+                    order.request.time_in_force = lifetime;
+                    order.request.gtd_expiry = entry.gtd_expiry;
+                    order.lifetime_unknown = false;
+                }
+            }
+        }
+        for r in &plan.adopt {
+            let Some(order_client_id) = r.order_client_id.as_deref() else { continue };
+            if fresh.iter().any(|f| f.order_client_id.as_deref() == Some(order_client_id)) {
+                done.touched.push(order_client_id.to_string());
+            }
+            // The order's own engine, the row a submit would have written, so its lifecycle events
+            // route to the engine that holds it and not to the primary.
+            if self.order_client_id_row_needed(index) {
+                self.order_client_id_venue.insert(order_client_id.to_string(), index);
+            }
+            // Only the entry of a MOUNTED slot is spent (and only now that the registry holds the
+            // order); a pending entry stays, for its mount to bind, except an operator's stop,
+            // which no mount ever binds.
+            self.spend_operator_stop(order_client_id);
+            if self.restored_orders.shift_remove(order_client_id).is_some() {
+                // A working emulated order's child is confirmed to its law too (`emulated.rs`), an
+                // operator's included: its parent awaits exactly this.
+                if self.mount_for_order_client_id(order_client_id).is_some()
+                    || self.emulated.child_of.contains_key(order_client_id)
+                {
+                    self.queue_order_event(
+                        index,
+                        &r.venue,
+                        &r.symbol,
+                        order_client_id,
+                        OrderEventKind::Accepted,
+                    );
+                    done.confirmed += 1;
+                }
+                done.touched.push(order_client_id.to_string());
+            }
+        }
+    }
+
+    /// GONE: forget the entry in the file and the tables, and tell the mount when there is one.
+    fn restore_gone(&mut self, index: usize, plan: &RestorePlan, done: &mut Applied) {
+        for r in &plan.gone {
+            done.gone += 1;
+            done.touched.push(r.order_client_id.clone());
+            self.record_owner(crate::order_owners::OrderOwnerRecord::Forget {
+                order_client_id: r.order_client_id.clone(),
+            });
+            if self.restored_orders.shift_remove(&r.order_client_id).is_some() {
+                let heard = self.mount_for_order_client_id(&r.order_client_id).is_some()
+                    || self.emulated.child_of.contains_key(&r.order_client_id);
+                if let (true, Some(venue), Some(symbol)) = (heard, &r.venue, &r.symbol) {
+                    let kind = OrderEventKind::Canceled { reason: RESTORE_GONE_REASON.to_string() };
+                    self.queue_order_event(index, venue, symbol, &r.order_client_id, kind);
+                } else {
+                    done.gone_unmounted += 1;
+                }
+            } else {
+                done.gone_unmounted += 1;
+                self.pending_owners.retain(|_, p| {
+                    p.order_client_ids.retain(|o| o.order_client_id != r.order_client_id);
+                    !p.order_client_ids.is_empty() || p.ledger.is_some()
+                });
+            }
+        }
+    }
+
+    /// FILLED WHILE DOWN: counted once, off the planner's set; the fill itself is the existing
+    /// `MissingFill` path's. Returns the order client ids spent here: entries of a MOUNTED slot, whose
+    /// fill the pass books at once so their mount hears it. A pending entry is not spent, so its fill
+    /// waits for the pass after its mount binds.
+    fn restore_filled(&mut self, plan: &RestorePlan, done: &mut Applied) -> Vec<String> {
+        let mut spent = Vec::new();
+        for order_client_id in &plan.filled_while_down {
+            if self.restored_orders.shift_remove(order_client_id).is_some() {
+                done.filled += 1;
+                done.touched.push(order_client_id.clone());
+                spent.push(order_client_id.clone());
+                self.restore_spent_filled.insert(order_client_id.clone());
+            }
+        }
+        spent
+    }
+
+    /// Put one synthetic lifecycle event on `index`'s engine buffer, the lane
+    /// `crates/vike-core/src/runtime/strategy_drive/order_events.rs`'s `dispatch_order_events`
+    /// drains: the tag is left `None` here because that lane stamps it (`tag_for_order_client_id` for a
+    /// non-terminal kind, `retire_tag_for_order_client_id` for a terminal one).
+    pub(super) fn queue_order_event(
+        &mut self,
+        index: usize,
+        venue: &str,
+        symbol: &str,
+        order_client_id: &str,
+        kind: OrderEventKind,
+    ) {
+        self.engine_mut(index).order_events.push(OrderEventOut {
+            venue: venue.to_string(),
+            symbol: symbol.to_string(),
+            event: OrderEvent { order_client_id: order_client_id.to_string(), tag: None, kind },
+        });
+    }
+}
+
+/// Rewrite the pass's reports from a venue wire id back to the restored order client id it names, in place:
+/// `order_client_id` becomes the order client id and, for an order report or a fill, `symbol` becomes the
+/// UNIFIED symbol the ownership record holds (a venue-native spelling such as a spot coin never
+/// reaches the registry for a translated order). Rows naming no restored order are untouched.
+fn translate_wire_ids(
+    wire: &HashMap<String, (String, Option<String>)>,
+    orders: &mut [OrderStatusReport],
+    fills: &mut [FillReport],
+) {
+    for o in orders {
+        if let Some((order_client_id, symbol)) =
+            o.order_client_id.as_deref().and_then(|w| wire.get(w))
+        {
+            let (order_client_id, symbol) = (order_client_id.clone(), symbol.clone());
+            o.order_client_id = Some(order_client_id);
+            if let Some(s) = symbol {
+                o.symbol = s;
+            }
+        }
+    }
+    for f in fills {
+        if let Some((order_client_id, symbol)) =
+            f.order_client_id.as_deref().and_then(|w| wire.get(w))
+        {
+            let (order_client_id, symbol) = (order_client_id.clone(), symbol.clone());
+            f.order_client_id = Some(order_client_id);
+            if let Some(s) = symbol {
+                f.symbol = s;
+            }
+        }
+    }
+}

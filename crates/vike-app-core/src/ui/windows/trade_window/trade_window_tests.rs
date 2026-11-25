@@ -1,0 +1,227 @@
+//! Tests of the Trade window's glue: the fixtures every theme in `trade_window_tests/` shares.
+
+use super::accounts::{account_name, engines_run, status_of, why_not};
+use super::catalog::{ROWS_CACHED, UNLISTED_QUOTE, unlisted_base_quote};
+use super::reasons::{
+    ACCOUNT_LIST_UNAVAILABLE, NOT_LISTED_WHY, TAKE_PROFIT_STOP_LOSS_LANE_WHY,
+    TAKE_PROFIT_STOP_LOSS_SYMBOL_WHY,
+};
+use super::*;
+use std::assert_matches;
+use std::sync::Arc;
+use vike_account_window::accounts::not_running_because;
+use vike_catalog::Catalog;
+use vike_execution::OrderView;
+use vike_marketdata::L2Book;
+use vike_model::AccountTier;
+use vike_model::Instrument;
+use vike_model::OrderStatus;
+use vike_model::accounts::account_keys::AccountLabel;
+use vike_model::{Contract, Margining, SymbolProperties};
+use vike_order_entry::dispatch::{ORDERS_UNATTRIBUTED_WHY, tradable, window_orders};
+use vike_order_entry::trade_window::TradeWindowTradable;
+use vike_tradehub_client::wire::{
+    AccountDirectoryAccountWire, AccountDirectoryVenueWire, AccountDirectoryWire,
+};
+
+// ---- fixtures ------------------------------------------------------------------------------
+
+fn venue(name: &str, title: Option<&str>) -> AccountDirectoryVenueWire {
+    AccountDirectoryVenueWire { name: name.into(), title: title.map(Into::into) }
+}
+
+fn account(id: i64, venue: &str, label: Option<&str>, tier: &str) -> AccountDirectoryAccountWire {
+    AccountDirectoryAccountWire {
+        id,
+        venue: venue.into(),
+        label: label.map(Into::into),
+        tier: tier.into(),
+        venue_account_id: None,
+    }
+}
+
+/// One engine's block, as a node that publishes tier and symbols names it. Its route key is
+/// derived from the label exactly as the core derives it.
+fn block(venue: &str, label: Option<&str>, symbol: &str, tier: Option<AccountTier>) -> VenueBlock {
+    let account = label.map(|l| AccountLabel::parse(l).expect("a test label"));
+    let route_key = match &account {
+        Some(l) => vike_model::accounts::account_keys::route_key_of(venue, l),
+        None => venue.to_string(),
+    };
+    VenueBlock {
+        venue: venue.into(),
+        account,
+        route_key,
+        symbol: symbol.into(),
+        tier,
+        // A fixture's choice, not a node's table: three venues whose door admits a symbol (a node says so from
+        // `SYMBOL_RULES`' `Admits` rows), every other venue one that keeps its symbol.
+        admits_symbols: matches!(venue, "binance" | "bybit" | "aster"),
+        ..Default::default()
+    }
+}
+
+/// A snapshot publishing `blocks`, the first one its primary (`vike_core::snapshot::build` publishes the
+/// primary engine first).
+fn snapshot_with(blocks: Vec<VenueBlock>) -> CoreSnapshot {
+    let (v, s) = blocks.first().map(|b| (b.venue.clone(), b.symbol.clone())).unwrap_or_default();
+    let mut snapshot = CoreSnapshot::empty(&v, &s);
+    snapshot.portfolio.venues = blocks;
+    snapshot
+}
+
+fn order(order_client_id: &str, label: Option<&str>, status: OrderStatus) -> OrderView {
+    OrderView {
+        order_client_id: order_client_id.into(),
+        venue: "binance".into(),
+        account: label.map(|l| AccountLabel::parse(l).expect("a test label")),
+        symbol: "BTCUSDT".into(),
+        side: 1,
+        qty: 1.0,
+        order_type: vike_model::OrderType::Limit,
+        price: Some(99.0),
+        trigger_price: None,
+        status,
+        venue_order_id: None,
+        filled_qty: 0.0,
+        average_fill_price: 0.0,
+        refusal_id: None,
+        reason: None,
+        pending_price: None,
+        trail: None,
+        limit_offset: None,
+        attributes: None,
+        trail_percent: None,
+        adjust: None,
+        release: None,
+        display_quantity: None,
+        data_delay: None,
+    }
+}
+
+fn instrument(venue: &str, symbol: &str, quote: &str, contract: Contract, lot: f64) -> Instrument {
+    Instrument::new(venue, symbol, "BTC", quote, contract)
+        .with_description(format!("Bitcoin / {quote}"))
+        .with_properties(SymbolProperties {
+            tick_size: 0.1,
+            step_size: lot,
+            min_qty: lot,
+            ..Default::default()
+        })
+}
+
+/// A linear perpetual settling in its quote (binance `BTCUSDT.P`, okx `BTC-USDT-SWAP`).
+fn linear_perp(settle: &str) -> Contract {
+    vike_model::test_support::instruments::perp(Margining::Linear, settle)
+}
+
+/// BTC on three venues: binance spot and perp (and a USDC pair), okx spot and swap, bybit spot.
+fn btc_catalog() -> Arc<Catalog> {
+    Arc::new(Catalog::from_instruments(vec![
+        instrument("binance", "BTCUSDT", "USDT", Contract::CryptoSpot, 0.001),
+        instrument("binance", "BTCUSDT.P", "USDT", linear_perp("USDT"), 0.001),
+        instrument("binance", "BTCUSDC", "USDC", Contract::CryptoSpot, 0.001),
+        instrument("okx", "BTC-USDT", "USDT", Contract::CryptoSpot, 0.0001),
+        instrument("okx", "BTC-USDT-SWAP", "USDT", linear_perp("USDT"), 0.01),
+        instrument("bybit", "BTCUSDT", "USDT", Contract::CryptoSpot, 0.000001),
+    ]))
+}
+
+/// `c` synced to `cat` for a window at `(venue, symbol)` with the picker on `query`, on a node
+/// publishing `snapshot`.
+fn sync_on(
+    c: &mut TradeWindowCatalog,
+    cat: &Arc<Catalog>,
+    _snapshot: &CoreSnapshot,
+    (venue, symbol, query): (&str, &str, &str),
+) {
+    c.sync(cat, venue, symbol, query);
+}
+
+fn synced(
+    cat: &Arc<Catalog>,
+    snapshot: &CoreSnapshot,
+    venue: &str,
+    symbol: &str,
+    query: &str,
+) -> TradeWindowCatalog {
+    let mut c = TradeWindowCatalog::default();
+    sync_on(&mut c, cat, snapshot, (venue, symbol, query));
+    c
+}
+
+/// One frame's sources at `(venue, account, symbol)`, with no book, no recent picks and no
+/// status.
+fn sources<'a>(
+    snapshot: &'a CoreSnapshot,
+    directory: Option<&'a AccountDirectoryWire>,
+    catalog: &'a TradeWindowCatalog,
+    (venue, account, symbol): (&'a str, Option<&'a str>, &'a str),
+) -> TradeWindowSources<'a> {
+    TradeWindowSources {
+        snapshot,
+        directory,
+        catalog,
+        venue,
+        account,
+        symbol,
+        book: None,
+        top: None,
+        tape: &[],
+        stale: false,
+        source: None,
+        unreachable: None,
+        recent: &[],
+        status: None,
+        bracket_wire: false,
+        post_only_wire: false,
+        control_link: BackendControlLink::Open,
+        directory_unavailable: false,
+        not_running: &[],
+        node_words: vike_tradehub_client::node_words::BackendNodeWords::NONE,
+        held_says: None,
+    }
+}
+
+/// A node running binance's default account (LIVE, 1500 free) and its `SUB` account (DEMO,
+/// 250 free), both on BTCUSDT.
+fn two_accounts() -> CoreSnapshot {
+    let mut main = block("binance", None, "BTCUSDT", Some(AccountTier::Live));
+    main.free_buying_power = 1500.0;
+    let mut sub = block("binance", Some("SUB"), "BTCUSDT", Some(AccountTier::Demo));
+    sub.free_buying_power = 250.0;
+    snapshot_with(vec![main, sub])
+}
+
+/// The database behind [`two_accounts`]: SUB listed BEFORE the default account (the reply is
+/// id-ordered), an okx account the server does not run, and bybit with no account at all.
+fn two_accounts_directory() -> AccountDirectoryWire {
+    AccountDirectoryWire {
+        venues: vec![
+            venue("binance", Some("Binance")),
+            venue("okx", Some("OKX")),
+            venue("bybit", None),
+        ],
+        accounts: vec![
+            account(1, "binance", Some("SUB"), "demo"),
+            account(2, "binance", None, "live"),
+            account(3, "okx", None, "demo"),
+        ],
+    }
+}
+
+#[path = "trade_window_tests/pieces.rs"]
+#[cfg(test)]
+mod pieces;
+
+#[path = "trade_window_tests/window_inputs.rs"]
+#[cfg(test)]
+mod window_inputs;
+
+#[path = "trade_window_tests/faults.rs"]
+#[cfg(test)]
+mod faults;
+
+#[path = "trade_window_tests/status_strip.rs"]
+#[cfg(test)]
+mod status_strip;

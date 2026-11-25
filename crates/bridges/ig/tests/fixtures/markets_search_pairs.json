@@ -1,0 +1,29 @@
+{
+  "_provenance": "HAND-WRITTEN, NOT a capture: GET /markets?searchTerm= (Version 1) bodies in the shape of crates/bridges/ig/tests/fixtures/markets_search.json, one per search term, for the operator's lookup (`crates/bridges/ig/src/operator_row.rs`). `EURUSD` lists the three forms IG names for a pair (the FX Mini, the standard CFD, the daily funded bet) beside a dated forward and a cross whose epic only CONTAINS the word; `GBPCHF` lists one standard CFD and no Mini; `AUDNZD` lists two CFD forms and no Mini; `XAUXAG` lists nothing of the pair. The epics follow IG's naming but were not fetched. Read by `crates/bridges/ig/src/operator_row_tests.rs`.",
+  "EURUSD": {
+    "markets": [
+      { "epic": "CS.D.EURUSD.CFD.IP", "instrumentName": "EUR/USD", "instrumentType": "CURRENCIES", "expiry": "-", "bid": 1.08512, "offer": 1.08518, "streamingPricesAvailable": true, "marketStatus": "TRADEABLE", "scalingFactor": 10000 },
+      { "epic": "CS.D.EURUSD.TODAY.IP", "instrumentName": "EUR/USD DFB", "instrumentType": "CURRENCIES", "expiry": "DFB", "bid": 1.08512, "offer": 1.08518, "streamingPricesAvailable": true, "marketStatus": "TRADEABLE", "scalingFactor": 10000 },
+      { "epic": "CS.D.EURUSD.MINI.IP", "instrumentName": "EUR/USD Mini", "instrumentType": "CURRENCIES", "expiry": "-", "bid": 1.08512, "offer": 1.08518, "streamingPricesAvailable": true, "marketStatus": "TRADEABLE", "scalingFactor": 10000 },
+      { "epic": "CS.D.EURUSD.FWM2.IP", "instrumentName": "EUR/USD Forward", "instrumentType": "CURRENCIES", "expiry": "DEC-26", "bid": 1.0901, "offer": 1.0905, "streamingPricesAvailable": true, "marketStatus": "TRADEABLE", "scalingFactor": 10000 },
+      { "epic": "CS.D.EURUSDX.MINI.IP", "instrumentName": "EUR/USD Index", "instrumentType": "INDICES", "expiry": "-", "bid": 98.1, "offer": 98.2, "streamingPricesAvailable": true, "marketStatus": "TRADEABLE", "scalingFactor": 1 }
+    ]
+  },
+  "GBPCHF": {
+    "markets": [
+      { "epic": "CS.D.GBPCHF.CFD.IP", "instrumentName": "GBP/CHF", "instrumentType": "CURRENCIES", "expiry": "-", "bid": 1.1201, "offer": 1.1205, "streamingPricesAvailable": true, "marketStatus": "TRADEABLE", "scalingFactor": 10000 },
+      { "epic": "CS.D.GBPCHF.TODAY.IP", "instrumentName": "GBP/CHF DFB", "instrumentType": "CURRENCIES", "expiry": "DFB", "bid": 1.1201, "offer": 1.1205, "streamingPricesAvailable": true, "marketStatus": "TRADEABLE", "scalingFactor": 10000 }
+    ]
+  },
+  "AUDNZD": {
+    "markets": [
+      { "epic": "CS.D.AUDNZD.CFD.IP", "instrumentName": "AUD/NZD", "instrumentType": "CURRENCIES", "expiry": "-", "bid": 1.0901, "offer": 1.0907, "streamingPricesAvailable": true, "marketStatus": "TRADEABLE", "scalingFactor": 10000 },
+      { "epic": "CS.D.AUDNZD.CFE.IP", "instrumentName": "AUD/NZD (EU)", "instrumentType": "CURRENCIES", "expiry": "-", "bid": 1.0901, "offer": 1.0907, "streamingPricesAvailable": true, "marketStatus": "TRADEABLE", "scalingFactor": 10000 }
+    ]
+  },
+  "XAUXAG": {
+    "markets": [
+      { "epic": "CS.D.CFDGOLD.CFD.IP", "instrumentName": "Spot Gold", "instrumentType": "CURRENCIES", "expiry": "-", "bid": 2041.2, "offer": 2041.5, "streamingPricesAvailable": true, "marketStatus": "TRADEABLE", "scalingFactor": 1 }
+    ]
+  }
+}
